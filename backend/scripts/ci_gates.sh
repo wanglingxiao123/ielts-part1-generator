@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Structural gates from implement.md. These are greps rather than comments on purpose: a comment
+# asking people not to break the blindness guarantee has never stopped anyone, and a violation
+# produces no error at runtime -- only a quietly inflated score.
+#
+# Run from the repository root: bash backend/scripts/ci_gates.sh
+set -uo pipefail
+
+cd "$(dirname "$0")/../.." || exit 1
+status=0
+
+fail() { echo "GATE FAILED: $1"; status=1; }
+
+echo "== gate 1: audit step carries no planning identifiers =="
+if grep -nE 'blueprint|form_group|question_type_coverage|item_form' backend/steps/audit.py; then
+    fail "BLINDNESS_VIOLATION in backend/steps/audit.py"
+else
+    echo "  ok"
+fi
+
+echo "== gate 2: deterministic layer has no model dependency =="
+if grep -rnE '^[[:space:]]*(from|import)[[:space:]]+(strands|openai)' backend/deterministic/; then
+    fail "deterministic/ imports a model SDK"
+else
+    echo "  ok"
+fi
+
+echo "== gate 3: no hand-written token refresh logic =="
+if grep -rniE 'refresh_token|token_cache|is_expired|renew_token' backend/model/; then
+    fail "model/ contains token lifecycle logic; Strands mints per call"
+else
+    echo "  ok"
+fi
+
+echo "== gate 4: skill assets stay Python 3.9 parseable =="
+for f in skills/ielts-listening-skills/*/scripts/*.py skills/ielts-listening-skills/shared/*.py; do
+    python3 -c "import ast,sys; ast.parse(open(sys.argv[1], encoding='utf-8').read())" "$f" \
+        || fail "$f is not parseable by the system python3 ($(python3 -V 2>&1))"
+done
+echo "  ok"
+
+echo "== gate 5: backend sources parse =="
+# Prune virtualenvs and caches: a venv created inside backend/ would otherwise drag
+# thousands of third-party files into this gate and fail on their syntax, not ours.
+find backend \( -name '.venv' -o -name 'venv' -o -name '__pycache__' -o -name 'site-packages' \) -prune \
+    -o -name '*.py' -print0 | xargs -0 "${PYTHON:-python3}" -c \
+    "import ast,sys; [ast.parse(open(f, encoding='utf-8').read(), f) for f in sys.argv[1:]]" \
+    || fail "backend has a syntax error"
+echo "  ok"
+
+echo "== gate 6: skill contract regression suite (51 checks) =="
+python3 skills/ielts-listening-skills/shared/tests/run_tests.py >/tmp/skill_tests.log 2>&1 \
+    && tail -1 /tmp/skill_tests.log || { tail -20 /tmp/skill_tests.log; fail "skill suite"; }
+
+echo "== gate 7: backend unit tests =="
+"${PYTHON:-python3}" -m pytest backend/tests -q || fail "backend unit tests"
+
+exit "$status"

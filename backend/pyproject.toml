@@ -1,0 +1,19 @@
+[project]
+name = "ielts-part1-backend"
+version = "0.1.0"
+description = "Deterministic generation Loop for IELTS Listening Part 1 material"
+requires-python = ">=3.11"
+dependencies = [
+    # GPT-5.6 is Responses-API only; OpenAIResponsesModel lives in the openai extra.
+    "strands-agents[openai]>=1.50.0",
+    "openai>=2.0.0",
+    "bedrock-agentcore>=0.1.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "jsonschema>=4.0"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

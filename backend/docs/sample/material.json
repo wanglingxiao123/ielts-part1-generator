@@ -1,0 +1,166 @@
+{
+  "model": "openai.gpt-5.6-terra",
+  "extracted_at": "2026-07-28T06:59:37.694450+00:00",
+  "test_package": "Test 1",
+  "content_kind": "listening_material",
+  "source_htmls": [],
+  "listening_material_parts": [
+    {
+      "reference": "Part 1",
+      "test_package": "Test 1",
+      "scenario": "A learner contacts a local driving school to arrange driving lessons and ask about prices, an instructor, and suitable lesson times.",
+      "script": {
+        "reference": "Part 1",
+        "test_package": "Test 1",
+        "turns": [
+          {
+            "speaker": "speaker1",
+            "text": "This is the IELTS Listening test. You will hear four different recordings, and you will have to answer questions on what you hear. There will be time for you to read the questions, and you will have the opportunity to check your answers. You should answer as you listen, because the recording will not be played again. You will hear each recording once only. The test has four parts. At the end of the test, you will be given ten minutes to transfer your answers to an answer sheet. Now turn to Part 1. For Questions 1 to 5, listen to a learner who is enquiring about driving lessons at a local school. First you have some time to look at Questions 1 to 5."
+          },
+          {
+            "speaker": "speaker2",
+            "text": "Good morning, Greenway Driving School. How can I help you today?"
+          },
+          {
+            "speaker": "speaker3",
+            "text": "Hello. I'm hoping to start lessons soon, and I'd like to find out how your school works before I book anything."
+          },
+          {
+            "speaker": "speaker2",
+            "text": "Of course. We provide regular lessons for new learners, and I can explain the prices, instructors, and available times."
+          },
+          {
+            "speaker": "speaker3",
+            "text": "That would be helpful. I'm still deciding what kind of car I would feel most comfortable learning in."
+          },
+          {
+            "speaker": "speaker2",
+            "text": "We teach in both manual and automatic cars, but many beginners choose automatic because they can focus on the road."
+          },
+          {
+            "speaker": "speaker3",
+            "text": "The latter sounds better for me, as I have never driven before and want to build confidence gradually."
+          },
+          {
+            "speaker": "speaker2",
+            "text": "An individual lesson is $48. Actually, the current rate is $45 per hour, following our recent price update."
+          },
+          {
+            "speaker": "speaker3",
+            "text": "Right, so it is $45 for each hourly lesson. That seems manageable if I begin with one lesson a week."
+          },
+          {
+            "speaker": "speaker2",
+            "text": "We also have a ten-lesson package, and the total price for that package is $420."
+          },
+          {
+            "speaker": "speaker3",
+            "text": "I may choose the package once I know whether the instructor's teaching style suits me."
+          },
+          {
+            "speaker": "speaker2",
+            "text": "For planning ahead, the fee for using our car on the practical driving test is $65."
+          },
+          {
+            "speaker": "speaker3",
+            "text": "Thank you. I wanted to include that $65 test fee in my budget from the beginning."
+          },
+          {
+            "speaker": "speaker2",
+            "text": "The instructor who usually teaches new automatic learners is Helen Morrow — that's M-O-R-R-O-W."
+          },
+          {
+            "speaker": "speaker3",
+            "text": "Helen Morrow, M-O-R-R-O-W. I'll write that down, because I may need to contact her directly later."
+          },
+          {
+            "speaker": "speaker2",
+            "text": "She is very patient with first-time learners and usually explains each new skill clearly before you practise it."
+          },
+          {
+            "speaker": "speaker3",
+            "text": "That sounds encouraging. My main concern now is finding a regular evening time after work."
+          },
+          {
+            "speaker": "speaker2",
+            "text": "We can certainly look at the evening timetable and find a suitable place for you to meet the instructor."
+          },
+          {
+            "speaker": "speaker1",
+            "text": "Before you hear the rest of the conversation, you have some time to look at Questions 6 to 10. Now listen carefully and answer Questions 6 to 10."
+          },
+          {
+            "speaker": "speaker3",
+            "text": "I finish work at five thirty, so I would prefer a lesson on a weekday evening rather than during the day."
+          },
+          {
+            "speaker": "speaker2",
+            "text": "We have evening spaces on Tuesday or Thursday. Both are taught by Helen and follow the same usual lesson plan."
+          },
+          {
+            "speaker": "speaker3",
+            "text": "Tuesday is best for me, because my work meetings are normally finished by then and I can arrive without rushing."
+          },
+          {
+            "speaker": "speaker2",
+            "text": "Fine. There is a regular Tuesday slot available, and I can reserve it when you are ready to enrol."
+          },
+          {
+            "speaker": "speaker2",
+            "text": "The Tuesday lesson starts at 6:15 in the evening, which gives most people time to travel from work."
+          },
+          {
+            "speaker": "speaker3",
+            "text": "Six fifteen is ideal. I can get there comfortably after I have changed out of my work clothes."
+          },
+          {
+            "speaker": "speaker2",
+            "text": "Each booking lasts 90 minutes, including a short discussion at the beginning about what you will practise that day."
+          },
+          {
+            "speaker": "speaker3",
+            "text": "That seems like enough time to practise properly and still receive some useful feedback before the lesson ends."
+          },
+          {
+            "speaker": "speaker2",
+            "text": "For your first meeting, please wait outside 14 Linden Road, beside the small supermarket entrance."
+          },
+          {
+            "speaker": "speaker3",
+            "text": "I'll meet Helen outside 14 Linden Road. That location is only a short walk from the bus stop."
+          },
+          {
+            "speaker": "speaker2",
+            "text": "Please bring your provisional licence to the first lesson, as Helen needs to check it before you drive."
+          },
+          {
+            "speaker": "speaker3",
+            "text": "Yes, I already have my provisional licence, so I will keep it with my other documents for Tuesday."
+          },
+          {
+            "speaker": "speaker2",
+            "text": "When you decide to book, you can call this number again, and our office staff will arrange the first lesson."
+          },
+          {
+            "speaker": "speaker3",
+            "text": "Great. I'll check my diary this evening and call back soon to reserve the Tuesday time."
+          },
+          {
+            "speaker": "speaker2",
+            "text": "You're welcome. We look forward to helping you get started with your driving lessons."
+          },
+          {
+            "speaker": "speaker3",
+            "text": "Thank you very much for all your help. Goodbye."
+          },
+          {
+            "speaker": "speaker1",
+            "text": "That is the end of Part 1. You now have half a minute to check your answers. You will now turn to Part 2."
+          }
+        ],
+        "speaker_count": 3
+      },
+      "source_htmls": []
+    }
+  ]
+}

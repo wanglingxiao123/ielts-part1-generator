@@ -1,0 +1,155 @@
+{
+  "narration_mode": "full",
+  "split_after": 5,
+  "question_type_coverage": {
+    "form": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "note": [
+      5
+    ],
+    "multiple_choice": [
+      6,
+      7
+    ],
+    "table": [
+      8,
+      9,
+      10
+    ]
+  },
+  "items": [
+    {
+      "number": 1,
+      "group": 1,
+      "type": "name",
+      "target": "Anna Woods",
+      "evidence": "It's Anna Woods.",
+      "turn_index": 4,
+      "item_form": "form",
+      "form_group": "A",
+      "distractor": false,
+      "confirmed": true
+    },
+    {
+      "number": 2,
+      "group": 1,
+      "type": "address",
+      "target": "118 Fordyce",
+      "evidence": "It's 118 Fordyce.",
+      "turn_index": 8,
+      "item_form": "form",
+      "form_group": "A",
+      "distractor": false,
+      "confirmed": true
+    },
+    {
+      "number": 3,
+      "group": 1,
+      "type": "number",
+      "target": "BT14 9BJ",
+      "evidence": "It's BT14 9BJ.",
+      "turn_index": 10,
+      "item_form": "form",
+      "form_group": "A",
+      "distractor": false,
+      "confirmed": true
+    },
+    {
+      "number": 4,
+      "group": 1,
+      "type": "number",
+      "target": "07840051963",
+      "evidence": "It's 07840051963.",
+      "turn_index": 12,
+      "item_form": "form",
+      "form_group": "A",
+      "distractor": false,
+      "confirmed": true
+    },
+    {
+      "number": 5,
+      "group": 1,
+      "type": "option",
+      "target": "primary school",
+      "evidence": "still in primary school",
+      "turn_index": 20,
+      "item_form": "note",
+      "form_group": null,
+      "distractor": true,
+      "confirmed": false
+    },
+    {
+      "number": 6,
+      "group": 2,
+      "type": "option",
+      "target": "park",
+      "evidence": "he'd love a park nearby",
+      "turn_index": 29,
+      "item_form": "multiple_choice",
+      "form_group": null,
+      "distractor": false,
+      "confirmed": false
+    },
+    {
+      "number": 7,
+      "group": 2,
+      "type": "option",
+      "target": "house",
+      "evidence": "always lived in a house",
+      "turn_index": 32,
+      "item_form": "multiple_choice",
+      "form_group": null,
+      "distractor": true,
+      "confirmed": false
+    },
+    {
+      "number": 8,
+      "group": 2,
+      "type": "quantity",
+      "target": "two-bedroom",
+      "evidence": "you definitely need a two-bedroom property",
+      "turn_index": 35,
+      "item_form": "table",
+      "form_group": "B",
+      "distractor": false,
+      "confirmed": true
+    },
+    {
+      "number": 9,
+      "group": 2,
+      "type": "condition",
+      "target": "guest room",
+      "evidence": "how about having a guest room",
+      "turn_index": 37,
+      "item_form": "table",
+      "form_group": "B",
+      "distractor": true,
+      "confirmed": false
+    },
+    {
+      "number": 10,
+      "group": 2,
+      "type": "condition",
+      "target": "office",
+      "evidence": "it'd be handy to have an office",
+      "turn_index": 40,
+      "item_form": "table",
+      "form_group": "B",
+      "distractor": false,
+      "confirmed": false
+    }
+  ],
+  "correction": {
+    "earlier": "I said secondary",
+    "final": "still in primary school",
+    "marker": "let me correct that"
+  },
+  "indirect_confirmation": {
+    "answer_term": "house",
+    "reference_phrase": "the latter"
+  }
+}

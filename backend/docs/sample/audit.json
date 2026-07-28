@@ -1,0 +1,118 @@
+{
+  "verdict": "PASS",
+  "assessable": true,
+  "score": {
+    "total": 99,
+    "dimensions": {
+      "scenario_purpose_frame": 20,
+      "information_map_quality": 25,
+      "role_consistency": 20,
+      "naturalness_level": 14,
+      "difficulty_distractor_control": 15,
+      "transcript_readiness": 5
+    }
+  },
+  "findings": [],
+  "blind_information_map": [
+    {
+      "seq": 1,
+      "type": "option",
+      "evidence": "“We teach in both manual and automatic cars” followed by “The latter sounds better for me.”",
+      "turn_index": 5,
+      "speaker": "speaker2",
+      "clarity": "indirect",
+      "mechanism": "dialogue-internal indirect confirmation of automatic via “the latter”"
+    },
+    {
+      "seq": 2,
+      "type": "price",
+      "evidence": "“An individual lesson is $48. Actually, the current rate is $45 per hour.”",
+      "turn_index": 7,
+      "speaker": "speaker2",
+      "clarity": "corrected",
+      "mechanism": "explicit self-correction; final value repeated by the enquirer"
+    },
+    {
+      "seq": 3,
+      "type": "price",
+      "evidence": "“The total price for that package is $420.”",
+      "turn_index": 9,
+      "speaker": "speaker2",
+      "clarity": "clear",
+      "mechanism": null
+    },
+    {
+      "seq": 4,
+      "type": "price",
+      "evidence": "“The fee for using our car on the practical driving test is $65,” later repeated as “that $65 test fee.”",
+      "turn_index": 11,
+      "speaker": "speaker2",
+      "clarity": "confirmed",
+      "mechanism": "numeric repetition by the enquirer"
+    },
+    {
+      "seq": 5,
+      "type": "name",
+      "evidence": "“Helen Morrow — that's M-O-R-R-O-W.”",
+      "turn_index": 13,
+      "speaker": "speaker2",
+      "clarity": "confirmed",
+      "mechanism": "letter-by-letter spelling and exact repetition by the enquirer"
+    },
+    {
+      "seq": 6,
+      "type": "option",
+      "evidence": "“We have evening spaces on Tuesday or Thursday,” followed by “Tuesday is best for me.”",
+      "turn_index": 20,
+      "speaker": "speaker2",
+      "clarity": "confirmed",
+      "mechanism": "mutually exclusive options resolved by the enquirer’s choice"
+    },
+    {
+      "seq": 7,
+      "type": "datetime",
+      "evidence": "“The Tuesday lesson starts at 6:15 in the evening,” followed by “Six fifteen is ideal.”",
+      "turn_index": 23,
+      "speaker": "speaker2",
+      "clarity": "confirmed",
+      "mechanism": "time repeated by the enquirer"
+    },
+    {
+      "seq": 8,
+      "type": "quantity",
+      "evidence": "“Each booking lasts 90 minutes.”",
+      "turn_index": 25,
+      "speaker": "speaker2",
+      "clarity": "clear",
+      "mechanism": null
+    },
+    {
+      "seq": 9,
+      "type": "address",
+      "evidence": "“Please wait outside 14 Linden Road,” followed by “I'll meet Helen outside 14 Linden Road.”",
+      "turn_index": 27,
+      "speaker": "speaker2",
+      "clarity": "confirmed",
+      "mechanism": "address repeated by the enquirer"
+    },
+    {
+      "seq": 10,
+      "type": "condition",
+      "evidence": "“Please bring your provisional licence to the first lesson,” followed by “I already have my provisional licence.”",
+      "turn_index": 29,
+      "speaker": "speaker2",
+      "clarity": "confirmed",
+      "mechanism": "requirement acknowledged by the enquirer"
+    }
+  ],
+  "metrics": {
+    "dialogue_words": 570,
+    "dialogue_turns": 33,
+    "first_half_turns": 17,
+    "second_half_turns": 16,
+    "narrator_words": 177
+  },
+  "warnings": [
+    "dialogue words outside preferred 600-650: 570"
+  ]
+}

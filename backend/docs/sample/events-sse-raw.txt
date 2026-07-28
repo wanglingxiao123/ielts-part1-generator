@@ -1,0 +1,24 @@
+data: {"type": "batch_started", "total": 1, "deadline_at": 1785221761.997, "config": {"model_id": "openai.gpt-5.6-terra", "region": "us-east-1", "auth_mode": "bearer", "concurrency": 3}, "at": 1785220951.9978712}
+
+data: {"type": "stage", "slot_id": "slot-1", "scenario": "daily-driving-lessons", "stage": "generating", "at": 1785220951.998249, "attempt": 1, "detail": {"attempt": 1}}
+
+data: {"type": "stage", "slot_id": "slot-1", "scenario": "daily-driving-lessons", "stage": "validating", "at": 1785220995.035309, "attempt": 1, "detail": {"attempt": 1}}
+
+data: {"type": "stage", "slot_id": "slot-1", "scenario": "daily-driving-lessons", "stage": "regenerating", "at": 1785220995.1174889, "attempt": 1, "detail": {"attempt": 1, "errors": ["full opening must include 'four different recordings'"]}}
+
+data: {"type": "stage", "slot_id": "slot-1", "scenario": "daily-driving-lessons", "stage": "generating", "at": 1785220995.117502, "attempt": 2, "detail": {"attempt": 2}}
+
+data: {"type": "stage", "slot_id": "slot-1", "scenario": "daily-driving-lessons", "stage": "validating", "at": 1785221040.686665, "attempt": 2, "detail": {"attempt": 2}}
+
+data: {"type": "stage", "slot_id": "slot-1", "scenario": "daily-driving-lessons", "stage": "regenerating", "at": 1785221040.771366, "attempt": 2, "detail": {"attempt": 2, "errors": ["blueprint.items[0].target must occur inside evidence", "blueprint.items[2].evidence not found in any dialogue turn", "blueprint.items[3].evidence not found in any dialogue turn"]}}
+
+data: {"type": "stage", "slot_id": "slot-1", "scenario": "daily-driving-lessons", "stage": "generating", "at": 1785221040.7713752, "attempt": 3, "detail": {"attempt": 3}}
+
+data: {"type": "stage", "slot_id": "slot-1", "scenario": "daily-driving-lessons", "stage": "validating", "at": 1785221084.672588, "attempt": 3, "detail": {"attempt": 3}}
+
+data: {"type": "stage", "slot_id": "slot-1", "scenario": "daily-driving-lessons", "stage": "regenerating", "at": 1785221084.737429, "attempt": 3, "detail": {"attempt": 3, "errors": ["exactly three narrator turns required; found 2"]}}
+
+data: {"slot_id": "slot-1", "scenario": "daily-driving-lessons", "ok": false, "reason": "validation_exhausted", "detail": {"errors": ["exactly three narrator turns required; found 2"]}, "timings": {"generate_1": 43.04, "validate_1": 0.08, "generate_2": 45.57, "validate_2": 0.08, "generate_3": 43.9, "validate_3": 0.06}, "type": "material_failed", "at": 1785221084.737507}
+
+data: {"type": "batch_completed", "succeeded": 0, "failed": 1, "skipped": 0, "degraded": 0, "stage_timings": {"generate_1": {"count": 1, "min": 43.04, "max": 43.04, "mean": 43.04}, "validate_1": {"count": 1, "min": 0.08, "max": 0.08, "mean": 0.08}, "generate_2": {"count": 1, "min": 45.57, "max": 45.57, "mean": 45.57}, "validate_2": {"count": 1, "min": 0.08, "max": 0.08, "mean": 0.08}, "generate_3": {"count": 1, "min": 43.9, "max": 43.9, "mean": 43.9}, "validate_3": {"count": 1, "min": 0.06, "max": 0.06, "mean": 0.06}}, "slots": [{"slot_id": "slot-1", "scenario": "daily-driving-lessons", "ok": false, "route": null, "note": null, "reason": "validation_exhausted", "degraded": false, "total_seconds": null}], "at": 1785221084.737741}
+

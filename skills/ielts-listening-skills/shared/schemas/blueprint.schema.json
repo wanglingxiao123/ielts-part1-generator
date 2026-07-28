@@ -1,0 +1,137 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "blueprint.schema.json",
+  "title": "IELTS Listening Part 1 Information-Point Blueprint",
+  "description": "Ten information points with turn anchors and question-type grouping. Delivered alongside material.json for reviewer annotation display. MUST NOT be given to the audit step, which builds its own map blind.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "narration_mode",
+    "split_after",
+    "question_type_coverage",
+    "items",
+    "correction",
+    "indirect_confirmation"
+  ],
+  "properties": {
+    "narration_mode": { "enum": ["full", "short"] },
+    "split_after": {
+      "enum": [5, 6],
+      "description": "Last item number of the first question group; must match the narrator's stated ranges."
+    },
+    "question_type_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "description": "Item numbers grouped by question type. Flattened, must equal exactly 1..10 with no repeats. Redundant with items[].item_form by design: this view supports auditing overall type distribution, the per-item field supports rendering each annotation.",
+      "properties": {
+        "form": { "$ref": "#/definitions/itemNumberList" },
+        "table": { "$ref": "#/definitions/itemNumberList" },
+        "multiple_choice": { "$ref": "#/definitions/itemNumberList" },
+        "note": { "$ref": "#/definitions/itemNumberList" }
+      }
+    },
+    "items": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 10,
+      "items": { "$ref": "#/definitions/item" }
+    },
+    "correction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["earlier", "final", "marker"],
+      "description": "One self-correction where a final value cancels an earlier value. Order in script must be earlier -> marker -> final.",
+      "properties": {
+        "earlier": { "type": "string", "minLength": 1 },
+        "final": { "type": "string", "minLength": 1 },
+        "marker": { "type": "string", "minLength": 1 }
+      }
+    },
+    "indirect_confirmation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["answer_term", "reference_phrase"],
+      "description": "Dialogue-internal indirect confirmation. answer_term MUST be the target of some item -- the spec's 命题铁律 requires the answer word itself to be spoken aloud, with indirect reference only adding listening difficulty on top.",
+      "properties": {
+        "answer_term": { "type": "string", "minLength": 1 },
+        "reference_phrase": { "type": "string", "minLength": 1 }
+      }
+    }
+  },
+  "definitions": {
+    "itemNumberList": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "integer", "minimum": 1, "maximum": 10 }
+    },
+    "item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "number",
+        "group",
+        "type",
+        "target",
+        "evidence",
+        "turn_index",
+        "item_form",
+        "form_group",
+        "distractor",
+        "confirmed"
+      ],
+      "properties": {
+        "number": { "type": "integer", "minimum": 1, "maximum": 10 },
+        "group": {
+          "enum": [1, 2],
+          "description": "Question group; derived from split_after."
+        },
+        "type": {
+          "enum": [
+            "name",
+            "number",
+            "address",
+            "price",
+            "datetime",
+            "quantity",
+            "condition",
+            "option"
+          ],
+          "description": "Detail type per spec 4B-3. At least four distinct types required across the ten items."
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The recordable value. Must occur inside evidence."
+        },
+        "evidence": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Shortest sufficient quote from the dialogue turn carrying this point."
+        },
+        "turn_index": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Index into material.json turns array. Anchors the annotation for marginal display. Must point at a non-speaker1 turn whose text contains evidence. Revision MUST keep this in sync -- a stale anchor shows reviewers an annotation beside the wrong sentence, which is very hard to detect downstream."
+        },
+        "item_form": {
+          "enum": ["form", "table", "multiple_choice", "note"],
+          "description": "Question type this point can support."
+        },
+        "form_group": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "Points sharing a form_group can combine into one table/form question. null means a standalone gap-fill. At least one group of >=3 points is required so the material can actually support a table or form question."
+        },
+        "distractor": {
+          "type": "boolean",
+          "description": "Part of a deliberate distractor cycle. Must be a complete census, not selected examples: 2-3 true across the ten items."
+        },
+        "confirmed": {
+          "type": "boolean",
+          "description": "Repeated or confirmed in dialogue. >=3 required; spelling and numeric points must be confirmed since they are the easiest to mishear under once-only listening."
+        }
+      }
+    }
+  }
+}

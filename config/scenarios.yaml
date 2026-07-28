@@ -1,0 +1,134 @@
+# Part 1 场景清单
+#
+# 来源：material/Part1_选材命制规范.md §2「推荐话题域」六大类。
+# 前端拉取此清单渲染勾选项（后端 action: list_scenarios），不在前端保留副本，
+# 否则前端的场景 id 会与后端漂移，用户可能勾到后端不认识的场景。
+#
+# prompt_hint 是给生成 skill 的场景约束，不是给用户看的文案。它需要交代
+# 参与者、现实需求、以及天然承载哪些可考细节类型——这三样决定了信息点能否落地。
+
+version: 1
+default_count: 2
+
+# 单次批量上限。AgentCore Runtime 同步请求 15 分钟硬限。
+#
+# 已实测（backend/docs/timing.md，本机 → us-east-1，非 Runtime 内）：
+#   单套 146s（含 1 次重生成）；3 套并发 244s，无 429。
+#   并发 3 时瓶颈是模型延迟而非 CPU，故 6 套按两波估算约 400-500s，在 900s 内。
+# 6 是有实测支撑的上限，不是猜测；Runtime 内实测后若不达标，下调此值，
+# 不要削减 revise / re-audit 环节（那会让质量循环形同虚设）。
+max_batch: 6
+
+categories:
+  - id: booking
+    title_zh: 预订/咨询服务
+    scenarios:
+      - id: booking-hotel
+        title_zh: 酒店预订
+        prompt_hint: >-
+          A traveller phones a hotel to book a room. The receptionist supplies room types,
+          nightly rates, available dates, included facilities, and the booking reference.
+      - id: booking-car-rental
+        title_zh: 租车咨询
+        prompt_hint: >-
+          A customer enquires about renting a car. The agent covers vehicle categories,
+          daily price, driver age and licence requirements, insurance options, and pickup times.
+      - id: booking-shipping
+        title_zh: 货运寄送
+        prompt_hint: >-
+          A student asks a shipping company about sending belongings abroad. The clerk gives
+          weight limits, prohibited items, packaging rules, collection dates, and total cost.
+      - id: booking-exhibition
+        title_zh: 展览参观
+        prompt_hint: >-
+          A visitor enquires about an exhibition. The staff member gives opening times,
+          ticket prices, concession conditions, guided-tour schedules, and venue directions.
+      - id: booking-festival
+        title_zh: 节庆活动
+        prompt_hint: >-
+          A resident asks about a local festival. The organiser covers the programme by day,
+          ticket types, venue location, parking arrangements, and a contact name.
+
+  - id: accommodation
+    title_zh: 住宿
+    scenarios:
+      - id: accommodation-rental
+        title_zh: 租房咨询
+        prompt_hint: >-
+          A tenant enquires about a property to rent. The agent gives the address, monthly
+          rent, number of bedrooms, deposit conditions, available date, and nearby transport.
+      - id: accommodation-student-hall
+        title_zh: 学生宿舍
+        prompt_hint: >-
+          A new student asks about university halls. The accommodation officer covers room
+          options, weekly cost, catering arrangements, application deadline, and what to bring.
+
+  - id: employment
+    title_zh: 求职
+    scenarios:
+      - id: employment-vacancy
+        title_zh: 职位空缺咨询
+        prompt_hint: >-
+          An applicant enquires about advertised vacancies. The employer describes several
+          roles with differing shift patterns, hourly pay, age or licence requirements, and
+          weekend obligations, so the applicant must compare conditions.
+      - id: employment-summer-job
+        title_zh: 暑期工应聘
+        prompt_hint: >-
+          A student applies for summer work. The manager gives start date, weekly hours,
+          rate of pay, training arrangements, uniform requirements, and a supervisor's name.
+
+  - id: customer_service
+    title_zh: 客服/事务
+    scenarios:
+      - id: service-refund
+        title_zh: 退款投诉
+        prompt_hint: >-
+          A customer reports a faulty order and requests a refund. The agent takes the order
+          number, confirms the purchase date, explains the returns condition, refund amount,
+          and processing time.
+      - id: service-cleaning
+        title_zh: 家政保洁
+        prompt_hint: >-
+          A householder books a cleaning service. The provider covers service packages,
+          hourly rate, visit frequency, what is excluded, access arrangements, and a start date.
+      - id: service-brochure
+        title_zh: 宣传册订单
+        prompt_hint: >-
+          A customer orders printed brochures. The clerk takes quantity, paper size, delivery
+          method (with an email-or-post choice), unit price, total, and a contact surname to spell.
+
+  - id: community
+    title_zh: 社会参与
+    scenarios:
+      - id: community-environment
+        title_zh: 环保报名
+        prompt_hint: >-
+          A volunteer signs up for an environmental project. The coordinator gives meeting
+          point, dates, equipment provided, minimum age, session length, and a registration code.
+      - id: community-event-organising
+        title_zh: 活动组织
+        prompt_hint: >-
+          A member helps organise a community event. The organiser covers the venue, setup
+          time, number of helpers needed, catering budget, and who to report to.
+
+  - id: daily_services
+    title_zh: 生活服务
+    scenarios:
+      - id: daily-health-centre
+        title_zh: 健康中心
+        prompt_hint: >-
+          A new patient registers at a health centre. The receptionist takes personal details,
+          confirms the address and phone number, explains appointment hours, and gives the
+          practice location and required documents.
+      - id: daily-driving-lessons
+        title_zh: 驾驶课
+        prompt_hint: >-
+          A learner asks about driving lessons. The instructor covers manual versus automatic,
+          lesson price, package discount, test fee, instructor name to spell, and lesson times.
+
+# 自定义场景：前端允许用户手填一条。后端将其作为 prompt_hint 透传，
+# category 记为 custom，并做长度上限与控制字符/注入特征串过滤。
+custom_scenario:
+  enabled: true
+  max_length: 200

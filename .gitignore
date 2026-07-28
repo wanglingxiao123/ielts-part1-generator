@@ -1,0 +1,45 @@
+# Dependencies and build output — reproducible from lockfiles, and 300MB+ if committed.
+node_modules/
+.venv/
+.venv-backend/
+venv/
+__pycache__/
+*.pyc
+frontend/dist/
+.vite/
+
+# Local AWS / deployment state. Nothing here should ever be committed: these are the files that
+# would carry account identity or credentials into the repository.
+.aws/
+*.pem
+*.key
+.env
+.env.*
+!.env.example
+
+# Scraped IELTS past-paper scripts. Excluded on copyright grounds: the transcripts are
+# Cambridge/British Council material, and `source_htmls` records that they were harvested from
+# web pages. The derived spec (material/Part1_选材命制规范.md) IS committed -- it is our own
+# analysis of them, not the papers themselves.
+#
+# Consequence: the regression suites that read these degrade to SKIP rather than fail. See
+# skills/ielts-listening-skills/shared/tests/run_tests.py and audio_storage/tests/run_tests.py.
+material/归档/
+material/归档.zip
+material/*.html
+
+# Generated audio probes: real Polly output, reproducible from the scripts, and 780KB of binary
+# that git cannot diff. The measurements they produced are recorded in
+# audio_storage/assumptions.py, which is what actually matters.
+audio_storage/probe_samples/*.mp3
+
+# Local scratch
+.DS_Store
+*.log
+/tmp/
+
+# Trellis planning artefacts are internal development records, not part of the delivered
+# software. They also carry developer names and the AWS account used during development.
+.trellis/
+.claude/
+AGENTS.md

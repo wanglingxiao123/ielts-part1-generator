@@ -1,0 +1,118 @@
+{
+  "verdict": "PASS",
+  "assessable": true,
+  "score": {
+    "total": 88,
+    "dimensions": {
+      "scenario_purpose_frame": 19,
+      "information_map_quality": 22,
+      "role_consistency": 18,
+      "naturalness_level": 13,
+      "difficulty_distractor_control": 11,
+      "transcript_readiness": 5
+    }
+  },
+  "findings": [],
+  "blind_information_map": [
+    {
+      "seq": 1,
+      "type": "name",
+      "evidence": "It's Anna Woods.",
+      "turn_index": 4,
+      "speaker": "speaker3",
+      "clarity": "confirmed",
+      "mechanism": "spelling"
+    },
+    {
+      "seq": 2,
+      "type": "address",
+      "evidence": "It's 118 Fordyce.",
+      "turn_index": 8,
+      "speaker": "speaker3",
+      "clarity": "confirmed",
+      "mechanism": null
+    },
+    {
+      "seq": 3,
+      "type": "number",
+      "evidence": "It's BT14 9BJ.",
+      "turn_index": 10,
+      "speaker": "speaker3",
+      "clarity": "confirmed",
+      "mechanism": null
+    },
+    {
+      "seq": 4,
+      "type": "number",
+      "evidence": "It's 07840051963.",
+      "turn_index": 12,
+      "speaker": "speaker3",
+      "clarity": "confirmed",
+      "mechanism": null
+    },
+    {
+      "seq": 5,
+      "type": "option",
+      "evidence": "still in primary school",
+      "turn_index": 20,
+      "speaker": "speaker3",
+      "clarity": "clear",
+      "mechanism": null
+    },
+    {
+      "seq": 6,
+      "type": "option",
+      "evidence": "he'd love a park nearby",
+      "turn_index": 29,
+      "speaker": "speaker3",
+      "clarity": "clear",
+      "mechanism": null
+    },
+    {
+      "seq": 7,
+      "type": "option",
+      "evidence": "always lived in a house",
+      "turn_index": 32,
+      "speaker": "speaker3",
+      "clarity": "clear",
+      "mechanism": null
+    },
+    {
+      "seq": 8,
+      "type": "quantity",
+      "evidence": "you definitely need a two-bedroom property",
+      "turn_index": 35,
+      "speaker": "speaker2",
+      "clarity": "confirmed",
+      "mechanism": null
+    },
+    {
+      "seq": 9,
+      "type": "condition",
+      "evidence": "how about having a guest room",
+      "turn_index": 37,
+      "speaker": "speaker2",
+      "clarity": "clear",
+      "mechanism": null
+    },
+    {
+      "seq": 10,
+      "type": "condition",
+      "evidence": "it'd be handy to have an office",
+      "turn_index": 40,
+      "speaker": "speaker3",
+      "clarity": "clear",
+      "mechanism": null
+    }
+  ],
+  "metrics": {
+    "dialogue_words": 535,
+    "dialogue_turns": 40,
+    "first_half_turns": 20,
+    "second_half_turns": 20,
+    "narrator_words": 173
+  },
+  "warnings": [
+    "dialogue words outside preferred 600-650: 535"
+  ]
+}

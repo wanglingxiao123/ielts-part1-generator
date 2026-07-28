@@ -1,0 +1,16 @@
+# Keep the image small (implement.md phase 6). The archive alone is 31 sample files that
+# nothing in the running service reads -- they are regression fixtures for the test suite.
+material/归档/
+.trellis/
+.venv/
+.venv-backend/
+frontend/node_modules/
+frontend/dist/
+.git/
+.claude/
+**/__pycache__/
+**/*.pyc
+skills/*.zip
+skills/ielts-listening-skills/shared/tests/
+.DS_Store
+**/.DS_Store

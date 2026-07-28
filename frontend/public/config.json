@@ -1,0 +1,30 @@
+{
+  "contractVersion": "1",
+  "apiBaseUrl": "/api",
+  "auth": {
+    "mode": "session-cookie",
+    "loginPath": "/login",
+    "meEndpoint": "/api/auth/me",
+    "devBypass": true
+  },
+  "thresholds": {
+    "CV_WARN": 0.75,
+    "CV_FAIL": 1.15,
+    "CLUSTER_SPAN": 3,
+    "CLUSTER_MIN_POINTS": 3,
+    "CLUSTER_DISP_PX": 24,
+    "GROUP_SPAN_WARN": 12,
+    "SCORE_DIFF_SIGNIFICANT": 5,
+    "DIMENSION_DIFF_SHOWN": 3,
+    "CALIBRATED": false
+  },
+  "limits": {
+    "maxBatch": 6,
+    "hardLimitSeconds": 900,
+    "warnAtSeconds": 720
+  },
+  "flags": {
+    "audioWebaudio": false,
+    "syntheticAudio": false
+  }
+}

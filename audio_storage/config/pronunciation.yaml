@@ -1,0 +1,21 @@
+# Pronunciation exception table -- the escape hatch of design.md §3.2 rule 3.
+#
+# Exact substring -> SSML fragment. Applied BEFORE the spelling and digits rules, so an entry
+# here wins over both. The rendered fragment is treated as opaque markup that no later rule
+# looks inside.
+#
+# Deliberately empty. Every entry is a standing risk of mispronouncing something else that
+# happens to contain the same substring, so entries are added only after a human has heard
+# Polly get a specific string wrong -- never pre-emptively. An empty table means "Polly's own
+# text normalisation is doing the job", which for currency, times and dates it generally does.
+#
+# Format:
+#   overrides:
+#     "SW1A 2AA": '<say-as interpret-as="characters">SW1A</say-as> <say-as interpret-as="characters">2AA</say-as>'
+#
+# After adding an entry, re-run the SSML suite: the invariant check in ssml.assert_invariant
+# whitelists override substitutions, and assert_targets_intact must still show every
+# blueprint target as intact.
+
+version: 1
+overrides: {}

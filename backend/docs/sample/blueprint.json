@@ -1,0 +1,153 @@
+{
+  "narration_mode": "full",
+  "split_after": 5,
+  "question_type_coverage": {
+    "form": [
+      2,
+      3,
+      4,
+      5
+    ],
+    "table": [
+      6,
+      7,
+      8,
+      9
+    ],
+    "multiple_choice": [
+      1,
+      10
+    ]
+  },
+  "items": [
+    {
+      "number": 1,
+      "group": 1,
+      "type": "option",
+      "target": "automatic",
+      "evidence": "both manual and automatic cars",
+      "turn_index": 5,
+      "item_form": "multiple_choice",
+      "form_group": null,
+      "distractor": true,
+      "confirmed": true
+    },
+    {
+      "number": 2,
+      "group": 1,
+      "type": "price",
+      "target": "$45",
+      "evidence": "the current rate is $45 per hour",
+      "turn_index": 7,
+      "item_form": "form",
+      "form_group": "A",
+      "distractor": true,
+      "confirmed": true
+    },
+    {
+      "number": 3,
+      "group": 1,
+      "type": "price",
+      "target": "$420",
+      "evidence": "the total price for that package is $420",
+      "turn_index": 9,
+      "item_form": "form",
+      "form_group": "A",
+      "distractor": false,
+      "confirmed": false
+    },
+    {
+      "number": 4,
+      "group": 1,
+      "type": "price",
+      "target": "$65",
+      "evidence": "the fee for using our car on the practical driving test is $65",
+      "turn_index": 11,
+      "item_form": "form",
+      "form_group": "A",
+      "distractor": false,
+      "confirmed": true
+    },
+    {
+      "number": 5,
+      "group": 1,
+      "type": "name",
+      "target": "Morrow",
+      "evidence": "Helen Morrow — that's M-O-R-R-O-W",
+      "turn_index": 13,
+      "item_form": "form",
+      "form_group": "A",
+      "distractor": false,
+      "confirmed": true
+    },
+    {
+      "number": 6,
+      "group": 2,
+      "type": "option",
+      "target": "Tuesday",
+      "evidence": "Tuesday is best for me",
+      "turn_index": 21,
+      "item_form": "table",
+      "form_group": "B",
+      "distractor": true,
+      "confirmed": false
+    },
+    {
+      "number": 7,
+      "group": 2,
+      "type": "datetime",
+      "target": "6:15",
+      "evidence": "The Tuesday lesson starts at 6:15",
+      "turn_index": 23,
+      "item_form": "table",
+      "form_group": "B",
+      "distractor": false,
+      "confirmed": true
+    },
+    {
+      "number": 8,
+      "group": 2,
+      "type": "quantity",
+      "target": "90 minutes",
+      "evidence": "Each booking lasts 90 minutes",
+      "turn_index": 25,
+      "item_form": "table",
+      "form_group": "B",
+      "distractor": false,
+      "confirmed": false
+    },
+    {
+      "number": 9,
+      "group": 2,
+      "type": "address",
+      "target": "14 Linden Road",
+      "evidence": "please wait outside 14 Linden Road",
+      "turn_index": 27,
+      "item_form": "table",
+      "form_group": "B",
+      "distractor": false,
+      "confirmed": true
+    },
+    {
+      "number": 10,
+      "group": 2,
+      "type": "condition",
+      "target": "provisional licence",
+      "evidence": "Please bring your provisional licence to the first lesson",
+      "turn_index": 29,
+      "item_form": "multiple_choice",
+      "form_group": null,
+      "distractor": false,
+      "confirmed": true
+    }
+  ],
+  "correction": {
+    "earlier": "$48",
+    "final": "$45",
+    "marker": "Actually"
+  },
+  "indirect_confirmation": {
+    "answer_term": "automatic",
+    "reference_phrase": "The latter"
+  }
+}
