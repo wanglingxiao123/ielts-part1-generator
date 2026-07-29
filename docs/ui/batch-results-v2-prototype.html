@@ -1,0 +1,786 @@
+<!DOCTYPE html>
+<html><head><style id="qw-theme">:root {
+  --color-bg: #faf9fc;
+  --color-text: #131920;
+  --color-navbar-bg: #f9f9fb;
+  --color-bg-chat-view: #fcfcfd;
+  --color-bg-secondary: #ffffff;
+  --color-bg-tertiary: #f9fafb;
+  --color-bg-hover: #f3f4f6;
+  --color-surface: #f9fafb;
+  --color-surface-hover: #f3f4f6;
+  --color-surface-active: #e5e7eb;
+  --color-border: rgba(0, 0, 0, .12);
+  --color-border-light: rgba(0, 0, 0, .06);
+  --color-border-strong: #d1d5db;
+  --color-primary: #4200db;
+  --color-primary-dark: #35009e;
+  --color-primary-light: #8575ff;
+  --color-primary-bg: #e8e6ff;
+  --color-primary-hover-border: #35009e;
+  --color-nav-icon-active: #4200db;
+  --color-nav-hover-border: #4200db;
+  --color-primary-alpha-3: color-mix(in srgb, #4200db 3%, transparent);
+  --color-primary-alpha-5: color-mix(in srgb, #4200db 5%, transparent);
+  --color-primary-alpha-8: color-mix(in srgb, #4200db 8%, transparent);
+  --color-primary-alpha-12: color-mix(in srgb, #4200db 12%, transparent);
+  --color-primary-alpha-15: color-mix(in srgb, #4200db 15%, transparent);
+  --color-primary-alpha-20: color-mix(in srgb, #4200db 20%, transparent);
+  --color-primary-alpha-25: color-mix(in srgb, #4200db 25%, transparent);
+  --color-primary-alpha-30: color-mix(in srgb, #4200db 30%, transparent);
+  --color-primary-alpha-40: color-mix(in srgb, #4200db 40%, transparent);
+  --color-primary-alpha-50: color-mix(in srgb, #4200db 50%, transparent);
+  --color-primary-alpha-60: color-mix(in srgb, #4200db 60%, transparent);
+  --color-primary-subtle: color-mix(in srgb, #4200db 12%, transparent);
+  --color-primary-border: color-mix(in srgb, #4200db 30%, transparent);
+  --color-focus-ring: color-mix(in srgb, #4200db 50%, transparent);
+  --color-sidebar-hover: color-mix(in srgb, #4200db 12%, transparent);
+  --color-accent: #4200db;
+  --color-accent-foreground: #4200db;
+  --color-accent-dark: #35009e;
+  --color-accent-light: #e8e6ff;
+  --color-accent-inverse: #ffffff;
+  --color-link: #4200db;
+  --color-primary-gradient-end: #e8e6ff;
+  --color-primary-bg-solid: #e8e6ff;
+  --color-user-bubble: #F3F3F7;
+  --color-user-bubble-text: #131920;
+  --color-text-secondary: #5e5e5e;
+  --color-text-tertiary: #656871;
+  --color-text-muted: #9ca3af;
+  --color-text-on-primary: #ffffff;
+  --color-success: #00802f;
+  --color-success-dark: #00471e;
+  --color-success-light: #d9ffd6;
+  --color-success-hover: #005c26;
+  --color-success-bg: #e6f5eb;
+  --color-success-border: #b3d9bf;
+  --color-success-foreground: #00802f;
+  --color-success-dark-foreground: #00471e;
+  --color-success-text: #00471e;
+  --color-error: #db0000;
+  --color-error-dark: #700000;
+  --color-error-light: #ffe0e0;
+  --color-error-hover: #ffe0e0;
+  --color-error-bg: #fceaea;
+  --color-error-border: #f2cccc;
+  --color-error-active-border: #db0000;
+  --color-error-foreground: #db0000;
+  --color-error-dark-foreground: #700000;
+  --color-error-inverse: #ffffff;
+  --color-error-text: #700000;
+  --color-warning: #f2b100;
+  --color-warning-dark: #573a00;
+  --color-warning-light: #fffbbd;
+  --color-warning-hover: #db9200;
+  --color-warning-bg: #fef7e6;
+  --color-warning-border: #f9dfa3;
+  --color-warning-foreground: #f2b100;
+  --color-warning-dark-foreground: #573a00;
+  --color-warning-inverse: #573a00;
+  --color-surface-warning: #fffbbd;
+  --color-text-warning: #573a00;
+  --color-info: #006ce0;
+  --color-info-dark: #002a66;
+  --color-info-light: #d1f1ff;
+  --color-info-hover: #003b8f;
+  --color-info-bg: #ebf3fc;
+  --color-info-border: #b3d1f0;
+  --color-info-foreground: #006ce0;
+  --color-info-dark-foreground: #002a66;
+  --color-info-inverse: #ffffff;
+  --color-overlay: rgba(0, 0, 0, .5);
+  --color-shadow: rgba(0, 0, 0, .08);
+  --color-hover: rgba(0, 0, 0, .05);
+  --color-tooltip-bg: rgba(0, 0, 0, .85);
+  --color-tooltip-text: #ffffff;
+  --color-voice-purple: #8575ff;
+  --color-voice-purple-dark: #4200db;
+  --color-voice-purple-light: #8575ff;
+  --color-voice-red: #db0000;
+  --color-voice-red-dark: #700000;
+  --color-voice-amber: #f2b100;
+  --color-voice-purple-glow: rgba(66, 0, 219, .4);
+  --color-voice-red-glow: rgba(219, 0, 0, .4);
+  --font-sans: "Amazon Ember", "Helvetica Neue", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: "SF Mono", "Monaco", "Menlo", "Consolas", monospace;
+  --text-2xs: .5625rem;
+  --text-xs: .625rem;
+  --text-sm: .6875rem;
+  --text-base: .75rem;
+  --text-md: .8125rem;
+  --text-lg: .875rem;
+  --text-xl: 1rem;
+  --text-2xl: 1.125rem;
+  --text-3xl: 1.25rem;
+  --text-4xl: 1.5rem;
+  --text-5xl: 2rem;
+  --spacing-1: calc(.25rem * 1);
+  --spacing-1-5: calc(.25rem * 1.5);
+  --spacing-2: calc(.25rem * 2);
+  --spacing-3: calc(.25rem * 3);
+  --spacing-4: calc(.25rem * 4);
+  --spacing-5: calc(.25rem * 5);
+  --spacing-6: calc(.25rem * 6);
+  --spacing-7: calc(.25rem * 7);
+  --spacing-8: calc(.25rem * 8);
+  --spacing-9: calc(.25rem * 9);
+  --spacing-10: calc(.25rem * 10);
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-card: 12px;
+  --radius-lg: 16px;
+  --radius-pill: 8px;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .05);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, .08);
+  --color-success-bg-solid: #d9ffd6;
+  --color-error-bg-solid: #ffe0e0;
+  --color-error-border-solid: #ffe0e0;
+  --color-warning-bg-solid: #fffbbd;
+  --color-warning-text: #573a00;
+  --color-info-bg-solid: #d1f1ff;
+  --color-info-bg-solid-alt: #d1f1ff;
+  --color-info-text: #002a66;
+  --color-info-text-alt: #002a66;
+  --color-emerald: #10b981;
+  --color-teal: #4ecdc4;
+  --color-code-bg: #F3F3F7;
+  --color-code-header-bg: #f1f3f5;
+  --color-code-text: #24292e;
+  --color-code-border: #e1e4e8;
+  --color-code-muted: #6a737d;
+  --color-inline-code-bg: #F3F3F7;
+  --color-inline-code-text: #24292e;
+  --color-inline-code-border: #e1e4e8;
+  --color-scrollbar-thumb: #d1d5db;
+  --color-scrollbar-track: transparent;
+  --color-graph-node-text: #333333;
+  --color-graph-node-text-dim: #7F8C8D;
+  --color-graph-edge-default: #95A5A6;
+  --color-graph-edge-cross: #E67E22;
+  --color-graph-edge-text: #666666;
+  --color-graph-edge-stroke: #ffffff;
+  --color-graph-highlight-bg: #FF6B6B;
+  --color-graph-highlight-border: #E74C3C;
+  --color-graph-search-bg: #FFD700;
+  --color-graph-search-border: #FFA500;
+  --color-graph-focus-border: #C0392B;
+  --color-graph-external-border: #95A5A6;
+  --color-graph-cat-file: #3498DB;
+  --color-graph-cat-folder: #7F8C8D;
+  --color-graph-cat-file-aggregate: #2980B9;
+  --color-graph-cat-class: #9B59B6;
+  --color-graph-cat-function: #2ECC71;
+  --color-graph-cat-method: #1ABC9C;
+  --color-graph-cat-variable: #F39C12;
+  --color-graph-cat-import: #D35400;
+  --color-graph-cat-module: #5B6ABF;
+  --color-graph-cat-concept: #E74C3C;
+  --color-graph-cat-person: #FF6B6B;
+  --color-graph-cat-org: #4ECDC4;
+  --color-graph-cat-organization: #4ECDC4;
+  --color-graph-cat-product: #A29BFE;
+  --color-graph-cat-metric: #FD79A8;
+  --color-graph-cat-location: #34495E;
+  --color-graph-cat-date: #E056A0;
+  --color-graph-cat-code: #3498DB;
+  --color-graph-cat-doc: #7F8C8D;
+  --color-graph-cat-url: #00B894;
+  --color-graph-cat-email: #6C5CE7;
+  --color-graph-cat-unknown: #BDC3C7;
+  --color-graph-rel-contains: #BDC3C7;
+  --color-graph-rel-extends: #9B59B6;
+  --color-graph-rel-implements: #3498DB;
+  --color-graph-rel-imports: #E67E22;
+  --color-graph-rel-uses: #2ECC71;
+  --color-graph-rel-calls: #27AE60;
+  --color-graph-rel-references: #F39C12;
+  --color-graph-rel-related-to: #95A5A6;
+  --color-graph-rel-works-on: #E74C3C;
+  --color-graph-rel-owns: #1ABC9C;
+  --color-graph-rel-depends-on: #E67E22;
+  --color-graph-rel-parent-of: #BDC3C7;
+  --qs-content: #fff;
+  --qs-main: #fff;
+  --qs-primary-foreground: #131920;
+  --qs-secondary-foreground: #656871;
+  --qs-tertiary-foreground: #9ca3af;
+  --qs-placeholder-foreground: #8c8c94;
+  --qs-divider: #dedee3;
+  --qs-default-border: #8c8c94;
+  --qs-neutral-soft: #b4b4bb;
+  --qs-neutral-gray-50: #f9fafb;
+  --qs-tertiary-background: #f9fafb;
+  --qs-action-hover: #f3f3f7;
+  --qs-primary-default: #4200db;
+  --qs-primary-dark: #35009e;
+  --qs-primary-light: #e8e6ff;
+  --qs-success-default: #00802f;
+  --qs-error-default: #db0000;
+  --qs-font-sans: "Amazon Ember", "Helvetica Neue", "Segoe UI", Helvetica, Arial, sans-serif;
+  --qs-font-family: "Amazon Ember", "Helvetica Neue", "Segoe UI", Helvetica, Arial, sans-serif;
+  --qs-font-base-letter-spacing: .15px;
+  --qs-shadow-sm: 0 0 2px 0 #00000029, 0 0 4px 0 #00000029;
+  --qs-shadow-md: 0 0 2px 0 #00000029, 0 2px 8px 1px #00000029;
+  --qs-shadow-lg: 0 4px 16px 4px #00000029, 0 2px 6px 1px #00000029;
+  --qs-shadow-xl: 0 4px 8px 2px #00000029, 0 6px 20px 4px #00000029;
+  --qs-width-modal-sm: 384px;
+  --qs-width-modal-md: 600px;
+  --qs-width-modal-lg: 1136px;
+  --qs-grid-gap: 16px;
+  --qs-grid-gap-xl: 24px;
+  --qs-primary-medium: #8575ff;
+  --qs-primary-inverse: #fff;
+  --qs-neutral-lightest: #f9f9fb;
+  --qs-neutral-light: #f3f3f7;
+  --qs-neutral-default: #dedee3;
+  --qs-neutral-medium: #8c8c94;
+  --qs-neutral-deep: #656871;
+  --qs-neutral-dark: #333843;
+  --qs-neutral-strong: #131920;
+  --qs-neutral-white: #fff;
+  --qs-neutral-black: #000;
+  --qs-success-medium: #005c26;
+  --qs-success-dark: #00471e;
+  --qs-success-light: #d9ffd6;
+  --qs-success-inverse: #fff;
+  --qs-info-default: #006ce0;
+  --qs-info-medium: #003b8f;
+  --qs-info-dark: #002a66;
+  --qs-info-light: #d1f1ff;
+  --qs-info-inverse: #fff;
+  --qs-warning-default: #f2b100;
+  --qs-warning-medium: #db9200;
+  --qs-warning-dark: #573a00;
+  --qs-warning-light: #fffbbd;
+  --qs-warning-inverse: #573a00;
+  --qs-warning-experimental: #f2b100;
+  --qs-warning-experimental-light: #fffbbd;
+  --qs-warning-experimental-light-foreground: #fffbbd;
+  --qs-error-medium: #900;
+  --qs-error-dark: #700000;
+  --qs-error-light: #ffe0e0;
+  --qs-error-inverse: #fff;
+  --qs-connection-default: #db3300;
+  --qs-connection-soft: #ff997a;
+  --qs-connection-light: #ffe0d6;
+  --qs-connection-dark: #661800;
+  --qs-automation-default: #b3008f;
+  --qs-automation-medium: #d600ba;
+  --qs-automation-soft: #ff94f1;
+  --qs-automation-light: #ffe0fb;
+  --qs-automation-dark: #660052;
+  --qs-insight-default: #a000b8;
+  --qs-insight-soft: #f299ff;
+  --qs-insight-light: #fce6ff;
+  --qs-insight-dark: #590066;
+  --qs-visualization-default: #7300e5;
+  --qs-visualization-soft: #d4a8ff;
+  --qs-visualization-light: #f2e5ff;
+  --qs-visualization-dark: #45008a;
+  --qs-spice: #ff9800;
+  --qs-coachmark: #006ce0;
+  --qs-brand: #fff;
+  --qs-brand-foreground: #131920;
+  --qs-brand-navbar: #131920;
+  --qs-brand-navbar-foreground: #fff;
+  --qs-brand-navbar-light: #dedee3;
+  --qs-brand-navbar-dark: #000;
+  --qs-application-navbar: #4200db;
+  --qs-application-navbar-foreground: #fff;
+  --qs-application-navbar-light: #e8e6ff;
+  --qs-application-navbar-dark: #35009e;
+  --qs-dimension: #4200db;
+  --qs-dimension-foreground: #fff;
+  --qs-dimension-experimental: #4200db;
+  --qs-dimension-experimental-foreground: #4200db;
+  --qs-measure: #00802f;
+  --qs-measure-foreground: #fff;
+  --qs-measure-experimental: #f2b100;
+  --qs-measure-experimental-foreground: #f2b100;
+  --qs-content-inverse: #333843;
+  --qs-content-inverse-active: #131920;
+  --qs-secondary: #dedee3;
+  --qs-disabled: #8c8c94;
+  --qs-divider-light: #f3f3f7;
+  --qs-hover-border: #333843;
+  --qs-active-border: #4200db;
+  --qs-disabled-border: #dedee3;
+  --qs-error-border: #ffe0e0;
+  --qs-error-active-border: #db0000;
+  --qs-disabled-foreground: #b4b4bb;
+  --qs-primary-inverse-foreground: #fff;
+  --qs-error-foreground: #db0000;
+  --qs-contrast-foreground: #131920;
+  --qs-main-foreground: #131920;
+  --qs-main-secondary-foreground: #656871;
+  --qs-action-disabled: #f3f3f7;
+  --qs-action-active: #e8e6ff;
+  --qs-default-badge: #dedee3;
+  --qs-tag-default: #dedee3;
+  --qs-tag-soft-border: #b4b4bb;
+  --qs-focus-offset: 1px;
+  --qs-toggle-tile-sm: calc(.25rem * 8);
+  --qs-toggle-tile-md: calc(.25rem * 12);
+  --qs-toggle-tile-lg: calc(.25rem * 15);
+  --qs-shadow-pin-right: inset 4px 0 4px -4px #00000029;
+  --qs-shadow-pin-left: inset -4px 0 4px -4px #00000029;
+  --react-pdf-text-layer: 1;
+  --highlight-bg-color: rgba(180, 0, 170, 1);
+  --highlight-selected-bg-color: rgba(0, 100, 0, 1);
+  --react-pdf-annotation-layer: 1;
+  --annotation-unfocused-field-background: url("data:image/svg+xml;charset=UTF-8,<svg width='1px' height='1px' xmlns='http://www.w3.org/2000/svg'><rect width='100%' height='100%' style='fill:rgba(0, 54, 255, 0.13);'/></svg>");
+  --input-focus-border-color: Highlight;
+  --input-focus-outline: 1px solid Canvas;
+  --input-unfocused-border-color: transparent;
+  --input-disabled-border-color: transparent;
+  --input-hover-border-color: black;
+  --link-outline: none;
+  color-scheme: light;
+}
+body { background: var(--color-bg); color: var(--color-text); }
+a { color: var(--color-link, var(--color-primary)); }</style>
+<meta charset="UTF-8">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--color-bg, #f8f9fb); font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif); color: var(--color-text, #172b4d); padding: 0; }
+
+/* Header */
+.header { background: #fff; border-bottom: 1px solid #ebecf0; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 10; }
+.header-left { display: flex; align-items: center; gap: 24px; }
+.header h1 { font-size: 16px; font-weight: 600; }
+.nav-tabs { display: flex; gap: 4px; }
+.nav-tab { padding: 6px 12px; font-size: 13px; border-radius: 6px; cursor: pointer; color: #44546f; }
+.nav-tab.active { background: #deebff; color: #0052CC; font-weight: 500; }
+
+/* Progress */
+.progress-bar { background: #fff; padding: 12px 24px; border-bottom: 1px solid #ebecf0; display: flex; align-items: center; gap: 16px; }
+.batch-id { font-family: monospace; font-size: 12px; color: #8993a4; }
+.progress-track { flex: 1; height: 6px; background: #ebecf0; border-radius: 3px; overflow: hidden; }
+.progress-fill { height: 100%; background: linear-gradient(90deg, #0052CC, #36b37e); border-radius: 3px; width: 100%; }
+.progress-stats { font-size: 12px; color: #44546f; display: flex; gap: 12px; }
+.done-badge { background: #e3fcef; color: #006644; padding: 2px 8px; border-radius: 100px; font-size: 10px; font-weight: 500; }
+
+/* Main */
+.main { padding: 24px; padding-bottom: 80px; }
+
+/* Scenario Group */
+.scenario-group { margin-bottom: 28px; }
+.scenario-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.scenario-icon { width: 32px; height: 32px; background: #deebff; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 14px; }
+.scenario-title { font-size: 15px; font-weight: 600; }
+.scenario-tag { font-size: 11px; padding: 2px 8px; border-radius: 100px; background: #f4f5f7; color: #44546f; }
+.scenario-actions { margin-left: auto; }
+
+/* Material Grid - support 2 or 3 columns */
+.materials-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+
+/* Material Card */
+.material-card { background: #fff; border: 1px solid #ebecf0; border-radius: 10px; padding: 16px; position: relative; transition: all 0.2s; cursor: pointer; }
+.material-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.06); border-color: #c1c7d0; }
+.material-card.selected { border-color: #0052CC; border-width: 2px; background: #fafbff; }
+.material-card.compare-a { border-color: #0052CC; border-width: 2px; }
+.material-card.compare-b { border-color: #6554C0; border-width: 2px; }
+
+/* Card Header */
+.card-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.card-label { font-size: 14px; font-weight: 600; color: #172b4d; }
+.status-badge { font-size: 10px; padding: 3px 10px; border-radius: 100px; font-weight: 500; background: #fff3cd; color: #856404; }
+
+/* Select Checkbox */
+.select-check { width: 20px; height: 20px; border-radius: 50%; border: 2px solid #dfe1e6; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: all 0.15s; }
+.select-check.checked { background: #0052CC; border-color: #0052CC; color: #fff; font-size: 10px; }
+
+/* Info Points */
+.info-section { margin-bottom: 12px; }
+.info-label { font-size: 10px; color: #8993a4; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+.info-dots { display: flex; gap: 4px; flex-wrap: wrap; }
+.info-dot { width: 20px; height: 20px; border-radius: 50%; background: #deebff; color: #0052CC; display: flex; align-items: center; justify-content: center; font-size: 9px; font-weight: 600; }
+.info-dot.flagged { background: #fff3cd; color: #856404; }
+
+/* Preview Text */
+.preview-text { font-size: 11px; color: #8993a4; margin-bottom: 12px; line-height: 1.5; border-left: 2px solid #ebecf0; padding-left: 8px; }
+.preview-text em { font-style: normal; color: #44546f; }
+
+/* Card Actions */
+.card-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.btn { padding: 6px 10px; font-size: 11px; border-radius: 6px; border: 1px solid #dfe1e6; background: #fff; cursor: pointer; display: flex; align-items: center; gap: 4px; color: #44546f; white-space: nowrap; }
+.btn:hover { background: #f4f5f7; }
+.btn-primary { background: #0052CC; color: #fff; border-color: #0052CC; }
+.btn-primary:hover { background: #0747A6; }
+.btn-compare { background: #EAE6FF; color: #6554C0; border-color: #C0B6F2; }
+.btn-compare:hover { background: #DFD8FF; }
+.btn i { font-size: 10px; }
+
+/* Compare Mode Banner */
+.compare-banner { background: #EAE6FF; border: 1px solid #C0B6F2; border-radius: 8px; padding: 10px 16px; margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #6554C0; }
+.compare-banner .legend { display: flex; gap: 12px; align-items: center; }
+.legend-item { display: flex; align-items: center; gap: 4px; }
+.legend-dot { width: 10px; height: 10px; border-radius: 50%; }
+.legend-dot.a { background: #0052CC; }
+.legend-dot.b { background: #6554C0; }
+
+/* Bottom Action Bar */
+.bottom-bar { position: fixed; bottom: 0; left: 0; right: 0; background: #fff; border-top: 1px solid #ebecf0; padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; z-index: 10; box-shadow: 0 -2px 8px rgba(0,0,0,0.04); }
+.bottom-left { display: flex; align-items: center; gap: 16px; font-size: 13px; color: #44546f; }
+.bottom-left .count { font-weight: 600; color: #0052CC; }
+.bottom-right { display: flex; gap: 8px; }
+
+/* Design Notes */
+.design-notes { margin: 24px; background: #fffae6; border: 1px solid #ffe380; border-radius: 10px; padding: 20px; }
+.design-notes h3 { font-size: 14px; margin-bottom: 12px; }
+.design-notes ul { padding-left: 18px; font-size: 12px; color: #44546f; line-height: 2.2; }
+.design-notes li strong { color: #172b4d; }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+  <div class="header-left">
+    <h1><i class="fa-solid fa-headphones" style="color:#0052CC;margin-right:6px"></i>IELTS Part 1 材料生成</h1>
+    <div class="nav-tabs">
+      <div class="nav-tab">场景选择</div>
+      <div class="nav-tab active">生成结果</div>
+      <div class="nav-tab">审核队列</div>
+    </div>
+  </div>
+</div>
+
+<!-- Progress -->
+<div class="progress-bar">
+  <span class="batch-id">batch-ms5lw9oz</span>
+  <div class="progress-track"><div class="progress-fill"></div></div>
+  <div class="progress-stats">
+    <span>3 场景 × 3 套 = 9 套材料</span>
+    <span class="done-badge">✓ 全部完成</span>
+  </div>
+</div>
+
+<!-- Main -->
+<div class="main">
+
+  <!-- Scenario 1 -->
+  <div class="scenario-group">
+    <div class="scenario-header">
+      <div class="scenario-icon">🏨</div>
+      <span class="scenario-title">booking-hotel</span>
+      <span class="scenario-tag">预订/咨询服务</span>
+      <div class="scenario-actions">
+        <button class="btn btn-compare"><i class="fa-solid fa-columns"></i> 对比本场景</button>
+      </div>
+    </div>
+
+    <!-- Compare Mode Banner (visible when comparing) -->
+    <div class="compare-banner">
+      <span><i class="fa-solid fa-info-circle"></i> 对比模式：点选两套材料进行并排对比</span>
+      <div class="legend">
+        <div class="legend-item"><div class="legend-dot a"></div> 材料 A</div>
+        <div class="legend-item"><div class="legend-dot b"></div> 材料 B</div>
+      </div>
+    </div>
+
+    <div class="materials-row">
+      <!-- Card 1 -->
+      <div class="material-card selected compare-a">
+        <div class="card-top">
+          <span class="card-label">第 1 套</span>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span class="status-badge">待审核</span>
+            <div class="select-check checked"><i class="fa-solid fa-check"></i></div>
+          </div>
+        </div>
+        <div class="info-section">
+          <div class="info-label">信息点分布（10/10）</div>
+          <div class="info-dots">
+            <div class="info-dot">1</div><div class="info-dot">2</div><div class="info-dot">3</div>
+            <div class="info-dot flagged">4</div><div class="info-dot">5</div><div class="info-dot">6</div>
+            <div class="info-dot">7</div><div class="info-dot">8</div><div class="info-dot flagged">9</div>
+            <div class="info-dot">10</div>
+          </div>
+        </div>
+        <div class="preview-text">
+          <em>"Good morning, Seaside Hotel. How can I help you?"</em><br>
+          — 预订海滨酒店，含拼读 + 价格修正干扰
+        </div>
+        <div class="card-actions">
+          <button class="btn"><i class="fa-solid fa-book-open"></i> 阅读全文</button>
+          <button class="btn"><i class="fa-solid fa-headphones"></i> 试听</button>
+        </div>
+      </div>
+
+      <!-- Card 2 -->
+      <div class="material-card compare-b">
+        <div class="card-top">
+          <span class="card-label">第 2 套</span>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span class="status-badge">待审核</span>
+            <div class="select-check"></div>
+          </div>
+        </div>
+        <div class="info-section">
+          <div class="info-label">信息点分布（10/10）</div>
+          <div class="info-dots">
+            <div class="info-dot">1</div><div class="info-dot">2</div><div class="info-dot">3</div>
+            <div class="info-dot">4</div><div class="info-dot">5</div><div class="info-dot">6</div>
+            <div class="info-dot">7</div><div class="info-dot">8</div><div class="info-dot">9</div>
+            <div class="info-dot">10</div>
+          </div>
+        </div>
+        <div class="preview-text">
+          <em>"Welcome to Royal Park Hotel, this is reception..."</em><br>
+          — 城市商务酒店，含电话号码 + 同义替换
+        </div>
+        <div class="card-actions">
+          <button class="btn"><i class="fa-solid fa-book-open"></i> 阅读全文</button>
+          <button class="btn"><i class="fa-solid fa-headphones"></i> 试听</button>
+        </div>
+      </div>
+
+      <!-- Card 3 -->
+      <div class="material-card">
+        <div class="card-top">
+          <span class="card-label">第 3 套</span>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span class="status-badge">待审核</span>
+            <div class="select-check"></div>
+          </div>
+        </div>
+        <div class="info-section">
+          <div class="info-label">信息点分布（10/10）</div>
+          <div class="info-dots">
+            <div class="info-dot">1</div><div class="info-dot">2</div><div class="info-dot">3</div>
+            <div class="info-dot">4</div><div class="info-dot">5</div><div class="info-dot">6</div>
+            <div class="info-dot">7</div><div class="info-dot flagged">8</div><div class="info-dot">9</div>
+            <div class="info-dot">10</div>
+          </div>
+        </div>
+        <div class="preview-text">
+          <em>"Hi there, I'd like to book a room for my anniversary..."</em><br>
+          — 度假酒店周年纪念，含日期 + 条件限定
+        </div>
+        <div class="card-actions">
+          <button class="btn"><i class="fa-solid fa-book-open"></i> 阅读全文</button>
+          <button class="btn"><i class="fa-solid fa-headphones"></i> 试听</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scenario 2 -->
+  <div class="scenario-group">
+    <div class="scenario-header">
+      <div class="scenario-icon">🏠</div>
+      <span class="scenario-title">accommodation-rental</span>
+      <span class="scenario-tag">住宿</span>
+      <div class="scenario-actions">
+        <button class="btn btn-compare"><i class="fa-solid fa-columns"></i> 对比本场景</button>
+      </div>
+    </div>
+    <div class="materials-row">
+      <div class="material-card">
+        <div class="card-top">
+          <span class="card-label">第 1 套</span>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span class="status-badge">待审核</span>
+            <div class="select-check"></div>
+          </div>
+        </div>
+        <div class="info-section">
+          <div class="info-label">信息点分布（10/10）</div>
+          <div class="info-dots">
+            <div class="info-dot">1</div><div class="info-dot">2</div><div class="info-dot flagged">3</div>
+            <div class="info-dot flagged">4</div><div class="info-dot">5</div><div class="info-dot">6</div>
+            <div class="info-dot">7</div><div class="info-dot">8</div><div class="info-dot">9</div>
+            <div class="info-dot">10</div>
+          </div>
+        </div>
+        <div class="preview-text">
+          <em>"I'm calling about the flat you advertised..."</em><br>
+          — 学生租房，含地址拼读 + 设施选项对比
+        </div>
+        <div class="card-actions">
+          <button class="btn"><i class="fa-solid fa-book-open"></i> 阅读全文</button>
+          <button class="btn"><i class="fa-solid fa-headphones"></i> 试听</button>
+        </div>
+      </div>
+      <div class="material-card selected">
+        <div class="card-top">
+          <span class="card-label">第 2 套</span>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span class="status-badge">待审核</span>
+            <div class="select-check checked"><i class="fa-solid fa-check"></i></div>
+          </div>
+        </div>
+        <div class="info-section">
+          <div class="info-label">信息点分布（10/10）</div>
+          <div class="info-dots">
+            <div class="info-dot">1</div><div class="info-dot">2</div><div class="info-dot">3</div>
+            <div class="info-dot">4</div><div class="info-dot">5</div><div class="info-dot">6</div>
+            <div class="info-dot">7</div><div class="info-dot">8</div><div class="info-dot">9</div>
+            <div class="info-dot">10</div>
+          </div>
+        </div>
+        <div class="preview-text">
+          <em>"Good afternoon, City Lettings Agency..."</em><br>
+          — 市中心合租，含金额 + 先说后改干扰
+        </div>
+        <div class="card-actions">
+          <button class="btn"><i class="fa-solid fa-book-open"></i> 阅读全文</button>
+          <button class="btn"><i class="fa-solid fa-headphones"></i> 试听</button>
+        </div>
+      </div>
+      <div class="material-card">
+        <div class="card-top">
+          <span class="card-label">第 3 套</span>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span class="status-badge">待审核</span>
+            <div class="select-check"></div>
+          </div>
+        </div>
+        <div class="info-section">
+          <div class="info-label">信息点分布（10/10）</div>
+          <div class="info-dots">
+            <div class="info-dot">1</div><div class="info-dot">2</div><div class="info-dot">3</div>
+            <div class="info-dot">4</div><div class="info-dot">5</div><div class="info-dot">6</div>
+            <div class="info-dot">7</div><div class="info-dot">8</div><div class="info-dot">9</div>
+            <div class="info-dot">10</div>
+          </div>
+        </div>
+        <div class="preview-text">
+          <em>"Hi, I saw your listing for the studio near campus..."</em><br>
+          — 校园附近工作室，含条件限定 + 否定排除
+        </div>
+        <div class="card-actions">
+          <button class="btn"><i class="fa-solid fa-book-open"></i> 阅读全文</button>
+          <button class="btn"><i class="fa-solid fa-headphones"></i> 试听</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scenario 3 -->
+  <div class="scenario-group">
+    <div class="scenario-header">
+      <div class="scenario-icon">💼</div>
+      <span class="scenario-title">employment-vacancy</span>
+      <span class="scenario-tag">求职</span>
+      <div class="scenario-actions">
+        <button class="btn btn-compare"><i class="fa-solid fa-columns"></i> 对比本场景</button>
+      </div>
+    </div>
+    <div class="materials-row">
+      <div class="material-card selected">
+        <div class="card-top">
+          <span class="card-label">第 1 套</span>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span class="status-badge">待审核</span>
+            <div class="select-check checked"><i class="fa-solid fa-check"></i></div>
+          </div>
+        </div>
+        <div class="info-section">
+          <div class="info-label">信息点分布（10/10）</div>
+          <div class="info-dots">
+            <div class="info-dot">1</div><div class="info-dot">2</div><div class="info-dot">3</div>
+            <div class="info-dot">4</div><div class="info-dot">5</div><div class="info-dot">6</div>
+            <div class="info-dot">7</div><div class="info-dot">8</div><div class="info-dot">9</div>
+            <div class="info-dot">10</div>
+          </div>
+        </div>
+        <div class="preview-text">
+          <em>"Hello, I'm ringing about the summer jobs you have..."</em><br>
+          — 暑期工应聘，含三职位对比 + 条件筛选
+        </div>
+        <div class="card-actions">
+          <button class="btn"><i class="fa-solid fa-book-open"></i> 阅读全文</button>
+          <button class="btn"><i class="fa-solid fa-headphones"></i> 试听</button>
+        </div>
+      </div>
+      <div class="material-card">
+        <div class="card-top">
+          <span class="card-label">第 2 套</span>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span class="status-badge">待审核</span>
+            <div class="select-check"></div>
+          </div>
+        </div>
+        <div class="info-section">
+          <div class="info-label">信息点分布（10/10）</div>
+          <div class="info-dots">
+            <div class="info-dot">1</div><div class="info-dot">2</div><div class="info-dot">3</div>
+            <div class="info-dot">4</div><div class="info-dot">5</div><div class="info-dot">6</div>
+            <div class="info-dot">7</div><div class="info-dot flagged">8</div><div class="info-dot">9</div>
+            <div class="info-dot">10</div>
+          </div>
+        </div>
+        <div class="preview-text">
+          <em>"Good morning, I'd like to enquire about the receptionist..."</em><br>
+          — 前台岗位，含班次时间 + 薪资先说后改
+        </div>
+        <div class="card-actions">
+          <button class="btn"><i class="fa-solid fa-book-open"></i> 阅读全文</button>
+          <button class="btn"><i class="fa-solid fa-headphones"></i> 试听</button>
+        </div>
+      </div>
+      <div class="material-card">
+        <div class="card-top">
+          <span class="card-label">第 3 套</span>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span class="status-badge">待审核</span>
+            <div class="select-check"></div>
+          </div>
+        </div>
+        <div class="info-section">
+          <div class="info-label">信息点分布（10/10）</div>
+          <div class="info-dots">
+            <div class="info-dot">1</div><div class="info-dot">2</div><div class="info-dot">3</div>
+            <div class="info-dot">4</div><div class="info-dot">5</div><div class="info-dot">6</div>
+            <div class="info-dot">7</div><div class="info-dot">8</div><div class="info-dot">9</div>
+            <div class="info-dot">10</div>
+          </div>
+        </div>
+        <div class="preview-text">
+          <em>"Hi, I noticed your ad for delivery drivers..."</em><br>
+          — 快递员岗位，含驾照要求 + 否定排除
+        </div>
+        <div class="card-actions">
+          <button class="btn"><i class="fa-solid fa-book-open"></i> 阅读全文</button>
+          <button class="btn"><i class="fa-solid fa-headphones"></i> 试听</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Bottom Action Bar -->
+<div class="bottom-bar">
+  <div class="bottom-left">
+    <span><i class="fa-solid fa-circle-check" style="color:#0052CC"></i> 已选择 <span class="count">3</span> 套材料</span>
+    <span style="color:#8993a4">（每场景至少选 1 套）</span>
+  </div>
+  <div class="bottom-right">
+    <button class="btn">取消选择</button>
+    <button class="btn btn-primary"><i class="fa-solid fa-paper-plane"></i> 提交审核</button>
+  </div>
+</div>
+
+<!-- Design Notes -->
+<div class="design-notes" style="margin-bottom:100px;">
+  <h3>🎨 V2 改进说明</h3>
+  <ul>
+    <li><strong>去掉内部评分标签</strong> — 不展示 PASS/MINOR_EDITS 等 Agent 内部评价结果，统一只显示"待审核"</li>
+    <li><strong>保留「对比本场景」按钮</strong> — 放在场景 Header 右侧，点击后进入对比模式：用户点选该场景下的任意两套材料进行并排对比（支持 2 套以上时选 2 对比）</li>
+    <li><strong>对比模式</strong> — 进入后顶部出现紫色提示条 + A/B 颜色图例，被选中的两张卡片分别标记蓝色（A）和紫色（B）边框</li>
+    <li><strong>支持 3+ 套材料</strong> — 网格布局自适应列数（2列 or 3列），未来场景生成 3 套直接兼容</li>
+    <li><strong>勾选 + 提交审核</strong> — 底部固定操作栏，实时显示已选数量，一键提交所有选中材料进入审核队列</li>
+    <li><strong>预览摘要</strong> — 每张卡片展示对话第一句 + 一行简述（话题+干扰类型），不用点进去就能快速区分不同材料</li>
+    <li><strong>信息点圆点</strong> — 保留，黄色表示该信息点分布有问题（Agent 评价中标记的），用户可快速扫描</li>
+    <li><strong>去掉评分分数条</strong> — 内部质量评估结果不暴露给用户，只通过信息点圆点的颜色间接体现</li>
+  </ul>
+</div>
+
+
+
+</body></html>
