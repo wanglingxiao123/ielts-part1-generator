@@ -1043,23 +1043,9 @@ h3 {
   quotes: '“' '”';
 }
 
-/* 缺陷小结：有缺陷的材料照样可选，只是把问题摆出来。 */
-.mat-flaws {
-  margin: 0 0 10px;
-  padding: 8px 10px;
-  list-style: none;
-  background: #fffaf0;
-  border: 1px solid #f6e3b8;
-  border-radius: 6px;
-  font-size: 11px;
-  color: #7a4a00;
-  display: grid;
-  gap: 3px;
-}
-
-.mat-flaws li::before {
-  content: '· ';
-}
+/* `.mat-flaws`（卡片上的缺陷小结）已删。客户要求卡片上不出现任何评价文字，评价建议一律
+   在「阅读全文」详情页里说——那里才有让建议读得懂的上下文。样式一并去掉，留着只会让下一个人
+   以为卡片上还该有这么一块。 */
 
 .mat-actions {
   display: flex;
@@ -1265,10 +1251,6 @@ h3 {
 .ann-card.cluster {
   border: 2px solid var(--warn);
   background: var(--warn-bg);
-}
-
-.ann-card.mismatch {
-  border-color: var(--bad);
 }
 
 .ann-cluster-head {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { FALLBACK_CONFIG } from '@/config/runtimeConfig'
-import { joinFromRecord } from './joinArtifacts'
+import { displayTurns, joinFromRecord } from './joinArtifacts'
 import { previewSummary } from './cardPreview'
 import { computeDistribution } from './distribution'
 import { summariseExamPoints } from './examPoints'
@@ -19,6 +19,21 @@ const balanced = joinFromRecord(buildRecord('balanced', { ...O, materialId: 'm-b
 const clustered = joinFromRecord(buildRecord('clustered', { ...O, materialId: 'm-clu' }))
 const failed = joinFromRecord(buildRecord('failed', { ...O, materialId: 'm-fail' }))
 const mismatch = joinFromRecord(buildRecord('anchorMismatch', { ...O, materialId: 'm-mis' }))
+const caseDiffers = joinFromRecord(
+  buildRecord('anchorCaseDiffers', { ...O, materialId: 'm-case' }),
+)
+const unresolvable = joinFromRecord(
+  buildRecord('anchorUnresolvable', { ...O, materialId: 'm-unres' }),
+)
+
+/**
+ * 换一份 blueprint 之后必须**重新 join**，不能只把 blueprint 字段替换掉。
+ *
+ * 分布指标现在读的是 ViewTurn 上已经解出来的位置（见 distribution.ts），而 `turns` 是
+ * join 出来的——只换 blueprint 字段就会让两者对不上，测出来的是一个页面上不可能出现的状态。
+ */
+const viewWith = (blueprint: Blueprint, materialId = 'm-var') =>
+  joinFromRecord({ ...buildRecord('balanced', { ...O, materialId }), blueprint })
 
 describe('joinArtifacts', () => {
   it('anchors all ten annotations to the turn_index the blueprint states', () => {
@@ -45,21 +60,131 @@ describe('joinArtifacts', () => {
     expect(balanced.dialogueTurnCount).toBe(balanced.turns.length - 3)
   })
 
-  it('reports a mismatched anchor instead of relocating it by string search', () => {
-    expect(mismatch.anchorMismatches).toHaveLength(1)
-    const m = mismatch.anchorMismatches[0]!
-    expect(m.itemNumber).toBe(3)
-    expect(m.reason).toBe('evidence-not-in-turn')
-    // The item stays anchored where the blueprint said, and no other turn
-    // silently acquired the annotation.
-    expect(mismatch.turns[14]!.items.map((i) => i.number)).toEqual([3])
-    expect(mismatch.turns[10]!.items).toEqual([])
-    expect(mismatch.turns[14]!.highlights).toEqual([])
+  /**
+   * 这条断言原来钉的是相反的行为：「报出失配、绝不按字符串搜索挪正」。客户的规则把它推翻了
+   *
+   *   > 如果能程序化定位并修正（如锚点偏移一位）→ 修好再返回，用户不需要知道
+   *
+   * 挪正的判据不是「按字符串搜索」这么宽——它就是 `deterministic/anchors.py` 那一条：
+   * evidence **恰好只在一轮**里出现才挪，零处或两处以上不猜。所以旧断言里真正要守的东西
+   * （不许瞎猜、不许把旁注挪到一个碰巧撞上的句子边上）一条没丢，只是「确定的那一种」现在
+   * 归入修好而不是报警。
+   */
+  it('silently relocates an anchor whose evidence sits in exactly one other turn', () => {
+    // blueprint_bad_anchor 把第 3 题标在 turn 14，而 "It's BT14 9BJ." 只在 turn 10 出现。
+    expect(mismatch.anchorRepairs).toHaveLength(1)
+    const r = mismatch.anchorRepairs[0]!
+    expect(r.itemNumber).toBe(3)
+    expect(r.declaredTurnIndex).toBe(14)
+    expect(r.turnIndex).toBe(10)
+    expect(mismatch.anchorOmissions).toEqual([])
+
+    // 旁注和高亮都落在真正带着这句话的那一轮，声明的那一轮什么也不留。
+    expect(mismatch.turns[10]!.items.map((i) => i.number)).toEqual([3])
+    expect(mismatch.turns[14]!.items).toEqual([])
+    const h = mismatch.turns[10]!.highlights.find((x) => x.itemNumbers.includes(3))!
+    expect(mismatch.turns[10]!.text.slice(h.start, h.end)).toBe("It's BT14 9BJ.")
+    // 存档侧不受影响：blueprint 仍是十个点，且 turn_index 一个字没改。
+    expect(mismatch.blueprint.items).toHaveLength(10)
+    expect(mismatch.blueprint.items.find((i) => i.number === 3)!.turn_index).toBe(14)
   })
 
-  it('has no anchor mismatch on the balanced or clustered fixtures', () => {
-    expect(balanced.anchorMismatches).toEqual([])
-    expect(clustered.anchorMismatches).toEqual([])
+  /**
+   * 后端两处实现（`validate_part1.py` 的 `anchor_ok`、`anchors.py` 的 `_carries`）都对两侧
+   * casefold，所以只差大小写的 evidence 是**合法**的。前端原来用 `indexOf` 精确匹配，把这样
+   * 一套材料报成「标错位置」——虚报，而且很可能是常见情形。高亮下标必须仍然对着原文。
+   */
+  it('accepts an evidence that differs only in case, with offsets into the original text', () => {
+    expect(caseDiffers.anchorRepairs).toEqual([])
+    expect(caseDiffers.anchorOmissions).toEqual([])
+    const item = caseDiffers.blueprint.items.find((i) => i.number === 1)!
+    expect(item.evidence).toBe("it's anna woods.") // 小写，和原文首字母不同
+    const turn = caseDiffers.turns[item.turn_index]!
+    const h = turn.highlights.find((x) => x.itemNumbers.includes(1))!
+    // 切出来的是**原文**那一段（大写 I），不是小写副本里的一段，也没有错位。
+    expect(turn.text.slice(h.start, h.end)).toBe("It's Anna Woods.")
+  })
+
+  /**
+   * 挪不了的那一条：evidence 一处都不存在。客户的规则：
+   *
+   *   > 如果不确定怎么修 → 直接去掉这条旁注，返回干净的材料
+   *
+   * 关键约束是这只影响**显示**：校验器要求恰好 10 个信息点，所以 blueprint 必须仍是十个。
+   */
+  it('omits an unresolvable annotation from the display while keeping ten in the blueprint', () => {
+    expect(unresolvable.anchorRepairs).toEqual([])
+    expect(unresolvable.anchorOmissions).toHaveLength(1)
+    const o = unresolvable.anchorOmissions[0]!
+    expect(o.itemNumber).toBe(3)
+    expect(o.reason).toBe('not-found')
+
+    // 九条旁注照常显示，第 3 条哪里都不出现。
+    const shown = unresolvable.turns.flatMap((t) => t.items.map((i) => i.number)).sort((a, b) => a - b)
+    expect(shown).toEqual([1, 2, 4, 5, 6, 7, 8, 9, 10])
+    for (const turn of unresolvable.turns) {
+      for (const h of turn.highlights) expect(h.itemNumbers).not.toContain(3)
+    }
+    // 存档 / 发布侧不变：十个点，`validate_part1.py` 的 `len(items) != 10` 仍然满足。
+    expect(unresolvable.blueprint.items).toHaveLength(10)
+    expect(unresolvable.blueprint.items.map((i) => i.number)).toContain(3)
+  })
+
+  /** evidence 命中两轮以上时不猜——重复出现的句子正是锚点存在的理由。 */
+  it('refuses to guess when the evidence matches more than one turn', () => {
+    const bp = structuredClone(balanced.blueprint) as Blueprint
+    const item = bp.items.find((i) => i.number === 6)!
+    item.evidence = 'do you have' // turn 17 / 22 / 28 / 31 都有
+    item.turn_index = 0 // 旁白，因此声明的位置本身也不成立
+    const view = viewWith(bp, 'm-amb')
+    expect(view.anchorRepairs).toEqual([])
+    expect(view.anchorOmissions).toHaveLength(1)
+    expect(view.anchorOmissions[0]!.reason).toBe('ambiguous')
+    expect(view.anchorOmissions[0]!.matches.length).toBeGreaterThan(1)
+    expect(view.blueprint.items).toHaveLength(10)
+  })
+
+  /** 指向旁白的锚点不成立：contract 要求锚点指向非 speaker1 轮，答案不能出自旁白。 */
+  it('does not accept a narrator turn as an anchor', () => {
+    const bp = structuredClone(balanced.blueprint) as Blueprint
+    const item = bp.items.find((i) => i.number === 2)!
+    item.turn_index = 0
+    item.evidence = 'Part one.' // 只在旁白 turn 0 里出现
+    const view = viewWith(bp, 'm-narr')
+    expect(view.anchorOmissions.map((o) => o.itemNumber)).toEqual([2])
+    expect(view.turns[0]!.items).toEqual([])
+  })
+
+  it('needs neither a repair nor an omission on the balanced or clustered fixtures', () => {
+    for (const view of [balanced, clustered]) {
+      expect(view.anchorRepairs).toEqual([])
+      expect(view.anchorOmissions).toEqual([])
+    }
+  })
+
+  /**
+   * 挪正之后，「这个点在原文哪一句」必须只有一个答案。
+   *
+   * 每一处坐标都走 `displayTurns`，因为直接读 `blueprint.items[].turn_index` 的地方会把点画在
+   * 声明的老位置上：分布图的点、form_group 括号、考点小结的跳转按钮就会各指一句，而这三样都
+   * 声称说的是同一件事。这条断言钉的就是它们不可能打架。
+   */
+  it('gives every channel one and the same location for a relocated point', () => {
+    const shown = displayTurns(mismatch)
+    expect(shown.get(3)).toBe(10) // 不是 blueprint 写的 14
+
+    // 分布图。
+    const d = computeDistribution(mismatch, T)
+    expect(d.points.find((p) => p.number === 3)!.turnIndex).toBe(10)
+    // 考点小结的跳转坐标。
+    expect(summariseExamPoints(mismatch).turnOf[3]).toBe(10)
+    // form_group 括号：第 3 题所在那一组的起止轮次里不许再出现 14。
+    const group = analyseFormGroups(mismatch, T).groups.find((g) => g.numbers.includes(3))!
+    expect(group.turnStart).toBeLessThanOrEqual(10)
+    expect(group.turnEnd).toBeLessThan(14)
+
+    // 解不出来的点不进这张表：它在页面上不显示，也就没有可跳转的位置。
+    expect(displayTurns(unresolvable).has(3)).toBe(false)
   })
 
   it('joins findings and blind map entries by turn_index', () => {
@@ -118,21 +243,34 @@ describe('distribution', () => {
       item.turn_index = middle[i]!
       item.evidence = balanced.turns[middle[i]!]!.text
     })
-    const view = { ...balanced, blueprint: bp }
-    const d = computeDistribution(view, T)
+    const d = computeDistribution(viewWith(bp), T)
     expect(d.gaps[0]).toBeGreaterThanOrEqual(8)
     expect(d.gaps[d.gaps.length - 1]!).toBeGreaterThanOrEqual(8)
     expect(d.cvWarn).toBe(true)
     expect(d.uniformity).toBeLessThan(dBal.uniformity)
   })
 
-  it('excludes unresolvable anchors from the metrics rather than crashing', () => {
+  /**
+   * 原来这条把 `turn_index` 改成 999 就算「定位不到」。现在不算了：evidence 还在
+   * turn 4 好好地待着，恰好只有一处，所以那是能确定挪正的一种，页面会静默挪回去
+   * （domain/anchors.ts，与后端同一条规则）。真正定位不到的是 evidence 本身不存在。
+   */
+  it('excludes a genuinely unresolvable anchor from the metrics rather than crashing', () => {
     const bp = structuredClone(balanced.blueprint) as Blueprint
-    bp.items[0]!.turn_index = 999
-    const d = computeDistribution({ ...balanced, blueprint: bp }, T)
+    bp.items[0]!.evidence = 'a sentence that appears nowhere in this script'
+    const d = computeDistribution(viewWith(bp), T)
     expect(d.unplacedNumbers).toEqual([1])
     expect(d.points).toHaveLength(9)
     expect(d.notes.some((n) => n.includes('锚点无法定位'))).toBe(true)
+  })
+
+  /** 一个只是下标写歪了的锚点会被挪回去，因此不进 unplacedNumbers。 */
+  it('counts a relocatable anchor as placed, at the turn that carries the evidence', () => {
+    const bp = structuredClone(balanced.blueprint) as Blueprint
+    bp.items[0]!.turn_index = 999
+    const d = computeDistribution(viewWith(bp), T)
+    expect(d.unplacedNumbers).toEqual([])
+    expect(d.points.find((p) => p.number === 1)!.turnIndex).toBe(4)
   })
 
   /**
@@ -153,7 +291,7 @@ describe('distribution', () => {
     i2.evidence = balanced.turns[10]!.text
     i3.turn_index = 8
     i3.evidence = balanced.turns[8]!.text
-    const d = computeDistribution({ ...balanced, blueprint: bp }, T)
+    const d = computeDistribution(viewWith(bp), T)
     expect(d.outOfOrder).toEqual([
       { spokenFirst: 3, spokenSecond: 2, turnFirst: 8, turnSecond: 10 },
     ])
@@ -166,7 +304,7 @@ describe('distribution', () => {
     const i5 = bp.items.find((i) => i.number === 5)!
     i5.turn_index = 12
     i5.evidence = balanced.turns[12]!.text
-    expect(computeDistribution({ ...balanced, blueprint: bp }, T).outOfOrder).toEqual([])
+    expect(computeDistribution(viewWith(bp), T).outOfOrder).toEqual([])
   })
 })
 
@@ -206,21 +344,31 @@ describe('usability verdict', () => {
     i2.evidence = balanced.turns[10]!.text
     i3.turn_index = 8
     i3.evidence = balanced.turns[8]!.text
-    const v = assessUsability(computeDistribution({ ...balanced, blueprint: bp }, T))
+    const v = assessUsability(computeDistribution(viewWith(bp), T))
     expect(v.level).toBe('blocked')
     expect(v.headline).toContain('暂不能直接出题')
     expect(v.checks.find((c) => c.key === 'order')!.detail).toContain('题号回跳')
   })
 
-  it('says nothing about anchors when every point is placed', () => {
-    // A row reading "10 个点都定位到了" is the kind of noise this redesign removes.
-    expect(vBal.checks.some((c) => c.key === 'anchor')).toBe(false)
+  /**
+   * 原来这里钉的是「有点定位不到时要多出一行『信息点定位』」。客户的规则把这一行整个否掉了：
+   * 锚点对不上是我们自己的标注 bug，不是材料的质量问题，不该拿给用户看，更不该让他自查
+   * （「不要把『我可能标错了你自己检查一下』这种话展示给用户」）。
+   *
+   * 原意图仍然守着——「不为常态挂一行」：定位正常时本来就没有这一行。变的是异常时也没有这一行，
+   * 因为异常已经在显示层处理掉了（挪正或不显示），而信号走开发者通道。
+   */
+  it('never says anything about anchors, placed or not', () => {
+    expect(vBal.checks.map((c) => c.key)).toEqual(['order', 'pace', 'coverage', 'groups'])
+
     const bp = structuredClone(balanced.blueprint) as Blueprint
-    bp.items[0]!.turn_index = 999
-    const v = assessUsability(computeDistribution({ ...balanced, blueprint: bp }, T))
-    const anchor = v.checks.find((c) => c.key === 'anchor')!
-    expect(anchor.level).toBe('blocked')
-    expect(anchor.detail).toContain('①')
+    bp.items[0]!.evidence = 'a sentence that appears nowhere in this script'
+    const v = assessUsability(computeDistribution(viewWith(bp), T))
+    expect(v.checks.map((c) => c.key)).toEqual(['order', 'pace', 'coverage', 'groups'])
+    const text = [v.headline, ...v.checks.map((c) => c.detail)].join(' ')
+    for (const forbidden of ['定位', '标错', '锚点', '旁注', '核对']) {
+      expect(text, forbidden).not.toContain(forbidden)
+    }
   })
 
   it('agrees with the metrics it was derived from', () => {
@@ -346,7 +494,7 @@ describe('formGroups', () => {
     const item8 = bp.items.find((i) => i.number === 8)!
     item8.turn_index = 24
     item8.evidence = balanced.turns[24]!.text
-    const g = analyseFormGroups({ ...balanced, blueprint: bp }, T)
+    const g = analyseFormGroups(viewWith(bp), T)
     const b = g.groups.find((x) => x.name === 'B')!
     expect(b.turnSpan).toBe(16)
     expect(b.spanWarn).toBe(true)
@@ -363,7 +511,7 @@ describe('formGroups', () => {
   it('names the specific item numbers when the two views disagree', () => {
     const bp = structuredClone(balanced.blueprint) as Blueprint
     bp.items[9]!.item_form = 'note' // coverage still lists 10 under `table`
-    const g = analyseFormGroups({ ...balanced, blueprint: bp }, T)
+    const g = analyseFormGroups(viewWith(bp), T)
     expect(g.consistency.disagreeingNumbers).toEqual([10])
     expect(g.consistency.consistent).toBe(false)
     // Coverage flattening itself is still complete; only the views disagree.
@@ -373,7 +521,7 @@ describe('formGroups', () => {
   it('detects a missing number in question_type_coverage', () => {
     const bp = structuredClone(balanced.blueprint) as Blueprint
     bp.question_type_coverage.note = []
-    const g = analyseFormGroups({ ...balanced, blueprint: bp }, T)
+    const g = analyseFormGroups(viewWith(bp), T)
     expect(g.consistency.missingNumbers).toEqual([5])
     expect(g.consistency.coversAllTen).toBe(false)
   })
@@ -397,7 +545,7 @@ describe('formGroups', () => {
     mc[1]!.turn_index = 27
     mc[1]!.evidence = balanced.turns[27]!.text
 
-    const g = analyseFormGroups({ ...balanced, blueprint: bp }, T)
+    const g = analyseFormGroups(viewWith(bp), T)
     const nullBucket = g.groups.find((x) => x.itemForm === 'multiple_choice')!
     expect(nullBucket.ungrouped).toBe(true)
     expect(nullBucket.turnSpan).toBe(20) // still reported as raw data
@@ -413,7 +561,7 @@ describe('formGroups', () => {
     mc[0]!.evidence = balanced.turns[7]!.text
     mc[1]!.turn_index = 27
     mc[1]!.evidence = balanced.turns[27]!.text
-    const g = analyseFormGroups({ ...balanced, blueprint: bp }, T)
+    const g = analyseFormGroups(viewWith(bp), T)
     const declared = g.groups.find((x) => x.name === 'C')!
     expect(declared.ungrouped).toBe(false)
     expect(declared.spanWarn).toBe(true)

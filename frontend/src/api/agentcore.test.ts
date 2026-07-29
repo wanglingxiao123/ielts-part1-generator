@@ -150,14 +150,19 @@ describe('real model output joins by turn_index', () => {
     })
     // The whole point of the annotation UI: real turn_index values must line up
     // with the highlighted spans. Fixtures were hand-checked; model output is not.
-    expect(view.anchorMismatches).toEqual([])
+    // Real output needs neither a relocation nor a dropped annotation.
+    expect(view.anchorRepairs).toEqual([])
+    expect(view.anchorOmissions).toEqual([])
     expect(view.blueprint.items.length).toBe(10)
     for (const item of view.blueprint.items) {
       const turn = view.turns[item.turn_index]
       expect(turn, `item ${item.number} turn ${item.turn_index}`).toBeDefined()
       const covering = turn!.highlights.find((h) => h.itemNumbers.includes(item.number))
       expect(covering, `item ${item.number} highlight`).toBeDefined()
-      expect(turn!.text.slice(covering!.start, covering!.end)).toContain(item.evidence)
+      // Case-insensitive: this is the same rule `anchor_ok` / `_carries` apply.
+      expect(turn!.text.slice(covering!.start, covering!.end).toLowerCase()).toContain(
+        item.evidence.toLowerCase(),
+      )
     }
   })
 

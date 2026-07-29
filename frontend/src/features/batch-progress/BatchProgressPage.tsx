@@ -262,14 +262,13 @@ function MaterialCard({
         <span>— {preview.summary}</span>
       </div>
 
-      {/* 有缺陷的材料照样返回、照样可选；这里把缺点摆出来让用户自己判断。 */}
-      {preview.shortcomings.length > 0 && (
-        <ul className="mat-flaws">
-          {preview.shortcomings.map((line, i) => (
-            <li key={i}>{line}</li>
-          ))}
-        </ul>
-      )}
+      {/* 这里原来有一段缺陷小结。客户明确否掉了：「结果页卡片上只展示：场景名 + 信息点
+          时间轴图 + 预览第一句话 + 操作按钮。不展示任何评价文字。……阅读全文页面里可以
+          展示评价建议（如『⑤⑥之间空了 6 轮，可考虑补细节或压缩闲聊』），因为用户在看
+          全文时才有上下文理解这个建议的含义。」
+          文案本身没有删，它在 domain/usability.ts，由阅读页的 DistributionStrip 渲染。
+          上面那张时间轴留着：黄点是「先看这一段」的指路，不是一句评价——客户点名表扬过
+          这张图。 */}
 
       {/* 原型里这个按钮是「图标 + 一个词」的行内胶囊（docs/ui/progressive-loading-prototype.html
           的 .card-actions .btn），不是一段带边框的文字链。文案仍是「阅读全文」——原型写「阅读」，
@@ -447,7 +446,6 @@ export function BatchProgressPage() {
             index: preview.index,
             submittedAt: at,
             summary: preview.summary,
-            shortcomingCount: preview.shortcomings.length,
           },
         ]
       }),

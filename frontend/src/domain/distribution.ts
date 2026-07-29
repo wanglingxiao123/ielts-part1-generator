@@ -84,23 +84,33 @@ export function computeDistribution(
   view: ViewMaterial,
   thresholds: Thresholds,
 ): DistributionMetrics {
+  // 点位读的是 ViewTurn 上**已经解出来**的位置，不是 blueprint 声明的 turn_index。
+  // joinArtifacts 已经按 domain/anchors.ts 那条规则把能确定挪正的挪正、确定不了的
+  // 不予显示，所以分布图、旁注列和缩略图三处必然指向同一批句子。直接读 blueprint 会
+  // 让分布图把一个已经挪正的点画在旧位置上。
   const points: PointPosition[] = []
-  const unplacedNumbers: number[] = []
+  const placed = new Set<number>()
 
-  for (const item of view.blueprint.items) {
-    const turn = view.turns[item.turn_index]
-    if (!turn || turn.dialogueOrdinal === null) {
-      unplacedNumbers.push(item.number)
-      continue
+  for (const turn of view.turns) {
+    if (turn.dialogueOrdinal === null) continue
+    for (const item of turn.items) {
+      placed.add(item.number)
+      points.push({
+        number: item.number,
+        turnIndex: turn.index,
+        ordinal: turn.dialogueOrdinal,
+        group: item.group,
+      })
     }
-    points.push({
-      number: item.number,
-      turnIndex: item.turn_index,
-      ordinal: turn.dialogueOrdinal,
-      group: item.group,
-    })
   }
   points.sort((a, b) => a.ordinal - b.ordinal || a.number - b.number)
+
+  // 定位不出来的点。它们不画在图上、也不参与任何度量——把一个位置未知的点按声明的
+  // 下标画上去，等于让图替一条我们并不相信的坐标背书。
+  const unplacedNumbers = view.blueprint.items
+    .map((i) => i.number)
+    .filter((n) => !placed.has(n))
+    .sort((a, b) => a - b)
 
   const dialogueTurnCount = view.dialogueTurnCount
   const dStart = 0

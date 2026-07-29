@@ -32,7 +32,11 @@ const shot = async (name, opts = {}) => {
 /** Words that must never be on screen. */
 const FORBIDDEN = [
   '校验未过',
-  '重新生成',
+  // 「校验未过，重新生成」里的那个「重新生成」——系统在向用户播报自己的重试。
+  // 钉的是带逗号的整句，不是「重新生成」四个字：阅读页上「重新生成音频」是一个正当的、
+  // 用户自己按的按钮（AudioPlayer），拿裸词去匹配会把它误报成泄漏。
+  '，重新生成',
+  '重新生成这',
   'regenerating',
   'refilling',
   'infra_retry',
@@ -40,6 +44,27 @@ const FORBIDDEN = [
   '隔离',
   'NOT_ASSESSABLE',
   'MINOR_EDITS',
+  // 标注 bug 一律不给用户看：能确定挪正的静默挪正，确定不了的那条旁注不显示。
+  '旁注可能错位',
+  '旁注位置可疑',
+  '标错了位置',
+  '不相干的句子',
+  '请核对高亮位置',
+]
+
+/**
+ * 只在结果页禁止的评价文字。阅读页上这些话是正当的（客户明确说详情页可以展示建议），
+ * 所以不能进 FORBIDDEN——那会让 10-material-reader 那一步误报。
+ */
+const CARD_FORBIDDEN = [
+  '记录节奏',
+  '全篇覆盖',
+  '题号顺序',
+  '前后两组题量',
+  '来不及记',
+  '建议先改',
+  '须先改',
+  '评价环节',
 ]
 
 async function assertClean(label) {
@@ -123,7 +148,14 @@ console.log(`   group brackets total = ${await page.locator('.dist-thumb-bracket
 console.log(
   `   timeline block height = ${await page.locator('.dist-thumb').first().evaluate((el) => el.getBoundingClientRect().height)}px`,
 )
+// 客户：「结果页卡片上……不展示任何评价文字。」缺陷小结整块已删。
 console.log(`   cards with a shortcomings list = ${await page.locator('.mat-flaws').count()}`)
+{
+  const body = await page.evaluate(() => document.body.innerText)
+  const hits = CARD_FORBIDDEN.filter((w) => body.includes(w))
+  console.log(`   evaluation prose on cards: ${hits.length === 0 ? 'none' : `LEAK ${hits.join(', ')}`}`)
+  leaks.push(...hits)
+}
 console.log(`   progress caption = ${await page.locator('.results-stats').innerText()}`)
 console.log(`   submit disabled with 0 selected = ${await page.locator('button:has-text("提交审核")').isDisabled()}`)
 

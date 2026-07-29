@@ -374,20 +374,92 @@ describe('layout', () => {
     expect(document.body.textContent).not.toContain('试听')
   })
 
-  it('states shortcomings on a flawed material while keeping it selectable', async () => {
+  /**
+   * 原来这条钉的是「卡片上把缺点摆出来」（`.mat-flaws`）。客户否掉了：
+   *
+   *   > 结果页卡片上只展示：场景名 + 信息点时间轴图 + 预览第一句话 + 操作按钮。
+   *   > 不展示任何评价文字。
+   *   > 阅读全文页面里可以展示评价建议……因为用户在看全文时才有上下文理解这个建议的含义。
+   *
+   * 原意图里真正要守的那一半留着，而且更严了：有缺陷的材料照样返回、照样可选，绝不显示内部
+   * 评级。评价文字去了 /materials/:id（见 usability 那组测试与 MaterialReader）。
+   */
+  it('keeps a flawed material selectable while showing no evaluation prose', async () => {
     startBatch(TWO_SCENARIOS)
     deliverAll(TWO_SCENARIOS)
     renderPage()
 
     // m4 is the FAIL fixture.
     const card = document.querySelector('[data-material="m4"]')!
-    expect(card.querySelector('.mat-flaws')).toBeTruthy()
+    expect(card.querySelector('.mat-flaws')).toBeNull()
     expect(card.textContent).toContain('待审核')
     expect(card.textContent).not.toContain('FAIL')
     // And it can be chosen like any other.
     const checkbox = within(card as HTMLElement).getByRole('button', { name: /第 2 套/ })
     await userEvent.click(checkbox)
     expect(card.className).toContain('selected')
+  })
+
+  /**
+   * 整页一句评价文字都不许有。逐字列出客户读到过的那些说法——它们随手就能被加回来，而加回来
+   * 页面就退回客户否掉的那一版。「阅读全文」是唯一的入口。
+   */
+  it('puts no quality advice anywhere on the results page', () => {
+    startBatch(TWO_SCENARIOS)
+    deliverAll(TWO_SCENARIOS)
+    renderPage()
+
+    expect(document.querySelectorAll('.mat-flaws')).toHaveLength(0)
+    const body = document.body.textContent ?? ''
+    for (const forbidden of [
+      // usability.ts 的结论文案：属于阅读页，那里才有上下文。
+      '记录节奏',
+      '全篇覆盖',
+      '题号顺序',
+      '前后两组题量',
+      '来不及记',
+      '轮空',
+      '建议先改',
+      '可直接出题',
+      '须先改',
+      // 评价环节的判定与降级说明。
+      '评价环节',
+      '必须改',
+      '复评',
+      // 标注 bug 那一类，一个字都不能有。
+      '旁注',
+      '标错',
+      '核对',
+    ]) {
+      expect(body, forbidden).not.toContain(forbidden)
+    }
+    // 卡片上留下的正是客户点名的那四样。
+    const card = document.querySelector('[data-material="m1"]')!
+    expect(card.querySelector('.dist-thumb')).toBeTruthy()
+    expect(card.querySelector('q')).toBeTruthy()
+    expect(within(card as HTMLElement).getByRole('link', { name: '阅读全文' })).toBeTruthy()
+  })
+
+  /**
+   * 时间轴上的黄点留着。客户点名表扬过这张图，而一个有颜色的点是「先看这一段」的指路，
+   * 不是一句评价——它不替客户判断材料好坏，也不带任何文字结论。
+   */
+  it('keeps the yellow dots as a look-here hint, with no verdict in their tooltip', () => {
+    startBatch(TWO_SCENARIOS)
+    deliverAll(TWO_SCENARIOS)
+    renderPage()
+
+    const clustered = document.querySelector('[data-material="m2"]')!
+    const warned = [...clustered.querySelectorAll<HTMLElement>('.dist-thumb-dot.warn')]
+    expect(warned.length).toBeGreaterThan(0)
+    for (const dot of warned) {
+      const title = dot.getAttribute('title') ?? ''
+      // 指路：说清是第几题、在哪一轮。不下结论。
+      expect(title).toMatch(/第 \d+ 题的信息在 turn \d+/)
+      for (const verdictWord of ['建议', '不达标', '须先改', '缺陷']) {
+        expect(title, verdictWord).not.toContain(verdictWord)
+      }
+    }
   })
 })
 

@@ -62,10 +62,73 @@ describe('MaterialReader', () => {
     expect(document.querySelectorAll('.ann-card').length).toBeGreaterThan(0)
   })
 
-  it('warns at material level and flags the card when an anchor is stale', () => {
-    render(<MaterialReader view={view('anchorMismatch', 'mis')} />)
-    expect(screen.getByText(/旁注可能错位/)).toBeInTheDocument()
-    expect(screen.getByText('旁注位置可疑')).toBeInTheDocument()
+  /**
+   * 这一条原来钉的是相反的行为：材料级红色横幅「⚠ 本材料旁注可能错位，请勿据此判断」加上
+   * 逐条旁注的「旁注位置可疑」。客户明确否掉了这种做法：
+   *
+   *   > 底线：用户看到的永远是「成品」，不是「带已知 bug 的半成品 + 修复建议」。
+   *
+   * 原意图（旁注不许贴在错的句子旁边）一点没丢，只是实现方式换了：能确定挪正的静默挪正，
+   * 确定不了的那一条不显示。这里钉的是同一件事的新形态。
+   */
+  it('silently anchors a relocatable annotation to the right sentence, saying nothing', () => {
+    const v = view('anchorMismatch', 'mis')
+    render(<MaterialReader view={v} />)
+
+    // 第 3 题的 evidence 只在 turn 10 出现，旁注和高亮都在那里，且旁注上的坐标也是 10。
+    const mark = document.querySelector('[data-turn="10"] mark')!
+    expect(mark.getAttribute('data-items')).toBe('3')
+    expect(mark.textContent).toContain("It's BT14 9BJ.")
+    expect(document.querySelector('[data-turn="14"] mark')).toBeNull()
+    const card = [...document.querySelectorAll('.ann-card')].find((c) =>
+      c.textContent!.includes("It's BT14 9BJ."),
+    )!
+    expect(card.textContent).toContain('turn 10')
+    expect(card.textContent).not.toContain('turn 14')
+
+    // 十条旁注一条不少（这一条挪正了，不是被剔除）。
+    const numbered = new Set(
+      [...document.querySelectorAll('.ann-item .num')].map((n) => n.textContent),
+    )
+    expect(numbered.size).toBe(10)
+
+    // 页面上没有任何一句「我可能标错了」。
+    const body = document.body.textContent!
+    for (const forbidden of [
+      '旁注可能错位',
+      '旁注位置可疑',
+      '标错了位置',
+      '不相干的句子',
+      '请核对高亮位置',
+      '请勿据此判断',
+      '退回重新生成',
+    ]) {
+      expect(body, forbidden).not.toContain(forbidden)
+    }
+  })
+
+  /**
+   * 挪不了的那一条：evidence 在脚本里根本不存在，任何落点都是猜。客户的规则是
+   * 「直接去掉这条旁注，返回干净的材料」。另外九条照常显示，页面上一句告警都没有。
+   */
+  it('drops an unresolvable annotation and shows the other nine, with no warning', () => {
+    const v = view('anchorUnresolvable', 'unres')
+    render(<MaterialReader view={v} />)
+
+    const numbers = [...document.querySelectorAll('.ann-item .num')].map((n) => n.textContent)
+    expect(numbers).toHaveLength(9)
+    expect(numbers).not.toContain('③')
+    // 高亮里也不会出现第 3 题。
+    for (const mark of document.querySelectorAll('mark')) {
+      expect(mark.getAttribute('data-items')!.split(',')).not.toContain('3')
+    }
+    // 存档侧仍是十个点：剔除只发生在显示层（校验器要求恰好 10 个）。
+    expect(v.blueprint.items).toHaveLength(10)
+
+    const body = document.body.textContent!
+    for (const forbidden of ['旁注', '标错', '定位', '错位', '核对', '可疑']) {
+      expect(body, forbidden).not.toContain(forbidden)
+    }
   })
 
   /**
@@ -119,6 +182,29 @@ describe('MaterialReader', () => {
     expect(strip).not.toContain('挤在')
     // The one finding, located so a writer can act on it.
     expect(strip).toContain('④ 与 ⑤ 之间空了 8 轮')
+  })
+
+  /**
+   * 评价建议现在**只**在这一页。客户的原话就是拿这句话举的例：
+   *
+   *   > 阅读全文页面里可以展示评价建议（如「⑤⑥之间空了 6 轮，可考虑补细节或压缩闲聊」），
+   *   > 因为用户在看全文时才有上下文理解这个建议的含义。
+   *
+   * 卡片那边已经删空（BatchResults.test.tsx 逐字钉了它不出现），所以这一条是那段文案
+   * 唯一的落脚处——它要是也丢了，审阅者就再没有地方看到这些建议了。
+   */
+  it('is where the quality advice lives, in the wording the client quoted', () => {
+    render(<MaterialReader view={view('balanced', 'bal')} />)
+    const strip = document.querySelector('.strip')!
+    const text = strip.textContent!
+    // 客户举例那句的形状：点号 + 空了 N 轮 + 该怎么办。
+    expect(text).toMatch(/[①-⑩] 与 [①-⑩] 之间空了 \d+ 轮/)
+    expect(text).toContain('补一个可考细节或压缩闲聊')
+    // 四条判断各占一行，标签是命题人的说法。
+    const labels = [...strip.querySelectorAll('.verdict-label')].map((l) => l.textContent)
+    expect(labels).toEqual(['题号顺序', '记录节奏', '全篇覆盖', '前后两组题量'])
+    // 一句话总结在最上面，所以不必逐行读完才知道能不能出题。
+    expect(strip.querySelector('.verdict-headline')!.textContent).toMatch(/出题/)
   })
 
   /**

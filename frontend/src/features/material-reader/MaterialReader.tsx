@@ -8,7 +8,6 @@ import { computeDistribution } from '@/domain/distribution'
 import { analyseFormGroups } from '@/domain/formGroups'
 import type { ViewMaterial } from '@/domain/types'
 import { AnnotationCard } from './AnnotationCard'
-import { AnchorMismatchBanner } from './AnchorMismatchBanner'
 import { DistributionStrip } from './DistributionStrip'
 import { LeaderLines } from './LeaderLines'
 import { TurnList } from './TurnList'
@@ -141,13 +140,13 @@ export function MaterialReader({
         compact={narrow}
       />
 
+      {/* 这里原来有 AnchorMismatchBanner：「有 N 个信息点标错了位置，旁注可能贴在了不相干的
+          句子旁边……请退回重新生成」。那是把我们自己的标注 bug 当成材料质量问题摊给用户。
+          现在的处理在 domain/anchors.ts：能确定挪正的按后端同一条规则静默挪正，确定不了的
+          那一条旁注不显示（其余九条照常）。页面上不出现任何「可能标错了、你自己核对一下」。
+          剔除只在显示层，view.blueprint 仍是完整十个点；开发者从控制台
+          与 /dev/fixtures 的「定位」块看得到发生了什么。 */}
       <div className="reader-scroll" style={{ height }} ref={layout.containerRef}>
-        {view.anchorMismatches.length > 0 && (
-          <div style={{ padding: '10px 12px 0' }}>
-            <AnchorMismatchBanner mismatches={view.anchorMismatches} />
-          </div>
-        )}
-
         <div className={`reader-body${narrow ? ' narrow' : ''}`}>
           <div ref={scriptColRef}>
             <TurnList
@@ -181,7 +180,6 @@ export function MaterialReader({
                     card={card}
                     blueprint={view.blueprint}
                     selectedItem={state.selectedItem}
-                    mismatches={view.anchorMismatches}
                     onSelect={selectItem}
                     cardRef={(el) => layout.registerCardRef(card.id, el)}
                   />

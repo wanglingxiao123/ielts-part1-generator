@@ -65,10 +65,11 @@ export function ReviewQueuePage() {
                 <strong style={{ fontSize: 13 }}>第 {item.index + 1} 套</strong>
                 <span style={{ flex: 1, fontSize: 12 }}>
                   {item.summary}
+                  {/* 「提交时已知 N 处缺陷」去掉了：质量评价建议一律在「阅读全文」里说，
+                      因为只有在全文的上下文里那句建议才读得懂（客户原话）。一个脱离上下文的
+                      缺陷计数在这里既不能行动，也和详情页里的说法难以对上。 */}
                   <div className="muted" style={{ fontSize: 11 }}>
                     {submittedAgo(item.submittedAt)}提交
-                    {item.shortcomingCount > 0 &&
-                      ` · 提交时已知 ${item.shortcomingCount} 处缺陷`}
                   </div>
                 </span>
                 <Link className="btn btn-sm" to={`/materials/${item.materialId}`}>

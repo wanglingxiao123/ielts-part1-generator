@@ -1,5 +1,5 @@
 /**
- * 结果卡片要显示的四样东西：第一句台词、一行简述、需要看一眼的点号、缺陷小结。
+ * 结果卡片要显示的三样东西：第一句台词、一行简述、需要看一眼的点号。
  *
  * 客户的版式里每张卡只有这么点信息量，但每一项都得当真：
  *
@@ -8,24 +8,28 @@
  * - **一行简述**只由 blueprint 自己声明的字段拼出来（`type` / `distractor` /
  *   `correction` / `indirect_confirmation`），术语沿用《Part1 选材命制规范》。
  *   不调模型、不猜，因此不可能和材料本身矛盾。
- * - **黄点**是「审阅时该看一眼的点号」，判据全部来自已有的确定性计算：锚点定位
- *   不到、扎堆、题号回跳、盲评没听出来。不引入新阈值。
- * - **缺陷小结**复用 domain/usability.ts 的结论文案。客户的规则是「有缺陷的材料
- *   照样返回、照样可选，只是把缺点说清楚让用户自己判断」，所以这里只描述缺点，
- *   不做「可选/不可选」的判断——那个判断不存在了。
+ * - **黄点**是「审阅时该看一眼的点号」，判据全部来自已有的确定性计算：扎堆、
+ *   题号回跳、盲评没听出来。不引入新阈值。
  *
- * `verdict`（PASS / MINOR_EDITS / FAIL）在这一层是可读的，但只用来补一句
- * 「评价环节判为不合格」这类给审阅者的提示，绝不当作卡片上的状态徽章：客户明确
- * 要求徽章统一是「待审核」，Agent 的内部评级不出现在用户面前。
+ * **卡片上没有评价文字。** 客户的原话：「结果页卡片上只展示：场景名 + 信息点时间轴图
+ * + 预览第一句话 + 操作按钮。不展示任何评价文字。……质量评价建议 → 放在『阅读全文』
+ * 详情页里」。理由是建议要有上下文才读得懂——「⑤⑥之间空了 6 轮」这句话，只有正在看全文
+ * 的人才知道它指哪一段。所以那些文案留在 domain/usability.ts，由阅读页的
+ * DistributionStrip 渲染；这一层不再产出 `shortcomings`。
+ *
+ * 黄点留下来了，而且仍然由同一批判据驱动。它是「看这里」的指路，不是结论：一个有颜色的
+ * 点不会替客户判断材料好坏，只会让他在时间轴上先看那一段。客户点名表扬过这张时间轴。
+ *
+ * `verdict`（PASS / MINOR_EDITS / FAIL）在这一层不再被读取：它唯一的用处是那句
+ * 「评价环节判为不合格」的提示，而提示已经随评价文字一起搬到阅读页
+ * （MaterialPage 的 audit_rejection 横幅）。
  */
-import type { Verdict } from '@/contracts'
 import type { MaterialRecord } from '@/contracts/api'
 import { scenarioMeta } from '@/config/scenarioMeta'
 import type { DistributionMetrics } from './distribution'
 import { contentFacts, DISTRACTION_LABEL } from './pointFacts'
 import type { ViewMaterial } from './types'
-import { ITEM_TYPE_LABEL, SEVERITY_LABEL } from './types'
-import { assessUsability, type Readiness } from './usability'
+import { ITEM_TYPE_LABEL } from './types'
 
 export interface CardPreview {
   materialId: string
@@ -42,10 +46,6 @@ export interface CardPreview {
   pointNumbers: number[]
   /** 需要看一眼的点号（黄点）。 */
   flaggedPoints: number[]
-  /** 缺陷小结，每条一句话；无缺陷时为空数组。 */
-  shortcomings: string[]
-  /** 出题就绪度，只用于给缺陷小结排序/着色，不作为徽章文案。 */
-  readiness: Readiness
 }
 
 /** 旁白是 speaker1。跳过它，返回第一句真实台词。 */
@@ -89,17 +89,20 @@ export function previewSummary(view: ViewMaterial): string {
 /**
  * 需要看一眼的点号。
  *
- * 四个判据，全部来自已经算好的确定性结果，没有新阈值：
- *   1. 锚点定位不到（`unplacedNumbers`）——这个点无法据以出题；
- *   2. 扎堆（`clusters`）——连着给，考生来不及记；
- *   3. 题号回跳（`outOfOrder`）——音频顺序和题号不一致；
- *   4. 盲评没复原（`crossCheck.unrecoverable`）——试听的人没听出来。
+ * 三个判据，全部来自已经算好的确定性结果，没有新阈值：
+ *   1. 扎堆（`clusters`）——连着给，考生来不及记；
+ *   2. 题号回跳（`outOfOrder`）——音频顺序和题号不一致；
+ *   3. 盲评没复原（`crossCheck.unrecoverable`）——试听的人没听出来。
+ *
+ * 不含 `unplacedNumbers`：定位不出来的点在图上根本不画（见 distribution.ts），
+ * 给一个画不出来的点标黄没有意义；而且那是我们自己的标注问题，不是让客户看一眼就能
+ * 判断的材料属性。它走开发者通道。
  */
 export function flaggedPointNumbers(
   view: ViewMaterial,
   metrics: DistributionMetrics,
 ): number[] {
-  const flagged = new Set<number>(metrics.unplacedNumbers)
+  const flagged = new Set<number>()
   for (const cluster of metrics.clusters) for (const n of cluster.numbers) flagged.add(n)
   for (const jump of metrics.outOfOrder) {
     flagged.add(jump.spokenFirst)
@@ -112,64 +115,11 @@ export function flaggedPointNumbers(
   return [...flagged].filter((n) => known.has(n)).sort((a, b) => a - b)
 }
 
-/** 评价方判为不合格时给审阅者的一句话。verdict 只在这里出声，不做徽章。 */
-function verdictShortcoming(verdict: Verdict, criticalCount: number): string | null {
-  if (verdict === 'FAIL') {
-    return criticalCount > 0
-      ? `评价环节认为有 ${criticalCount} 处必须改的问题，建议先读全文再决定是否选用。`
-      : '评价环节认为本套整体不达标，建议先读全文再决定是否选用。'
-  }
-  if (verdict === 'NOT_ASSESSABLE') {
-    return '评价环节未能给出结论，本套的质量没有经过复核，请务必先读全文。'
-  }
-  return null
-}
-
-/**
- * 缺陷小结。文案一律取自 usability.ts，不另造一套说法——同一份数据同时驱动
- * 卡片小结、分布预览和对比视图，三处不可能互相打架。
- */
-export function shortcomingsOf(
-  view: ViewMaterial,
-  metrics: DistributionMetrics,
-): { shortcomings: string[]; readiness: Readiness } {
-  const verdictReport = assessUsability(metrics)
-  const lines = verdictReport.checks
-    .filter((c) => c.level !== 'ready')
-    .map((c) => `${c.label}：${c.detail}`)
-
-  const criticalCount = view.audit.findings.filter((f) => f.severity === 'critical').length
-  const fromVerdict = verdictShortcoming(view.verdict, criticalCount)
-  if (fromVerdict) lines.unshift(fromVerdict)
-
-  // 「必须改」的 finding 里第一条带上原文位置：小结要能让人直接翻到那一句。
-  const firstCritical = view.audit.findings.find((f) => f.severity === 'critical')
-  if (firstCritical && criticalCount > 0) {
-    lines.push(`${SEVERITY_LABEL.critical}：${firstCritical.rule}`)
-  }
-
-  if (view.anchorMismatches.length > 0) {
-    lines.push(
-      `有 ${view.anchorMismatches.length} 处旁注可能标在了错的句子上，读全文时请核对高亮位置。`,
-    )
-  }
-  if (view.degraded) {
-    lines.push('本套跳过了修改与复评环节，只经过一次评价。')
-  }
-
-  const readiness: Readiness =
-    view.verdict === 'FAIL' || view.verdict === 'NOT_ASSESSABLE'
-      ? 'blocked'
-      : verdictReport.level
-  return { shortcomings: lines, readiness }
-}
-
 export function buildCardPreview(
   record: MaterialRecord,
   view: ViewMaterial,
   metrics: DistributionMetrics,
 ): CardPreview {
-  const { shortcomings, readiness } = shortcomingsOf(view, metrics)
   const pointNumbers = view.blueprint.items.map((i) => i.number).sort((a, b) => a - b)
   return {
     materialId: record.material_id,
@@ -180,7 +130,5 @@ export function buildCardPreview(
     pointTotal: pointNumbers.length,
     pointNumbers,
     flaggedPoints: flaggedPointNumbers(view, metrics),
-    shortcomings,
-    readiness,
   }
 }

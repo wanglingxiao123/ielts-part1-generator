@@ -9,7 +9,7 @@
 import { describe, expect, it } from 'vitest'
 import { FALLBACK_CONFIG } from '@/config/runtimeConfig'
 import type { BatchItemSnapshot, MaterialRecord } from '@/contracts/api'
-import { buildRecord } from '@/mocks/fixtures'
+import { buildRecord, type FixtureKind } from '@/mocks/fixtures'
 import {
   BACKEND_CONCURRENCY,
   describeBatchEstimate,
@@ -45,7 +45,7 @@ import {
 const T = FALLBACK_CONFIG.thresholds
 const O = { batchId: 'b1', scenarioKey: 'accommodation-rental', index: 0 }
 
-const previewOf = (kind: 'balanced' | 'clustered' | 'failed' | 'anchorMismatch', id: string) => {
+const previewOf = (kind: FixtureKind, id: string) => {
   const record = buildRecord(kind, { ...O, materialId: id })
   const view = joinFromRecord(record)
   return buildCardPreview(record, view, computeDistribution(view, T))
@@ -243,49 +243,67 @@ describe('card preview', () => {
     for (const n of clustered.flaggedPoints) expect(clustered.pointNumbers).toContain(n)
   })
 
-  it('flags a point whose anchor cannot be located', () => {
-    const record = buildRecord('anchorMismatch', { ...O, materialId: 'm-mis' })
-    const view = joinFromRecord(record)
-    const metrics = computeDistribution(view, T)
-    const flagged = flaggedPointNumbers(view, metrics)
-    for (const n of metrics.unplacedNumbers) expect(flagged).toContain(n)
+  /**
+   * 客户的原话：
+   *
+   *   > 结果页卡片上只展示：场景名 + 信息点时间轴图 + 预览第一句话 + 操作按钮。
+   *   > 不展示任何评价文字。
+   *
+   * 所以 CardPreview 这一层不再产出任何一句评价——连字段都没有了（留一个没人读的
+   * `shortcomings` 只是等着有人再把它渲染回卡片上）。评价文案本身没删，它在
+   * domain/usability.ts，由阅读页的 DistributionStrip 渲染；下面 usability 那一组
+   * 测试仍然在钉它。
+   */
+  it('carries no evaluation prose at all, only what the client listed', () => {
+    for (const kind of ['balanced', 'clustered', 'failed'] as const) {
+      const preview = previewOf(kind, `m-${kind}`)
+      expect(Object.keys(preview).sort()).toEqual([
+        'firstLine',
+        'flaggedPoints',
+        'index',
+        'materialId',
+        'pointNumbers',
+        'pointTotal',
+        'scenarioKey',
+        'summary',
+      ])
+      // 那一行简述是「话题 + 考点」，不是判断：不许出现结论/整改用语。
+      for (const forbidden of ['建议', '须先改', '不达标', '缺陷', '影响', '来不及']) {
+        expect(preview.summary, forbidden).not.toContain(forbidden)
+      }
+    }
   })
 
   /**
-   * The client's rule: a flawed material is still returned and still selectable;
-   * the UI states its shortcomings and the user decides. So the FAIL fixture must
-   * produce shortcomings AND must not produce anything that reads as a verdict.
+   * 黄点留下来了，而且判据没变——它是「先看这一段」的指路，不是结论。客户点名表扬过这张
+   * 时间轴，一个有颜色的点不会替他判断材料好坏。
    */
-  it('states a rejected material shortcomings without exposing the verdict', () => {
-    const failed = previewOf('failed', 'm-fail')
-    expect(failed.shortcomings.length).toBeGreaterThan(0)
-    const text = failed.shortcomings.join(' ')
-    expect(text).not.toMatch(/FAIL|NOT_ASSESSABLE|PASS|MINOR_EDITS/)
-    expect(text).not.toMatch(/隔离|quarantin/i)
-    // It says what is wrong in terms a question-writer can act on.
-    expect(text).toMatch(/必须改|不达标|没有经过复核/)
-  })
-
-  it('reuses the readiness vocabulary rather than inventing a second one', () => {
+  it('keeps flagging the points worth a look, from the same deterministic evidence', () => {
     const clustered = previewOf('clustered', 'm-clu')
-    const balanced = previewOf('balanced', 'm-bal')
-    // 记录节奏 / 全篇覆盖 / 题号顺序 / 前后两组题量 are usability.ts's own labels;
-    // every shortcoming line must be one of them (or the audit sentence), so the
-    // card, the distribution strip and the compare view cannot disagree.
-    for (const line of [...clustered.shortcomings, ...balanced.shortcomings]) {
-      expect(line, line).toMatch(/^(记录节奏|全篇覆盖|题号顺序|前后两组题量|信息点定位)：/)
+    const record = buildRecord('clustered', { ...O, materialId: 'm-clu' })
+    const view = joinFromRecord(record)
+    const metrics = computeDistribution(view, T)
+    // 扎堆的三个点必在其中；判据全部来自已经算好的确定性结果。
+    for (const n of metrics.clusters.flatMap((c) => c.numbers)) {
+      expect(clustered.flaggedPoints).toContain(n)
     }
-    // The clustered fixture's defining problem IS the clustering; the balanced
-    // one is clean on that axis. (It still reports its own wide gaps — a real
-    // property of that fixture, not a second vocabulary.)
-    expect(clustered.shortcomings.join(' ')).toContain('记录节奏')
-    expect(balanced.shortcomings.join(' ')).not.toContain('记录节奏')
-    expect(balanced.readiness).toBe('needsWork')
-    expect(balanced.flaggedPoints).toEqual([])
+    for (const row of view.crossCheck.unrecoverable) {
+      expect(clustered.flaggedPoints).toContain(row.number)
+    }
+    // 均衡那一套在这个轴上是干净的，否则黄点等于什么也没说。
+    expect(previewOf('balanced', 'm-bal').flaggedPoints).toEqual([])
   })
 
-  it('reports the degraded material as having skipped revise + re-audit', () => {
-    expect(previewOf('anchorMismatch', 'm-mis').shortcomings.join(' ')).toContain('复评')
+  /**
+   * 定位不出来的点不标黄：它在图上根本画不出来（见 distribution.ts），给一个画不出来的
+   * 点标黄没有意义；而且那是我们自己的标注问题，不是客户看一眼就能判断的材料属性。
+   */
+  it('does not flag a point whose anchor could not be resolved', () => {
+    const record = buildRecord('anchorUnresolvable', { ...O, materialId: 'm-unres' })
+    const view = joinFromRecord(record)
+    const metrics = computeDistribution(view, T)
+    expect(metrics.unplacedNumbers).toEqual([3])
+    expect(flaggedPointNumbers(view, metrics)).not.toContain(3)
   })
 })
 

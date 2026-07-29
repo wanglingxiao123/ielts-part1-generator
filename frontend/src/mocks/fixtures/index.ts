@@ -126,6 +126,39 @@ export function clusteredAudit(): Audit {
   return audit
 }
 
+/* ── anchor variants ─────────────────────────────────────────────────────── */
+
+/**
+ * 大小写不同的 evidence。
+ *
+ * 这一套的锚点是**对的**：校验器的 `anchor_ok` 与 `deterministic/anchors.py` 的 `_carries`
+ * 都对两侧 casefold，所以 `"it's Anna Woods."` 落在 `"It's Anna Woods."` 这一轮上完全合法。
+ * 前端原来用 `indexOf` 精确匹配，于是同一份材料在页面上被报成「标错位置」——纯属虚报，而且
+ * 很可能是常见情形（模型给 evidence 时未必照抄首字母大小写）。
+ *
+ * 这个夹具钉两件事：不算失配，且高亮下标仍然对着**原文**（不是小写副本）。
+ */
+export function caseDifferingBlueprint(): Blueprint {
+  const bp = clone(BASE_BLUEPRINT)
+  const item = bp.items.find((i) => i.number === 1)!
+  item.evidence = item.evidence.toLowerCase()
+  return bp
+}
+
+/**
+ * 修不了的锚点：evidence 一处都不存在。
+ *
+ * `deterministic/anchors.py` 的规则是「恰好命中一轮才挪正，零处或两处以上不猜」。这一套
+ * 走的是零处那条分支：第 3 题的 evidence 被改成脚本里没有的句子，因此这条旁注**不显示**，
+ * 另外九条照常显示。页面上不出现任何「可能标错了」的字样，而 blueprint 仍是十个点。
+ */
+export function unresolvableAnchorBlueprint(): Blueprint {
+  const bp = clone(BASE_BLUEPRINT)
+  const item = bp.items.find((i) => i.number === 3)!
+  item.evidence = "It's ZZ99 0QQ."
+  return bp
+}
+
 /* ── FAIL variant ────────────────────────────────────────────────────────── */
 
 export function failedAudit(): Audit {
@@ -205,7 +238,16 @@ export const MANIFEST_TURN_COUNT =
 
 /* ── material records ────────────────────────────────────────────────────── */
 
-export type FixtureKind = 'balanced' | 'clustered' | 'failed' | 'anchorMismatch'
+export type FixtureKind =
+  | 'balanced'
+  | 'clustered'
+  | 'failed'
+  /** blueprint_bad_anchor：第 3 题的 evidence 恰好只在另一轮出现 → 静默挪正。 */
+  | 'anchorMismatch'
+  /** evidence 只有大小写不同 → 后端认为合法，前端也必须认为合法。 */
+  | 'anchorCaseDiffers'
+  /** evidence 在脚本里不存在 → 挪不了，这一条旁注不显示。 */
+  | 'anchorUnresolvable'
 
 export interface RecordOverrides {
   materialId: string
@@ -287,6 +329,22 @@ export function buildRecord(kind: FixtureKind, o: RecordOverrides): MaterialReco
         verdict: 'PASS',
         degraded: true,
         blueprint: BLUEPRINT_BAD_ANCHOR,
+        audit: BASE_AUDIT_ALIGNED,
+        cross_check: CROSS_CHECK_ALIGNED,
+      }
+    case 'anchorCaseDiffers':
+      return {
+        ...base,
+        verdict: 'PASS',
+        blueprint: caseDifferingBlueprint(),
+        audit: BASE_AUDIT_ALIGNED,
+        cross_check: CROSS_CHECK_ALIGNED,
+      }
+    case 'anchorUnresolvable':
+      return {
+        ...base,
+        verdict: 'PASS',
+        blueprint: unresolvableAnchorBlueprint(),
         audit: BASE_AUDIT_ALIGNED,
         cross_check: CROSS_CHECK_ALIGNED,
       }

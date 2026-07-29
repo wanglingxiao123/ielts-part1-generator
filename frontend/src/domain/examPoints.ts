@@ -20,6 +20,7 @@
  */
 import type { ItemType } from '@/contracts'
 import { previewSummary } from './cardPreview'
+import { displayTurns } from './joinArtifacts'
 import { DISTRACTION_HINT, DISTRACTION_LABEL, contentFacts, distractionOf } from './pointFacts'
 import type { DistractionKind } from './pointFacts'
 import { ITEM_TYPE_LABEL, type ViewMaterial } from './types'
@@ -84,8 +85,13 @@ function block(
 export function summariseExamPoints(view: ViewMaterial): ExamPointSummary {
   const items = view.blueprint.items
   const facts = contentFacts(view.blueprint)
+
+  // 跳转坐标取**显示位置**，不取 blueprint 声明的 turn_index：一个被挪正过的点，声明的坐标
+  // 会把人跳到一句不含这个考点的台词上——考点小结的全部用处就是「从考点直接看到句子」，跳错了
+  // 它比没有更糟。解不出来的点没有显示位置，退回声明坐标（那个点在正文里本来也没有高亮）。
+  const shown = displayTurns(view)
   const turnOf: Record<number, number> = {}
-  for (const item of items) turnOf[item.number] = item.turn_index
+  for (const item of items) turnOf[item.number] = shown.get(item.number) ?? item.turn_index
 
   const blocks: ExamPointBlock[] = []
 

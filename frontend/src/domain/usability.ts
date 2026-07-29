@@ -20,7 +20,7 @@ import { circled } from './types'
 export type Readiness = 'ready' | 'needsWork' | 'blocked'
 
 export interface UsabilityCheck {
-  key: 'order' | 'pace' | 'coverage' | 'groups' | 'anchor'
+  key: 'order' | 'pace' | 'coverage' | 'groups'
   /** 命题人的说法，不出现指标名。 */
   label: string
   level: Readiness
@@ -137,6 +137,15 @@ function groupsCheck(m: DistributionMetrics): UsabilityCheck {
       }
 }
 
+/**
+ * 出题就绪度。
+ *
+ * 这里**没有**「信息点定位」那一条。它原来说的是「⑨找不到对应台词，这几个点无法据以
+ * 出题」——那不是材料的质量问题，是我们自己的标注逻辑没把锚点对上。客户的底线：
+ * 「用户看到的永远是成品，不是带已知 bug 的半成品 + 修复建议」。能确定挪正的已经在
+ * domain/anchors.ts 里静默挪正了，确定不了的那一条不显示，剩下九条照常判断。
+ * 定位问题走开发者通道（控制台 + /dev/fixtures），不占用户的一行。
+ */
 export function assessUsability(m: DistributionMetrics): UsabilityVerdict {
   const checks: UsabilityCheck[] = [
     orderCheck(m),
@@ -144,16 +153,6 @@ export function assessUsability(m: DistributionMetrics): UsabilityVerdict {
     coverageCheck(m),
     groupsCheck(m),
   ]
-
-  // 只在出问题时才占一行：「10 个点都定位到了」是废话，「有 2 个定位不到」才是消息。
-  if (m.unplacedNumbers.length > 0) {
-    checks.push({
-      key: 'anchor',
-      label: '信息点定位',
-      level: 'blocked',
-      detail: `${nums(m.unplacedNumbers)} 找不到对应台词，这几个点无法据以出题（也未计入上面的判断）。`,
-    })
-  }
 
   const level = checks.map((c) => c.level).reduce(worst, 'ready')
   const problems = checks.filter((c) => c.level !== 'ready')

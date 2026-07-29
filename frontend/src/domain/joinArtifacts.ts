@@ -4,10 +4,19 @@
  * Pure. No React. The one thing that must never go wrong here is the anchor:
  * an annotation next to the wrong sentence does not throw, it just makes the
  * reviewer believe something false.
+ *
+ * 定位规则不在这个文件里：它是 domain/anchors.ts，那是 backend/deterministic/anchors.py
+ * 的移植（大小写不敏感匹配、恰好一处命中才修正、否则不猜）。这里只负责把解出来的位置
+ * 挂到 ViewTurn 上。
+ *
+ * **显示 / 存档的边界就在这一层。** 解不出来的旁注不进 `viewTurns`，因此页面不显示它；
+ * 但 `blueprint` 字段原封不动地透传出去，因为校验器要求恰好 10 个信息点，任何存档或
+ * 发布路径读到的必须还是十个点。剔除只发生在这里往下的显示侧。
  */
 import type { Audit, AuditFinding, BlindMapEntry, Blueprint, Material, SpeakerId } from '@/contracts'
 import type { CrossCheck, MaterialRecord } from '@/contracts/api'
-import type { AnchorMismatch, HighlightRange, TurnRole, ViewMaterial, ViewTurn } from './types'
+import { reportAnchorProblems, resolveAnchors } from './anchors'
+import type { HighlightRange, TurnRole, ViewMaterial, ViewTurn } from './types'
 
 /**
  * 说话人编号原样用作标签，不再映射成「信息持有方 / 需求方」。
@@ -70,51 +79,33 @@ export function joinArtifacts(input: JoinInput): ViewMaterial {
   const part = input.material.listening_material_parts[0]
   const turns = part.script.turns
 
-  const anchorMismatches: AnchorMismatch[] = []
+  /**
+   * 定位。修正得了的静默修正，修不了的这一次不显示——两者都不出现在页面上。
+   * 规则本身在 domain/anchors.ts，与 backend/deterministic/anchors.py 同一条。
+   */
+  const anchors = resolveAnchors(turns, input.blueprint.items)
+  const itemByNumber = new Map(input.blueprint.items.map((i) => [i.number, i]))
+
   const itemsByTurn = new Map<number, Blueprint['items'][number][]>()
   const highlightsByTurn = new Map<number, HighlightRange[]>()
 
-  for (const item of input.blueprint.items) {
-    const turn = turns[item.turn_index]
-    if (!turn) {
-      anchorMismatches.push({
-        itemNumber: item.number,
-        turnIndex: item.turn_index,
-        reason: 'turn-out-of-range',
-        evidence: item.evidence,
-        actualTurnText: null,
-      })
-      continue
-    }
-    const at = turn.text.indexOf(item.evidence)
-    if (at < 0) {
-      // Deliberately NOT falling back to a fuzzy search over other turns:
-      // that would relocate the annotation and hide the defect.
-      anchorMismatches.push({
-        itemNumber: item.number,
-        turnIndex: item.turn_index,
-        reason: 'evidence-not-in-turn',
-        evidence: item.evidence,
-        actualTurnText: turn.text,
-      })
-    } else {
-      const list = highlightsByTurn.get(item.turn_index) ?? []
-      list.push({ start: at, end: at + item.evidence.length, itemNumbers: [item.number] })
-      highlightsByTurn.set(item.turn_index, list)
-    }
-    if (turn.speaker === 'speaker1') {
-      anchorMismatches.push({
-        itemNumber: item.number,
-        turnIndex: item.turn_index,
-        reason: 'narrator-turn',
-        evidence: item.evidence,
-        actualTurnText: turn.text,
-      })
-    }
-    // The card is still anchored where the blueprint says, mismatch or not.
-    const bucket = itemsByTurn.get(item.turn_index) ?? []
-    bucket.push(item)
-    itemsByTurn.set(item.turn_index, bucket)
+  for (const placement of anchors.placements) {
+    const item = itemByNumber.get(placement.itemNumber)
+    if (!item) continue
+    const list = highlightsByTurn.get(placement.turnIndex) ?? []
+    list.push({
+      start: placement.span.start,
+      end: placement.span.end,
+      itemNumbers: [item.number],
+    })
+    highlightsByTurn.set(placement.turnIndex, list)
+
+    // 旁注挂在**解出来的**那一轮，而不是 blueprint 声明的那一轮：两者不同时，声明的
+    // 那一轮就是「贴错位置」本身。item 对象照原样带过去（含它自己的 turn_index），
+    // 因为旁注里那行 `turn N` 是给人对着 JSON 看的坐标。
+    const bucket = itemsByTurn.get(placement.turnIndex) ?? []
+    bucket.push(placement.turnIndex === item.turn_index ? item : { ...item, turn_index: placement.turnIndex })
+    itemsByTurn.set(placement.turnIndex, bucket)
   }
 
   const findingsByTurn = new Map<number, AuditFinding[]>()
@@ -150,7 +141,7 @@ export function joinArtifacts(input: JoinInput): ViewMaterial {
     }
   })
 
-  return {
+  const view: ViewMaterial = {
     materialId: input.materialId,
     scenarioKey: input.scenarioKey,
     index: input.index,
@@ -161,14 +152,41 @@ export function joinArtifacts(input: JoinInput): ViewMaterial {
     turns: viewTurns,
     dialogueTurnCount: ordinal,
     material: input.material,
+    // 原封不动透传：显示侧可能少一条旁注，存档侧永远是十个点。
     blueprint: input.blueprint,
     audit: input.audit,
     crossCheck: input.crossCheck,
-    anchorMismatches,
+    anchorRepairs: anchors.repairs,
+    anchorOmissions: anchors.omissions,
   }
+
+  // 用户看不到定位问题；开发者看得到。剔除一条旁注说明我们自己的流水线产出了自相矛盾的
+  // 构件，全方向咽下去就再没人会发现。
+  reportAnchorProblems(view)
+
+  return view
 }
 
 /** turn_index → dialogueOrdinal, for the overview strip and playback pointer. */
 export function ordinalOf(view: ViewMaterial, turnIndex: number): number | null {
   return view.turns[turnIndex]?.dialogueOrdinal ?? null
+}
+
+/**
+ * 点号 → **显示用**的 turn。
+ *
+ * 每一处「这个点在原文哪一句」都必须走这里，不许直接读 `blueprint.items[].turn_index`：
+ * 那是 blueprint 声明的坐标，而声明可能是歪的（这正是这一轮要解决的问题）。挪正过的点在
+ * 这里给出的是真正带着 evidence 的那一轮，因此分布图的点位、form_group 括号、考点小结的
+ * 跳转坐标必然落在同一句上。
+ *
+ * 解不出来的点在这个表里**没有条目**——它在页面上不显示，所以也没有可跳转的位置。调用方
+ * 据此跳过它，而不是跳到一个我们并不相信的坐标。
+ */
+export function displayTurns(view: ViewMaterial): Map<number, number> {
+  const out = new Map<number, number>()
+  for (const turn of view.turns) {
+    for (const item of turn.items) out.set(item.number, turn.index)
+  }
+  return out
 }

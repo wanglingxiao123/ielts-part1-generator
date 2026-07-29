@@ -8,7 +8,6 @@
 import type { BlueprintItem, Blueprint } from '@/contracts'
 import { DISTRACTION_HINT, DISTRACTION_LABEL, distractionOf } from '@/domain/pointFacts'
 import { circled, ITEM_TYPE_LABEL, needsSpelling } from '@/domain/types'
-import type { AnchorMismatch } from '@/domain/types'
 import type { PlacedCard } from './annotationLayout'
 
 /**
@@ -23,17 +22,16 @@ import type { PlacedCard } from './annotationLayout'
  *                 才是真问题（§3「关键信息须复述/确认」），那一条单独说。
  *   `item_form`   题型适配是整篇的判断，题型面板已经有一整张表，逐点重复只是噪音。
  *   `name`/`option` 等内部枚举 → 换成规范 §4B-3 的中文类型名。
- * turn N 留下：它是唯一的跳转坐标，旁注和原文靠它对上，客户团队也一直用它沟通。
+ *   `旁注位置可疑`「这句话不在 turn N 里，旁注可能贴错位置」是把我们自己的标注 bug 摊给
+ *                 命题人自查。客户的底线：能确定修的静默修好（domain/anchors.ts 按后端
+ *                 同一条规则把锚点挪到真正带着这句话的那一轮），确定不了的干脆不显示这条
+ *                 旁注。所以这个 badge 没有存在的余地——它只会出现在我们已经决定不显示的
+ *                 旁注上。
+ * turn N 留下：它是唯一的跳转坐标，旁注和原文靠它对上，客户团队也一直用它沟通。它显示的是
+ * **解出来的**那一轮（joinArtifacts 把挪正后的 turn_index 写进 item 副本），所以点它一定
+ * 能跳到真的带着这句话的地方。
  */
-function ItemBody({
-  item,
-  blueprint,
-  mismatch,
-}: {
-  item: BlueprintItem
-  blueprint: Blueprint
-  mismatch: AnchorMismatch | undefined
-}) {
+function ItemBody({ item, blueprint }: { item: BlueprintItem; blueprint: Blueprint }) {
   const distraction = distractionOf(item, blueprint)
   const spelling = needsSpelling(item.type)
   return (
@@ -64,14 +62,6 @@ function ItemBody({
             {DISTRACTION_LABEL[distraction]}
           </span>
         )}
-        {mismatch && (
-          <span
-            className="flag flag-bad"
-            title={`这句话不在 turn ${item.turn_index} 里，旁注可能贴错位置`}
-          >
-            旁注位置可疑
-          </span>
-        )}
       </div>
       <div className="ann-ev">“{item.evidence}”</div>
       <div className="ann-meta">turn {item.turn_index}</div>
@@ -84,31 +74,19 @@ interface Props {
   /** Needed to name WHICH distraction mechanism a point uses (§4B-4). */
   blueprint: Blueprint
   selectedItem: number | null
-  mismatches: AnchorMismatch[]
   onSelect: (itemNumber: number, turnIndex: number) => void
   /** Measured by useAnnotationLayout; must sit on the positioned element. */
   cardRef?: (el: HTMLDivElement | null) => void
 }
 
-export function AnnotationCard({
-  card,
-  blueprint,
-  selectedItem,
-  mismatches,
-  onSelect,
-  cardRef,
-}: Props) {
+export function AnnotationCard({ card, blueprint, selectedItem, onSelect, cardRef }: Props) {
   const selected = card.items.some((i) => i.number === selectedItem)
-  const hasMismatch = card.items.some((i) => mismatches.some((m) => m.itemNumber === i.number))
   const anchorTurn = card.items[0]?.turn_index ?? card.turnIndexes[0] ?? 0
 
   return (
     <div
       className={
-        'ann-card' +
-        (card.isCluster ? ' cluster' : '') +
-        (selected ? ' selected' : '') +
-        (hasMismatch ? ' mismatch' : '')
+        'ann-card' + (card.isCluster ? ' cluster' : '') + (selected ? ' selected' : '')
       }
       ref={cardRef}
       style={{ top: card.top }}
@@ -136,12 +114,7 @@ export function AnnotationCard({
         </div>
       )}
       {card.items.map((item) => (
-        <ItemBody
-          key={item.number}
-          item={item}
-          blueprint={blueprint}
-          mismatch={mismatches.find((m) => m.itemNumber === item.number)}
-        />
+        <ItemBody key={item.number} item={item} blueprint={blueprint} />
       ))}
     </div>
   )

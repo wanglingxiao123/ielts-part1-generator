@@ -21,8 +21,14 @@ export interface QueuedMaterial {
   submittedAt: number
   /** 提交时卡片上那一行简述，队列页不必重新 join 全部构件就能显示。 */
   summary: string
-  /** 提交时的缺陷条数；>0 时队列页提示「提交时已知 N 处缺陷」。 */
-  shortcomingCount: number
+  /**
+   * 这里原来有 `shortcomingCount`，用来在队列页写「提交时已知 N 处缺陷」。评价文字随
+   * 客户的要求整体搬去阅读页之后，卡片不再算这个数，也没有第二个来源，所以字段一并删掉，
+   * 而不是留一个永远为 0 的死字段。质量建议在 /materials/:id 上，队列页每一行都有入口。
+   *
+   * 老的 localStorage 记录里可能还带着这个键：`load()` 只按 materialId 过滤、不做
+   * 白名单，所以多出来的键会被原样读进来又原样写回，不影响任何显示。
+   */
 }
 
 /** 版本前缀，和 batchStore 一致：结构变了就丢弃而不是崩。 */

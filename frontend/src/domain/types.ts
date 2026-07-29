@@ -12,6 +12,7 @@ import type {
   Verdict,
 } from '@/contracts'
 import type { CrossCheck } from '@/contracts/api'
+import type { AnchorOmission, AnchorRepair } from './anchors'
 
 /**
  * 说话人标签。客户的原话：「是 speak1 和 speak2，而不是你现在的信息持有方和需求方什么的」。
@@ -47,14 +48,6 @@ export interface ViewTurn {
   highlights: HighlightRange[]
 }
 
-export interface AnchorMismatch {
-  itemNumber: number
-  turnIndex: number
-  reason: 'evidence-not-in-turn' | 'turn-out-of-range' | 'narrator-turn'
-  evidence: string
-  actualTurnText: string | null
-}
-
 export interface ViewMaterial {
   materialId: string
   scenarioKey: string
@@ -68,15 +61,25 @@ export interface ViewMaterial {
   /** Non-narrator turn count; the x-axis extent of the overview strip. */
   dialogueTurnCount: number
   material: Material
+  /**
+   * 存档/发布用的 blueprint，**原封不动**。校验器要求恰好 10 个信息点
+   * （`validate_part1.py`：`len(items) != 10` 直接是 error），所以剔除一条旁注只能
+   * 发生在显示层。这个字段就是那条边界：读它的人拿到的永远是十个点。
+   */
   blueprint: Blueprint
   audit: Audit
   crossCheck: CrossCheck
   /**
-   * Non-empty means at least one annotation may sit beside the wrong sentence.
-   * Never silently repaired by string search: an auto-"fix" hides a defect the
-   * backend already persisted to S3 (design.md §2.1).
+   * 静默修正过的定位（evidence 恰好只在另一轮里出现）。用户看不到——挪正一条能确定
+   * 挪的旁注就是「修好再返回」，不是需要用户参与的事。留在这里给开发者。
    */
-  anchorMismatches: AnchorMismatch[]
+  anchorRepairs: AnchorRepair[]
+  /**
+   * 修不了、因此本次**不显示**的旁注（evidence 找不到，或命中多轮无法确定）。
+   * 只影响显示：`blueprint` 仍是完整的十个点。用户看不到这一条；开发者从控制台
+   * 与 /dev/fixtures 上看得到（见 domain/anchors.ts 的 reportAnchorProblems）。
+   */
+  anchorOmissions: AnchorOmission[]
 }
 
 export const ITEM_FORM_GLYPH: Record<ItemForm, string> = {
