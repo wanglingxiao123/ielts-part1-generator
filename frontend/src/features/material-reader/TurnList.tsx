@@ -5,6 +5,7 @@
  */
 import {
   circled,
+  NARRATOR_SPEAKER,
   SEVERITY_FLAG,
   SEVERITY_LABEL,
   type ViewMaterial,
@@ -96,12 +97,22 @@ export function TurnList({
             onClick={() => onSelectTurn(turn.index)}
           >
             <div className="tno">{turn.index}</div>
+            {/* 标签就是材料 JSON 里的 speaker 编号。speaker1 额外标一句「旁白」——它不参与对话、
+                不计入轮次编号，读稿时这个区别必须看得见（规范 §4B-5）。 */}
             <div className="role">
-              {turn.role}
-              {turn.dialogueOrdinal !== null && (
+              <span className="speaker-id">{turn.role}</span>
+              {turn.speaker === NARRATOR_SPEAKER ? (
                 <div className="muted" style={{ fontSize: 10 }}>
-                  #{turn.dialogueOrdinal}
+                  旁白
                 </div>
+              ) : (
+                turn.dialogueOrdinal !== null && (
+                  // 「轮次 N」而不是「第 N 轮」：这个数是分布图横轴的坐标，从 0 起算，说成「第 0 轮」
+                  // 在中文里读着就是错的。两处必须是同一个数，否则点不到原文。
+                  <div className="muted" style={{ fontSize: 10 }} title="分布图横轴上的位置">
+                    轮次 {turn.dialogueOrdinal}
+                  </div>
+                )
               )}
             </div>
             <div className="text">

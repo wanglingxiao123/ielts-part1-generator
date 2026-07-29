@@ -41,6 +41,8 @@ export function ComparePage() {
   const [records, setRecords] = useState<MaterialRecord[]>(fromStore)
   const [syncScroll, setSyncScroll] = useState(true)
   const [dialogFor, setDialogFor] = useState<MaterialRecord | null>(null)
+  /** 打开确认框时这一套是否已经有音频——决定确认框说不说「产生费用」。null = 还在查。 */
+  const [dialogHasAudio, setDialogHasAudio] = useState<boolean | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [selectError, setSelectError] = useState<string | null>(null)
   const [jump, setJump] = useState<Record<string, { turnIndex: number; nonce: number }>>({})
@@ -94,6 +96,23 @@ export function ComparePage() {
     if (!a || !b) return null
     return compareCandidates(a, b, thresholds)
   }, [facts, pair, thresholds])
+
+  /**
+   * 打开确认框，并先问一下这一套有没有音频。
+   *
+   * 只影响文案：已试听过的材料在选定时一次 Polly 都不调，把它说成「产生费用」是劝人别做一件其实
+   * 免费的事。查询失败就按「还没有音频」处理——多说一句费用比漏说一句安全。
+   */
+  const openSelectDialog = useCallback(async (record: MaterialRecord) => {
+    setDialogFor(record)
+    setDialogHasAudio(null)
+    try {
+      const status = await api.getAudio(record.material_id)
+      setDialogHasAudio(status.status === 'ready')
+    } catch {
+      setDialogHasAudio(false)
+    }
+  }, [])
 
   const doSelect = useCallback(async (record: MaterialRecord) => {
     try {
@@ -167,7 +186,8 @@ export function ComparePage() {
 
       {selectedId && (
         <div className="banner banner-good">
-          <strong>已选定，语音合成已触发</strong>
+          {/* 「语音合成已触发」对已试听过的材料不成立——那一套的音频早就在了，选定沿用它。 */}
+          <strong>{dialogHasAudio ? '已选定，沿用已生成的语音' : '已选定，语音合成已触发'}</strong>
           <div>
             未选中的候选已标注为弃用，不再占据主视图。
             <Link className="btn btn-sm" to={`/materials/${selectedId}`} style={{ marginLeft: 8 }}>
@@ -309,22 +329,25 @@ export function ComparePage() {
                 type="button"
                 className="btn btn-primary"
                 disabled={selectedId !== null}
-                onClick={() => setDialogFor(record)}
+                onClick={() => void openSelectDialog(record)}
               >
-                {discarded ? '已弃用' : `选定 ${f.label} → 合成语音`}
+                {discarded ? '已弃用' : `选定 ${f.label}`}
               </button>
             </div>
           )
         })}
       </div>
 
+      {/* 对比页本身仍然不放播放器（两条音轨并排听不出什么），但「语音在选定之后才合成」已经不对了
+          ——阅读页现在可以先生成音频再决定，而那份音频在选定时会被沿用。 */}
       <div className="muted" style={{ marginTop: 8, fontSize: 12 }}>
-        对比阶段无音频：语音在选定之后才合成，避免为被弃用的材料产生 Polly 费用。
+        想先听一遍再决定的，在单套材料的阅读页点「生成音频」；那份音频会跟着这一套，选定时不重新合成。
       </div>
 
       {dialogFor && (
         <SelectDialog
           record={dialogFor}
+          alreadySynthesised={dialogHasAudio}
           onCancel={() => setDialogFor(null)}
           onConfirm={() => void doSelect(dialogFor)}
         />

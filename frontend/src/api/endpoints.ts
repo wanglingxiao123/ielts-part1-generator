@@ -7,6 +7,7 @@ import type {
   CreateBatchResponse,
   MaterialListResponse,
   MaterialRecord,
+  PreviewAudioResponse,
   SelectMaterialResponse,
 } from '@/contracts/api'
 import { request } from './http'
@@ -47,6 +48,20 @@ export const api = {
     request<SelectMaterialResponse>({
       method: 'POST',
       path: `/materials/${materialId}/select`,
+      body: {},
+    }),
+
+  /**
+   * 生成音频以便试听，不选定这一套。
+   *
+   * MUST NOT go through `selectMaterial`: 那个端点会认领候选组并丢弃同场景的另一套，只想先听
+   * 一遍的人会因此永久失去备选。合成结果与选定共用同一份 clip，所以之后真的选定不会重复计费。
+   * 同样必须幂等：重复 POST 返回同一个 job。
+   */
+  previewAudio: (materialId: string) =>
+    request<PreviewAudioResponse>({
+      method: 'POST',
+      path: `/materials/${materialId}/audio`,
       body: {},
     }),
 

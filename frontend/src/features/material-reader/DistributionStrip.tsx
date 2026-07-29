@@ -58,10 +58,13 @@ export function DistributionStrip({
 
   return (
     <div className="strip">
+      {/* 说明只保留两件读图必须知道的事：横轴是什么，以及重叠的点不是画错了。第二句要紧——点位
+          按真实轮次落，不做避让，所以挨在一起就是原文里挨在一起（考生来不及记）。原来那句
+          「点挨在一起，就是原文里真的挨在一起」意思对，但是口语。 */}
       <div className="strip-title">
         <span>信息点分布</span>
         <span className="muted" style={{ fontWeight: 400 }}>
-          横轴＝对话进行到第几轮（不含旁白）· 点挨在一起，就是原文里真的挨在一起
+          横轴为对话轮次（不含旁白）；点位不作避让，重叠即原文中相邻
         </span>
       </div>
 

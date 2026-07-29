@@ -8,10 +8,16 @@ platform would kill a healthy instance mid-batch. Every script call goes through
 ``asyncio.create_subprocess_exec`` (deterministic/runner.py) and the catalogue is loaded in a
 thread.
 
-``select`` is the sharpest case of that rule. Synthesising one material is 30-45 Polly requests
-plus as many S3 puts -- tens of seconds of synchronous boto3. So it returns a job id immediately
-and the work runs in a thread (orchestration/publish.py); the client polls ``audio_status``.
-Running it inline would be the one call in this file long enough to lose the instance.
+``select`` and ``preview_audio`` are the sharpest cases of that rule. Synthesising one material is
+30-45 Polly requests plus as many S3 puts -- tens of seconds of synchronous boto3. So both return
+a job id immediately and the work runs in a thread (orchestration/publish.py); the client polls
+``audio_status``. Running either inline would be the one call in this file long enough to lose the
+instance.
+
+The two are separate actions on purpose. ``select`` claims the candidate group and discards the
+siblings; ``preview_audio`` only voices one candidate so a reviewer can listen before deciding, and
+must therefore leave the alternatives standing. They share the clips, so a select after a preview
+costs nothing further.
 """
 
 from __future__ import annotations
@@ -29,6 +35,7 @@ from .orchestration.publish import (
     UnknownMaterial,
     audio_status,
     list_candidates,
+    preview_audio,
     select_material,
 )
 from .orchestration.scenarios import ScenarioCatalogue, load_catalogue
@@ -65,6 +72,9 @@ async def invoke(payload: Dict[str, Any]):
     if action == "select":
         return await _select(payload or {})
 
+    if action == "preview_audio":
+        return await _preview_audio(payload or {})
+
     if action == "audio_status":
         material_id = (payload or {}).get("material_id")
         if not material_id:
@@ -80,7 +90,7 @@ async def invoke(payload: Dict[str, Any]):
     if action != "generate":
         return {
             "error": "unknown action %r; expected generate, list_scenarios, select, "
-                     "audio_status, list_candidates or presign_audio" % action
+                     "preview_audio, audio_status, list_candidates or presign_audio" % action
         }
 
     return _generate(payload)
@@ -111,6 +121,25 @@ async def _select(payload: Dict[str, Any]) -> Dict[str, Any]:
         return _error("UNKNOWN_MATERIAL", str(exc), material_id=material_id)
     except SelectionError as exc:
         return _error("selection_failed", str(exc), material_id=material_id)
+
+
+async def _preview_audio(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Voice one candidate so it can be heard, without accepting it. Returns a job, does not wait.
+
+    Deliberately NOT ``select`` with a flag: ``select`` claims the candidate group and deletes the
+    siblings, so a reviewer who only wanted to listen would lose the alternative they were still
+    comparing against. Hence a separate action with no ``AlreadySelected`` branch -- previewing a
+    candidate whose sibling was chosen is still a legitimate request, and the group is not consulted.
+    """
+    material_id = payload.get("material_id")
+    if not material_id:
+        return _error("bad_request", "material_id is required")
+    try:
+        return await preview_audio(str(material_id), actor=str(payload.get("actor") or "user"))
+    except UnknownMaterial as exc:
+        return _error("UNKNOWN_MATERIAL", str(exc), material_id=material_id)
+    except SelectionError as exc:
+        return _error("preview_failed", str(exc), material_id=material_id)
 
 
 async def _presign(payload: Dict[str, Any]) -> Dict[str, Any]:

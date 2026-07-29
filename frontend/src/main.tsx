@@ -15,7 +15,7 @@ const queryClient = new QueryClient({
 async function bootstrap() {
   // Runtime config first: apiBaseUrl, thresholds and flags all come from
   // /config.json so one image runs in every environment (design.md §9).
-  const config = await loadRuntimeConfig()
+  await loadRuntimeConfig()
 
   if (import.meta.env.VITE_MOCK === '1') {
     const { installMocks } = await import('./mocks/handlers')
@@ -24,16 +24,11 @@ async function bootstrap() {
     // The real backend is an AgentCore Runtime with one POST /invocations, not
     // the §8 REST surface. The adapter translates between them; nothing above
     // api/http.ts knows the difference.
-    const { installAgentCoreAdapter, setSyntheticClipFactory } = await import('./api/agentcore')
+    //
+    // No synthetic-audio branch: preview_audio / select / audio_status / presign_audio all exist
+    // and produce real Polly clips, so the tone-clip scaffold that stood in for them is gone.
+    const { installAgentCoreAdapter } = await import('./api/agentcore')
     setTransport(installAgentCoreAdapter().transport)
-    if (config.flags.syntheticAudio) {
-      // Scaffold only: stands in for the selection→synthesis endpoint that does
-      // not exist yet. Loaded lazily so it is absent from the bundle's hot path
-      // when the flag is off.
-      const { syntheticClipUrl } = await import('./mocks/silentAudio')
-      setSyntheticClipFactory(syntheticClipUrl)
-      console.warn('[flags] syntheticAudio=true — 播放的是本地合成音，不是 Polly 产物')
-    }
   }
 
   setUnauthorizedHandler(() => {

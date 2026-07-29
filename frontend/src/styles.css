@@ -1208,6 +1208,12 @@ h3 {
   padding-top: 2px;
 }
 
+/* speaker 编号用等宽：speaker1/2/3 三行左端对齐，扫读时一眼看出说话人换了没有。 */
+.turn .role .speaker-id {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
 .turn .text {
   min-width: 0;
   word-break: break-word;
@@ -1875,6 +1881,188 @@ h3 {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
+  align-items: start;
+}
+
+.panel-stack {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
+/* ── 生成音频 / 合成进度 ───────────────────────────────────────────────────── */
+
+/* 播放器还没有音频时占同一块位置，所以高度和 .player 对齐——音频好了以后按钮换成播放器，
+   下面的阅读器不会跳。 */
+.audio-cta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+
+.audio-cta.busy {
+  background: var(--accent-soft);
+  border-color: #b3d4ff;
+}
+
+.audio-cta-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.audio-cta .spinner {
+  width: 16px;
+  height: 16px;
+  border: 2.5px solid #deebff;
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  flex: none;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── 考点小结 ─────────────────────────────────────────────────────────────── */
+
+.exam-points .ep-headline {
+  font-size: 13px;
+  color: var(--ink);
+  margin-bottom: 10px;
+}
+
+.ep-blocks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* 高亮块：一个考点一块，块里是标题 + 可点的点号。默认是「这套材料具备的考点」，
+   warn/bad 才是要人动手的。 */
+.ep-block {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--accent);
+  background: var(--accent-soft);
+  border-radius: 100px;
+  padding: 3px 4px 3px 10px;
+}
+
+.ep-block.warn {
+  border-color: var(--warn-line);
+  background: var(--warn-bg);
+}
+
+.ep-block.bad {
+  border-color: var(--bad-line);
+  background: var(--bad-bg);
+}
+
+.ep-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.ep-block.warn .ep-label {
+  color: var(--warn);
+}
+
+.ep-block.bad .ep-label {
+  color: var(--bad);
+}
+
+.ep-nums {
+  display: inline-flex;
+  gap: 1px;
+}
+
+.ep-num {
+  border: none;
+  background: none;
+  padding: 0 1px;
+  font-size: 13px;
+  line-height: 1;
+  color: inherit;
+  cursor: pointer;
+}
+
+.ep-num:hover {
+  color: var(--accent);
+}
+
+.ep-types {
+  margin-top: 12px;
+  border-top: 1px solid var(--line-2);
+  padding-top: 10px;
+}
+
+.ep-types-head {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.ep-types-head .muted,
+.ep-types-head .ep-thin {
+  font-weight: 400;
+  font-size: 11px;
+}
+
+.ep-thin {
+  color: var(--warn);
+}
+
+.ep-type-rows {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.ep-type {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.ep-type-label {
+  color: var(--ink-2);
+}
+
+/* 卡片上的动作按钮，按原型的行内胶囊做（progressive-loading-prototype.html 的
+   .card-actions .btn）：图标 + 一个词，居中对齐，不是一段带边框的文字。 */
+.btn-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  font-size: 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--ink-2);
+  text-decoration: none;
+}
+
+.btn-card:hover {
+  background: var(--line-2);
+  color: var(--ink);
 }
 
 .stack {

@@ -5,8 +5,13 @@ import type { AudioStatusResponse } from '@/contracts/api'
 /**
  * Polls GET /audio while synthesising (design.md §6.4): short-lived, low
  * frequency, single resource — polling is simpler than SSE here.
+ *
+ * `restartKey` restarts the loop. `not_requested` is a settled state and stops polling, which is
+ * right (nobody has asked for audio, so nothing will ever change on its own) — but 生成音频 is
+ * exactly the event that makes it change. Bumping the key after that POST is what resumes polling;
+ * without it the panel would sit on the stale `not_requested` until the page was reloaded.
  */
-export function useAudioStatus(materialId: string, enabled: boolean) {
+export function useAudioStatus(materialId: string, enabled: boolean, restartKey = 0) {
   const [status, setStatus] = useState<AudioStatusResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -40,7 +45,7 @@ export function useAudioStatus(materialId: string, enabled: boolean) {
       stopped = true
       if (timer !== null) window.clearTimeout(timer)
     }
-  }, [materialId, enabled])
+  }, [materialId, enabled, restartKey])
 
   return { status, error }
 }

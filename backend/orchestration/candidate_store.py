@@ -41,6 +41,10 @@ def _claim_key(group_key: str) -> str:
     return "{0}{1}.json".format(CLAIM_PREFIX, group_key)
 
 
+def _job_key(material_id: str) -> str:
+    return "{0}{1}.job.json".format(CANDIDATE_PREFIX, material_id)
+
+
 class CandidateStore:
     """What the registry needs from shared storage. Deliberately narrow."""
 
@@ -79,6 +83,19 @@ class CandidateStore:
         raise NotImplementedError
 
     def load_job(self, material_id: str) -> Optional[Dict[str, Any]]:
+        raise NotImplementedError
+
+    def reserve_job(self, material_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
+        """Create the audio job for one material if it has none. Returns the job that now exists.
+
+        The same create-if-absent primitive as `claim_group`, keyed on the material instead of on
+        the group. `preview_audio` needs exactly that: two reviewers clicking 生成音频 on the same
+        candidate must share one job (otherwise both pay Polly), while neither may arbitrate the
+        group -- the choice between siblings has not been made yet.
+
+        Returning the stored job rather than raising lets the caller compare `audio_job_id` to
+        learn whether it won, the same way `claim_group` compares `material_id`.
+        """
         raise NotImplementedError
 
 
@@ -121,6 +138,13 @@ class InMemoryCandidateStore(CandidateStore):
     def load_job(self, material_id: str) -> Optional[Dict[str, Any]]:
         found = self._jobs.get(material_id)
         return json.loads(json.dumps(found)) if found else None
+
+    def reserve_job(self, material_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
+        existing = self._jobs.get(material_id)
+        if existing is not None:
+            return json.loads(json.dumps(existing))
+        self.save_job(material_id, job)
+        return json.loads(json.dumps(job))
 
 
 class S3CandidateStore(CandidateStore):
@@ -177,10 +201,29 @@ class S3CandidateStore(CandidateStore):
         self._store.delete([_claim_key(group_key)])
 
     def save_job(self, material_id: str, job: Dict[str, Any]) -> None:
-        self._store.put("{0}{1}.job.json".format(CANDIDATE_PREFIX, material_id), _dumps(job))
+        self._store.put(_job_key(material_id), _dumps(job))
 
     def load_job(self, material_id: str) -> Optional[Dict[str, Any]]:
-        return self._read("{0}{1}.job.json".format(CANDIDATE_PREFIX, material_id))
+        return self._read(_job_key(material_id))
+
+    def reserve_job(self, material_id: str, job: Dict[str, Any]) -> Dict[str, Any]:
+        key = _job_key(material_id)
+        try:
+            # Same 412-or-win contract as claim_group, on the job object itself. The job object
+            # doubles as the reservation because there is nothing else to record: unlike a group
+            # claim, the only fact being reserved is "this material's audio is already being paid
+            # for", which the job already states.
+            self._store.put(key, _dumps(job), if_none_match=True)
+            return job
+        except Exception as exc:  # noqa: BLE001 - PreconditionFailed lives in audio_storage
+            if type(exc).__name__ not in ("PreconditionFailed", "ConditionalWriteUnsupported"):
+                raise
+            if type(exc).__name__ == "ConditionalWriteUnsupported":
+                # Refuse rather than race: the failure mode is two concurrent previews each paying
+                # for a full synthesis, which is the cost this reservation exists to avoid.
+                raise
+            existing = self._read(key)
+            return existing if existing is not None else job
 
     def _read(self, key: str) -> Optional[Dict[str, Any]]:
         try:

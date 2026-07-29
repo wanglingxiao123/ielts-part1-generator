@@ -92,6 +92,10 @@ export function phaseOfProgress(input: StageInput): ProgressPhase | null {
  *
  * 只说「到哪了」，不说任何一套材料正在经历什么第几次尝试：客户的原则是
  * 「生成完就直接返回结果」，页面顶部这一行是进度条的说明文字，不是日志。
+ *
+ * **不再重复 M/N。** 这句话原来是「已生成 0 / 2 套 · 正在生成」，而它右边紧挨着的
+ * `.progress-count` 已经在说「已完成 0/2」——同一个数字在同一行出现两次。数字归计数器，这句话
+ * 只负责计数器说不出来的那部分：还在跑的时候是哪一段，跑完了是齐没齐。
  */
 export function describeProgress(input: {
   completed: number
@@ -101,13 +105,12 @@ export function describeProgress(input: {
   finished: boolean
 }): string {
   if (input.total > 0 && input.completed >= input.total) {
-    return `${input.completed} 套材料已全部生成`
+    return '全部生成完毕'
   }
   // 跑完了但没跑齐（partial）。说「已全部生成」会和页面上那几张红色的「生成异常」
   // 卡片直接矛盾，而矛盾比缺一句话更像 bug。
   if (input.finished) {
-    return `已生成 ${input.completed} / ${input.total} 套，其余未能生成`
+    return '已结束，其余未能生成'
   }
-  const head = `已生成 ${input.completed} / ${input.total} 套`
-  return input.phase ? `${head} · 正在${PHASE_LABEL[input.phase]}` : head
+  return input.phase ? `正在${PHASE_LABEL[input.phase]}` : '正在生成'
 }

@@ -12,6 +12,7 @@ import type {
   CreateBatchResponse,
   MaterialListResponse,
   MaterialRecord,
+  PreviewAudioResponse,
   SelectMaterialResponse,
   SseEvent,
 } from '@/contracts/api'
@@ -52,8 +53,47 @@ export function getMockOptions(): MockOptions {
 
 const batches = new Map<string, MockBatch>()
 const standaloneMaterials = new Map<string, MaterialRecord>()
-const audioJobs = new Map<string, { startedAt: number; total: number }>()
-const selected = new Set<string>()
+
+/**
+ * 音频任务与选定记录。都存在 sessionStorage 里，理由和 batch plan 一样（见下方 PLAN_KEY）：
+ * 它们在真后端都是服务端状态（S3 里的 job 与 group claim），刷新一次不会消失。
+ *
+ * 这一条对「生成音频」尤其重要：客户要的性质是「后续如果选择这个材料音频也一直跟随，不用重新
+ * 生成」。如果 mock 一刷新就忘掉 job，页面在 mock 下会退回「音频尚未合成」——那是假后端的失忆，
+ * 却看起来像这个性质没实现。
+ */
+const AUDIO_KEY = 'bcielts.v1.mock.audio'
+const SELECTED_KEY = 'bcielts.v1.mock.selected'
+
+function loadSession<T>(key: string, fallback: T): T {
+  try {
+    const raw = sessionStorage.getItem(key)
+    return raw ? (JSON.parse(raw) as T) : fallback
+  } catch {
+    return fallback
+  }
+}
+
+function saveSession(key: string, value: unknown) {
+  try {
+    sessionStorage.setItem(key, JSON.stringify(value))
+  } catch {
+    /* private mode */
+  }
+}
+
+const audioJobs = new Map<string, { startedAt: number; total: number }>(
+  loadSession<Array<[string, { startedAt: number; total: number }]>>(AUDIO_KEY, []),
+)
+const selected = new Set<string>(loadSession<string[]>(SELECTED_KEY, []))
+
+function persistAudio() {
+  saveSession(AUDIO_KEY, [...audioJobs.entries()])
+}
+
+function persistSelected() {
+  saveSession(SELECTED_KEY, [...selected])
+}
 
 // Persisted so ids minted after a reload cannot collide with pre-reload ones.
 const COUNTER_KEY = 'bcielts.v1.mock.counter'
@@ -350,8 +390,15 @@ const mockTransport = async (spec: RequestSpec): Promise<unknown> => {
       throw new ApiError(409, 'ALREADY_SELECTED', '该材料已选定，语音合成不会重复计费')
     }
     selected.add(id!)
-    const total = m.material.listening_material_parts[0].script.turns.length
-    audioJobs.set(id!, { startedAt: Date.now(), total })
+    persistSelected()
+    // A previewed material already has its job (and, on the real backend, its clips). Restarting
+    // the timer here would make the progress bar jump back to 0 — the visible signature of a
+    // second synthesis, which is exactly what the shared-clip design prevents.
+    if (!audioJobs.has(id!)) {
+      const total = m.material.listening_material_parts[0].script.turns.length
+      audioJobs.set(id!, { startedAt: Date.now(), total })
+      persistAudio()
+    }
     const siblings = [...batches.values()]
       .flatMap((b) => snapshotOf(b).items)
       .filter((i) => i.scenario_key === m.scenario_key && i.material_id !== id)
@@ -360,6 +407,34 @@ const mockTransport = async (spec: RequestSpec): Promise<unknown> => {
       material_id: id!,
       audio_job_id: nextId('audio'),
       siblings_discarded: siblings,
+    }
+    return response
+  }
+
+  /**
+   * 生成音频（试听），后端的 `preview_audio`。
+   *
+   * 与 select 的关键区别照抄后端语义：**不动 `selected`**，同场景的另一套照样在。真后端的
+   * `preview_audio` 不认领候选组，mock 要是顺手把它记成选定，页面在 mock 下就会表现出一个只有
+   * mock 才有的行为，而这条正是这个端点存在的理由。
+   *
+   * 幂等：已经有 job 就返回 `repeat: true`，不重开计时（否则进度条会退回 0，看起来像重新计费）。
+   */
+  if (spec.method === 'POST' && resource === 'materials' && sub === 'audio') {
+    const m = findMaterial(id!)
+    if (!m) throw new ApiError(404, 'MATERIAL_NOT_FOUND', '材料不存在')
+    const existing = audioJobs.get(id!)
+    if (!existing) {
+      audioJobs.set(id!, {
+        startedAt: Date.now(),
+        total: m.material.listening_material_parts[0].script.turns.length,
+      })
+      persistAudio()
+    }
+    const response: PreviewAudioResponse = {
+      material_id: id!,
+      audio_job_id: `audio-${id}`,
+      repeat: Boolean(existing),
     }
     return response
   }
@@ -599,4 +674,6 @@ export function resetMocks() {
   standaloneMaterials.clear()
   audioJobs.clear()
   selected.clear()
+  persistAudio()
+  persistSelected()
 }

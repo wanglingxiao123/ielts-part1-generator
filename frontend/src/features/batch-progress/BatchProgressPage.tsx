@@ -271,9 +271,12 @@ function MaterialCard({
         </ul>
       )}
 
+      {/* 原型里这个按钮是「图标 + 一个词」的行内胶囊（docs/ui/progressive-loading-prototype.html
+          的 .card-actions .btn），不是一段带边框的文字链。文案仍是「阅读全文」——原型写「阅读」，
+          但页面上另有「对比本场景」这类动作，说清读的是全文才不会被当成展开摘要。 */}
       <div className="mat-actions">
-        <Link className="btn btn-sm" to={`/materials/${preview.materialId}`}>
-          阅读全文
+        <Link className="btn btn-card" to={`/materials/${preview.materialId}`}>
+          <span aria-hidden="true">📖</span> 阅读全文
         </Link>
       </div>
     </div>
@@ -468,19 +471,23 @@ export function BatchProgressPage() {
             {scenarioCount > 0 ? `${scenarioCount} 场景 × ${perScenario} 套 = ` : ''}
             {plannedTotal} 套材料
           </span>
-          {/* 「已完成 M/N」。骨架期 N 已经是计划总数，所以进度条一开始就有分母。 */}
+          {/* 「已完成 M/N」。骨架期 N 已经是计划总数，所以进度条一开始就有分母。
+              这是这一行里唯一的 M/N——describeProgress 不再重复它（见 progressStages.ts）。 */}
           <span className="progress-count">
             已完成 {completed}/{plannedTotal}
           </span>
-          <span>
-            {describeProgress({ completed, total: plannedTotal, phase: activePhase, finished })}
-          </span>
           {/* 「全部完成」只在真的一套不缺时出现——旁边还有红色「生成异常」卡片却
-              打一个绿勾，读起来就是页面在骗人。 */}
+              打一个绿勾，读起来就是页面在骗人。而它出现时那句「全部生成完毕」就是同一件事说两遍，
+              所以两者互斥：跑完且跑齐用绿勾，其余情况用那句话 + 四段进度。 */}
           {finished && completed >= plannedTotal ? (
             <span className="done-badge">✓ 全部完成</span>
-          ) : finished ? null : (
-            <PhaseTrack phase={activePhase} finished={false} />
+          ) : (
+            <>
+              <span>
+                {describeProgress({ completed, total: plannedTotal, phase: activePhase, finished })}
+              </span>
+              {!finished && <PhaseTrack phase={activePhase} finished={false} />}
+            </>
           )}
           <span className="muted">已用 {elapsed}</span>
         </div>

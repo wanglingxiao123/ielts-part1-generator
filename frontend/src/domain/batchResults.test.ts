@@ -178,20 +178,33 @@ describe('progress phases', () => {
     expect(phaseOfProgress({ stage: 'revising', rawStage: 'some_future_step' })).toBe('revising')
   })
 
+  /**
+   * 这句话原来带着「已生成 2 / 6 套」，而它右边紧挨着的 `.progress-count` 已经在说
+   * 「已完成 2/6」——客户看到的是同一个数字在同一行出现两次。所以 M/N 归计数器，这句话只说
+   * 计数器说不出来的部分：还在跑时是哪一段，跑完时是齐没齐。
+   *
+   * 原来的意图一条没丢：不出现重试 / 尝试次数 / 失败字样，而且「跑完但没跑齐」仍然不能说成
+   * 「已全部生成」——那会和同一页上的红色「生成异常」卡片直接矛盾。
+   */
   it('describes progress without naming a retry, an attempt or a failure', () => {
     const running = describeProgress({ completed: 2, total: 6, phase: 'checking', finished: false })
-    expect(running).toContain('已生成 2 / 6 套')
-    expect(running).toContain('正在校验')
-    expect(describeProgress({ completed: 6, total: 6, phase: null, finished: true })).toBe(
-      '6 套材料已全部生成',
-    )
-    // Finished but short: saying "已全部生成" here would contradict the 生成异常
+    expect(running).toBe('正在校验')
+    const allDone = describeProgress({ completed: 6, total: 6, phase: null, finished: true })
+    expect(allDone).toBe('全部生成完毕')
+    // Finished but short: saying "全部生成完毕" here would contradict the 生成异常
     // cards sitting on the same page, and a self-contradicting page reads as a bug.
     expect(describeProgress({ completed: 4, total: 6, phase: null, finished: true })).toBe(
-      '已生成 4 / 6 套，其余未能生成',
+      '已结束，其余未能生成',
     )
-    for (const text of [running, describeProgress({ completed: 6, total: 6, phase: null, finished: true })]) {
+    // The counter owns the numbers; this line must not repeat them.
+    for (const text of [
+      running,
+      allDone,
+      describeProgress({ completed: 4, total: 6, phase: null, finished: true }),
+      describeProgress({ completed: 0, total: 2, phase: 'writing', finished: false }),
+    ]) {
       expect(text).not.toMatch(/未过|重试|重新生成|失败|第 \d+ 次/)
+      expect(text).not.toMatch(/\d/)
     }
   })
 })

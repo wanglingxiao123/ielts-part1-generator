@@ -9,12 +9,34 @@ const view = (kind: Parameters<typeof buildRecord>[0], id: string) =>
   joinFromRecord(buildRecord(kind, { ...O, materialId: id }))
 
 describe('MaterialReader', () => {
-  it('renders every turn with its index and role', () => {
+  /**
+   * 说话人标签就是材料 JSON 里的 speaker 编号。
+   *
+   * 这条断言原来钉的是「需求方」——我们自己起的角色名。客户明确要求「是 speak1 和 speak2，而不是
+   * 你现在的信息持有方和需求方什么的」，所以钉的东西换成编号，意图不变：每一轮都得标出**是谁在
+   * 说**，标签必须和 JSON 对得上。旁白仍要看得出来（它不参与对话、不计入轮次），写法是
+   * `speaker1` 加一个「旁白」限定语，而不是换成另一个编造的名字。
+   */
+  it('labels every turn with its speaker id, marking the narrator as such', () => {
     render(<MaterialReader view={view('balanced', 'bal')} />)
     const turns = document.querySelectorAll('[data-turn]')
     expect(turns).toHaveLength(43)
-    expect(document.querySelector('[data-turn="0"]')?.className).toContain('narration')
-    expect(document.querySelector('[data-turn="4"]')?.textContent).toContain('需求方')
+
+    const narration = document.querySelector('[data-turn="0"]')!
+    expect(narration.className).toContain('narration')
+    expect(narration.querySelector('.role')?.textContent).toContain('speaker1')
+    expect(narration.querySelector('.role')?.textContent).toContain('旁白')
+
+    const dialogue = document.querySelector('[data-turn="4"]')!
+    expect(dialogue.querySelector('.role')?.textContent).toContain('speaker3')
+    // 对话轮标轮次序号，不标「旁白」。
+    expect(dialogue.querySelector('.role')?.textContent).not.toContain('旁白')
+
+    // 编造的角色名一个都不该再出现在页面上。
+    const body = document.body.textContent!
+    for (const invented of ['信息持有方', '需求方']) {
+      expect(body).not.toContain(invented)
+    }
   })
 
   it('highlights evidence inside the anchored turn only', () => {
@@ -55,7 +77,10 @@ describe('MaterialReader', () => {
    */
   it('states the distribution verdict in plain language, with no metric jargon', () => {
     render(<MaterialReader view={view('clustered', 'clu')} />)
-    expect(screen.getByText(/点挨在一起/)).toBeInTheDocument()
+    // 说明文字重写过：原来那句「点挨在一起，就是原文里真的挨在一起」意思对但是口语。这里钉的仍是
+    // 同一个意思——点位不做避让，所以重叠是真实信号，不是画错了。
+    expect(screen.getByText(/点位不作避让，重叠即原文中相邻/)).toBeInTheDocument()
+    expect(document.querySelector('.strip')!.textContent).not.toContain('就是原文里真的')
 
     const strip = document.querySelector('.strip')!.textContent!
     // The clustered fixture bunches 6/7/8 → "能出题，但…建议先改", and the

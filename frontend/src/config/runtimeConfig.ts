@@ -52,21 +52,16 @@ export interface RuntimeConfig {
   apiBaseUrl: string
   thresholds: Thresholds
   limits: { maxBatch: number; hardLimitSeconds: number; warnAtSeconds: number }
+  /**
+   * `syntheticAudio` is gone. It stood in for a synthesis endpoint that did not exist, with
+   * locally generated tone clips, back when /invocations accepted only `generate` and
+   * `list_scenarios`. `preview_audio`, `select`, `audio_status` and `presign_audio` all exist now
+   * and return real Polly audio, so the flag has nothing left to substitute for — and a flag that
+   * can quietly serve tones where a reviewer expects speech is a way to approve a material nobody
+   * has actually heard.
+   */
   flags: {
     audioWebaudio: boolean
-    /**
-     * Stand in for the not-yet-existing selection→synthesis endpoint with
-     * locally generated tone clips.
-     *
-     * Verified live against the container: /invocations accepts only `generate`
-     * and `list_scenarios`, so there is nothing to call. With this flag OFF the
-     * UI reports that honestly (501) and shows no player. With it ON the player,
-     * timeline and turn-highlight sync stay demonstrable, and every surface that
-     * uses it must say the audio is synthetic — see AudioStatusNotice.
-     *
-     * MUST be false once the real endpoint lands: it is a scaffold, not audio.
-     */
-    syntheticAudio: boolean
   }
 }
 
@@ -85,7 +80,7 @@ export const FALLBACK_CONFIG: RuntimeConfig = {
     CALIBRATED: false,
   },
   limits: { maxBatch: 6, hardLimitSeconds: 900, warnAtSeconds: 720 },
-  flags: { audioWebaudio: false, syntheticAudio: false },
+  flags: { audioWebaudio: false },
 }
 
 let current: RuntimeConfig = FALLBACK_CONFIG

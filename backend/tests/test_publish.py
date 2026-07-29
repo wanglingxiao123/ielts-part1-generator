@@ -1,10 +1,11 @@
-"""Selection, synthesis wiring, and the non-blocking guarantee.
+"""Preview, selection, synthesis wiring, and the non-blocking guarantee.
 
 No AWS here. The object store is InMemoryObjectStore and Polly is a counting stub, which is what
-lets these tests assert the two properties that matter and that a real call cannot demonstrate
+lets these tests assert the properties that matter and that a real call cannot demonstrate
 cheaply:
 
   * a repeated selection makes zero further Polly requests (the "do not bill twice" rule);
+  * a preview leaves the siblings selectable, and the select that follows it pays nothing more;
   * the event loop stays free while synthesis runs, measured rather than asserted.
 
 Whether Polly's audio is *correct* is settled by real synthesis against the live service; see
@@ -16,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import threading
 import time
 import types
 from unittest import mock
@@ -35,6 +37,7 @@ from backend.orchestration.publish import (
     CandidateRegistry,
     UnknownMaterial,
     audio_status,
+    preview_audio,
     scenario_key_for,
     select_material,
 )
@@ -266,6 +269,339 @@ class TestSelection:
 
     def test_audio_status_before_selection(self, wiring):
         assert audio_status("anything", registry=wiring["registry"])["status"] == "not_requested"
+
+
+class TestPreview:
+    """`preview_audio`: hear one candidate before choosing, without choosing it.
+
+    The client's request was 生成音频 on the reader page, "后续如果选择这个材料音频也一直跟随，
+    不用重新生成". Two things had to be true for that to be safe, and both are asserted by
+    counting Polly requests rather than by asserting an intention:
+
+      * the alternatives survive, because a preview does not claim the group;
+      * the select that follows pays nothing, because both paths write the same clips into the
+        same prefix and the cache-key check finds them.
+    """
+
+    async def test_a_preview_leaves_every_sibling_selectable(
+        self, wiring, material, blueprint, audit_aligned, clone
+    ):
+        """The whole reason this is not `select`: a reviewer listening must not lose the other set."""
+        registry = wiring["registry"]
+        group = "batch-1:accommodation-rental"
+        other_id = "20260728-accommodation-rental-aaaabbbb"
+        registry.register(make_candidate(material, blueprint, audit_aligned, group_key=group))
+        registry.register(make_candidate(clone(material), blueprint, audit_aligned,
+                                         material_id=other_id, group_key=group))
+
+        result = await preview_audio(
+            MATERIAL_ID, registry=registry, state_store=wiring["state_store"],
+            backing=wiring["backing"], polly=wiring["polly"], wait=True,
+        )
+        assert result["status"] == "ready", result
+
+        # The sibling is still offered, still resolvable, and still in shared storage.
+        assert registry.store.load(other_id) is not None
+        assert registry.get(other_id).state == "offered"
+        assert other_id in [c.material_id for c in registry.all()]
+        # And it is genuinely still choosable, which is the property that matters: `claim` must not
+        # have been consulted, or this would raise AlreadySelected.
+        chosen = await select_material(
+            other_id, registry=registry, state_store=wiring["state_store"],
+            backing=wiring["backing"], polly=wiring["polly"], wait=True,
+        )
+        assert chosen["status"] == "ready", chosen
+        assert chosen["siblings_discarded"] == [MATERIAL_ID]
+
+    async def test_a_preview_then_select_makes_zero_further_polly_requests(
+        self, wiring, material, blueprint, audit_aligned
+    ):
+        """The client's "音频也一直跟随" requirement, measured on the request counter."""
+        registry = wiring["registry"]
+        registry.register(make_candidate(material, blueprint, audit_aligned))
+        turns = extract_turns(material)
+
+        preview = await preview_audio(
+            MATERIAL_ID, registry=registry, state_store=wiring["state_store"],
+            backing=wiring["backing"], polly=wiring["polly"], wait=True,
+        )
+        assert preview["status"] == "ready"
+        after_preview = len(wiring["raw"].requests)
+        assert after_preview == len(turns), preview
+
+        chosen = await select_material(
+            MATERIAL_ID, registry=registry, state_store=wiring["state_store"],
+            backing=wiring["backing"], polly=wiring["polly"], wait=True,
+        )
+        # Zero further requests, and the audio is the SAME job -- a second job id would mean two
+        # progress records for one set of clips.
+        assert len(wiring["raw"].requests) == after_preview
+        assert chosen["audio_job_id"] == preview["audio_job_id"]
+        assert chosen["status"] == "ready"
+        assert chosen["repeat"] is True
+
+    async def test_the_clips_carry_over_even_if_the_preview_job_record_is_lost(
+        self, wiring, material, blueprint, audit_aligned
+    ):
+        """Why the second pass is free: the clips, not the job record.
+
+        The cheap path through `claim` reuses the preview's job, so on its own it proves only that
+        this process remembered. This drops the registry entirely -- the honest model of a select
+        landing on a microVM that never saw the preview -- and the select STILL bills nothing,
+        because `_partition` heads each MP3 in the shared prefix and finds its cache key matching.
+        `polly_calls: 0` and `reused_clips: <every turn>` are that check reporting itself.
+        """
+        turns = extract_turns(material)
+        first = CandidateRegistry()
+        first.register(make_candidate(material, blueprint, audit_aligned))
+        await preview_audio(
+            MATERIAL_ID, registry=first, state_store=wiring["state_store"],
+            backing=wiring["backing"], polly=wiring["polly"], wait=True,
+        )
+        billed = len(wiring["raw"].requests)
+        assert billed == len(turns)
+
+        # A different instance: fresh registry, fresh job store, same object store.
+        second = CandidateRegistry()
+        second.register(make_candidate(material, blueprint, audit_aligned))
+        chosen = await select_material(
+            MATERIAL_ID, registry=second, state_store=wiring["state_store"],
+            backing=wiring["backing"], polly=wiring["polly"], wait=True,
+        )
+        assert chosen["status"] == "ready", chosen
+        assert chosen["polly_calls"] == 0
+        assert chosen["reused_clips"] == len(turns)
+        assert len(wiring["raw"].requests) == billed
+
+    async def test_the_select_after_a_preview_still_claims_and_discards(
+        self, wiring, material, blueprint, audit_aligned, clone
+    ):
+        """Cheap must not mean inert. The pick is still a pick: group claimed, sibling gone.
+
+        This is the regression the `group_claimed` flag exists for -- `claim` used to return early
+        on the mere existence of a job, so a select after a preview would have been accepted while
+        both candidates stayed offered and the group stayed unarbitrated.
+        """
+        registry = wiring["registry"]
+        group = "batch-3:accommodation-rental"
+        other_id = "20260728-accommodation-rental-cccc4444"
+        registry.register(make_candidate(material, blueprint, audit_aligned, group_key=group))
+        registry.register(make_candidate(clone(material), blueprint, audit_aligned,
+                                         material_id=other_id, group_key=group))
+
+        await preview_audio(
+            MATERIAL_ID, registry=registry, state_store=wiring["state_store"],
+            backing=wiring["backing"], polly=wiring["polly"], wait=True,
+        )
+        chosen = await select_material(
+            MATERIAL_ID, registry=registry, state_store=wiring["state_store"],
+            backing=wiring["backing"], polly=wiring["polly"], wait=True,
+        )
+        assert chosen["siblings_discarded"] == [other_id]
+        assert registry.store.load(other_id) is None
+        with pytest.raises(UnknownMaterial):
+            registry.get(other_id)
+        # And the group is arbitrated, so a late select on the discarded sibling is refused rather
+        # than silently starting a second synthesis for the same choice.
+        registry.register(make_candidate(clone(material), blueprint, audit_aligned,
+                                         material_id=other_id, group_key=group))
+        with pytest.raises(AlreadySelected):
+            await select_material(other_id, registry=registry,
+                                  state_store=wiring["state_store"],
+                                  backing=wiring["backing"], polly=wiring["polly"])
+
+    async def test_two_concurrent_previews_of_one_material_do_not_double_bill(
+        self, wiring, material, blueprint, audit_aligned
+    ):
+        registry = wiring["registry"]
+        registry.register(make_candidate(material, blueprint, audit_aligned))
+        turns = extract_turns(material)
+        slow = synth.PollyClient(client=CountingPolly(delay=0.005))
+
+        first, second = await asyncio.gather(
+            preview_audio(MATERIAL_ID, registry=registry, state_store=wiring["state_store"],
+                          backing=wiring["backing"], polly=slow, wait=True),
+            preview_audio(MATERIAL_ID, registry=registry, state_store=wiring["state_store"],
+                          backing=wiring["backing"], polly=slow, wait=True),
+        )
+        assert first["audio_job_id"] == second["audio_job_id"]
+        assert [first["repeat"], second["repeat"]].count(True) == 1
+        # One material's worth of requests, not two. The counter is on the shared PollyClient, so
+        # this cannot pass by accident.
+        assert slow.calls == len(turns), (slow.calls, len(turns))
+
+    def test_two_threads_reserving_across_instances_agree_on_one_job(
+        self, material, blueprint, audit_aligned
+    ):
+        """The honest model of the real race: two microVMs, separate memory, one bucket.
+
+        Real threads and a real barrier, because `asyncio.gather` would not test anything here --
+        `reserve` is synchronous, so two coroutines run it strictly one after the other and the
+        second would find the first's job however `reserve` was implemented. Threads released
+        together do overlap, and the in-process `_jobs` dict cannot order them because each
+        registry has its own. What arbitrates is `reserve_job`'s create-if-absent write.
+
+        The store is S3CandidateStore over InMemoryObjectStore, so `if_none_match` is the genuine
+        conditional write (it raises PreconditionFailed for the loser) rather than a dict lookup.
+        """
+        from backend.orchestration.candidate_store import S3CandidateStore
+
+        shared = S3CandidateStore(InMemoryObjectStore())
+        registries = [CandidateRegistry(store=shared) for _ in range(2)]
+        registries[0].register(make_candidate(material, blueprint, audit_aligned))
+        # Both resolve the candidate BEFORE either reserves. That ordering is the race.
+        candidates = [r.get(MATERIAL_ID) for r in registries]
+
+        barrier = threading.Barrier(2)
+        results = {}
+
+        def reserve(i):
+            barrier.wait()
+            results[i] = registries[i].reserve(candidates[i], total=40)
+
+        threads = [threading.Thread(target=reserve, args=(i,)) for i in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        jobs = [results[i][0] for i in range(2)]
+        assert jobs[0].job_id == jobs[1].job_id
+        # Exactly one winner. Two would each go on to synthesise the same material.
+        assert [results[i][1] for i in range(2)].count(True) == 1
+        # And no group was claimed, which is the difference from `claim`.
+        assert not any(j.group_claimed for j in jobs)
+
+    async def test_two_instances_previewing_the_same_material_bill_once(
+        self, material, blueprint, audit_aligned
+    ):
+        """Two microVMs, one bucket, end to end through preview_audio.
+
+        Even in the sequential ordering asyncio gives these, the second instance must adopt the
+        first's job from shared storage rather than mint one of its own -- otherwise a poll served
+        by either instance would report a different job for the same clips.
+        """
+        shared = InMemoryCandidateStore()
+        backing = InMemoryObjectStore()
+        state_store = StateStore(backing)
+        raw = CountingPolly(delay=0.005)
+        polly = synth.PollyClient(client=raw)
+
+        first = CandidateRegistry(store=shared)
+        first.register(make_candidate(material, blueprint, audit_aligned))
+        second = CandidateRegistry(store=shared)
+        second.get(MATERIAL_ID)
+
+        a, b = await asyncio.gather(
+            preview_audio(MATERIAL_ID, registry=first, state_store=state_store,
+                          backing=backing, polly=polly, wait=True),
+            preview_audio(MATERIAL_ID, registry=second, state_store=state_store,
+                          backing=backing, polly=polly, wait=True),
+        )
+        assert a["audio_job_id"] == b["audio_job_id"]
+        assert len(raw.requests) == len(extract_turns(material))
+
+    async def test_a_repeated_preview_returns_the_same_job_and_bills_nothing(
+        self, wiring, material, blueprint, audit_aligned
+    ):
+        """A reviewer double-clicking 生成音频 must not be a second charge."""
+        registry = wiring["registry"]
+        registry.register(make_candidate(material, blueprint, audit_aligned))
+        first = await preview_audio(
+            MATERIAL_ID, registry=registry, state_store=wiring["state_store"],
+            backing=wiring["backing"], polly=wiring["polly"], wait=True,
+        )
+        billed = len(wiring["raw"].requests)
+        second = await preview_audio(
+            MATERIAL_ID, registry=registry, state_store=wiring["state_store"],
+            backing=wiring["backing"], polly=wiring["polly"], wait=True,
+        )
+        assert second["repeat"] is True
+        assert second["audio_job_id"] == first["audio_job_id"]
+        assert len(wiring["raw"].requests) == billed
+
+    async def test_a_preview_reports_progress_and_becomes_playable(
+        self, wiring, material, blueprint, audit_aligned
+    ):
+        """`audio_status` polling and `presign_audio` playback must work unchanged."""
+        registry = wiring["registry"]
+        registry.register(make_candidate(material, blueprint, audit_aligned))
+        turns = extract_turns(material)
+        assert audio_status(MATERIAL_ID, registry=registry)["status"] == "not_requested"
+
+        await preview_audio(
+            MATERIAL_ID, registry=registry, state_store=wiring["state_store"],
+            backing=wiring["backing"], polly=wiring["polly"], wait=True,
+        )
+        status = audio_status(MATERIAL_ID, registry=registry)
+        assert status["status"] == "ready"
+        assert status["progress"] == {"done": len(turns), "total": len(turns)}
+        assert status["state"] == PENDING
+        # Playback goes through `locate`, which only sees a prefix whose manifest sentinel exists.
+        urls = wiring["state_store"].presign_audio(MATERIAL_ID)
+        assert sorted(urls) == list(range(len(turns)))
+
+    async def test_a_preview_does_not_stall_the_event_loop(
+        self, wiring, material, blueprint, audit_aligned
+    ):
+        """Same /ping guarantee as select, measured the same way -- preview shares the handler."""
+        registry = wiring["registry"]
+        registry.register(make_candidate(material, blueprint, audit_aligned))
+        gaps = []
+        stop = asyncio.Event()
+
+        async def ticker():
+            previous = time.monotonic()
+            while not stop.is_set():
+                await asyncio.sleep(0.01)
+                now = time.monotonic()
+                gaps.append(now - previous)
+                previous = now
+
+        tick_task = asyncio.create_task(ticker())
+        started = time.monotonic()
+        result = await preview_audio(
+            MATERIAL_ID, registry=registry, state_store=wiring["state_store"],
+            backing=wiring["backing"], polly=synth.PollyClient(client=CountingPolly(delay=0.01)),
+            wait=True,
+        )
+        elapsed = time.monotonic() - started
+        stop.set()
+        await tick_task
+
+        assert result["status"] == "ready"
+        assert elapsed > 0.05, elapsed
+        assert gaps, "the ticker never ran"
+        assert max(gaps) < 0.25, "loop stalled for %.3fs during preview" % max(gaps)
+
+    async def test_previewing_a_sibling_of_a_chosen_material_is_still_allowed(
+        self, wiring, material, blueprint, audit_aligned, clone
+    ):
+        """No AlreadySelected branch: preview never consults the group.
+
+        A sibling that a select already discarded is gone from storage and therefore unknown, which
+        is a different refusal — the candidate does not exist, not "the group is taken".
+        """
+        registry = wiring["registry"]
+        group = "batch-5:accommodation-rental"
+        other_id = "20260728-accommodation-rental-eeee5555"
+        registry.register(make_candidate(material, blueprint, audit_aligned, group_key=group))
+        registry.register(make_candidate(clone(material), blueprint, audit_aligned,
+                                         material_id=other_id, group_key=group))
+        await select_material(
+            MATERIAL_ID, registry=registry, state_store=wiring["state_store"],
+            backing=wiring["backing"], polly=wiring["polly"], wait=True,
+        )
+        with pytest.raises(UnknownMaterial):
+            await preview_audio(other_id, registry=registry,
+                                state_store=wiring["state_store"],
+                                backing=wiring["backing"], polly=wiring["polly"])
+
+    async def test_an_unknown_material_cannot_be_previewed(self, wiring):
+        with pytest.raises(UnknownMaterial):
+            await preview_audio("nope", registry=wiring["registry"],
+                                state_store=wiring["state_store"],
+                                backing=wiring["backing"], polly=wiring["polly"])
 
 
 class TestVerdictRouting:

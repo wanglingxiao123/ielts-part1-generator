@@ -1,18 +1,36 @@
+/**
+ * 单套材料的阅读页。
+ *
+ * 这一页展示什么，是按「命题人读完之后能做什么」筛过一遍的结果。去掉的三样：
+ *
+ *   · **评价指出的问题 / 无缺陷记录**。评价方的 finding 列表是内部质检记录，措辞是给系统看的；
+ *     真正必须改的那几处已经由「考点小结」里的「听不出来」块指出来，并且能直接跳到句子。
+ *   · **提示（不影响采用）**。原文照抄校验器输出，形如
+ *     `dialogue words outside preferred 600-650: 559`。它是英文的、是阈值口径的，而且按定义不
+ *     影响采用——一条读不懂又不用管的信息，只会训练人忽略这一整块。篇幅数字保留在下方「篇幅」里。
+ *   · **盲读复核：这些点听得出来吗 / 计划 10 个，听出 10 个**。盲读本身是真的质量保证，但它的
+ *     **计数**是内部核对口径。留下的是它唯一可行动的产出：具体哪几个点没被听出来、哪几个有歧义
+ *     ——已经并入考点小结，用命题人的词说（「听不出来」），点号可跳转。
+ *
+ * 加上的一样：**考点小结**（ExamPointPanel）。客户的要求是把「拼读、先说后改、同义替换」这些
+ * 考点抽出来用高亮块标注，判据取自规范 §3 与 §4B-3/4B-4，复用 domain/examPoints.ts。
+ */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api } from '@/api/endpoints'
 import { getThresholds } from '@/config/runtimeConfig'
 import type { MaterialRecord } from '@/contracts/api'
+import { summariseExamPoints } from '@/domain/examPoints'
 import { analyseFormGroups } from '@/domain/formGroups'
 import { joinFromRecord } from '@/domain/joinArtifacts'
-import { SEVERITY_FLAG, SEVERITY_LABEL } from '@/domain/types'
 import type { Playlist } from '@/domain/playlist'
 import { buildPlaylist } from '@/domain/playlist'
 import { useAudioStore } from '@/stores/audioStore'
 import { useBatchStore } from '@/stores/batchStore'
-import { AudioPlayer, AudioStatusNotice } from '../audio/AudioPlayer'
+import { AudioPanel, AudioPlayer } from '../audio/AudioPlayer'
 import { useAudioStatus } from '../audio/useAudioStatus'
 import { useAudioPool } from '../audio/useAudioPool'
+import { ExamPointPanel } from './ExamPointPanel'
 import { MaterialReader } from './MaterialReader'
 import { QuestionTypePanel } from './QuestionTypePanel'
 
@@ -22,6 +40,11 @@ export function MaterialPage() {
   const [record, setRecord] = useState<MaterialRecord | null>(fromStore ?? null)
   const [error, setError] = useState<string | null>(null)
   const [jump, setJump] = useState<{ turnIndex: number; nonce: number } | null>(null)
+  /** 生成音频：已按下、还没等到第一次「合成中」状态的那一小段。 */
+  const [generating, setGenerating] = useState(false)
+  const [generateError, setGenerateError] = useState<string | null>(null)
+  /** 每次点「生成音频」+1，用来重新开启轮询（`not_requested` 会让轮询停下来）。 */
+  const [pollKey, setPollKey] = useState(0)
 
   const cursor = useAudioStore((s) => s.cursor)
   const playing = useAudioStore((s) => s.playing)
@@ -29,13 +52,14 @@ export function MaterialPage() {
 
   // Audio is owned here, not inside a child that would hand a fresh pool object
   // back up on every render (that loops).
-  // Audio exists only after the material is selected; before that there is
-  // nothing to poll for. Rejected materials are no longer excluded — if the user
-  // selected one, they get audio for it like any other.
+  // Audio may or may not exist yet: it is synthesised on demand from the button below (a preview,
+  // which does NOT select the material) or by an earlier selection. Either way this poll reports
+  // the same job, so the panel needs no knowledge of which of the two paid for the clips.
   const audioEnabled = Boolean(record)
   const { status: audioStatus, error: audioError } = useAudioStatus(
     materialId ?? '',
     audioEnabled,
+    pollKey,
   )
   const playlist = useMemo<Playlist | null>(
     () =>
@@ -63,6 +87,36 @@ export function MaterialPage() {
     () => (view ? analyseFormGroups(view, getThresholds()) : null),
     [view],
   )
+  const examPoints = useMemo(() => (view ? summariseExamPoints(view) : null), [view])
+
+  const jumpTo = useCallback((turnIndex: number) => {
+    setJump({ turnIndex, nonce: Date.now() })
+  }, [])
+
+  /**
+   * 生成音频。走 `preview_audio`，不是 `select`。
+   *
+   * 幂等由后端保证（同一个 job，不第二次调 Polly），所以重复点击是安全的；这里仍然在请求期间禁用
+   * 按钮，只是为了不让人以为什么都没发生。
+   */
+  const doGenerate = useCallback(() => {
+    if (!materialId) return
+    setGenerating(true)
+    setGenerateError(null)
+    void api
+      .previewAudio(materialId)
+      // 先让轮询重新跑起来，再解除「生成中」——顺序反了会有一帧回到按钮态，看起来像点击丢了。
+      .then(() => setPollKey((k) => k + 1))
+      .catch((err) => {
+        setGenerateError(err instanceof Error ? err.message : String(err))
+        setGenerating(false)
+      })
+  }, [materialId])
+
+  // 轮询已经报出真实状态之后，本地那个「刚点过」的标记就没用了，交给状态本身。
+  useEffect(() => {
+    if (audioStatus && audioStatus.status !== 'not_requested') setGenerating(false)
+  }, [audioStatus])
 
   const playingTurn =
     playing && playlist ? (playlist.entries[cursor]?.turnIndex ?? null) : null
@@ -96,7 +150,7 @@ export function MaterialPage() {
       </div>
     )
   }
-  if (!view || !record || !groups) {
+  if (!view || !record || !groups || !examPoints) {
     return (
       <div className="page">
         <div className="panel panel-pad">加载中…</div>
@@ -109,11 +163,8 @@ export function MaterialPage() {
       <div className="row" style={{ marginBottom: 8 }}>
         <h2 style={{ margin: 0 }}>{view.scenario.slice(0, 70)}</h2>
         <span className="mono muted">{record.material_id}</span>
-        {view.crossCheck.unrecoverable.length > 0 && (
-          <span className="flag flag-bad" title="试听的人没听出这些点，考生也听不出来">
-            {view.crossCheck.unrecoverable.length} 个点听不出来
-          </span>
-        )}
+        {/* 「N 个点听不出来」原来在这里只是个数字。它已经并入考点小结的「听不出来」块——那里带
+            点号、可跳转，能直接看到是哪几句。这里不再重复一个不能行动的计数。 */}
         {record.degraded && (
           <span className="flag flag-warn" title="首次评价即通过，未经修改与复评环节">
             未经修改环节
@@ -138,7 +189,13 @@ export function MaterialPage() {
         (playlist ? (
           <AudioPlayer playlist={playlist} pool={pool} currentTurn={playingTurn} />
         ) : (
-          <AudioStatusNotice status={audioStatus} error={audioError} />
+          <AudioPanel
+            status={audioStatus}
+            error={audioError}
+            onGenerate={doGenerate}
+            generating={generating}
+            generateError={generateError}
+          />
         ))}
 
       <MaterialReader
@@ -151,101 +208,10 @@ export function MaterialPage() {
       />
 
       <div className="split-2" style={{ marginTop: 12 }}>
-        <QuestionTypePanel analysis={groups} />
-        <div className="panel panel-pad">
-          <h3>评价指出的问题</h3>
-          {view.audit.findings.length === 0 && <div className="muted">无缺陷记录</div>}
-          {view.audit.findings.map((f, i) => (
-            <div key={i} style={{ borderBottom: '1px solid var(--line-2)', padding: '6px 0' }}>
-              <div className="row">
-                <span className={`flag ${SEVERITY_FLAG[f.severity]}`}>
-                  {SEVERITY_LABEL[f.severity]}
-                </span>
-                <strong style={{ fontSize: 12 }}>{f.rule}</strong>
-                {f.turn_index != null ? (
-                  <button
-                    type="button"
-                    className="btn btn-sm"
-                    onClick={() => setJump({ turnIndex: f.turn_index!, nonce: Date.now() })}
-                  >
-                    跳到 turn {f.turn_index}
-                  </button>
-                ) : (
-                  <span className="muted" style={{ fontSize: 11 }}>
-                    全篇性问题
-                  </span>
-                )}
-              </div>
-              <div className="muted" style={{ fontSize: 11 }}>
-                “{f.evidence}” → {f.fix}
-              </div>
-            </div>
-          ))}
-          {view.audit.warnings && view.audit.warnings.length > 0 && (
-            <div style={{ marginTop: 8 }}>
-              <h3>提示（不影响采用）</h3>
-              {view.audit.warnings.map((w) => (
-                <div key={w} className="muted" style={{ fontSize: 11 }}>
-                  · {w}
-                </div>
-              ))}
-            </div>
-          )}
-          <div style={{ marginTop: 10 }}>
-            <h3>盲读复核：这些点听得出来吗</h3>
-            {/* 有人只读脚本、不看我们的信息点清单，把他听出来的和计划的对一遍。
-                他没听出来的点，考生也听不出来。 */}
-            <div className="row" style={{ fontSize: 12 }}>
-              <span>
-                计划 {view.crossCheck.planned ?? '—'} 个，听出{' '}
-                <strong>{view.crossCheck.matched}</strong> 个
-              </span>
-              {view.crossCheck.unrecoverable.length > 0 ? (
-                <span className="flag flag-bad">
-                  第 {view.crossCheck.unrecoverable.map((r) => r.number).join('、')} 题没被听出来
-                </span>
-              ) : (
-                <span className="flag flag-good">十个点都听得出来</span>
-              )}
-              {view.crossCheck.unintended_target.length > 0 && (
-                <span className="flag flag-warn">
-                  另有 {view.crossCheck.unintended_target.length} 处计划外的可考细节
-                </span>
-              )}
-              {view.crossCheck.ambiguous && view.crossCheck.ambiguous.length > 0 && (
-                <span className="flag flag-warn">
-                  第 {view.crossCheck.ambiguous.map((r) => r.number).join('、')} 题听着有歧义
-                </span>
-              )}
-            </div>
-            {/* The reason/evidence rows are the actionable part; a bare count
-                tells a reviewer a point is unhearable but not which sentence. */}
-            {view.crossCheck.unrecoverable.map((r) => (
-              <div key={`u${r.number}`} className="muted" style={{ fontSize: 11, marginTop: 4 }}>
-                <button
-                  type="button"
-                  className="btn btn-sm"
-                  onClick={() => setJump({ turnIndex: r.turn_index, nonce: Date.now() })}
-                >
-                  第 {r.number} 题没听出来 · turn {r.turn_index}
-                </button>{' '}
-                {r.target && <span className="mono">{r.target}</span>} “{r.evidence}”
-              </div>
-            ))}
-            {view.crossCheck.unintended_target.map((r) => (
-              <div key={`x${r.audit_seq}`} className="muted" style={{ fontSize: 11, marginTop: 4 }}>
-                <button
-                  type="button"
-                  className="btn btn-sm"
-                  onClick={() => setJump({ turnIndex: r.turn_index, nonce: Date.now() })}
-                >
-                  计划外的可考细节 · turn {r.turn_index}
-                </button>{' '}
-                “{r.evidence}”
-              </div>
-            ))}
-          </div>
-          <div style={{ marginTop: 10 }}>
+        <ExamPointPanel summary={examPoints} onJump={jumpTo} />
+        <div className="panel-stack">
+          <QuestionTypePanel analysis={groups} />
+          <div className="panel panel-pad">
             <h3>篇幅</h3>
             <div className="row mono" style={{ fontSize: 12 }}>
               <span>对话 {view.audit.metrics.dialogue_words} 词</span>

@@ -171,6 +171,24 @@ export interface SelectMaterialResponse {
   siblings_discarded: string[]
 }
 
+/* ── POST /api/materials/{id}/audio ──────────────────────────────────────── */
+
+/**
+ * 生成音频（试听），不等于选定。
+ *
+ * 后端的 `preview_audio` action：只给这一套合成语音，不认领候选组、不丢弃同场景的另一套。所以
+ * 它和 `select` 是两个端点而不是一个带开关的端点——一个只想先听听的人，不该因此失去备选。
+ * 合成结果与 `select` 共用同一份 clip，之后选定这一套不会再次计费。
+ *
+ * 幂等：重复 POST 返回同一个 job（`repeat: true`），不会第二次调用 Polly。
+ */
+export interface PreviewAudioResponse {
+  material_id: string
+  audio_job_id: string
+  /** true = 这套音频已经在合成或已合成好，本次没有新开任务。 */
+  repeat: boolean
+}
+
 /* ── GET /api/materials/{id}/audio ───────────────────────────────────────── */
 
 export type AudioJobStatus = 'not_requested' | 'queued' | 'synthesizing' | 'ready' | 'failed'

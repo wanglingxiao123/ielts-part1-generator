@@ -1,7 +1,24 @@
-"""Candidate registry and the selection path: synthesise, publish, discard the rest.
+"""Candidate registry, the preview path, and the selection path.
 
 The parent PRD's flow is "generate two, show both, the user picks one, only that one gets
-audio". Three consequences shape this module.
+audio". The product owner then added a step in front of it: a reviewer may ask to *hear* one
+candidate before choosing, and the audio they heard must follow the material if they go on to
+select it. That is ``preview_audio``, and it is deliberately not ``select`` with a flag:
+
+**A preview must not claim the group.** ``claim`` is what discards the losing siblings, so
+routing a preview through it would destroy the alternative the reviewer was still deciding
+between -- the exact opposite of what "let me listen first" is for. So ``preview_audio``
+reserves only the material's own audio job (a conditional write keyed on the material, not on
+the group) and leaves every sibling offered.
+
+**A preview and a selection share one set of clips.** Both write into the prefix
+``route_for_verdict`` picks -- always ``pending/{scenario_key}/{material_id}/`` -- and
+``synthesize_material`` skips any clip whose cache key already matches the stored object. So the
+``select`` after a ``preview`` finds every clip present and makes zero Polly requests; the second
+pass is free because the bytes are where the first pass paid to put them, not because a job
+record happens to survive.
+
+Three further consequences shape this module.
 
 **Synthesis must not block the event loop.** It is 30-45 Polly requests plus 30-45 S3 puts --
 tens of seconds. ``/ping`` shares the loop with the entrypoint, and AgentCore kills an instance
@@ -42,6 +59,7 @@ __all__ = [
     "AlreadySelected",
     "UnknownMaterial",
     "REGISTRY",
+    "preview_audio",
     "select_material",
     "audio_status",
     "list_candidates",
@@ -235,7 +253,7 @@ class AudioJob:
 
     __slots__ = ("job_id", "material_id", "status", "done", "total", "error", "manifest",
                  "started_at", "finished_at", "polly_calls", "reused", "cost_usd", "state",
-                 "siblings_discarded")
+                 "siblings_discarded", "group_claimed")
 
     def __init__(self, job_id: str, material_id: str, total: int) -> None:
         self.job_id = job_id
@@ -252,6 +270,11 @@ class AudioJob:
         self.cost_usd = 0.0
         self.state: Optional[str] = None
         self.siblings_discarded: List[str] = []
+        # Whether the group has been arbitrated for this material -- i.e. whether a `select` has
+        # happened, as opposed to a `preview_audio` that only asked for the clips. Without it,
+        # `claim` could not tell "a job already exists" from "the choice was already made", and a
+        # select following a preview would return the existing job and silently skip the discard.
+        self.group_claimed = False
 
     def as_dict(self) -> Dict[str, Any]:
         payload = {
@@ -261,6 +284,7 @@ class AudioJob:
             "progress": {"done": self.done, "total": self.total},
             "state": self.state,
             "siblings_discarded": list(self.siblings_discarded),
+            "group_claimed": self.group_claimed,
             "elapsed_seconds": round((self.finished_at or time.time()) - self.started_at, 2),
             # Reported even on success: it is the evidence for "a repeat selection did not bill
             # again", and a number nobody can see is a guarantee nobody can check.
@@ -303,6 +327,7 @@ class AudioJob:
         job.manifest = record.get("manifest")
         job.state = record.get("state")
         job.siblings_discarded = list(record.get("siblings_discarded") or [])
+        job.group_claimed = bool(record.get("group_claimed"))
         job.polly_calls = int(record.get("polly_calls") or 0)
         job.reused = int(record.get("reused_clips") or 0)
         job.cost_usd = float(record.get("cost_usd") or 0.0)
@@ -415,6 +440,30 @@ class CandidateRegistry:
         except Exception:  # noqa: BLE001 - progress reporting must not break synthesis
             pass
 
+    def reserve(self, candidate: Candidate, total: int) -> "tuple[AudioJob, bool]":
+        """Reserve this material's audio job WITHOUT arbitrating its group. Returns (job, is_new).
+
+        This is the preview path. It deliberately does not touch the group marker: the reviewer is
+        still choosing, and a sibling discarded to let them listen would be a candidate they can
+        never come back to.
+
+        The reservation is a conditional write on the job object (`store.reserve_job`), for the
+        same reason `claim` uses one on the group marker: two concurrent previews of one material
+        can be served by two microVMs, and a `threading.Lock` orders neither. The loser adopts the
+        winner's job instead of starting a second synthesis.
+        """
+        existing = self.job(candidate.material_id)
+        if existing is not None:
+            return existing, False
+
+        job = AudioJob("job-{0}".format(uuid.uuid4().hex[:12]), candidate.material_id, total)
+        record = self.store.reserve_job(candidate.material_id, job.as_record())
+        stored = AudioJob.from_record(record)
+        is_new = stored.job_id == job.job_id
+        with self._lock:
+            self._jobs[candidate.material_id] = stored
+        return stored, is_new
+
     def claim(self, candidate: Candidate, total: int) -> "tuple[AudioJob, bool, List[str]]":
         """Reserve the single job for this material. Returns (job, is_new, discarded_siblings).
 
@@ -426,9 +475,15 @@ class CandidateRegistry:
 
         A repeated select on the *same* material is not a race and must not raise -- the frontend
         contract allows a retry, and the existing job is returned unchanged.
+
+        `is_new` means "synthesis has to be started", not "the group was just decided". A material
+        previewed first already has a job and its clips, so a select on it returns is_new=False --
+        and still has to arbitrate the group and discard the siblings, which `group_claimed`
+        records. Returning early on the existence of a job alone was the bug this distinction
+        prevents: the pick would have been accepted while both candidates stayed offered.
         """
         existing = self.job(candidate.material_id)
-        if existing is not None:
+        if existing is not None and existing.group_claimed:
             return existing, False, list(existing.siblings_discarded)
 
         job_id = "job-{0}".format(uuid.uuid4().hex[:12])
@@ -441,13 +496,16 @@ class CandidateRegistry:
                 )
             )
 
-        # Won the group. Re-check for a job: the winning claim may have been recorded by another
-        # instance that has already started synthesising.
+        # Won the group. Re-read the job: another instance's select may already have started
+        # synthesising, or a preview may have paid for the clips already. Either way the existing
+        # job is adopted rather than replaced -- a second job id would give the client two
+        # progress records for one set of clips -- and `is_new` says whether synthesis still has
+        # to be started.
         existing = self.job(candidate.material_id)
-        if existing is not None:
-            return existing, False, list(existing.siblings_discarded)
-
-        job = AudioJob(str(claim.get("job_id") or job_id), candidate.material_id, total)
+        job = existing or AudioJob(
+            str(claim.get("job_id") or job_id), candidate.material_id, total
+        )
+        is_new = existing is None
 
         # Order matters, and it is the reverse of the obvious one. Persisting the winner comes
         # before discarding the siblings, and the claim is released if it fails: a claim that
@@ -478,12 +536,13 @@ class CandidateRegistry:
                 self._candidates.pop(sibling.material_id, None)
             discarded.append(sibling.material_id)
         job.siblings_discarded = discarded
+        job.group_claimed = True
 
         with self._lock:
             self._jobs[candidate.material_id] = job
             self._selected_by_group[candidate.group_key] = candidate.material_id
         self.save_job(job)
-        return job, True, discarded
+        return job, is_new, discarded
 
 
 REGISTRY = CandidateRegistry()
@@ -542,12 +601,19 @@ def _publish_blocking(
     heads every clip and writes ``audio/manifest.json`` in one PutObject. A crash anywhere before
     that leaves paid-for clips in place and the material invisible, which is exactly what the
     completeness sentinel is for.
+
+    Preview and selection run this same function, unchanged. That is the point: both write into
+    the prefix ``route_for_verdict`` chose, so the clips a preview paid for are already where a
+    later selection looks for them, and ``_partition``'s HeadObject check finds every cache key
+    matching. The material also becomes readable and playable the moment its manifest lands, which
+    is what a reviewer asked for -- ``presign_audio`` resolves a material through ``locate``, and
+    ``locate`` only sees a prefix whose sentinel exists.
     """
     from audio_storage import synthesize as synth
     from audio_storage.state_store import route_for_verdict, verdict_of
 
-    # No verdict branch: the user picked this material, so it gets voiced. A FAIL script the user
-    # chose knowing its defects is a material they intend to listen to.
+    # No verdict branch: the user asked to hear this material, so it gets voiced. A FAIL script
+    # someone chose knowing its defects is a material they intend to listen to.
     verdict = verdict_of(candidate.audit)
     state = route_for_verdict(verdict)
     job.state = state
@@ -604,31 +670,23 @@ def _publish_blocking(
     _persist(registry, job)
 
 
-async def select_material(
-    material_id: str,
-    *,
-    registry: Optional[CandidateRegistry] = None,
-    state_store=None,
-    backing=None,
-    polly=None,
-    actor: str = "user",
-    wait: bool = False,
-) -> Dict[str, Any]:
-    """Accept a user's choice and start synthesis. Returns as soon as the job exists.
+async def _start_synthesis(
+    candidate: Candidate,
+    job: AudioJob,
+    registry: CandidateRegistry,
+    state_store,
+    backing,
+    polly,
+    actor: str,
+    wait: bool,
+) -> None:
+    """Hand ``_publish_blocking`` to a worker thread. The one thing this must never do is await it.
 
-    ``wait`` is for tests and the CLI only. A caller on the AgentCore event loop must never set
-    it: awaiting the thread there is the same stall as running synthesis inline, and the health
-    check is what pays for it.
+    ``asyncio.to_thread`` and not an inline call: synthesis is 30-45 Polly requests plus as many
+    S3 puts, and ``/ping`` shares this loop -- AgentCore kills an instance whose health check
+    times out. ``wait`` exists for tests and the CLI, and a caller on the Runtime loop must never
+    set it, because awaiting the thread stalls the loop exactly as running inline would.
     """
-    registry = registry or REGISTRY
-    candidate = registry.get(material_id)
-    job, is_new, discarded = registry.claim(candidate, _turn_count(candidate))
-
-    if not is_new:
-        # Idempotent: the same job, and no second synthesis. The manifest, if there is one, comes
-        # back so a client that lost the response can pick up where it left off.
-        return dict(job.as_dict(), repeat=True)
-
     if state_store is None or backing is None or polly is None:
         from .. import audio
 
@@ -650,6 +708,85 @@ async def select_material(
     task = asyncio.create_task(asyncio.to_thread(work))
     if wait:
         await task
+
+
+async def preview_audio(
+    material_id: str,
+    *,
+    registry: Optional[CandidateRegistry] = None,
+    state_store=None,
+    backing=None,
+    polly=None,
+    actor: str = "user",
+    wait: bool = False,
+) -> Dict[str, Any]:
+    """Synthesise one candidate so it can be heard, WITHOUT choosing it. Returns a job.
+
+    The product owner's request: 生成音频 on the reader page, so a reviewer can listen before
+    deciding, "后续如果选择这个材料音频也一直跟随，不用重新生成".
+
+    Three properties, in the order they matter:
+
+    * **No sibling is harmed.** ``reserve`` is used instead of ``claim``: the group marker is
+      untouched and every candidate stays offered. A reviewer who only wanted to listen keeps
+      their alternatives.
+    * **It is idempotent, across instances.** ``reserve`` is a create-if-absent write on the job
+      object, so two concurrent previews of one material share one job and one synthesis. And even
+      if that reservation were lost, ``synthesize_material`` skips a clip whose cache key matches
+      the stored MP3 -- the expensive guarantee does not depend on any process's memory.
+    * **The clips carry over to ``select``.** Both paths write to the same
+      ``pending/{scenario_key}/{material_id}/`` prefix, so a later select finds them and pays
+      nothing.
+
+    Reports progress through the same ``AudioJob``, so ``audio_status`` polling and
+    ``presign_audio`` playback need no change at all.
+    """
+    registry = registry or REGISTRY
+    candidate = registry.get(material_id)
+    job, is_new = registry.reserve(candidate, _turn_count(candidate))
+
+    if not is_new:
+        # Someone already asked -- possibly this same reviewer double-clicking, possibly a select.
+        # Same job, no second synthesis, manifest included if there is one so the client can go
+        # straight to playing.
+        return dict(job.as_dict(), repeat=True)
+
+    await _start_synthesis(candidate, job, registry, state_store, backing, polly, actor, wait)
+    return dict(job.as_dict(), repeat=False)
+
+
+async def select_material(
+    material_id: str,
+    *,
+    registry: Optional[CandidateRegistry] = None,
+    state_store=None,
+    backing=None,
+    polly=None,
+    actor: str = "user",
+    wait: bool = False,
+) -> Dict[str, Any]:
+    """Accept a user's choice and start synthesis. Returns as soon as the job exists.
+
+    ``wait`` is for tests and the CLI only. A caller on the AgentCore event loop must never set
+    it: awaiting the thread there is the same stall as running synthesis inline, and the health
+    check is what pays for it.
+
+    A material that was previewed first takes the cheap path: ``claim`` still arbitrates the group
+    and discards the siblings, but it returns the preview's job with ``is_new=False``, so no second
+    synthesis is started and Polly is not called again.
+    """
+    registry = registry or REGISTRY
+    candidate = registry.get(material_id)
+    job, is_new, discarded = registry.claim(candidate, _turn_count(candidate))
+
+    if not is_new:
+        # Idempotent: the same job, and no second synthesis. The manifest, if there is one, comes
+        # back so a client that lost the response can pick up where it left off. `siblings_discarded`
+        # is the job's own, which is right either way: on a repeated select it is what the first
+        # one discarded, and on a select following a preview it is what this call just discarded.
+        return dict(job.as_dict(), repeat=True)
+
+    await _start_synthesis(candidate, job, registry, state_store, backing, polly, actor, wait)
     payload = dict(job.as_dict(), repeat=False)
     payload["siblings_discarded"] = discarded
     return payload
@@ -658,7 +795,7 @@ async def select_material(
 def audio_status(
     material_id: str, *, registry: Optional[CandidateRegistry] = None
 ) -> Dict[str, Any]:
-    """Poll one material's audio job. ``not_requested`` when it was never selected."""
+    """Poll one material's audio job. ``not_requested`` when no one asked for audio yet."""
     registry = registry or REGISTRY
     job = (registry or REGISTRY).job(material_id)
     if job is None:

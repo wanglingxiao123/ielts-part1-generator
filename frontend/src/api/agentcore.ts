@@ -44,6 +44,7 @@ import type {
   MaterialListResponse,
   MaterialRecord,
   MaterialStage,
+  PreviewAudioResponse,
   SelectMaterialResponse,
   SseEvent,
 } from '@/contracts/api'
@@ -815,33 +816,23 @@ function snapshot(session: Session): BatchSnapshot {
 }
 
 /**
- * Selection + synthesis.
+ * Selection, preview, and synthesis. All three call the real backend.
  *
- * Both now call the real backend: `action: select` starts synthesis and returns a
- * job, `action: audio_status` polls it. Real Polly clips are fetched through
- * `action: presign_audio`, so the frontend never sees an S3 key.
+ * `action: select` claims the candidate group and starts synthesis;
+ * `action: preview_audio` synthesises ONE candidate without claiming anything, so a reviewer can
+ * listen before deciding and keeps the alternative either way; `action: audio_status` polls both.
+ * Real Polly clips are fetched through `action: presign_audio`, so the frontend never sees an S3
+ * key. Verified end to end against real Polly.
  *
- * `flags.syntheticAudio` remains, but only as an offline fallback for working on
- * the player without spending Polly budget. It is off by default, and when it is
- * on the UI must label it — see AudioStatusNotice's `synthetic` banner.
+ * There is no synthetic-audio fallback here any more. It existed because /invocations accepted
+ * only `generate` and `list_scenarios`, so there was no endpoint to call and the player had to be
+ * demonstrated against locally generated tones. Every endpoint it stood in for now exists, and a
+ * scaffold that silently substitutes fake audio for real is worse than no scaffold — a reviewer
+ * could approve a material on the strength of a tone.
  */
 async function selectMaterial(materialId: string): Promise<SelectMaterialResponse> {
   const hit = findSlotByMaterial(materialId)
   if (!hit) throw new ApiError(404, 'MATERIAL_NOT_FOUND', '材料不存在（本页会话内未见此材料）')
-
-  if (getConfig().flags.syntheticAudio) {
-    // Offline path: no backend call, no Polly spend, tone clips stand in.
-    if (selections.get(materialId)) {
-      throw new ApiError(409, 'ALREADY_SELECTED', '该材料已选定，语音合成不会重复计费')
-    }
-    const audioJobId = `audio-${Date.now().toString(36)}`
-    selections.set(materialId, { at: Date.now(), audioJobId })
-    return {
-      material_id: materialId,
-      audio_job_id: audioJobId,
-      siblings_discarded: siblingsOf(hit, materialId),
-    }
-  }
 
   const body = await invoke<{
     material_id?: string
@@ -859,6 +850,29 @@ async function selectMaterial(materialId: string): Promise<SelectMaterialRespons
   }
 }
 
+/**
+ * 生成音频以便试听。`action: preview_audio`。
+ *
+ * 与 select 的区别全在后端，也正是这个端点存在的理由：preview 不认领候选组、不丢弃同场景的另一
+ * 套。前端这里唯一要跟着做的事是**不要**把它记进 `selections`——那份记录的语义是「这一套被选定
+ * 了」，对比视图据此把同组的另一套置灰。试听记成选定会让页面谎报一个还没发生的决定。
+ */
+async function previewAudio(materialId: string): Promise<PreviewAudioResponse> {
+  if (!findSlotByMaterial(materialId)) {
+    throw new ApiError(404, 'MATERIAL_NOT_FOUND', '材料不存在（本页会话内未见此材料）')
+  }
+  const body = await invoke<WireAudioStatus>({
+    action: 'preview_audio',
+    material_id: materialId,
+    actor: 'reviewer',
+  })
+  return {
+    material_id: body.material_id ?? materialId,
+    audio_job_id: body.audio_job_id ?? materialId,
+    repeat: body.repeat ?? false,
+  }
+}
+
 /** Other candidates for the same scenario in this batch — the ones selection discards. */
 function siblingsOf(hit: SlotHit, materialId: string): string[] {
   return [...hit.session.slots.values()]
@@ -868,93 +882,29 @@ function siblingsOf(hit: SlotHit, materialId: string): string[] {
     .map((s) => s.materialId)
 }
 
-type SyntheticClipFactory = (speaker: string, durationMs: number) => string
-
-let syntheticClip: SyntheticClipFactory | null = null
-
-/** Registered by main.tsx only when flags.syntheticAudio is on. */
-export function setSyntheticClipFactory(fn: SyntheticClipFactory) {
-  syntheticClip = fn
-}
-
 async function audioStatus(materialId: string): Promise<AudioStatusResponse> {
-  if (!getConfig().flags.syntheticAudio) {
-    const wire = await invoke<WireAudioStatus>({
-      action: 'audio_status',
-      material_id: materialId,
-    })
-    if (wire.status !== 'ready' || !wire.manifest) {
-      return {
-        status: (wire.status as AudioStatusResponse['status']) ?? 'not_requested',
-        progress: wire.progress ?? { done: 0, total: 0 },
-        ...(wire.error ? { error: wire.error } : {}),
-      }
-    }
-    // Presigned URLs are fetched separately and keyed by turn_index: the manifest stores S3
-    // keys on purpose, so that a state transition cannot invalidate a link already handed out.
-    const signed = await invoke<WirePresign>({
-      action: 'presign_audio',
-      material_id: materialId,
-      ttl_seconds: 3600,
-    })
-    return {
-      status: 'ready',
-      progress: wire.progress ?? { done: wire.manifest.clips.length, total: wire.manifest.clips.length },
-      manifest: normaliseManifest(wire.manifest, signed),
-    }
-  }
-
-  const hit = findSlotByMaterial(materialId)
-  if (!hit?.slot.record) return { status: 'not_requested', progress: { done: 0, total: 0 } }
-  const job = selections.get(materialId)
-  if (!job) return { status: 'not_requested', progress: { done: 0, total: 0 } }
-
-  const turns = hit.slot.record.material.listening_material_parts[0].script.turns
-  const total = turns.length
-  if (!syntheticClip) {
-    return {
-      status: 'failed',
-      progress: { done: 0, total },
-      error: '合成器未装载（flags.syntheticAudio 已开但未注册 clip factory）',
-    }
-  }
-  // Same visible cadence as the mock so the progress UI is exercised.
-  const done = Math.min(total, Math.floor((Date.now() - job.at) / 250))
-  if (done < total) {
-    return { status: done === 0 ? 'queued' : 'synthesizing', progress: { done, total } }
-  }
-
-  let cursor = 0
-  const segments = turns.map((turn, turnIndex) => {
-    const words = turn.text.trim().split(/\s+/).length
-    const durationMs = Math.max(900, Math.round((words / 160) * 60_000))
-    const gapAfterMs = turn.speaker === 'speaker1' ? 1200 : 500
-    cursor += durationMs + gapAfterMs
-    return {
-      turn_index: turnIndex,
-      speaker: turn.speaker,
-      url: syntheticClip!(turn.speaker, durationMs),
-      duration_ms: durationMs,
-      gap_after_ms: gapAfterMs,
-      bytes: durationMs * 4,
-      error: null,
-    }
+  const wire = await invoke<WireAudioStatus>({
+    action: 'audio_status',
+    material_id: materialId,
   })
-  const lastGap = segments[segments.length - 1]?.gap_after_ms ?? 0
+  if (wire.status !== 'ready' || !wire.manifest) {
+    return {
+      status: (wire.status as AudioStatusResponse['status']) ?? 'not_requested',
+      progress: wire.progress ?? { done: 0, total: 0 },
+      ...(wire.error ? { error: wire.error } : {}),
+    }
+  }
+  // Presigned URLs are fetched separately and keyed by turn_index: the manifest stores S3
+  // keys on purpose, so that a state transition cannot invalidate a link already handed out.
+  const signed = await invoke<WirePresign>({
+    action: 'presign_audio',
+    material_id: materialId,
+    ttl_seconds: 3600,
+  })
   return {
     status: 'ready',
-    progress: { done: total, total },
-    manifest: {
-      material_id: materialId,
-      generated_at: new Date().toISOString(),
-      engine: 'synthetic-local',
-      format: 'wav',
-      sample_rate_hz: 8000,
-      voice_map: { speaker1: 'Brian', speaker2: 'Amy', speaker3: 'Arthur' },
-      total_duration_ms: cursor - lastGap,
-      url_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
-      segments,
-    },
+    progress: wire.progress ?? { done: wire.manifest.clips.length, total: wire.manifest.clips.length },
+    manifest: normaliseManifest(wire.manifest, signed),
   }
 }
 
@@ -1101,6 +1051,10 @@ const agentCoreTransport: Transport = async (spec: RequestSpec): Promise<unknown
 
   if (spec.method === 'POST' && resource === 'materials' && sub === 'select') {
     return selectMaterial(id!)
+  }
+
+  if (spec.method === 'POST' && resource === 'materials' && sub === 'audio') {
+    return previewAudio(id!)
   }
 
   if (spec.method === 'GET' && resource === 'materials' && sub === 'audio') {

@@ -9,10 +9,17 @@ import type { Audit, AuditFinding, BlindMapEntry, Blueprint, Material, SpeakerId
 import type { CrossCheck, MaterialRecord } from '@/contracts/api'
 import type { AnchorMismatch, HighlightRange, TurnRole, ViewMaterial, ViewTurn } from './types'
 
+/**
+ * 说话人编号原样用作标签，不再映射成「信息持有方 / 需求方」。
+ *
+ * 那两个名字是我们自己起的：规范 §4B-5 把分工系在编号上（speaker1＝旁白；另两位一方发问推进、
+ * 一方分点给出细节），而哪一位是哪一种在场景之间会互换（平等关系场景里分工本身就可轮换）。所以
+ * 一个固定的 speaker2→信息持有方 映射既对不上材料 JSON，也不总是对的。编号是唯一稳定的事实。
+ */
 const ROLE_BY_SPEAKER: Record<SpeakerId, TurnRole> = {
-  speaker1: '旁白',
-  speaker2: '信息持有方',
-  speaker3: '需求方',
+  speaker1: 'speaker1',
+  speaker2: 'speaker2',
+  speaker3: 'speaker3',
 }
 
 export interface JoinInput {

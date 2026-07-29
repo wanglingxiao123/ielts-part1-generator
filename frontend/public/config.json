@@ -18,7 +18,6 @@
     "warnAtSeconds": 720
   },
   "flags": {
-    "audioWebaudio": false,
-    "syntheticAudio": false
+    "audioWebaudio": false
   }
 }

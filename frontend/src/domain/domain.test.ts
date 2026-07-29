@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { FALLBACK_CONFIG } from '@/config/runtimeConfig'
 import { joinFromRecord } from './joinArtifacts'
+import { previewSummary } from './cardPreview'
 import { computeDistribution } from './distribution'
+import { summariseExamPoints } from './examPoints'
 import { analyseFormGroups } from './formGroups'
 import { buildFacts, compareCandidates } from './compare'
 import { assessUsability } from './usability'
@@ -261,6 +263,60 @@ describe('pointFacts', () => {
     expect(f.confirmedNumbers.length).toBeGreaterThanOrEqual(CONTENT_RULES.MIN_CONFIRMED)
     expect(f.distractions.length).toBeGreaterThanOrEqual(CONTENT_RULES.MIN_DISTRACTORS)
     expect(f.typeKindCount).toBeGreaterThanOrEqual(CONTENT_RULES.MIN_TYPE_KINDS)
+  })
+})
+
+/**
+ * 考点小结（examPoints）。客户要的是「把拼读、先说后改、同义替换这些考点抽取出来」，所以这一层
+ * 唯一要证明的事是：它归拢的是规范里已有的考点，且判据仍然是现成的那几个，没有新造。
+ */
+describe('examPoints', () => {
+  it("names the spec's own exam points, reusing the existing predicates", () => {
+    const s = summariseExamPoints(balanced)
+    const labels = s.blocks.map((b) => b.label)
+    // §3 的拼读、§4B-4 的两种已声明机制。措辞与旁注、结果卡完全一致。
+    expect(labels).toContain('拼读')
+    expect(labels).toContain('先说后改')
+    expect(labels).toContain('同义替换')
+    expect(labels).toContain('有复述确认')
+
+    // 点号直接取自 pointFacts / blueprint，不是这一层重算的。
+    const facts = contentFacts(balanced.blueprint)
+    expect(s.blocks.find((b) => b.label === '拼读')!.numbers).toEqual(facts.spellingNumbers)
+    expect(s.blocks.find((b) => b.label === '先说后改')!.numbers).toEqual([5])
+    expect(s.blocks.find((b) => b.label === '同义替换')!.numbers).toEqual([7])
+    // 每个点号都带得到跳转坐标，否则小结只是一串不能行动的数字。
+    for (const block of s.blocks) {
+      for (const n of block.numbers) expect(block.turnOf[n]).toBeTypeOf('number')
+    }
+  })
+
+  it("covers the eight detail types in the spec's order and counts the kinds", () => {
+    const s = summariseExamPoints(balanced)
+    expect(s.typeKindCount).toBe(contentFacts(balanced.blueprint).typeKindCount)
+    // §4B-3 的表格顺序，姓名在最前——固定顺序才看得出缺哪一类。
+    expect(s.typeCoverage[0]!.type).toBe('name')
+    const listed = s.typeCoverage.flatMap((r) => r.numbers).sort((a, b) => a - b)
+    expect(listed).toEqual(balanced.blueprint.items.map((i) => i.number).sort((a, b) => a - b))
+  })
+
+  it('surfaces the blind audit as jumpable point numbers, never as a count', () => {
+    // 盲评没听出第 5 题（CROSS_CHECK_WITH_GAP）。要的是「哪个点、在哪句」，不是「计划 10 听出 10」。
+    const s = summariseExamPoints(clustered)
+    const unheard = s.blocks.find((b) => b.label === '听不出来')!
+    expect(unheard.numbers).toEqual([5])
+    expect(unheard.tone).toBe('bad')
+    expect(unheard.turnOf[5]).toBe(20)
+    // 计数口径不出现在任何一块的文案里。
+    for (const block of s.blocks) {
+      expect(block.label).not.toMatch(/计划|听出\s*\d|\d+\s*个/)
+    }
+    // 一套盲评全中的材料就不该有这一块——「都听得出来」是常态，为常态挂一块只是噪音。
+    expect(summariseExamPoints(balanced).blocks.map((b) => b.label)).not.toContain('听不出来')
+  })
+
+  it('shares its headline with the result card, so the two cannot disagree', () => {
+    expect(summariseExamPoints(balanced).headline).toBe(previewSummary(balanced))
   })
 })
 

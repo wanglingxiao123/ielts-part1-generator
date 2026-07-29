@@ -13,7 +13,18 @@ import type {
 } from '@/contracts'
 import type { CrossCheck } from '@/contracts/api'
 
-export type TurnRole = '旁白' | '信息持有方' | '需求方'
+/**
+ * 说话人标签。客户的原话：「是 speak1 和 speak2，而不是你现在的信息持有方和需求方什么的」。
+ *
+ * 反对的是我们自己编的角色名，不是「谁在旁白」这个事实。规范 §4B-5 把角色系在 speaker 编号上
+ * （speaker1＝旁白，另两位一方发问、一方持有信息），材料 JSON 也用 speaker1/2/3，所以标签直接
+ * 用编号——命题人对着 JSON 看时不用再做一次翻译。旁白仍标出来，因为它不参与对话、不计入轮次，
+ * 是读稿时必须看得见的区别；写法是 `speaker1` 加一个「旁白」限定语，而不是换成别的名字。
+ */
+export type TurnRole = 'speaker1' | 'speaker2' | 'speaker3'
+
+/** 旁白（§4B-5：speaker1 只出现在框架轮次，不参与对话）。 */
+export const NARRATOR_SPEAKER: TurnRole = 'speaker1'
 
 export interface HighlightRange {
   start: number

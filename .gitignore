@@ -11,6 +11,7 @@ frontend/dist/
 # Local AWS / deployment state. Nothing here should ever be committed: these are the files that
 # would carry account identity or credentials into the repository.
 .aws/
+.mcp.json
 *.pem
 *.key
 .env

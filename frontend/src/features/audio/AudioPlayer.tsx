@@ -1,5 +1,4 @@
 import type { AudioStatusResponse } from '@/contracts/api'
-import { getConfig } from '@/config/runtimeConfig'
 import { formatMs, type Playlist } from '@/domain/playlist'
 import { useAudioStore } from '@/stores/audioStore'
 import type { AudioPoolApi } from './useAudioPool'
@@ -24,15 +23,8 @@ export function AudioPlayer({ playlist, pool, currentTurn }: Props) {
   const pct = playlist.totalMs > 0 ? (globalMs / playlist.totalMs) * 100 : 0
   const gapMs = pool.lastGapMs()
 
-  const synthetic = playlist.engine === 'synthetic-local'
-
   return (
     <div className="player">
-      {synthetic && (
-        <span className="flag flag-bad" title="flags.syntheticAudio=true；真实合成端点尚未就绪">
-          非真实语音 · 本地占位音
-        </span>
-      )}
       <button
         type="button"
         className="btn btn-primary"
@@ -98,13 +90,32 @@ export function AudioPlayer({ playlist, pool, currentTurn }: Props) {
   )
 }
 
-/** Synthesis progress / unavailability notice. Renders nothing once ready. */
-export function AudioStatusNotice({
+/**
+ * 播放器还没有音频时占的那块位置：一个「生成音频」按钮，合成中显示进度。
+ *
+ * 客户的原话：「改成一个 button，让用户自行决定是否生成音频呢？点击后就可以在这个页面直接生成
+ * 音频，后续如果选择这个材料音频也一直跟随，不用重新生成」。这就是这块面板的全部职责。
+ *
+ * 按钮走的是 `preview_audio` 而不是 `select`：选定会认领候选组、丢弃同场景的另一套，只想先听一
+ * 遍的人不该因此失去备选。两条路径共用同一份 clip，所以「音频一直跟随」是后端保证的，不是这里
+ * 记住了什么。
+ *
+ * 从这里删掉的一段话：「当前后端 /invocations 仅支持 generate 与 list_scenarios，选稿与合成端点
+ * 尚未就绪」。那句话已经不成立——四个端点都在，真实 Polly 合成已端到端验证过。
+ */
+export function AudioPanel({
   status,
   error,
+  onGenerate,
+  generating,
+  generateError,
 }: {
   status: AudioStatusResponse | null
   error: string | null
+  onGenerate: () => void
+  /** 已按下按钮、还没等到第一个「合成中」状态的那一小段时间。 */
+  generating: boolean
+  generateError: string | null
 }) {
   if (error) {
     return (
@@ -114,50 +125,52 @@ export function AudioStatusNotice({
       </div>
     )
   }
-  if (!status || status.status === 'not_requested') {
-    const cfg = getConfig()
-    return (
-      <div className="banner banner-info">
-        <strong>音频尚未合成</strong>
-        <div>语音在选定材料之后才合成，避免为被弃用的材料付费。</div>
-        {!cfg.flags.syntheticAudio && (
-          <div style={{ marginTop: 6 }}>
-            当前后端 <span className="mono">/invocations</span> 仅支持{' '}
-            <span className="mono">generate</span> 与 <span className="mono">list_scenarios</span>
-            ，选稿与合成端点尚未就绪（由 audio-storage 任务补齐）。
-            此处不提供播放器，也不会产生任何 Polly 调用。
-          </div>
-        )}
-      </div>
-    )
-  }
-  if (status.status === 'queued' || status.status === 'synthesizing') {
-    return (
-      <div className="banner banner-info">
-        <strong>语音合成中</strong>
-        <div className="row">
-          <div className="progress-track" style={{ maxWidth: 240 }}>
-            <div
-              className="progress-fill"
-              style={{
-                width: `${status.progress.total > 0 ? (status.progress.done / status.progress.total) * 100 : 0}%`,
-              }}
-            />
-          </div>
-          <span className="mono">
-            已合成 {status.progress.done} / {status.progress.total} 段
-          </span>
-        </div>
-      </div>
-    )
-  }
-  if (status.status === 'failed') {
+
+  if (status?.status === 'failed') {
     return (
       <div className="banner banner-bad">
         <strong>语音合成失败</strong>
         <div>{status.error ?? '未知原因'}</div>
+        <div style={{ marginTop: 8 }}>
+          <button type="button" className="btn" onClick={onGenerate}>
+            重新生成音频
+          </button>
+        </div>
       </div>
     )
   }
-  return null
+
+  const inFlight = generating || status?.status === 'queued' || status?.status === 'synthesizing'
+  if (inFlight) {
+    const done = status?.progress.done ?? 0
+    const total = status?.progress.total ?? 0
+    return (
+      <div className="audio-cta busy">
+        <span className="spinner" aria-hidden="true" />
+        <span className="audio-cta-title">正在生成音频</span>
+        <div className="progress-track" style={{ maxWidth: 240 }}>
+          <div
+            className="progress-fill"
+            style={{ width: `${total > 0 ? (done / total) * 100 : 0}%` }}
+          />
+        </div>
+        {/* 分母是脚本的轮次数，所以「N 段」对得上原文里的 turn，不是一个只有我们懂的单位。 */}
+        <span className="mono muted" style={{ fontSize: 12 }}>
+          {total > 0 ? `${done} / ${total} 段` : '排队中'}
+        </span>
+      </div>
+    )
+  }
+
+  return (
+    <div className="audio-cta">
+      <button type="button" className="btn btn-primary" onClick={onGenerate}>
+        🎧 生成音频
+      </button>
+      <span className="muted" style={{ fontSize: 12 }}>
+        先听一遍再决定要不要选用。生成后音频跟随这一套材料，选用时不会重新生成。
+      </span>
+      {generateError && <span className="flag flag-bad">{generateError}</span>}
+    </div>
+  )
 }
