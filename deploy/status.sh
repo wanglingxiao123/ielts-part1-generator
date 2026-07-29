@@ -58,7 +58,12 @@ if [ "${running:-0}" != "0" ] && [ "${running:--}" != "-" ]; then
          --query 'NetworkInterfaces[0].Association.PublicIp' --output text 2>/dev/null)
     echo
     echo "  DEMO URL:  http://${ip}"
-    echo "  (plain HTTP, no login — stop the service when the demo ends)"
+    # Was "no login", which was simply untrue and dangerously so: it invited leaving the service
+    # up on the assumption that nothing was protected anyway. /api/* answers 401 without a
+    # session cookie and / redirects to /login. Credentials do cross the wire in clear text
+    # though, which is the real caveat for a plain-HTTP demo.
+    echo "  (login required; plain HTTP, so credentials are unencrypted in transit)"
+    echo "  (stop the service when the demo ends — 0.0.0.0/0 ingress)"
 else
     echo
     echo "  service is stopped; run 'bash deploy/start.sh' before a demo"
