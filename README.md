@@ -28,7 +28,7 @@ Runtime——**没有任何长期密钥，前端拿不到 AWS 凭证**。
 | 目录 | 职责 |
 |---|---|
 | `skills/ielts-listening-skills/` | 生成与评价的 skill 契约、三份 JSON Schema、确定性校验脚本 |
-| `backend/` | AgentCore Runtime：Strands Agent + 确定性 Loop 编排 |
+| `backend/` | AgentCore Runtime：Strands Agent + 确定性 Loop 编排；候选注册表以 S3 共享 |
 | `audio_storage/` | Polly 逐 turn 合成、manifest、S3 状态流转 |
 | `web/` | FastAPI Web 层：静态服务 + 自建登录 + SigV4 代理 |
 | `frontend/` | React + TypeScript + Vite 审阅界面 |
@@ -101,8 +101,6 @@ bash deploy/stop.sh                       # 停止，常驻成本归零
 
 ## 已知限制
 
-- **选稿与语音合成在多实例下不可用**：候选注册表目前是进程内内存，AgentCore 的调用可能落在
-  不同 microVM 上。修法是将其改为 S3 后端，改动局限在 `backend/orchestration/publish.py`。
 - **均匀度阈值未校准**：`frontend/public/config.json` 的 `CV_WARN` / `CV_FAIL` 是启发式取值
   （`CALIBRATED: false`），界面已标注「参考值·阈值待校准」。积累若干真实材料后需人工校准。
 - **雅思真题样本未随仓库分发**（版权原因）。依赖它们的回归测试会 SKIP 而非失败。

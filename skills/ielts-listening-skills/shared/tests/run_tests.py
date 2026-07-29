@@ -128,6 +128,55 @@ def test_malformed_turns_stay_reportable() -> None:
               parsed is not None and parsed["ok"] is False, result.stderr[-200:])
 
 
+def test_closing_rules_match_the_real_corpus() -> None:
+    """A closing that omits the Part 2 pointer must not be rejected.
+
+    This rule was written as a hard error and had no test. It rejected 18 of the 30 closings in
+    the archived papers -- including all 12 that use the "part one" naming, none of which mention
+    part 2 at all -- so the generator burned every retry attempting to satisfy a convention the
+    source material does not follow. The corpus is the authority here, which is why this test
+    reads it rather than asserting against a fixture.
+    """
+    print("closing rules match the real corpus")
+    import copy
+    import tempfile
+
+    base = json.loads((FIXTURES / "material_valid.json").read_text(encoding="utf-8"))
+    turns = base["listening_material_parts"][0]["script"]["turns"]
+    closing_index = max(i for i, t in enumerate(turns) if t["speaker"] == "speaker1")
+    scratch = Path(tempfile.mkdtemp())
+
+    # Taken verbatim from the archive: the "part one" form, which never points at part 2.
+    for label, closing in (
+        ("omits the part 2 pointer",
+         "That is the end of part one. You now have one minute to check your answers to part one."),
+        ("uses a comma before 'turn to'",
+         "That is the end of section one. You now have half a minute to check your answers now, "
+         "turn to section two."),
+    ):
+        variant = copy.deepcopy(base)
+        variant["listening_material_parts"][0]["script"]["turns"][closing_index]["text"] = closing
+        path = scratch / "material.json"
+        path.write_text(json.dumps(variant, ensure_ascii=False), encoding="utf-8")
+        result = run(VALIDATE, str(path), "--blueprint", str(FIXTURES / "blueprint_valid.json"),
+                     "--json")
+        parsed = json.loads(result.stdout) if result.stdout.strip() else {}
+        errors = [e for e in (parsed.get("errors") or []) if "Part/Section 2" in e]
+        check(f"real closing that {label} is not an error", not errors, str(errors))
+
+    # The genuinely broken case must still fail: no checking time at all.
+    variant = copy.deepcopy(base)
+    variant["listening_material_parts"][0]["script"]["turns"][closing_index]["text"] = (
+        "That is the end of section one. Now turn to section two.")
+    path = scratch / "material.json"
+    path.write_text(json.dumps(variant, ensure_ascii=False), encoding="utf-8")
+    parsed = json.loads(run(VALIDATE, str(path), "--blueprint",
+                            str(FIXTURES / "blueprint_valid.json"), "--json").stdout)
+    check("a closing with no checking time is still rejected",
+          any("checking time" in e for e in (parsed.get("errors") or [])),
+          str(parsed.get("errors")))
+
+
 def test_grouping_cannot_be_faked() -> None:
     """A shared group label must not stand in for a constructible table (D2)."""
     print("question-type grouping cannot be faked")
@@ -343,6 +392,7 @@ def main() -> int:
         test_warning_does_not_fail,
         test_new_checks_catch_defects,
         test_malformed_turns_stay_reportable,
+        test_closing_rules_match_the_real_corpus,
         test_grouping_cannot_be_faked,
         test_spelled_name_rule_not_vacuous,
         test_metrics_absent_when_unmeasured,

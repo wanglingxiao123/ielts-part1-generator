@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+import uuid
 from typing import Any, Dict, List, Optional
 
 __all__ = [
@@ -64,6 +65,32 @@ class UnknownMaterial(SelectionError):
 
 class AlreadySelected(SelectionError):
     """A sibling of this material was already selected, so this one was discarded."""
+
+
+def _plain(value: Any) -> Any:
+    """Best-effort conversion to something `json.dumps` accepts.
+
+    Objects that already know their dict form (`as_dict`) are asked for it; dataclass-ish objects
+    fall back to `__dict__`. Anything else becomes a string rather than raising: a candidate must
+    remain storable even if one diagnostic field cannot be represented faithfully.
+    """
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(v) for v in value]
+    for attr in ("as_dict", "to_dict"):
+        method = getattr(value, attr, None)
+        if callable(method):
+            try:
+                return _plain(method())
+            except Exception:  # noqa: BLE001 - fall through to the next strategy
+                pass
+    data = getattr(value, "__dict__", None)
+    if isinstance(data, dict):
+        return {str(k): _plain(v) for k, v in data.items()}
+    return str(value)
 
 
 class Candidate:
@@ -112,6 +139,8 @@ class Candidate:
         return self.verdict not in _QUARANTINE_VERDICTS
 
     def as_dict(self) -> Dict[str, Any]:
+        """Summary for the candidate list. Excludes the artifacts: a list of six candidates
+        would otherwise carry six full scripts, and the UI only needs the verdict to render."""
         return {
             "material_id": self.material_id,
             "scenario_key": self.scenario_key,
@@ -124,6 +153,48 @@ class Candidate:
             "expects_audio": self.expects_audio,
             "state": self.state,
         }
+
+    def as_record(self) -> Dict[str, Any]:
+        """Everything needed to reconstruct this candidate in another process.
+
+        The artifacts are included because selection needs them: the process that synthesises may
+        not be the one that generated, so it cannot rely on holding them in memory.
+        """
+        record = self.as_dict()
+        record.update({
+            "material": self.material,
+            "blueprint": self.blueprint,
+            "audit": self.audit,
+            # cross_check arrives as a CrossCheckResult from the Loop, which json cannot encode.
+            # Normalised here rather than at the call site: this is the only place the candidate
+            # crosses a serialisation boundary, and a TypeError raised inside `select` surfaced as
+            # an opaque 500 from the Runtime.
+            "cross_check": _plain(self.cross_check),
+            "created_at": self.created_at,
+        })
+        return record
+
+    @classmethod
+    def from_record(cls, record: Dict[str, Any]) -> "Candidate":
+        candidate = cls(
+            material_id=str(record.get("material_id") or ""),
+            scenario_key=str(record.get("scenario_key") or ""),
+            group_key=str(record.get("group_key") or ""),
+            slot_id=str(record.get("slot_id") or ""),
+            material=record.get("material") or {},
+            blueprint=record.get("blueprint") or {},
+            audit=record.get("audit") or {},
+            cross_check=record.get("cross_check"),
+            degraded=bool(record.get("degraded")),
+            degraded_reason=record.get("degraded_reason"),
+        )
+        # Preserved rather than recomputed: `created_at` drives offer expiry, and `state` is the
+        # discarded/selected outcome another instance already decided.
+        if record.get("created_at"):
+            candidate.created_at = float(record["created_at"])
+        if record.get("state"):
+            candidate.state = str(record["state"])
+        return candidate
 
 
 class AudioJob:
@@ -170,88 +241,216 @@ class AudioJob:
             payload["manifest"] = self.manifest
         return payload
 
+    def as_record(self) -> Dict[str, Any]:
+        """Full state for shared storage, including the timestamps `as_dict` derives away.
+
+        `as_dict` reports `elapsed_seconds`, which is a view. Persisting that instead of
+        `started_at` would make elapsed time restart every time another instance loaded the job.
+        """
+        record = self.as_dict()
+        record.update({
+            "done": self.done,
+            "total": self.total,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+        })
+        return record
+
+    @classmethod
+    def from_record(cls, record: Dict[str, Any]) -> "AudioJob":
+        progress = record.get("progress") or {}
+        job = cls(
+            str(record.get("audio_job_id") or ""),
+            str(record.get("material_id") or ""),
+            int(record.get("total") or progress.get("total") or 0),
+        )
+        job.status = str(record.get("status") or "queued")
+        job.done = int(record.get("done") or progress.get("done") or 0)
+        job.error = record.get("error")
+        job.manifest = record.get("manifest")
+        job.state = record.get("state")
+        job.siblings_discarded = list(record.get("siblings_discarded") or [])
+        job.polly_calls = int(record.get("polly_calls") or 0)
+        job.reused = int(record.get("reused_clips") or 0)
+        job.cost_usd = float(record.get("cost_usd") or 0.0)
+        if record.get("started_at"):
+            job.started_at = float(record["started_at"])
+        job.finished_at = record.get("finished_at")
+        return job
+
 
 class CandidateRegistry:
-    """In-process registry of offered candidates and their audio jobs.
+    """Registry of offered candidates and their audio jobs, backed by shared storage.
 
-    In memory on purpose: a candidate that was never selected has no reason to exist beyond the
-    user's session (design.md §14 -- the unselected material is discarded, not archived). The
-    cost is that a restart loses the offer, which the frontend already handles by re-generating.
-    What a restart cannot lose is a *published* material or a paid-for clip; both live in S3.
+    Originally in-process, on the reasoning that an unselected offer need not outlive the user's
+    session. That reasoning holds for one server and fails on AgentCore: Runtime dispatches each
+    invocation to whichever microVM is warm, so the `select` following a `generate` is routinely a
+    different process. Generation would succeed and return a `material_id`, and the next call
+    would report that id unknown.
+
+    So offers go to shared storage (`candidate_store`), keyed by `material_id`. The in-process
+    dicts remain as a read-through cache -- within one instance they save a round trip, and they
+    are never the source of truth.
+
+    What shared storage cannot provide is a lock spanning instances, which `claim` needed. That is
+    handled with a conditional write instead; see `claim`.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, store: Optional[Any] = None) -> None:
         self._lock = threading.Lock()
         self._candidates: Dict[str, Candidate] = {}
         self._jobs: Dict[str, AudioJob] = {}
         self._selected_by_group: Dict[str, str] = {}
         self._counter = 0
+        self._store = store
+
+    @property
+    def store(self) -> Any:
+        """Built lazily so importing this module never touches AWS."""
+        if self._store is None:
+            from .candidate_store import build_store, describe_store
+
+            self._store = build_store()
+            # Logged once, at the only moment the choice is made. An in-memory store in the
+            # Runtime is the defect this module exists to fix, and its symptom (an empty
+            # candidate list minutes later, in a different process) points nowhere near the
+            # cause. One line here turns that into a grep.
+            import logging
+
+            logging.getLogger(__name__).info(
+                "candidate store backend: %s", describe_store(self._store)
+            )
+        return self._store
 
     def register(self, candidate: Candidate) -> Candidate:
         with self._lock:
             self._candidates[candidate.material_id] = candidate
+        # Persisted after the local write so a storage failure cannot leave the cache empty while
+        # the caller believes registration succeeded. batch.py downgrades an exception here to a
+        # warning on the material, which is right: the material is valid either way.
+        self.store.save(candidate.material_id, candidate.as_record())
         return candidate
 
     def get(self, material_id: str) -> Candidate:
         with self._lock:
             candidate = self._candidates.get(material_id)
-        if candidate is None:
+        if candidate is not None:
+            return candidate
+        record = self.store.load(material_id)
+        if record is None:
             raise UnknownMaterial(
-                "no candidate {0!r}; it was never offered, was discarded, or the process "
-                "restarted".format(material_id)
+                "no candidate {0!r}; it was never offered, was discarded, or the offer "
+                "expired".format(material_id)
             )
+        candidate = Candidate.from_record(record)
+        with self._lock:
+            self._candidates.setdefault(material_id, candidate)
         return candidate
 
     def group(self, group_key: str) -> List[Candidate]:
-        with self._lock:
-            return [c for c in self._candidates.values() if c.group_key == group_key]
+        return [c for c in self.all() if c.group_key == group_key]
 
     def all(self) -> List[Candidate]:
+        """Shared storage is authoritative; the local cache only fills gaps within an instance."""
+        found: Dict[str, Candidate] = {}
+        for record in self.store.load_all():
+            candidate = Candidate.from_record(record)
+            if candidate.material_id:
+                found[candidate.material_id] = candidate
         with self._lock:
-            return list(self._candidates.values())
+            for material_id, candidate in self._candidates.items():
+                found.setdefault(material_id, candidate)
+        return sorted(found.values(), key=lambda c: c.created_at)
 
     def job(self, material_id: str) -> Optional[AudioJob]:
         with self._lock:
-            return self._jobs.get(material_id)
+            job = self._jobs.get(material_id)
+        if job is not None:
+            return job
+        record = self.store.load_job(material_id)
+        return AudioJob.from_record(record) if record else None
+
+    def save_job(self, job: AudioJob) -> None:
+        """Publish job progress so a poll served by another instance sees it.
+
+        Called after each state change in the worker thread. The write is best-effort: losing a
+        progress update degrades the UI to a stale percentage, whereas raising here would abort a
+        synthesis that is otherwise succeeding.
+        """
+        try:
+            self.store.save_job(job.material_id, job.as_record())
+        except Exception:  # noqa: BLE001 - progress reporting must not break synthesis
+            pass
 
     def claim(self, candidate: Candidate, total: int) -> "tuple[AudioJob, bool, List[str]]":
         """Reserve the single job for this material. Returns (job, is_new, discarded_siblings).
 
-        Under the lock, so two concurrent selects on the same material produce one job rather
-        than two synthesis runs. The sibling check is here too: a second pick within the same
-        group must be refused, not silently published alongside the first.
+        Arbitration is a conditional write on a per-group marker, not a lock. A `threading.Lock`
+        only orders callers inside one process, and the two selects racing here can be in
+        different microVMs; the loser would then pay for a second full synthesis. S3's
+        create-if-absent gives exactly one winner across instances (verified against real S3: the
+        second write returns 412).
+
+        A repeated select on the *same* material is not a race and must not raise -- the frontend
+        contract allows a retry, and the existing job is returned unchanged.
         """
-        with self._lock:
-            existing = self._jobs.get(candidate.material_id)
-            if existing is not None:
-                return existing, False, list(existing.siblings_discarded)
+        existing = self.job(candidate.material_id)
+        if existing is not None:
+            return existing, False, list(existing.siblings_discarded)
 
-            chosen = self._selected_by_group.get(candidate.group_key)
-            if chosen is not None and chosen != candidate.material_id:
-                raise AlreadySelected(
-                    "{0} was already selected for {1}; {2} was discarded".format(
-                        chosen, candidate.group_key, candidate.material_id
-                    )
+        job_id = "job-{0}".format(uuid.uuid4().hex[:12])
+        claim = self.store.claim_group(candidate.group_key, candidate.material_id, job_id)
+        winner = str(claim.get("material_id") or "")
+        if winner and winner != candidate.material_id:
+            raise AlreadySelected(
+                "{0} was already selected for {1}; {2} was discarded".format(
+                    winner, candidate.group_key, candidate.material_id
                 )
+            )
 
-            self._counter += 1
-            job = AudioJob("job-{0}".format(self._counter), candidate.material_id, total)
+        # Won the group. Re-check for a job: the winning claim may have been recorded by another
+        # instance that has already started synthesising.
+        existing = self.job(candidate.material_id)
+        if existing is not None:
+            return existing, False, list(existing.siblings_discarded)
+
+        job = AudioJob(str(claim.get("job_id") or job_id), candidate.material_id, total)
+
+        # Order matters, and it is the reverse of the obvious one. Persisting the winner comes
+        # before discarding the siblings, and the claim is released if it fails: a claim that
+        # outlives its winner makes the whole group permanently unselectable, since every later
+        # attempt raises AlreadySelected naming a material_id that no longer has a candidate.
+        # Discarding first would additionally destroy the alternatives on the way out.
+        candidate.state = "selected"
+        try:
+            self.store.save(candidate.material_id, candidate.as_record())
+        except Exception:
+            candidate.state = "offered"
+            try:
+                self.store.release_claim(candidate.group_key)
+            except Exception:  # noqa: BLE001 - the original failure is the one worth raising
+                pass
+            raise
+
+        discarded = []
+        for sibling in self.group(candidate.group_key):
+            if sibling.material_id == candidate.material_id:
+                continue
+            sibling.state = "discarded"
+            # Removed, not archived: audio-storage design.md §14 settled that the unselected
+            # material is discarded, and adding a sixth state directory to keep it is a decision
+            # for a human rather than a convenience.
+            self.store.drop(sibling.material_id)
+            with self._lock:
+                self._candidates.pop(sibling.material_id, None)
+            discarded.append(sibling.material_id)
+        job.siblings_discarded = discarded
+
+        with self._lock:
             self._jobs[candidate.material_id] = job
             self._selected_by_group[candidate.group_key] = candidate.material_id
-
-            discarded = []
-            for sibling in list(self._candidates.values()):
-                if sibling.group_key != candidate.group_key or sibling.material_id == candidate.material_id:
-                    continue
-                sibling.state = "discarded"
-                # Dropped from the registry, not written anywhere. design.md §14 settled this:
-                # the unselected material is not archived, and adding a sixth state directory to
-                # keep it would be a decision for a human, not a convenience.
-                self._candidates.pop(sibling.material_id, None)
-                discarded.append(sibling.material_id)
-            job.siblings_discarded = discarded
-            candidate.state = "selected"
-            return job, True, discarded
+        self.save_job(job)
+        return job, True, discarded
 
 
 REGISTRY = CandidateRegistry()
@@ -287,6 +486,13 @@ def _turn_count(candidate: Candidate) -> int:
     return len(turns or [])
 
 
+def _persist(registry: Optional["CandidateRegistry"], job: AudioJob) -> None:
+    """Best-effort publish of job state. Never raises: a lost progress update degrades the UI to
+    a stale percentage, while an exception here would abort a synthesis that is succeeding."""
+    if registry is not None:
+        registry.save_job(job)
+
+
 def _publish_blocking(
     candidate: Candidate,
     job: AudioJob,
@@ -294,6 +500,7 @@ def _publish_blocking(
     backing,
     polly,
     actor: str,
+    registry: Optional["CandidateRegistry"] = None,
 ) -> None:
     """The whole slow path, run in a worker thread. Never call this on the event loop.
 
@@ -321,6 +528,7 @@ def _publish_blocking(
         )
         job.status = QUARANTINED
         job.finished_at = time.time()
+        _persist(registry, job)
         return
 
     def on_event(name: str, detail: Dict[str, Any]) -> None:
@@ -330,6 +538,9 @@ def _publish_blocking(
             job.done = detail.get("reused", 0)
         elif name == "turn_done":
             job.done = detail.get("done", job.done)
+        # Published on every turn so a poll landing on another instance shows real progress
+        # instead of sitting at "queued" for the whole minute.
+        _persist(registry, job)
 
     result = synth.synthesize_material(
         candidate.material,
@@ -353,6 +564,7 @@ def _publish_blocking(
             sorted(result.failed), "; ".join(list(result.failed.values())[:2])
         )
         job.finished_at = time.time()
+        _persist(registry, job)
         return
 
     # No `audio=` payload: the clips are already at the destination prefix, and re-uploading them
@@ -368,6 +580,7 @@ def _publish_blocking(
     job.done = job.total
     job.status = READY
     job.finished_at = time.time()
+    _persist(registry, job)
 
 
 async def select_material(
@@ -405,11 +618,13 @@ async def select_material(
 
     def work() -> None:
         try:
-            _publish_blocking(candidate, job, state_store, backing, polly, actor)
+            _publish_blocking(candidate, job, state_store, backing, polly, actor,
+                              registry=registry)
         except BaseException as exc:  # noqa: BLE001 - a thread's exception must land on the job
             job.status = FAILED
             job.error = "{0}: {1}".format(type(exc).__name__, str(exc)[:400])
             job.finished_at = time.time()
+            _persist(registry, job)
 
     task = asyncio.create_task(asyncio.to_thread(work))
     if wait:

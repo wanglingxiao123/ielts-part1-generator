@@ -42,6 +42,8 @@ SECOND_RANGE_RE = re.compile(r"questions?\s+(\d+)\s*(?:to|[-~–])\s*10", re.I)
 RECORDINGS_RE = re.compile(r"\b(?:four|4|a number of|several|different)\s+(?:different\s+)?recordings?\b", re.I)
 PARTS_RE = re.compile(r"\b(?:four|4)\s+(?:parts|sections)\b|\bin\s+(?:four|4)\b", re.I)
 CHECKING_RE = re.compile(r"check\s+(?:all\s+of\s+)?your\s+(?:answers|work)", re.I)
+# "now, turn to section two" (comma) occurs in the corpus, so the separator must be tolerant.
+NEXT_PART_RE = re.compile(r"(?:turn|move on|go on)\W{0,3}to\s+(?:section|part)\s+(?:two|2)", re.I)
 
 
 def words(value: str) -> int:
@@ -425,8 +427,14 @@ def main() -> int:
             errors.append("opening must include once only")
         if not re.search(r"end of (?:section one|part 1|part one)", closing, re.I) or not CHECKING_RE.search(closing):
             errors.append("closing must identify Part 1 end and checking time")
-        if not re.search(r"(?:turn|move on) to (?:section|part) (?:two|2)", closing, re.I):
-            errors.append("closing must direct candidates to Part/Section 2")
+        # A pointer to Part 2 is optional, and was wrong as a hard rule. Measured over the 30
+        # closings in the corpus: of the 12 that use the "part one" naming, ZERO mention part 2,
+        # and 6 of the 18 "section one" ones do not either. Requiring it rejected half of the real
+        # papers, and the generator exhausted its retries trying to satisfy a rule the source
+        # material does not follow.
+        if not NEXT_PART_RE.search(closing):
+            warnings.append("closing does not direct candidates to Part/Section 2 (optional: "
+                            "12/30 real closings omit it)")
         mode = validate_blueprint(blueprint, turns, narrator[1], first_end, second_start, errors, warnings)
         narration = " ".join(turns[i]["text"] for i in narrator)
         if mode == "full":

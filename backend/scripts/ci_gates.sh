@@ -53,6 +53,17 @@ python3 skills/ielts-listening-skills/shared/tests/run_tests.py >/tmp/skill_test
     && tail -1 /tmp/skill_tests.log || { tail -20 /tmp/skill_tests.log; fail "skill suite"; }
 
 echo "== gate 7: backend unit tests =="
-"${PYTHON:-python3}" -m pytest backend/tests -q || fail "backend unit tests"
+# The backend needs 3.12 and its own dependencies, so `python3` is the wrong interpreter on a dev
+# machine where it is the system 3.9 without pytest. Preferring the project venv makes this gate
+# actually run locally instead of failing for a reason unrelated to the code under test.
+BACKEND_PYTHON="${PYTHON:-}"
+if [ -z "$BACKEND_PYTHON" ]; then
+    if [ -x .venv-backend/bin/python ]; then
+        BACKEND_PYTHON=.venv-backend/bin/python
+    else
+        BACKEND_PYTHON=python3
+    fi
+fi
+"$BACKEND_PYTHON" -m pytest backend/tests -q || fail "backend unit tests"
 
 exit "$status"

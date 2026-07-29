@@ -16,6 +16,8 @@ from __future__ import annotations
 import asyncio
 import io
 import time
+import types
+from unittest import mock
 
 import pytest
 
@@ -25,6 +27,7 @@ from audio_storage.mp3_duration import duration_ms
 from audio_storage.object_store import InMemoryObjectStore
 from audio_storage.state_store import PENDING, QUARANTINE, StateStore
 from backend.orchestration import publish as publish_module
+from backend.orchestration.candidate_store import InMemoryCandidateStore
 from backend.orchestration.publish import (
     AlreadySelected,
     Candidate,
@@ -217,17 +220,21 @@ class TestSelection:
         self, wiring, material, blueprint, audit_aligned, clone
     ):
         registry = wiring["registry"]
-        registry.register(make_candidate(material, blueprint, audit_aligned))
+        first = make_candidate(material, blueprint, audit_aligned)
+        registry.register(first)
         other_id = "20260728-accommodation-rental-aaaabbbb"
+        # The shared group is set at construction, not by mutating a registry lookup: the store is
+        # authoritative now, so an edit to a returned Candidate is a local copy and never persists.
         registry.register(make_candidate(clone(material), blueprint, audit_aligned,
-                                         material_id=other_id, group_key="g"))
-        # Same group this time, so the second pick competes with the first.
-        registry.get(other_id).group_key = registry.get(MATERIAL_ID).group_key
+                                         material_id=other_id, group_key=first.group_key))
 
         await select_material(
             MATERIAL_ID, registry=registry, state_store=wiring["state_store"],
             backing=wiring["backing"], polly=wiring["polly"], wait=True,
         )
+        # Discarded siblings are removed from the store, so the id is genuinely gone rather than
+        # merely losing the group race.
+        assert registry.store.load(other_id) is None
         with pytest.raises(UnknownMaterial):
             await select_material(other_id, registry=registry,
                                   state_store=wiring["state_store"],
@@ -491,3 +498,268 @@ class TestConfiguration:
     def test_publish_module_imports_without_aws(self):
         """backend.tests must run on a machine with no credentials at all."""
         assert publish_module.REGISTRY is not None
+
+
+class TestSurvivesAcrossInstances:
+    """The bug this fixes: AgentCore routes each invocation to whichever microVM is warm, so the
+    `select` after a `generate` is routinely a different process. With an in-process registry,
+    generation returned a material_id that the next call reported as unknown.
+
+    Each test builds TWO registries over ONE shared store. That is the honest model of two
+    microVMs: separate memory, same S3.
+    """
+
+    def test_a_second_instance_sees_a_candidate_it_never_registered(
+        self, material, blueprint, audit_aligned
+    ):
+        shared = InMemoryCandidateStore()
+        first = CandidateRegistry(store=shared)
+        first.register(make_candidate(material, blueprint, audit_aligned))
+
+        second = CandidateRegistry(store=shared)
+        assert [c.material_id for c in second.all()] == [MATERIAL_ID]
+        recovered = second.get(MATERIAL_ID)
+        # The artifacts must survive too: the instance that synthesises needs the script, and it
+        # is not the one that generated it.
+        assert recovered.material == material
+        assert recovered.blueprint == blueprint
+        assert recovered.verdict == audit_aligned["verdict"]
+
+    def test_an_unknown_id_still_raises_rather_than_inventing_a_candidate(self):
+        registry = CandidateRegistry(store=InMemoryCandidateStore())
+        with pytest.raises(UnknownMaterial):
+            registry.get("20260728-nope-00000000")
+
+    def test_only_one_of_two_instances_wins_the_group(
+        self, material, blueprint, audit_aligned, clone
+    ):
+        """Two instances claiming the same group concurrently. Exactly one may proceed; the other
+        must be refused, because the loser would otherwise pay for a second full synthesis."""
+        shared = InMemoryCandidateStore()
+        a = CandidateRegistry(store=shared)
+        b = CandidateRegistry(store=shared)
+        group = "batch-9:shared"
+        first = make_candidate(material, blueprint, audit_aligned, group_key=group)
+        second = make_candidate(clone(material), blueprint, audit_aligned,
+                                material_id="20260728-accommodation-rental-cccc1111",
+                                group_key=group)
+        a.register(first)
+        a.register(second)
+
+        # b resolves its candidate BEFORE a claims. That ordering is the race: in production both
+        # instances have already loaded a candidate when the two selects arrive. Resolving after
+        # the claim would instead test discard, which is a different property.
+        b_candidate = b.get(second.material_id)
+
+        job, is_new, _ = a.claim(first, total=3)
+        assert is_new and job.job_id
+        with pytest.raises(AlreadySelected) as caught:
+            b.claim(b_candidate, total=3)
+        # The message names the winner, so the UI can say which candidate was kept.
+        assert first.material_id in str(caught.value)
+
+    def test_repeating_a_select_on_the_same_material_is_not_a_race(
+        self, material, blueprint, audit_aligned
+    ):
+        """A retry from the browser must return the SAME job, not be refused and not re-bill."""
+        shared = InMemoryCandidateStore()
+        a = CandidateRegistry(store=shared)
+        a.register(make_candidate(material, blueprint, audit_aligned))
+        job, is_new, _ = a.claim(a.get(MATERIAL_ID), total=3)
+        assert is_new
+
+        b = CandidateRegistry(store=shared)
+        again, is_new_again, _ = b.claim(b.get(MATERIAL_ID), total=3)
+        assert not is_new_again
+        assert again.job_id == job.job_id
+
+    def test_progress_written_by_one_instance_is_readable_by_another(
+        self, material, blueprint, audit_aligned
+    ):
+        """audio_status is polled repeatedly and may land anywhere. Without shared job state the
+        UI would sit at 'queued' while synthesis actually ran to completion elsewhere."""
+        shared = InMemoryCandidateStore()
+        worker = CandidateRegistry(store=shared)
+        worker.register(make_candidate(material, blueprint, audit_aligned))
+        job, _, _ = worker.claim(worker.get(MATERIAL_ID), total=40)
+        job.status = "synthesizing"
+        job.done = 17
+        job.polly_calls = 17
+        worker.save_job(job)
+
+        poller = CandidateRegistry(store=shared)
+        seen = poller.job(MATERIAL_ID)
+        assert seen is not None
+        assert (seen.status, seen.done, seen.total) == ("synthesizing", 17, 40)
+        # started_at is persisted rather than re-stamped: otherwise elapsed_seconds would reset to
+        # zero on every poll served by a different instance.
+        assert seen.started_at == job.started_at
+
+    def test_a_discarded_sibling_is_gone_from_shared_storage(
+        self, material, blueprint, audit_aligned, clone
+    ):
+        shared = InMemoryCandidateStore()
+        a = CandidateRegistry(store=shared)
+        group = "batch-7:shared"
+        keep = make_candidate(material, blueprint, audit_aligned, group_key=group)
+        drop = make_candidate(clone(material), blueprint, audit_aligned,
+                              material_id="20260728-accommodation-rental-dddd2222",
+                              group_key=group)
+        a.register(keep)
+        a.register(drop)
+        _, _, discarded = a.claim(keep, total=3)
+        assert discarded == [drop.material_id]
+
+        b = CandidateRegistry(store=shared)
+        assert shared.load(drop.material_id) is None
+        with pytest.raises(UnknownMaterial):
+            b.get(drop.material_id)
+
+    def test_a_non_serialisable_cross_check_still_round_trips(
+        self, material, blueprint, audit_aligned
+    ):
+        """The Loop hands over a CrossCheckResult object, not a dict. Persisting it raised
+        `TypeError: Object of type CrossCheckResult is not JSON serializable`, which surfaced as an
+        opaque 500 from the Runtime on `select` -- long after generation had reported success."""
+        import json as _json
+
+        class NotSerialisable:
+            def __init__(self):
+                self.matched = 10
+                self.unrecoverable = []
+
+            def as_dict(self):
+                return {"matched": self.matched, "unrecoverable": self.unrecoverable}
+
+        shared = InMemoryCandidateStore()
+        registry = CandidateRegistry(store=shared)
+        candidate = make_candidate(material, blueprint, audit_aligned)
+        candidate.cross_check = NotSerialisable()
+        registry.register(candidate)
+
+        record = shared.load(MATERIAL_ID)
+        # The real assertion: the record must survive an actual encode, which is what S3 does.
+        _json.dumps(record)
+        assert record["cross_check"] == {"matched": 10, "unrecoverable": []}
+
+    def test_an_opaque_object_degrades_to_a_string_rather_than_raising(
+        self, material, blueprint, audit_aligned
+    ):
+        """A field nobody can encode must not make the candidate unstorable: losing one diagnostic
+        value is recoverable, losing the candidate means the user cannot select their material."""
+        import json as _json
+
+        class Opaque:
+            __slots__ = ()
+
+            def __repr__(self):
+                return "<opaque>"
+
+        shared = InMemoryCandidateStore()
+        registry = CandidateRegistry(store=shared)
+        candidate = make_candidate(material, blueprint, audit_aligned)
+        candidate.cross_check = Opaque()
+        registry.register(candidate)
+        record = shared.load(MATERIAL_ID)
+        _json.dumps(record)
+        assert record["cross_check"] == "<opaque>"
+        assert record["material"] == material
+
+
+class TestAFailedSelectLeavesNothingStuck:
+    """Observed in the Runtime: `claim` wrote the group marker, then the write of the winning
+    candidate raised, leaving two claims in `_claims/` pointing at material_ids that had no
+    candidate. Every later select on those groups was refused, naming a material nobody could
+    find, and no amount of retrying could recover -- the batch was permanently unselectable.
+    """
+
+    def _failing_store(self, fail_on, times=1):
+        """Fails the first `times` saves of `fail_on`, then behaves normally.
+
+        A permanently-failing store cannot show recovery: the retry would fail for the original
+        reason rather than because of a leftover claim, so the test would pass even with the
+        rollback removed.
+        """
+
+        class Failing(InMemoryCandidateStore):
+            def __init__(self):
+                super().__init__()
+                self.failures = 0
+
+            def save(self, material_id, record):
+                if material_id == fail_on and self.failures < times:
+                    self.failures += 1
+                    raise RuntimeError("s3 write refused")
+                super().save(material_id, record)
+
+        return Failing()
+
+    def test_the_group_is_selectable_again_after_the_winner_fails_to_persist(
+        self, material, blueprint, audit_aligned
+    ):
+        shared = self._failing_store(fail_on=MATERIAL_ID)
+        registry = CandidateRegistry(store=shared)
+        candidate = make_candidate(material, blueprint, audit_aligned)
+        # Registration goes through the same failing path, so seed the record directly: the
+        # property under test is claim's rollback, not register's.
+        InMemoryCandidateStore.save(shared, MATERIAL_ID, candidate.as_record())
+
+        with pytest.raises(RuntimeError):
+            registry.claim(candidate, total=3)
+
+        # The claim must be gone. If it survived, this next call would raise AlreadySelected.
+        assert shared._claims == {}
+        fresh = CandidateRegistry(store=shared)
+        job, is_new, _ = fresh.claim(fresh.get(MATERIAL_ID), total=3)
+        assert is_new and job.job_id
+
+    def test_siblings_survive_a_failed_claim(
+        self, material, blueprint, audit_aligned, clone
+    ):
+        """Discarding used to happen before the winner was persisted, so a failure destroyed the
+        alternatives as well -- leaving the group with neither a winner nor a fallback."""
+        shared = self._failing_store(fail_on=MATERIAL_ID)
+        registry = CandidateRegistry(store=shared)
+        group = "batch-11:shared"
+        winner = make_candidate(material, blueprint, audit_aligned, group_key=group)
+        sibling = make_candidate(clone(material), blueprint, audit_aligned,
+                                 material_id="20260728-accommodation-rental-eeee3333",
+                                 group_key=group)
+        InMemoryCandidateStore.save(shared, winner.material_id, winner.as_record())
+        registry.register(sibling)
+
+        with pytest.raises(RuntimeError):
+            registry.claim(winner, total=3)
+
+        assert shared.load(sibling.material_id) is not None
+        assert CandidateRegistry(store=shared).get(sibling.material_id).state != "discarded"
+
+    def test_a_material_id_is_not_reported_when_registration_fails(
+        self, material, blueprint, audit_aligned
+    ):
+        """The frontend offers whatever material_id a slot reports. If registration failed, that id
+        resolves to nothing, so the UI showed a ready material whose select answered 'unknown'."""
+        from backend.orchestration import batch as batch_mod
+
+        class Boom:
+            def register(self, candidate):
+                raise RuntimeError("store unavailable")
+
+        result = types.SimpleNamespace(
+            candidate=types.SimpleNamespace(
+                gen=types.SimpleNamespace(material=material, blueprint=blueprint),
+                audit=audit_aligned, cross_check={"matched": 1},
+            ),
+            slot_id="slot-1", material_id=None, scenario_key=None, group_key=None,
+            degraded=False, degraded_reason=None,
+        )
+        scenario = types.SimpleNamespace(id="accommodation-rental", key="accommodation-rental")
+
+        # Patched on publish, not batch: `_register` imports REGISTRY from `.publish` at call
+        # time, so rebinding the name on batch would have no effect and the test would pass
+        # vacuously against the unfixed code.
+        with mock.patch.object(publish_module, "REGISTRY", Boom()):
+            with pytest.raises(RuntimeError):
+                batch_mod._register(result, scenario, "batch-12:x")
+
+        assert result.material_id is None

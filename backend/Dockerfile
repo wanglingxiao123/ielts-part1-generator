@@ -20,6 +20,12 @@ RUN pip install --no-cache-dir \
 
 COPY backend/ /app/backend/
 COPY config/ /app/config/
+# audio_storage is imported at run time by the selection path (new_material_id, the candidate
+# store, synthesis). Omitting it did not break the build or the health check -- every import of it
+# sits inside a function, and the one in `_register` is caught and downgraded to a warning. The
+# visible symptom was a material_completed event carrying `material_id: null`, and a cold instance
+# 500ing on `list_candidates`; nothing said "missing module" until the traceback was read.
+COPY audio_storage/ /app/audio_storage/
 # The skill assets are copied at build time and read at runtime. They are never transcribed
 # into the backend: the human-maintained files stay the single source of truth.
 COPY skills/ielts-listening-skills/ /app/backend/skills/

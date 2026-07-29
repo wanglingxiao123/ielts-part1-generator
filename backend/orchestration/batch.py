@@ -117,7 +117,16 @@ async def _run_slot(
             try:
                 _register(result, scenario, group_key)
             except Exception as exc:  # noqa: BLE001 - see _register's docstring
-                result.warnings.append("candidate_not_registered: %s" % str(exc)[:200])
+                # Name the exception type as well as the message: the failure that mattered in
+                # practice was a silent fallback to in-memory storage, and "AudioNotConfigured"
+                # says which of the many possible causes it was.
+                result.warnings.append(
+                    "candidate_not_registered: %s: %s" % (type(exc).__name__, str(exc)[:200])
+                )
+                import logging
+                logging.getLogger(__name__).warning(
+                    "candidate registration failed for slot %s", result.slot_id, exc_info=True
+                )
         await queue.put(
             events.material_completed(result) if result.ok else events.material_failed(result)
         )
@@ -136,12 +145,15 @@ def _register(result: MaterialResult, scenario: Scenario, group_key: str) -> Non
 
     candidate = result.candidate
     scenario_key = scenario_key_for(scenario)
-    result.material_id = new_material_id(scenario_key)
+    material_id = new_material_id(scenario_key)
     result.scenario_key = scenario_key
     result.group_key = group_key
+    # Assigned only after registration succeeds. Setting it first published an id the frontend
+    # would offer for selection while no candidate backed it, so `select` answered "unknown
+    # material" for something the UI had just displayed as ready.
     REGISTRY.register(
         Candidate(
-            material_id=result.material_id,
+            material_id=material_id,
             scenario_key=scenario_key,
             group_key=group_key,
             slot_id=result.slot_id,
@@ -153,6 +165,7 @@ def _register(result: MaterialResult, scenario: Scenario, group_key: str) -> Non
             degraded_reason=result.degraded_reason,
         )
     )
+    result.material_id = material_id
 
 
 async def run_batch(request: BatchRequest) -> AsyncIterator[Dict[str, Any]]:
