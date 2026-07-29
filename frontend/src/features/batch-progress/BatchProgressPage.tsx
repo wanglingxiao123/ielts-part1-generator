@@ -161,28 +161,24 @@ function SkeletonCard({ scenarioTitle, label }: { scenarioTitle: string; label: 
   )
 }
 
-/**
- * 终态失败的卡位。
+/*
+ * 这里原来有一个 `ErrorCard`——红色的「生成异常」空卡片。它被整个删掉了，不是改文案。
  *
- * 只在收到 `material_failed` 时出现——那是后端**不再补**的失败（模型不可达、校验器
- * 崩了这类，见 backend/orchestration/batch.py 的 `_run_slot`：它只静默补「成功但
- * 评价方判不了」的版位）。因此这里不写「自动重试中」：那会是一句不会发生的承诺。
- * 补这一套的入口是页面顶部整批那条「补生成这 N 套」，一个动作补齐，用户不用逐张点。
+ * 客户的两句话决定了这件事：
+ *
+ *   「前端不再渲染任何『生成异常』空卡片。只要模型返回了文本就必须展示」
+ *   「如果是 API 调用本身失败（网络超时等真正没内容的情况），后台静默补跑，补不上就
+ *     少返回一套，不放空卡片」
+ *
+ * 它原本几乎全部是被**校验**触发的：三次校验都没过 → `validation_exhausted` → 材料被吞
+ * → 这张空卡。而模型每一次都正常返回了完整脚本。现在校验是质检报告不是门卫，材料照样
+ * 交付（校验意见挂在阅读页上），这条路径不存在了。
+ *
+ * 剩下的唯一情况是真的没有内容（模型调用失败、slot 崩了）。那种情况后端现在会静默补跑
+ * （batch.py 的 `REFILLABLE_FAILURES`），补不上就是这个场景**少一套**——组头上的
+ * 「2/3」如实说出了这件事，页面顶部还有一条整批的「补生成这 N 套」。少一张卡是诚实的，
+ * 一张写着「生成异常」的空卡只是把我们自己的故障当成内容摆给用户看。
  */
-function ErrorCard({ scenarioTitle, label }: { scenarioTitle: string; label: string }) {
-  return (
-    <div className="mat-card err-card" aria-label={`${scenarioTitle} ${label} 生成异常`}>
-      <div className="mat-card-top">
-        <span className="mat-card-label">{label}</span>
-        <span className="status-badge err-badge">生成异常</span>
-      </div>
-      <div className="skel-scn">{scenarioTitle}</div>
-      {/* 不写「自动重试中」：这是终态失败，`_run_slot` 只补跑 NOT_ASSESSABLE，模型不可达
-          或崩溃的一套不会自己回来。写一句后端不会兑现的承诺，用户只会一直等。 */}
-      <div className="err-note">这一套没有生成出来，页面下方可一次补齐。</div>
-    </div>
-  )
-}
 
 /* ── 一张材料卡 ─────────────────────────────────────────────────────────────── */
 
@@ -550,6 +546,8 @@ export function BatchProgressPage() {
               </span>
               <span className="scn-group-title">{meta.titleZh}</span>
               <span className="scn-group-tag">{meta.categoryZh}</span>
+              {/* 「2/3」就是「少返回一套」这件事本身的说法。空卡片删掉之后，这个计数是
+                  用户唯一需要知道的：这个场景要了 3 套、到了 2 套。 */}
               <span className="scn-group-count">
                 {group.arrived}/{group.slots.length}
               </span>
@@ -587,9 +585,12 @@ export function BatchProgressPage() {
                 const label = `第 ${slot.index + 1} 套`
                 // key 是 (场景, 第 N 套)，骨架期和真卡期同一个值：React 因此把骨架
                 // **替换**成真卡，而不是在旁边多挂一张。
-                if (slot.state === 'error') {
-                  return <ErrorCard key={slot.key} scenarioTitle={meta.titleZh} label={label} />
-                }
+                //
+                // 没有出来的版位**不渲染**。后端已经静默补跑过了（batch.py 的
+                // `REFILLABLE_FAILURES`），到这一步还是空的就是这个场景少一套——组头的
+                // 「N/M」已经说了，顶部还有整批的补生成入口。渲染一张空卡等于把我们自己的
+                // 故障当成一份材料摆出来，客户点名不要。
+                if (slot.state === 'error') return null
                 const card = slot.materialId ? cards.get(slot.materialId) : undefined
                 if (!card || !slot.materialId) {
                   return <SkeletonCard key={slot.key} scenarioTitle={meta.titleZh} label={label} />

@@ -1120,7 +1120,7 @@ class TestAFailedSelectLeavesNothingStuck:
                 audit=audit_aligned, cross_check={"matched": 1},
             ),
             slot_id="slot-1", material_id=None, scenario_key=None, group_key=None,
-            degraded=False, degraded_reason=None,
+            degraded=False, degraded_reason=None, validation_findings=[],
         )
         scenario = types.SimpleNamespace(id="accommodation-rental", key="accommodation-rental")
 

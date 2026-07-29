@@ -9,17 +9,21 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import type { AudioStatusResponse } from '@/contracts/api'
+import type { AudioStatusResponse, MaterialRecord } from '@/contracts/api'
 import { buildRecord } from '@/mocks/fixtures'
 import { MaterialPage } from './MaterialPage'
 
-const MATERIAL_ID = 'mat-reader-1'
-const record = buildRecord('clustered', {
+// 生产形状的 material_id（`YYYYMMDD-<scenario_key>-<8 hex>`）。用假形状会让这一页看起来能用
+// 任何 id 工作，而后端的候选注册表只认这一种。
+const MATERIAL_ID = '20260729-accommodation-rental-11aa22bb'
+const baseRecord = buildRecord('clustered', {
   materialId: MATERIAL_ID,
   batchId: 'b1',
   scenarioKey: 'accommodation-rental',
   index: 0,
 })
+/** 每个测试自己决定这一套带不带校验意见；beforeEach 复位成不带。 */
+let record: MaterialRecord = baseRecord
 
 /** 音频状态由测试驱动，`previewAudio` 的调用次数被计下来。 */
 let audio: AudioStatusResponse = { status: 'not_requested', progress: { done: 0, total: 0 } }
@@ -49,6 +53,7 @@ function renderPage() {
 }
 
 beforeEach(() => {
+  record = baseRecord
   previewCalls.length = 0
   audio = { status: 'not_requested', progress: { done: 0, total: 0 } }
 })
@@ -137,5 +142,68 @@ describe('MaterialPage 考点小结', () => {
     }
     // 篇幅数字留着——它是「够不够 600-650 词」这个判断的原始依据，只是不再用校验器的英文说。
     expect(body).toContain('篇幅')
+  })
+})
+
+/* ── 校验意见（校验从门卫改成质检报告之后新出现的一类材料） ─────────────────── */
+
+describe('MaterialPage 结构校验意见', () => {
+  const FINDINGS = [
+    'blueprint.items[4].turn_index 20 does not carry its evidence (found at turn 21)',
+    'dialogue words outside 450-750: 812 (over the 600-650 target by 187 words)',
+    'blueprint must mark at least 3 confirmed items; found 1',
+  ]
+
+  it('says nothing at all when the material validated cleanly', async () => {
+    renderPage()
+    await waitFor(() => expect(document.querySelector('.exam-points')).not.toBeNull())
+    // 没有意见就不该有面板：一个写着「0 条」的空面板只会让人以为漏了什么。
+    expect(document.querySelector('.vn-list')).toBeNull()
+    expect(document.body.textContent).not.toContain('结构校验意见')
+  })
+
+  it('states the findings as places to look, in the 命题人 vocabulary', async () => {
+    record = { ...baseRecord, validation_findings: FINDINGS }
+    renderPage()
+    const list = await waitFor(() => {
+      const found = document.querySelector('.vn-list')
+      if (!found) throw new Error('校验意见面板尚未渲染')
+      return found
+    })
+    expect(list.querySelectorAll('li')).toHaveLength(3)
+
+    const text = list.textContent!
+    // 校验器的英文阈值原文一律不上页面——这正是上一轮把「提示（不影响采用）」删掉的理由。
+    for (const raw of ['blueprint.items', 'turn_index', 'dialogue words outside', 'confirmed items']) {
+      expect(text, raw).not.toContain(raw)
+    }
+    // 措辞是「看这里」，不是「这里坏了 / 你去修」：校验器自己会判错真题。
+    expect(document.body.textContent).toContain('材料本身完整可用')
+    for (const blaming of ['缺陷', '不合格', '请修改', '错误']) {
+      expect(text, blaming).not.toContain(blaming)
+    }
+    // 带题号的那一条给出可跳转的点号——离开原文这条意见没有意义。
+    expect(list.querySelectorAll('.ep-num').length).toBeGreaterThan(0)
+  })
+
+  it('keeps an unrecognised finding verbatim rather than dropping it', async () => {
+    record = { ...baseRecord, validation_findings: ['some brand new rule nobody has mapped yet'] }
+    renderPage()
+    const list = await waitFor(() => {
+      const found = document.querySelector('.vn-list')
+      if (!found) throw new Error('校验意见面板尚未渲染')
+      return found
+    })
+    // 翻不动的线索仍然是线索。悄悄丢掉会让人以为材料是干净的。
+    expect(list.textContent).toContain('some brand new rule nobody has mapped yet')
+  })
+
+  it('still offers 生成音频: a material with findings is fully operable', async () => {
+    record = { ...baseRecord, validation_findings: FINDINGS }
+    renderPage()
+    // 「前端展示了的材料，后端必须保留其可操作状态」——带校验意见不等于降级。
+    const button = await screen.findByRole('button', { name: /生成音频/ })
+    await userEvent.click(button)
+    expect(previewCalls).toEqual([MATERIAL_ID])
   })
 })

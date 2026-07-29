@@ -147,14 +147,85 @@ def bad_validation(errors):
 
 class TestGenerationBudget:
     @pytest.mark.asyncio
-    async def test_three_validation_failures_exhaust_the_budget(self, harness):
+    async def test_three_validation_failures_still_deliver_the_last_attempt(self, harness):
+        """Validation is a report, not a gate.
+
+        This test used to assert the opposite -- ok=False, reason="validation_exhausted", and
+        `audit_calls == []` on the reasoning that "a rejected material must never reach the audit".
+        The product owner overruled it, and the diagnosis was right: "模型正常返回了内容，是校验规则
+        把它判死了 -- 这不是'生成异常'". Five of the validator's rules were then measured rejecting
+        real exam papers, which is what "the validator is sometimes wrong" looks like in numbers.
+
+        So the material is delivered, and it goes through the REST of the pipeline unchanged -- it
+        is audited and cross-checked like any other, which is why `audit_calls` is now expected to
+        be non-empty. The retries are untouched (still three attempts, still accumulating
+        feedback); only the give-up changed from discard to deliver.
+        """
         harness.validate_results = [bad_validation(["e1"]), bad_validation(["e2"]),
                                     bad_validation(["e3"])]
+        harness.audit_results = [audit_doc("PASS", 84)]
+        harness.crosscheck_results = [clean_crosscheck()]
         result = await run_one(FakeScenario(), "slot-1", harness.emit)
-        assert not result.ok
-        assert result.reason == "validation_exhausted"
-        assert len(harness.generate_calls) == 3
-        assert harness.audit_calls == [], "a rejected material must never reach the audit"
+
+        assert result.ok, "a material the model returned must not be swallowed"
+        assert result.candidate is not None
+        assert len(harness.generate_calls) == 3, "all three attempts are still spent"
+        assert len(harness.audit_calls) == 1, "the delivered material is still audited"
+        # The findings travel with it, so the reader page can state them as reference.
+        assert result.validation_findings == ["e3"], "the LAST attempt's findings, not all three"
+        # Not `degraded`: that flag means "skipped part of the pipeline", and this material did not.
+        assert result.degraded is False
+        assert "validation_reported" in harness.stages
+
+    @pytest.mark.asyncio
+    async def test_a_revision_that_fixes_validation_clears_the_findings(self, harness):
+        """The reason the retries and the revision are still worth their cost.
+
+        Three generations failed validation, the material was delivered anyway, and then the
+        revision produced a version that validates. The delivered artifact is the revision, so it
+        must NOT carry the initial version's findings -- reporting notes about a script that is not
+        the one on screen would send a question-writer looking for a defect that no longer exists.
+        """
+        harness.validate_results = [bad_validation(["e1"]), bad_validation(["e2"]),
+                                    bad_validation(["e3"]), ok_validation()]
+        # A minor finding on the first audit, so `is_clean` is False and the revision actually runs.
+        harness.audit_results = [audit_doc("PASS_WITH_MINOR_EDITS", 70, findings=[{"severity": "minor", "rule": "r",
+                                                             "evidence": "e", "fix": "f"}]),
+                                 audit_doc("PASS", 92)]
+        harness.crosscheck_results = [clean_crosscheck(), clean_crosscheck()]
+        result = await run_one(FakeScenario(), "slot-1", harness.emit)
+
+        assert result.ok and result.selected_version == "revised"
+        assert result.validation_findings == []
+
+    @pytest.mark.asyncio
+    async def test_findings_survive_when_the_initial_version_wins(self, harness):
+        """The mirror case: the revision validates but scores worse, so `initial` ships.
+
+        `initial` is the same script the validator reported on, so it keeps those findings. Dropping
+        them because a revision happened would deliver a material whose notes were computed from a
+        version nobody sees.
+        """
+        harness.validate_results = [bad_validation(["e1"]), bad_validation(["e2"]),
+                                    bad_validation(["e3"]), ok_validation()]
+        harness.audit_results = [audit_doc("PASS", 92, findings=[{"severity": "minor", "rule": "r",
+                                                             "evidence": "e", "fix": "f"}]), audit_doc("PASS", 61)]
+        harness.crosscheck_results = [clean_crosscheck(), clean_crosscheck()]
+        result = await run_one(FakeScenario(), "slot-1", harness.emit)
+
+        assert result.ok and result.selected_version == "initial"
+        assert result.validation_findings == ["e3"]
+
+    @pytest.mark.asyncio
+    async def test_a_clean_material_carries_no_findings(self, harness):
+        """The normal path must be untouched: an empty list, never a missing key."""
+        harness.validate_results = [ok_validation()]
+        harness.audit_results = [audit_doc("PASS", 91)]
+        harness.crosscheck_results = [clean_crosscheck()]
+        result = await run_one(FakeScenario(), "slot-1", harness.emit)
+
+        assert result.ok and result.validation_findings == []
+        assert result.as_dict()["validation_findings"] == []
 
     @pytest.mark.asyncio
     async def test_third_attempt_passing_continues_normally(self, harness):
@@ -228,7 +299,7 @@ class TestGenerationBudget:
     @pytest.mark.asyncio
     async def test_unrepairable_anchors_still_reach_the_validator(self, harness, clone,
                                                                   monkeypatch):
-        """A failed repair must not short-circuit anything: the validator remains authoritative."""
+        """A failed repair must not short-circuit anything: the validator still runs every time."""
         broken = clone(harness.blueprint)
         broken["items"][0]["evidence"] = "text that appears nowhere"
         harness.blueprint = broken
@@ -239,9 +310,14 @@ class TestGenerationBudget:
             return bad_validation(["evidence not found"])
 
         monkeypatch.setattr(loop_module, "validate", spy_validate)
+        harness.audit_results = [audit_doc("PASS", 80)]
+        harness.crosscheck_results = [clean_crosscheck()]
         result = await run_one(FakeScenario(), "slot-1", harness.emit)
         assert len(calls) == 3, "every attempt must still be validated"
-        assert result.reason == "validation_exhausted"
+        # Still delivered, still reported. The unrepairable anchor is now a note on a material the
+        # user can read rather than the reason they got nothing.
+        assert result.ok
+        assert result.validation_findings == ["evidence not found"]
 
     @pytest.mark.asyncio
     async def test_repeated_errors_are_not_duplicated_in_feedback(self, harness):

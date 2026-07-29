@@ -109,6 +109,31 @@ const nextId = (prefix: string) => {
 }
 
 /**
+ * A material id in the SHAPE the backend actually mints: `YYYYMMDD-<scenario_key>-<8 hex>`.
+ * See `audio_storage/state_store.py`'s `new_material_id`.
+ *
+ * The mock used to hand out `mat-001`, and the AgentCore adapter used to hand out
+ * `<batchId>::<slot_id>`. Neither matched production, and that is why the mock could not reproduce
+ * the 试听 failure: the backend rejected the adapter's id as an unknown candidate, while the mock
+ * happily resolved its own invented one. A mock that cannot reproduce a production bug is worse
+ * than no mock — it certifies the broken path as working. Matching the real shape here means a
+ * future id-space mismatch fails in `npm run dev:mock` rather than only against real AWS.
+ */
+const nextMaterialId = (scenarioKey: string) => {
+  const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+  counter += 1
+  try {
+    sessionStorage.setItem(COUNTER_KEY, String(counter))
+  } catch {
+    /* private mode */
+  }
+  // Deterministic rather than random: a fixture set that changes id on every reload makes a
+  // screenshot diff unreadable, and uniqueness within a session is all the registry needs.
+  const hex = (counter * 0x9e3779b1).toString(16).slice(-8).padStart(8, '0')
+  return `${stamp}-${scenarioKey}-${hex}`
+}
+
+/**
  * Batch plans survive a page reload via sessionStorage.
  *
  * Without this the mock would fail the "refresh and return to the in-flight
@@ -155,6 +180,11 @@ const knownKeys = new Set(
 /**
  * Seeds a couple of audit-rejected materials so the "flawed but selectable" card
  * is reachable without waiting for a batch to produce one.
+ *
+ * The fourth seed is the one that matters for the validation-as-a-report change: a material the
+ * validator still has notes about, which the backend now DELIVERS instead of swallowing. Without a
+ * mock for it, the reader page's 结构校验意见 panel could only be seen against real AWS after three
+ * consecutive validation failures — i.e. in practice, never.
  */
 function seedStandalone() {
   if (standaloneMaterials.size > 0) return
@@ -162,9 +192,12 @@ function seedStandalone() {
     { kind: 'failed', scenarioKey: 'booking-car-rental' },
     { kind: 'failed', scenarioKey: 'booking-car-rental' },
     { kind: 'failed', scenarioKey: 'employment-vacancy' },
+    { kind: 'clustered', scenarioKey: 'accommodation-rental' },
   ]
   seeds.forEach((s, i) => {
-    const id = `seed-rejected-${i + 1}`
+    // Same production shape as every other mock id. A `seed-rejected-1` would be a second id
+    // format the frontend has to tolerate and production never emits.
+    const id = `20260101-${s.scenarioKey}-seed000${i + 1}`
     const rec = buildRecord(s.kind, {
       materialId: id,
       batchId: 'seed-batch',
@@ -177,6 +210,15 @@ function seedStandalone() {
         code: 'NOT_ASSESSABLE',
         message: '评价环节未能给出结论，本套的质量没有经过复核',
       }
+    }
+    if (i === 3) {
+      // Verbatim validator output, which is the point: the reader page has to translate whatever
+      // the script actually emits, not a pre-tidied version of it.
+      rec.validation_findings = [
+        'blueprint.items[4].turn_index 20 does not carry its evidence (found at turn 21)',
+        'dialogue words outside 450-750: 812 (over the 600-650 target by 187 words)',
+        'blueprint must mark at least 3 confirmed items; found 1',
+      ]
     }
     standaloneMaterials.set(id, rec)
   })
@@ -277,7 +319,7 @@ const mockTransport = async (spec: RequestSpec): Promise<unknown> => {
     const batchId = nextId('batch')
     const materials = body.requests.flatMap((r) =>
       Array.from({ length: r.count }, (_, i) => ({
-        materialId: nextId('mat'),
+        materialId: nextMaterialId(r.scenario_key),
         scenarioKey: r.scenario_key,
         index: i,
         kind: options.kinds[(i + body.requests.indexOf(r) * 2) % options.kinds.length]!,
@@ -340,7 +382,7 @@ const mockTransport = async (spec: RequestSpec): Promise<unknown> => {
     const plan = {
       batchId,
       materials: Array.from({ length: count }, (_, i) => ({
-        materialId: nextId('mat'),
+        materialId: nextMaterialId(body.scenario_keys?.[i] ?? 'booking-hotel'),
         scenarioKey: body.scenario_keys?.[i] ?? 'booking-hotel',
         index: i,
         kind: 'balanced' as FixtureKind,

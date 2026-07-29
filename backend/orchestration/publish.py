@@ -120,7 +120,7 @@ class Candidate:
 
     __slots__ = ("material_id", "scenario_key", "group_key", "slot_id", "material", "blueprint",
                  "audit", "cross_check", "verdict", "score", "degraded", "degraded_reason",
-                 "created_at", "state")
+                 "validation_findings", "created_at", "state")
 
     def __init__(
         self,
@@ -134,6 +134,7 @@ class Candidate:
         cross_check: Any = None,
         degraded: bool = False,
         degraded_reason: Optional[str] = None,
+        validation_findings: Optional[List[str]] = None,
     ) -> None:
         self.material_id = material_id
         self.scenario_key = scenario_key
@@ -148,6 +149,10 @@ class Candidate:
         self.score = score.get("total") if isinstance(score, dict) else None
         self.degraded = degraded
         self.degraded_reason = degraded_reason
+        # Structural notes the validator still had about this exact script. Carried on the candidate
+        # rather than recomputed at read time: validation ran against the script as generated, and a
+        # second run here would be a second source of truth for the same claim.
+        self.validation_findings = list(validation_findings or [])
         self.created_at = time.time()
         self.state = "offered"
 
@@ -200,6 +205,9 @@ class Candidate:
             "score": self.score,
             "degraded": self.degraded,
             "degraded_reason": self.degraded_reason,
+            # In the summary and not only the full record: the reader page loads a material through
+            # `get`, and a note the user cannot see is a note that does not exist.
+            "validation_findings": list(self.validation_findings),
             "state": self.state,
         }
         payload.update(self.card_fields())
@@ -238,6 +246,8 @@ class Candidate:
             cross_check=record.get("cross_check"),
             degraded=bool(record.get("degraded")),
             degraded_reason=record.get("degraded_reason"),
+            validation_findings=[f for f in (record.get("validation_findings") or [])
+                                 if isinstance(f, str)],
         )
         # Preserved rather than recomputed: `created_at` drives offer expiry, and `state` is the
         # discarded/selected outcome another instance already decided.

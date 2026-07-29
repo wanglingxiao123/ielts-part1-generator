@@ -151,6 +151,21 @@ export interface MaterialRecord {
   audit_rejection?: { code: string; message: string } | null
   /** Skipped revise+re-audit; must be surfaced, not silently treated as complete. */
   degraded?: boolean
+  /**
+   * Structural notes the deterministic validator still had about this exact script.
+   *
+   * Non-empty when three generation attempts all carried validator errors and the Loop delivered
+   * the last one anyway — validation is a report, not a gate (backend/orchestration/loop.py).
+   *
+   * A separate field from `degraded`, which means "delivered without the full pipeline". This
+   * material went through the whole pipeline; the validator merely still has notes. The two can
+   * co-occur and need different copy, so one boolean cannot answer both.
+   *
+   * Rendered on the READER page only. The result card is scenario name + timeline + first line +
+   * buttons; the client ruled evaluation prose off it, because a note has no meaning without the
+   * script beside it.
+   */
+  validation_findings?: string[]
   material: Material
   blueprint: Blueprint
   audit: Audit

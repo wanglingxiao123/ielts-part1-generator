@@ -25,6 +25,8 @@ import { analyseFormGroups } from '@/domain/formGroups'
 import { joinFromRecord } from '@/domain/joinArtifacts'
 import type { Playlist } from '@/domain/playlist'
 import { buildPlaylist } from '@/domain/playlist'
+import { circled } from '@/domain/types'
+import { summariseValidationNotes } from '@/domain/validationNotes'
 import { useAudioStore } from '@/stores/audioStore'
 import { useBatchStore } from '@/stores/batchStore'
 import { AudioPanel, AudioPlayer } from '../audio/AudioPlayer'
@@ -88,6 +90,16 @@ export function MaterialPage() {
     [view],
   )
   const examPoints = useMemo(() => (view ? summariseExamPoints(view) : null), [view])
+  /**
+   * 校验意见。只在这一页出现——结果页卡片上不放任何评价文字（客户明确要求）。
+   *
+   * 非空意味着：三次生成的结构校验都没过，后端把最后一次交付了（校验是质检报告，不是门卫）。
+   * 材料是完整的、可读的、可选的；这些只是出题前值得先看一眼的位置。
+   */
+  const validationNotes = useMemo(
+    () => summariseValidationNotes(record?.validation_findings ?? []),
+    [record?.validation_findings],
+  )
 
   const jumpTo = useCallback((turnIndex: number) => {
     setJump({ turnIndex, nonce: Date.now() })
@@ -211,6 +223,41 @@ export function MaterialPage() {
         <ExamPointPanel summary={examPoints} onJump={jumpTo} />
         <div className="panel-stack">
           <QuestionTypePanel analysis={groups} />
+
+          {/* 校验意见。放在原文下面、题型面板旁边，因为它只有对着原文才有意义——
+              这也是客户把评价文字限制在阅读页的理由。
+              措辞是「看这里」而不是「这里坏了」：校验器自己会判错（本轮实测有 5 条规则
+              会判掉真题），所以它给的是线索，不是判决。 */}
+          {validationNotes.notes.length > 0 && (
+            <div className="panel panel-pad">
+              <h3>结构校验意见</h3>
+              <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
+                {validationNotes.headline}
+              </div>
+              <ul className="vn-list">
+                {validationNotes.notes.map((note) => (
+                  <li key={note.key}>
+                    {note.numbers.length > 0 && (
+                      <span className="vn-nums">
+                        {note.numbers.map((n) => (
+                          <button
+                            key={n}
+                            type="button"
+                            className="ep-num"
+                            title={`跳到第 ${n} 题的信息所在的那一句`}
+                            onClick={() => jumpTo(examPoints.turnOf[n] ?? 0)}
+                          >
+                            {circled(n)}
+                          </button>
+                        ))}
+                      </span>
+                    )}
+                    <span>{note.text}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           <div className="panel panel-pad">
             <h3>篇幅</h3>
             <div className="row mono" style={{ fontSize: 12 }}>

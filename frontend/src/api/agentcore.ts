@@ -16,14 +16,35 @@
  * | batch is a server-side job        | batch lives for the duration of the POST |
  * | `id: <seq>` per event, replayable  | `data:`-only frames, no seq, no replay   |
  * | `event: material` names the type  | type is a field INSIDE data              |
- * | `material_id`                     | `slot_id` ("slot-1"), scoped to the POST |
  * | GET /batches/{id} snapshot        | no such route                            |
  * | GET /materials/{id}               | no such route                            |
  *
  * Two decisions follow, and both are deliberate rather than convenient:
  *
- * 1. **Ids are minted client-side** as `<batchId>::<slot_id>`. The backend has no
- *    material identity that outlives the request, so there is nothing to adopt.
+ * 1. **The backend's `material_id` is authoritative.** This used to read "ids are
+ *    minted client-side as `<batchId>::<slot_id>`, the backend has no material
+ *    identity that outlives the request, so there is nothing to adopt". That was
+ *    true when it was written and has not been for some time: `_run_slot` now
+ *    mints a real id through `new_material_id` (`YYYYMMDD-<scenario>-<hash8>`),
+ *    registers a candidate under it in shared storage, and puts it in
+ *    `material_completed`. The synthetic id kept being sent anyway, so every
+ *    call that resolves a candidate server-side — `preview_audio`, `select`,
+ *    `audio_status`, `presign_audio` — was handed a key the registry had never
+ *    seen and answered:
+ *
+ *      no candidate 'batch-ms61jp3r-1::slot-2'; it was never offered, was
+ *      discarded, or the offer expired
+ *
+ *    Clicking 试听 on a material the page had just rendered therefore failed
+ *    100% of the time. The rule that closes it is the client's: 前端展示了的材料，
+ *    后端必须保留其可操作状态 — so the id the UI holds must be the id the backend
+ *    knows, which means adopting theirs rather than inventing ours.
+ *
+ *    A slot key is still needed to place a card before its material arrives, and
+ *    it is still `<batchId>::<slot_id>` — but it now lives in `Slot.placeholderId`
+ *    and is replaced by the real `material_id` the moment `material_completed`
+ *    lands. A placeholder never reaches an endpoint, because a placeholder card
+ *    is a skeleton and a skeleton has no buttons.
  * 2. **Materials are cached in this module** so that GET-material / GET-materials /
  *    compare keep working. That cache is the ONLY store; a page reload loses the
  *    batch. This is reported honestly in the UI (see `sessionResumable`) rather
@@ -86,6 +107,27 @@ interface WireMaterialCompleted {
   slot_id: string
   scenario: string
   ok: true
+  /**
+   * The registry key. `YYYYMMDD-<scenario_key>-<8 hex>`, from `new_material_id`.
+   *
+   * Optional in the type, not because the backend omits it — `MaterialResult.as_dict`
+   * always emits the field — but because it is `null` when candidate registration
+   * failed. `_run_slot` deliberately assigns `result.material_id` only after
+   * `REGISTRY.register` succeeds, so a null here means "this material exists but no
+   * candidate backs it", and offering it for 试听 would reproduce the very error this
+   * field is here to prevent.
+   */
+  material_id?: string | null
+  scenario_key?: string | null
+  group_key?: string | null
+  /**
+   * Structural notes the validator still had about the delivered script.
+   *
+   * Non-empty when three generation attempts all carried validator errors and the
+   * Loop delivered the last one anyway (validation is a report, not a gate). Rendered
+   * on the reader page only — never on the result card.
+   */
+  validation_findings?: string[]
   material: Material
   blueprint: Blueprint
   audit: Audit
@@ -313,13 +355,26 @@ function failureMessage(reason: string, detail: unknown): string {
 /* ── the session store ───────────────────────────────────────────────────── */
 
 interface Slot {
-  materialId: string
+  /**
+   * `<batchId>::<slot_id>`. A React key and a snapshot row id — nothing more.
+   *
+   * It must never be sent to an endpoint that resolves a candidate: it is not a
+   * `material_id` and the backend registry has never heard of it. That is why the
+   * field is not called `materialId` any more; the old name is what made passing it
+   * to `previewAudio` look correct.
+   */
+  placeholderId: string
   slotId: string
   scenarioKey: string
   index: number
   stage: MaterialStage
   attempt: number
   status: BatchItemSnapshot['status']
+  /**
+   * The backend's registry key, present once `material_completed` has arrived AND
+   * carried one. Every operable action keys off THIS.
+   */
+  materialId: string | null
   record?: MaterialRecord
   failure?: { code: string; message: string; attempts: number }
 }
@@ -349,10 +404,18 @@ let batchCounter = 0
 
 type SlotHit = { session: Session; slot: Slot }
 
+/**
+ * Resolve a slot by the BACKEND's material_id only.
+ *
+ * Deliberately no fallback to `placeholderId`: a lookup that accepted a slot key would let
+ * `previewAudio` pass its local guard and then fail server-side with "no candidate", which is
+ * exactly the failure this module now prevents. A local 404 naming the material is a far better
+ * report than a backend error naming an id nobody can look up.
+ */
 function findSlotByMaterial(materialId: string): SlotHit | null {
   for (const session of sessions.values()) {
     for (const slot of session.slots.values()) {
-      if (slot.materialId === materialId) return { session, slot }
+      if (slot.materialId !== null && slot.materialId === materialId) return { session, slot }
     }
   }
   return null
@@ -405,9 +468,14 @@ function emit(session: Session, build: (seq: number) => SseEvent | null): void {
   for (const fn of session.listeners) fn(event)
 }
 
-function toRecord(session: Session, slot: Slot, wire: WireMaterialCompleted): MaterialRecord {
+function toRecord(
+  session: Session,
+  slot: Slot,
+  wire: WireMaterialCompleted,
+  materialId: string,
+): MaterialRecord {
   return {
-    material_id: slot.materialId,
+    material_id: materialId,
     batch_id: session.batchId,
     scenario_key: slot.scenarioKey,
     index: slot.index,
@@ -415,6 +483,9 @@ function toRecord(session: Session, slot: Slot, wire: WireMaterialCompleted): Ma
     verdict: wire.audit.verdict as Verdict,
     audit_rejection: auditRejection(wire.audit, wire.route),
     degraded: wire.degraded,
+    // Passed through verbatim. The card must not read these (the client ruled evaluation prose off
+    // the card); the reader page states them as reference for a question-writer.
+    validation_findings: wire.validation_findings ?? [],
     material: wire.material,
     blueprint: wire.blueprint,
     audit: wire.audit,
@@ -446,7 +517,10 @@ function applyWire(session: Session, wire: WireEvent): void {
       emit(session, (seq) => ({
         event: 'progress',
         seq,
-        material_id: slot.materialId,
+        // A progress event addresses a SLOT, and before its material arrives there is no
+        // material_id to address it by. The placeholder is right here and only here: the store
+        // keys skeleton cards on it, and nothing operable hangs off a skeleton.
+        material_id: slot.materialId ?? slot.placeholderId,
         stage: slot.stage,
         attempt: slot.attempt,
         // Verbatim, untranslated: the consumer is the progress mapping, not a label.
@@ -458,8 +532,17 @@ function applyWire(session: Session, wire: WireEvent): void {
       const slot = ensureSlot(session, wire.slot_id, wire.scenario)
       slot.status = 'done'
       slot.stage = 're_auditing'
-      slot.record = toRecord(session, slot, wire)
-      const record = slot.record
+      if (wire.scenario_key) slot.scenarioKey = wire.scenario_key
+      // Adopt the backend's id. When it is absent the material exists but no candidate backs it
+      // (registration failed server-side), so `select` and 试听 genuinely cannot work on it. It is
+      // still delivered and still readable — the client's rule is that a material the model
+      // produced is never withheld — and the reader page reports the audio button as unavailable
+      // rather than offering one that fails. `materialId` stays null, which is what makes that
+      // difference visible instead of turning it into a runtime error.
+      const materialId = wire.material_id ?? null
+      slot.materialId = materialId
+      const record = toRecord(session, slot, wire, materialId ?? slot.placeholderId)
+      slot.record = record
       emit(session, (seq) => ({
         event: 'material',
         seq,
@@ -484,7 +567,9 @@ function applyWire(session: Session, wire: WireEvent): void {
       emit(session, (seq) => ({
         event: 'material_failed',
         seq,
-        material_id: slot.materialId,
+        // A failed slot has no material and therefore no backend id; the placeholder is the only
+        // handle the store can key the failed card on.
+        material_id: slot.materialId ?? slot.placeholderId,
         code: wire.reason,
         message,
         attempts: slot.attempt,
@@ -550,13 +635,14 @@ function ensureSlot(session: Session, slotId: string, scenario: string): Slot {
   }
   const sameScenario = [...session.slots.values()].filter((s) => s.scenarioKey === scenario)
   const slot: Slot = {
-    materialId: `${session.batchId}::${slotId}`,
+    placeholderId: `${session.batchId}::${slotId}`,
     slotId,
     scenarioKey: scenario,
     index: sameScenario.length,
     stage: 'queued',
     attempt: 1,
     status: 'pending',
+    materialId: null,
   }
   session.slots.set(slotId, slot)
   session.slotOrder.push(slotId)
@@ -738,13 +824,16 @@ async function createBatch(body: CreateBatchRequest): Promise<CreateBatchRespons
     n += 1
     const slotId = `slot-${n}`
     slots.set(slotId, {
-      materialId: `${batchId}::${slotId}`,
+      placeholderId: `${batchId}::${slotId}`,
       slotId,
       scenarioKey: p.scenarioKey,
       index: p.index,
       stage: 'queued',
       attempt: 0,
       status: 'pending',
+      // No id yet: the backend mints it when the material completes. Planned slots exist to lay
+      // out skeleton cards, and a skeleton has no operable action.
+      materialId: null,
     })
     slotOrder.push(slotId)
   }
@@ -777,7 +866,8 @@ async function createBatch(body: CreateBatchRequest): Promise<CreateBatchRespons
     items: slotOrder.map((slotId) => {
       const slot = slots.get(slotId)!
       return {
-        material_id: slot.materialId,
+        // Placeholder: no material exists yet, and the store uses this only to key the skeleton.
+        material_id: slot.placeholderId,
         scenario_key: slot.scenarioKey,
         index: slot.index,
       }
@@ -789,7 +879,8 @@ function snapshot(session: Session): BatchSnapshot {
   const items: BatchItemSnapshot[] = session.slotOrder.map((slotId) => {
     const slot = session.slots.get(slotId)!
     return {
-      material_id: slot.materialId,
+      // The real id once the material has arrived; the placeholder while it is still a skeleton.
+      material_id: slot.materialId ?? slot.placeholderId,
       scenario_key: slot.scenarioKey,
       index: slot.index,
       status: slot.status,
@@ -877,9 +968,13 @@ async function previewAudio(materialId: string): Promise<PreviewAudioResponse> {
 function siblingsOf(hit: SlotHit, materialId: string): string[] {
   return [...hit.session.slots.values()]
     .filter(
-      (s) => s.record && s.scenarioKey === hit.slot.scenarioKey && s.materialId !== materialId,
+      (s) =>
+        s.record &&
+        s.materialId !== null &&
+        s.scenarioKey === hit.slot.scenarioKey &&
+        s.materialId !== materialId,
     )
-    .map((s) => s.materialId)
+    .map((s) => s.materialId!)
 }
 
 async function audioStatus(materialId: string): Promise<AudioStatusResponse> {
@@ -1008,10 +1103,19 @@ const agentCoreTransport: Transport = async (spec: RequestSpec): Promise<unknown
   if (spec.method === 'POST' && resource === 'batches' && sub === 'retry') {
     const body = spec.body as { material_ids?: string[]; scenario_keys?: string[] }
     const source = sessions.get(id!)
+    // Resolve each id back to its scenario. Both shapes reach here: a failed slot is keyed on its
+    // placeholder (`<batchId>::slot-N`), a delivered one on the backend's material_id. Matching
+    // against BOTH fields rather than parsing the string is what keeps this working now that the
+    // two id spaces are no longer interchangeable.
     const keys =
       body.scenario_keys ??
       (body.material_ids ?? [])
-        .map((mid) => source?.slots.get(mid.split('::')[1] ?? '')?.scenarioKey)
+        .map(
+          (mid) =>
+            [...(source?.slots.values() ?? [])].find(
+              (s) => s.materialId === mid || s.placeholderId === mid,
+            )?.scenarioKey,
+        )
         .filter((k): k is string => Boolean(k))
     if (keys.length === 0) {
       throw new ApiError(400, 'RETRY_EMPTY', '没有可补生成的场景')

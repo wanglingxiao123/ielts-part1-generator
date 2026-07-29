@@ -33,9 +33,17 @@ MIN_GROUPED_ITEMS = 3
 MIN_CHOICE_ITEMS = 2
 MAX_GROUP_SPAN = 14
 SPELLING_RE = re.compile(r"\b(?:[A-Z]\s*[-,]\s*){2,}[A-Z]\b|\b[A-Z](?:-[A-Z]){2,}\b|\bdouble\s+[A-Z]\b", re.I)
-NUMBER_RE = re.compile(r"(?:[$£€]\s*\d|\b\d+\b)")
-FIRST_RANGE_RE = re.compile(r"questions?\s+1\s*(?:to|[-~–])\s*(\d+)", re.I)
-SECOND_RANGE_RE = re.compile(r"questions?\s+(\d+)\s*(?:to|[-~–])\s*10", re.I)
+# `\b\d+\b` misses a digit glued to a suffix, which is how real transcripts write ordinals and
+# postcodes: snap_002's only numeral is "80th" and snap_054's postcode is "B0241DJ". Measured, the
+# word-boundary form rejected snap_002 outright -- a paper whose dialogue is full of dates and
+# amounts -- for having no numeric information. Any digit at all is the honest test; the spec
+# (§3) asks for "一处数字信息", not for a bare integer token.
+NUMBER_RE = re.compile(r"(?:[$£€]\s*\d|\d)")
+# `\s+` after "questions" rejects the un-spaced form. Measured: snap_022_scripts_topic8163 writes
+# "questions1~4" and was rejected for having no split at all, which then also failed the blueprint
+# split rule. The separator is optional, matching the corpus rather than our typography.
+FIRST_RANGE_RE = re.compile(r"questions?\s*1\s*(?:to|[-~–])\s*(\d+)", re.I)
+SECOND_RANGE_RE = re.compile(r"questions?\s*(\d+)\s*(?:to|[-~–])\s*10", re.I)
 # Match the requirement semantically, not by literal phrase. The spec asks the opening to
 # "naturally cover four recordings" and the closing to give "checking time"; it never fixes the
 # wording. Real archived scripts bear this out: 30/30 say "check your answers", but only 4/30 say
@@ -207,8 +215,20 @@ def validate_blueprint(blueprint: object, turns: list[dict], midpoint: int, firs
         errors.append("blueprint.narration_mode must be full or short")
         mode = "full"
     split_after = blueprint.get("split_after")
-    if split_after not in {5, 6} or split_after != first_end or second_start != first_end + 1:
-        errors.append("blueprint split must match a contiguous 1-5/6-10 or 1-6/7-10 narration split")
+    # The bound is 3-7, identical to the narration rule below, and that is the point: this check
+    # used to accept only {5, 6} while the narration check accepted 3-7, so a material with a
+    # perfectly legal 1-4/5-10 split -- the single commonest split in the archive, 9 of 27 papers --
+    # passed the narration rule and was then failed here. The generator could not satisfy both, and
+    # the error message named a constraint the sibling rule had already stopped enforcing.
+    # What is still enforced is the part that matters: the blueprint's split must be the SAME split
+    # the narration announced, so items 1-N are the ones the candidate is told to answer first.
+    if not 3 <= (split_after if isinstance(split_after, int) else 0) <= 7 \
+            or split_after != first_end or second_start != first_end + 1:
+        errors.append(
+            "blueprint.split_after must equal the narration's own split point (3-7, contiguous); "
+            "narration says 1-{0}/{1}-10 and the blueprint says {2!r}".format(
+                first_end, second_start, split_after)
+        )
     items = blueprint.get("items")
     if not isinstance(items, list) or len(items) != 10:
         errors.append("blueprint.items must contain exactly 10 items")
@@ -488,12 +508,15 @@ def main() -> int:
                         if words(narration) < 160 else "Trim the narration; it carries no answers.",
                     )
                 )
-        elif not 70 <= words(narration) <= 110:
+        # 70-115, not 70-110. Measured over the 20 short-mode archived papers the counts run
+        # 75..111, so the old ceiling rejected the longest real one by a single word -- a band
+        # derived from the corpus has to contain the corpus.
+        elif not 70 <= words(narration) <= 115:
             errors.append(
-                "short narration must be 70-110 words; found {0} ({1} by {2})".format(
+                "short narration must be 70-115 words; found {0} ({1} by {2})".format(
                     words(narration),
                     "short" if words(narration) < 70 else "long",
-                    abs(90 - words(narration)),
+                    70 - words(narration) if words(narration) < 70 else words(narration) - 115,
                 )
             )
         dialogue_turns = [turn for turn in turns if turn.get("speaker") != "speaker1"]
@@ -519,14 +542,33 @@ def main() -> int:
             warnings.append(f"dialogue turns outside preferred 30-40: {len(dialogue_turns)}")
         before = sum(i < narrator[1] for i, turn in enumerate(turns) if turn.get("speaker") != "speaker1")
         after = len(dialogue_turns) - before
-        if before < 8 or after < 8:
-            errors.append(f"each half needs 8 turns; found {before}/{after}")
+        # Floor of 7, not 8. Measured: snap_042 runs 18/7 and was rejected for its 7-turn second
+        # half, yet it carries four questions there -- 1.75 turns per question, the loosest ratio in
+        # the archive and still workable. 8 was one turn above the observed minimum, so it rejected
+        # a real paper for a number the corpus does not support. What the floor is actually for is
+        # unchanged: a half with almost no dialogue cannot carry its share of the ten points.
+        if before < 7 or after < 7:
+            errors.append(f"each half needs 7 turns; found {before}/{after}")
         # Spec 4A also asks for 前后均衡. Advisory rather than an error: the spec sets no ratio,
         # and a 20/14 split is still usable, so this informs the revise step without blocking.
         elif min(before, after) / max(before, after) < 0.6:
             warnings.append(f"dialogue halves are uneven: {before}/{after}")
+        # A letter-by-letter spelling sequence is what the spec's §3 checklist asks for, and it is
+        # advisory here because the real papers do not deliver it. Measured over the 27 usable
+        # archived papers: only 13 contain one, so demanding it rejected 14 genuine exam papers --
+        # the single largest source of rejection of any rule in this file, and by the client's rule
+        # ("真题能过的，校验就应该过") that makes it wrong as an error.
+        #
+        # What is NOT relaxed, and is where the requirement actually lives: `validate_blueprint`
+        # still fails a blueprint with no `name`-typed item, and still fails one where no
+        # name-typed item is `confirmed`. That is the property a 填空题 needs -- the answer word is
+        # spoken and then reinforced -- and the real papers DO satisfy it, typically by repeating
+        # or confirming the name rather than by reciting its letters.
         if not SPELLING_RE.search(dialogue):
-            errors.append("no spelling sequence detected")
+            warnings.append(
+                "no letter-by-letter spelling sequence detected (optional: 14/27 real papers "
+                "carry none; a confirmed name-typed item is required instead)"
+            )
         if not NUMBER_RE.search(dialogue):
             errors.append("no numeric information detected")
         metrics.update({

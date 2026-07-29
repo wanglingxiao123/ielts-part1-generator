@@ -59,6 +59,22 @@ REVISION_COST_SECONDS = float(os.environ.get("IELTS_REVISION_COST", "120"))
 # is generous, e.g. a small batch with hours of headroom in a test.
 MAX_REFILL_ROUNDS = int(os.environ.get("IELTS_MAX_REFILL_ROUNDS", "2"))
 
+# Failure reasons a silent refill can plausibly fix, i.e. the ones that produced NO CONTENT for
+# reasons unrelated to the script: the model call itself failed, or the slot crashed.
+#
+# The product owner's rule for these: "如果是 API 调用本身失败（网络超时等真正没内容的情况），后台
+# 静默补跑，补不上就少返回一套，不放空卡片". So they are re-run exactly like NOT_ASSESSABLE, and if
+# the re-run also fails the batch returns fewer materials rather than an empty card.
+#
+# Deliberately NOT in this set:
+#   * `skipped_time_budget` -- attempted nothing, and re-running it is what the budget just refused.
+#   * `validator_unavailable` -- the validator is a local script; if it is gone it is gone for every
+#     retry too, and an operator has to see that rather than have it burn the clock three times.
+#   * validation failures of any kind -- they no longer produce a failure at all. The Loop delivers
+#     the material with its findings, which is the whole point of change ①.
+REFILLABLE_FAILURES = frozenset({"model_error", "audit_failed", "unhandled_error",
+                                 "no_material_generated"})
+
 # Marks the end of the event stream. A unique object, so it can never collide with an event dict.
 _SENTINEL = object()
 
@@ -168,12 +184,20 @@ async def _run_slot(
     rounds_used = 0
 
     for round_number in range(1, max_refill_rounds + 1):
-        # Only an unassessable *success* is refilled. A slot that failed -- model unreachable, the
-        # validator gone, a crash -- is reported as it happened: those failures are diagnosed by
-        # an operator, and re-running them would triple the wall-clock cost of a broken dependency
-        # inside a request that has fifteen minutes total. `skipped_time_budget` in particular
-        # attempted nothing, so its own skip is already the honest report.
-        if not result.ok or is_assessable(result):
+        # Two things get refilled, and both are "the user has nothing to look at":
+        #
+        #   * an unassessable success -- a script the audit could not read;
+        #   * a REFILLABLE_FAILURES failure -- the model call or the slot itself blew up, so no
+        #     content exists at all. This is the client's "API 调用本身失败" case, and it is refilled
+        #     silently for the same reason: a transient network fault is not something the user
+        #     should be shown, and the honest outcome when the retry also fails is one fewer
+        #     material, never an empty card.
+        #
+        # A validation failure is not here because it is no longer a failure: the Loop delivers the
+        # material with the validator's findings attached.
+        if result.ok and is_assessable(result):
+            break
+        if not result.ok and result.reason not in REFILLABLE_FAILURES:
             break
         if not budget.may_start():
             # Out of clock. Return what exists: fewer materials than requested beats a 504 that
@@ -186,7 +210,11 @@ async def _run_slot(
             break
         await queue.put(events.stage(
             slot_id, scenario.id, "refilling",
-            {"round": round_number, "of": max_refill_rounds, "cause": "not_assessable"},
+            {"round": round_number, "of": max_refill_rounds,
+             # Which of the two refill causes this is. The user never sees it; an operator needs it,
+             # because a batch refilling on `model_error` is a different problem from one refilling
+             # on `not_assessable` and the remedies are nothing alike.
+             "cause": result.reason if not result.ok else "not_assessable"},
         ))
         rounds_used = round_number
         attempt = await _attempt_slot(scenario, slot_id, semaphore, budget, queue)
@@ -273,6 +301,7 @@ def _register(result: MaterialResult, scenario: Scenario, group_key: str) -> Non
             cross_check=candidate.cross_check,
             degraded=result.degraded,
             degraded_reason=result.degraded_reason,
+            validation_findings=result.validation_findings,
         )
     )
     result.material_id = material_id

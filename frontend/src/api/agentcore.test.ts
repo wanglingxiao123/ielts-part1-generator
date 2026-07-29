@@ -237,9 +237,82 @@ describe('failure reporting', () => {
     const hit = wireEvents().find((e) => e.type === 'material_failed')
     expect(hit).toBeDefined()
     const failed = hit as unknown as { reason: string; detail: { errors: string[] } }
+    // Historical: this capture predates the change that made validation a report rather than a
+    // gate. A `validation_exhausted` failure is no longer emitted at all -- the Loop delivers the
+    // last attempt with its findings. The assertion is kept because the property it protects still
+    // holds for the failures that DO remain: the actionable strings must survive translation, or
+    // the page says "失败" and nothing else.
     expect(failed.reason).toBe('validation_exhausted')
-    // These strings are the only actionable content in a failure; dropping them
-    // leaves a card that says "失败" and nothing else.
     expect(failed.detail.errors.length).toBeGreaterThan(0)
+  })
+})
+
+/* ── the material_id contract ─────────────────────────────────────────────── */
+
+/**
+ * The bug: clicking 试听 on a visible material returned
+ *
+ *   no candidate 'batch-ms61jp3r-1::slot-2'; it was never offered, was discarded, or the offer
+ *   expired
+ *
+ * Root cause, established by reading both sides. `_run_slot` mints a real id via `new_material_id`
+ * (`YYYYMMDD-<scenario_key>-<8 hex>`), registers a candidate under it, and emits it in
+ * `material_completed`. The adapter ignored that field and minted `<batchId>::<slot_id>` instead —
+ * so every candidate-resolving action (`preview_audio`, `select`, `audio_status`, `presign_audio`)
+ * was handed a key the registry had never seen.
+ *
+ * `real-batch.sse.txt` predates the field, and that is itself the evidence: the adapter's premise
+ * ("the backend has no material identity that outlives the request") was true when the capture was
+ * taken and stopped being true afterwards. The capture is left untouched — it is a record of a real
+ * response, not a fixture to edit — and the current shape is asserted here.
+ */
+describe('material_id is adopted from the backend, never minted', () => {
+  const REAL_ID = '20260729-community-environment-a1b2c3d4'
+
+  /** The current wire shape, matching what `events.material_completed` emits today. */
+  function currentWireFrame(overrides: Record<string, unknown> = {}): string {
+    const base = wireEvents().find((e) => e.type === 'material_completed')!
+    return `data: ${JSON.stringify({
+      ...base,
+      material_id: REAL_ID,
+      scenario_key: 'community-environment',
+      group_key: 'batch-1:community-environment',
+      validation_findings: [],
+      ...overrides,
+    })}`
+  }
+
+  it('the id shape the backend mints is nothing like a slot key', () => {
+    // `YYYYMMDD-<scenario_key>-<8 hex>`; see audio_storage/state_store.py new_material_id.
+    expect(REAL_ID).toMatch(/^\d{8}-[a-z0-9-]+-[0-9a-f]{8}$/)
+    // What the adapter used to send instead. The two spaces do not overlap, which is why the
+    // registry answered "no candidate" for something the UI had just rendered as ready.
+    expect('batch-ms61jp3r-1::slot-2').not.toMatch(/^\d{8}-[a-z0-9-]+-[0-9a-f]{8}$/)
+    expect(REAL_ID).not.toContain('::')
+  })
+
+  it('decodes material_id and validation_findings off the wire', () => {
+    const wire = decodeWireFrame(currentWireFrame()) as unknown as {
+      material_id: string
+      scenario_key: string
+      validation_findings: string[]
+    }
+    expect(wire.material_id).toBe(REAL_ID)
+    expect(wire.scenario_key).toBe('community-environment')
+    expect(wire.validation_findings).toEqual([])
+  })
+
+  it('represents a delivered material that still carries validator findings', () => {
+    // The give-up path delivers instead of discarding, so `ok: true` and a non-empty findings list
+    // co-occur. Both had to be representable for the reader page to state them.
+    const wire = decodeWireFrame(
+      currentWireFrame({
+        validation_findings: [
+          'blueprint.items[4].turn_index 20 does not carry its evidence (found at turn 21)',
+        ],
+      }),
+    ) as unknown as { ok: boolean; validation_findings: string[] }
+    expect(wire.ok).toBe(true)
+    expect(wire.validation_findings).toHaveLength(1)
   })
 })

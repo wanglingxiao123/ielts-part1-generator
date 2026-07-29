@@ -9,10 +9,18 @@ and it is accepted deliberately. The value of a material carrying a score depend
 that score being produced by a process that is reproducible and unit-testable. A model that can
 decide it has passed will eventually decide it has passed.
 
-    generate -> validate -> [errors: regenerate, at most 2 retries]
+    generate -> validate -> [errors: regenerate, at most 2 retries; then deliver anyway]
       -> metrics -> blind audit -> cross-check (pure Python)
       -> revise -> anchor repair -> validate
       -> blind re-audit (memoryless) -> pick_better -> deliver
+
+Validation is a REPORT, not a gate. The retries stay -- a retry that fixes the material is worth
+two minutes -- but the final give-up delivers the last attempt instead of discarding it. The
+product owner's diagnosis, and it was correct: "模型正常返回了内容，是校验规则把它判死了 --
+这不是'生成异常'". A validator that rejects a script the model wrote is making a claim about that
+script, and the claim is sometimes wrong (five rules were measured rejecting real exam papers).
+Withholding the material makes the validator's mistake unappealable and unseen; delivering it with
+the findings attached makes it a note a question-writer can weigh.
 """
 
 from __future__ import annotations
@@ -108,7 +116,7 @@ class MaterialResult(object):
 
     __slots__ = ("slot_id", "scenario_id", "ok", "candidate", "selected_version", "route",
                  "reason", "detail", "note", "degraded", "degraded_reason", "timings",
-                 "anchor_repairs", "warnings",
+                 "anchor_repairs", "warnings", "validation_findings",
                  # Assigned by batch.py once the material is offered for selection. They are not
                  # constructor arguments because the Loop does not know about S3 or scenario keys
                  # -- it produces a material, and publication is somebody else's decision.
@@ -134,6 +142,7 @@ class MaterialResult(object):
         timings: Optional[Dict[str, float]] = None,
         anchor_repairs: Optional[List[Dict[str, Any]]] = None,
         warnings: Optional[List[str]] = None,
+        validation_findings: Optional[List[str]] = None,
     ) -> None:
         if ok and candidate is None:
             # Enforced here rather than discovered during serialisation. A success without a
@@ -155,6 +164,12 @@ class MaterialResult(object):
         self.timings = timings or {}
         self.anchor_repairs = anchor_repairs or []
         self.warnings = warnings or []
+        # Structural checks the validator still reports on the DELIVERED material. Separate from
+        # `warnings` on purpose: a warning is an advisory band deviation the spec never required,
+        # while these were errors the pipeline could not clear in three attempts. Conflating them
+        # would either hide these behind copy that says "does not affect use", or make every
+        # word-count deviation read as a defect. The reader page renders them as reference notes.
+        self.validation_findings = validation_findings or []
         self.material_id: Optional[str] = None
         self.scenario_key: Optional[str] = None
         self.group_key: Optional[str] = None
@@ -196,6 +211,9 @@ class MaterialResult(object):
             "refill_rounds": self.refill_rounds,
             "anchor_repairs": self.anchor_repairs,
             "warnings": self.warnings,
+            # Present but empty on the normal path. Always emitted rather than conditionally added,
+            # so the frontend reads one shape and an absent key cannot be mistaken for "clean".
+            "validation_findings": self.validation_findings,
             "timings": self.timings,
         }
 
@@ -310,6 +328,13 @@ async def run_one(
     gen = None
     gen_warnings: List[str] = []
     last_errors: List[str] = []
+    # The last attempt's output, kept whether or not it validated. This is the difference between
+    # "3 attempts produced nothing" and "3 attempts produced a material the validator still has
+    # notes about": the model returned a full script every time, and the script is what the user
+    # asked for. Held separately from `gen` so the clean path is unaffected -- `gen is None` still
+    # means "no attempt cleared validation" and still selects the deliver-with-findings branch.
+    last_gen = None
+    last_warnings: List[str] = []
     # Feedback accumulates across attempts instead of being replaced. Measured on a live 3-slot
     # batch: passing only the latest attempt's errors made all three materials oscillate --
     # attempt 2 fixed the reported error and regressed on a phrase attempt 1 had got right, so
@@ -357,6 +382,10 @@ async def run_one(
                                  detail=str(exc)[:500], timings=timings)
         mark("validate_%d" % (attempt + 1), step_started)
 
+        # Retained on every attempt, passing or not: the last one is what gets delivered if none
+        # of the three clears validation.
+        last_gen, last_warnings = candidate_gen, result.warnings
+
         if result.ok:
             # Warnings do NOT fail. They become advisory input to the revision.
             gen, gen_warnings = candidate_gen, result.warnings
@@ -367,9 +396,30 @@ async def run_one(
                 seen_errors.append(message)
         await emit("regenerating", {"attempt": attempt + 1, "errors": result.errors[:3]})
 
+    # ---- validation is a report, not a gate -------------------------------------------------
+    #
+    # Three attempts all carrying validator errors used to return ok=False with
+    # reason="validation_exhausted", and the frontend rendered an empty 生成异常 card. That was the
+    # swallow: the model had returned a complete script every time. The material is delivered now,
+    # carrying the findings, and the rest of the Loop runs over it unchanged -- it is still audited,
+    # still cross-checked, still revised, so the delivered artifact is measured exactly like any
+    # other and the findings are one more thing a question-writer reads.
+    #
+    # `validation_findings` and not `degraded`: `degraded` already means "delivered without the full
+    # pipeline" (the time budget skipped revision), and this material went through the whole
+    # pipeline. Reusing the flag would make one boolean answer two different questions, and the copy
+    # each needs is different -- "未经修改环节" versus "校验还有几处提示". They can also co-occur.
+    validation_findings: List[str] = []
     if gen is None:
-        return MaterialResult(slot_id, scenario.id, False, reason="validation_exhausted",
-                              detail={"errors": last_errors}, timings=timings)
+        if last_gen is None:
+            # Genuinely nothing: every attempt raised before producing output. That is the only
+            # remaining no-content case, and it is what `model_error` above already reports.
+            return MaterialResult(slot_id, scenario.id, False, reason="no_material_generated",
+                                  detail={"errors": last_errors}, timings=timings)
+        gen, gen_warnings = last_gen, last_warnings
+        validation_findings = list(last_errors)
+        await emit("validation_reported", {"findings": last_errors[:3],
+                                           "count": len(last_errors)})
 
     # ---- blind audit: material + metrics only ----------------------------------------------
     await emit("auditing", {})
@@ -396,14 +446,16 @@ async def run_one(
         timings["total"] = round(time.monotonic() - started, 2)
         return MaterialResult(slot_id, scenario.id, True, initial, "initial",
                               route_for(initial), note="clean_on_first_pass",
-                              timings=timings, warnings=gen_warnings)
+                              timings=timings, warnings=gen_warnings,
+                              validation_findings=validation_findings)
 
     if not allow_revision():
         timings["total"] = round(time.monotonic() - started, 2)
         return MaterialResult(slot_id, scenario.id, True, initial, "initial",
                               route_for(initial), note="revision_skipped_time_budget",
                               degraded=True, degraded_reason="time_budget",
-                              timings=timings, warnings=gen_warnings)
+                              timings=timings, warnings=gen_warnings,
+                              validation_findings=validation_findings)
 
     # ---- revision ---------------------------------------------------------------------------
     instruction = revise_step.build_revise_instruction(audit_a, cross_a, gen_warnings)
@@ -419,7 +471,8 @@ async def run_one(
         timings["total"] = round(time.monotonic() - started, 2)
         return MaterialResult(slot_id, scenario.id, True, initial, "initial",
                               route_for(initial), note="revise_call_failed",
-                              detail=str(exc)[:300], timings=timings, warnings=gen_warnings)
+                              detail=str(exc)[:300], timings=timings, warnings=gen_warnings,
+                              validation_findings=validation_findings)
     mark("revise", step_started)
 
     # Anchor sync. 1 unique hit repairs the index; 0 or >=2 hits fail the revision outright.
@@ -429,7 +482,8 @@ async def run_one(
         return MaterialResult(slot_id, scenario.id, True, initial, "initial",
                               route_for(initial), note="revise_rejected_anchor_desync",
                               detail={"failures": repair.failures[:5]},
-                              timings=timings, warnings=gen_warnings)
+                              timings=timings, warnings=gen_warnings,
+                              validation_findings=validation_findings)
     revised.blueprint = repair.blueprint
     if repair.repaired:
         await emit("anchors_repaired", {"count": len(repair.repaired)})
@@ -443,7 +497,8 @@ async def run_one(
         timings["total"] = round(time.monotonic() - started, 2)
         return MaterialResult(slot_id, scenario.id, True, initial, "initial",
                               route_for(initial), note="revise_validation_unavailable",
-                              detail=str(exc)[:300], timings=timings, warnings=gen_warnings)
+                              detail=str(exc)[:300], timings=timings, warnings=gen_warnings,
+                              validation_findings=validation_findings)
     mark("validate_revised", step_started)
 
     if not result_b.ok:
@@ -453,7 +508,8 @@ async def run_one(
         return MaterialResult(slot_id, scenario.id, True, initial, "initial",
                               route_for(initial), note="revise_rejected_by_validate",
                               detail={"errors": result_b.errors[:5]},
-                              timings=timings, warnings=gen_warnings)
+                              timings=timings, warnings=gen_warnings,
+                              validation_findings=validation_findings)
 
     # ---- re-audit: a brand-new memoryless call ---------------------------------------------
     # It receives neither the first audit's conclusions nor the revision instructions. The map
@@ -472,7 +528,8 @@ async def run_one(
         timings["total"] = round(time.monotonic() - started, 2)
         return MaterialResult(slot_id, scenario.id, True, initial, "initial",
                               route_for(initial), note="re_audit_failed",
-                              detail=str(exc)[:300], timings=timings, warnings=gen_warnings)
+                              detail=str(exc)[:300], timings=timings, warnings=gen_warnings,
+                              validation_findings=validation_findings)
     mark("re_audit", step_started)
 
     cross_b = crosscheck(revised.blueprint, audit_b)
@@ -486,4 +543,10 @@ async def run_one(
         timings=timings,
         anchor_repairs=repair.repaired if best.label == "revised" else [],
         warnings=result_b.warnings if best.label == "revised" else gen_warnings,
+        # The findings belong to the material actually delivered. Reaching here means the revision
+        # passed validation (`result_b.ok`), so if the revision is the one shipped its findings are
+        # empty -- the rewrite fixed what three generations could not, which is exactly the value of
+        # keeping the retries. If the initial version still wins on audit score, it is the same
+        # script the validator reported on and it keeps those findings.
+        validation_findings=[] if best.label == "revised" else validation_findings,
     )

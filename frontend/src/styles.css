@@ -980,25 +980,9 @@ h3 {
   width: 58%;
 }
 
-.err-card {
-  border-color: var(--bad-line);
-  background: var(--bad-bg);
-}
-
-.err-card:hover {
-  box-shadow: none;
-  border-color: var(--bad-line);
-}
-
-.err-badge {
-  background: #ffe0e0;
-  color: var(--bad);
-}
-
-.err-note {
-  font-size: 11px;
-  color: var(--bad);
-}
+/* `.err-card` / `.err-badge` / `.err-note` 已删除，连同它们的组件。
+   客户：「前端不再渲染任何『生成异常』空卡片。只要模型返回了文本就必须展示。」
+   没生成出来的版位现在不渲染，组头的「N/M」把「少一套」说清楚。 */
 
 /* 骨架换成真卡时淡入。 */
 .fade-in {
@@ -1982,6 +1966,35 @@ h3 {
 
 .ep-num:hover {
   color: var(--accent);
+}
+
+/* 结构校验意见。刻意做得不刺眼：它是出题前的核对线索，不是缺陷判决——校验器自己会判错，
+   所以不用 --bad 的红色，那会把「看一眼」读成「这里坏了」。 */
+.vn-list {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-2, #555);
+}
+
+.vn-list > li {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  border-left: 2px solid var(--warn-line, #e6d08a);
+  padding-left: 8px;
+}
+
+.vn-nums {
+  display: inline-flex;
+  gap: 1px;
+  flex: none;
+  color: var(--warn, #a07800);
 }
 
 .ep-types {

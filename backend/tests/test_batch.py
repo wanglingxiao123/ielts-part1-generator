@@ -359,9 +359,18 @@ class TestNotAssessableRefill:
         assert events[-1]["skipped"] == 1 and events[-1]["refilled"] == 0
         assert not [e for e in events if e.get("stage") in ("refilling", "refill_abandoned")]
 
-    async def test_a_crashed_slot_is_reported_not_refilled(self, monkeypatch):
-        """Only NOT_ASSESSABLE is refilled. A crash means a broken dependency an operator has to
-        see, and re-running it would triple the cost of that breakage inside a 15-minute request."""
+    async def test_a_crashed_slot_is_refilled_silently_then_reported(self, monkeypatch):
+        """A no-content failure is refilled, and if the refill also fails the count just drops.
+
+        This test used to assert `attempts == 1` on the reasoning that "a crash means a broken
+        dependency an operator has to see". The product owner changed the requirement: "如果是 API
+        调用本身失败（网络超时等真正没内容的情况），后台静默补跑，补不上就少返回一套，不放空卡片".
+        A transient fault is not the user's business, and the operator still sees it -- the
+        `refilling` stage events carry the cause, and the terminal failure is still reported.
+
+        What is NOT allowed either way, and is what the frontend now depends on: the user must not
+        get an empty card. Fewer materials is the honest outcome.
+        """
         attempts = {"n": 0}
 
         async def boom(scenario, slot_id, emit, allow_revision):
@@ -373,12 +382,18 @@ class TestNotAssessableRefill:
                                budget=Budget(hard_limit=900, margin=0, p95=1))
         events = [event async for event in run_batch(request)]
 
-        assert attempts["n"] == 1
-        assert events[-1]["failed"] == 1 and events[-1]["refilled"] == 0
-        assert [e for e in events if e["type"] == "material_failed"][0]["reason"] == \
-            "unhandled_error"
+        assert attempts["n"] == 3, "1 initial + MAX_REFILL_ROUNDS silent retries"
+        # Silent to the user: stage events only, and exactly one terminal failure for the slot.
+        refills = [e for e in events if e.get("stage") == "refilling"]
+        assert len(refills) == 2
+        assert all(r["detail"]["cause"] == "unhandled_error" for r in refills)
+        assert events[-1]["failed"] == 1
+        failures = [e for e in events if e["type"] == "material_failed"]
+        assert len(failures) == 1, "one card's worth of failure, not one per attempt"
+        assert failures[0]["reason"] == "unhandled_error"
 
-    async def test_a_model_error_is_reported_not_refilled(self, monkeypatch):
+    async def test_a_model_error_is_refilled_silently(self, monkeypatch):
+        """The client's named case: 网络超时. Retried in the background, never shown mid-flight."""
         attempts = {"n": 0}
 
         async def unreachable(scenario, slot_id, emit, allow_revision):
@@ -391,8 +406,50 @@ class TestNotAssessableRefill:
                                budget=Budget(hard_limit=900, margin=0, p95=1))
         events = [event async for event in run_batch(request)]
 
-        assert attempts["n"] == 1
+        assert attempts["n"] == 3
         assert [e for e in events if e["type"] == "material_failed"][0]["reason"] == "model_error"
+
+    async def test_a_refill_that_succeeds_yields_a_material_and_no_failure(self, monkeypatch):
+        """The reason the refill exists: a transient model error must cost the user nothing."""
+        attempts = {"n": 0}
+
+        async def flaky(scenario, slot_id, emit, allow_revision):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                return MaterialResult(slot_id, scenario.id, False, reason="model_error",
+                                      detail="timeout")
+            return succeeded(slot_id, scenario.id, "PASS")
+
+        monkeypatch.setattr(batch_module, "run_one", flaky)
+        monkeypatch.setattr(batch_module, "_register", lambda *a: None)
+        request = BatchRequest([FakeScenario("a")], concurrency=1,
+                               budget=Budget(hard_limit=900, margin=0, p95=1))
+        events = [event async for event in run_batch(request)]
+
+        assert attempts["n"] == 2
+        assert events[-1]["succeeded"] == 1 and events[-1]["failed"] == 0
+        assert not [e for e in events if e["type"] == "material_failed"]
+
+    async def test_a_validator_outage_is_reported_not_refilled(self, monkeypatch):
+        """The counterweight: not every failure is refillable.
+
+        The validator is a local script. If it is missing it will be missing on every retry too, so
+        refilling would spend the whole 15-minute budget on a broken deployment and hide the cause.
+        """
+        attempts = {"n": 0}
+
+        async def no_validator(scenario, slot_id, emit, allow_revision):
+            attempts["n"] += 1
+            return MaterialResult(slot_id, scenario.id, False, reason="validator_unavailable",
+                                  detail="script not found")
+
+        monkeypatch.setattr(batch_module, "run_one", no_validator)
+        request = BatchRequest([FakeScenario("a")], concurrency=1,
+                               budget=Budget(hard_limit=900, margin=0, p95=1))
+        events = [event async for event in run_batch(request)]
+
+        assert attempts["n"] == 1
+        assert not [e for e in events if e.get("stage") == "refilling"]
 
     async def test_a_discarded_attempt_is_never_registered_as_a_candidate(self, monkeypatch):
         """It would appear in list_candidates and compete for the group's single selection against

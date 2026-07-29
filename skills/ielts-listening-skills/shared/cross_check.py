@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -23,6 +24,27 @@ from pathlib import Path
 # nearby anchors count as the same point. Wider tolerance would start merging genuinely
 # distinct adjacent points, which spec 4B-2 requires to stay separate.
 ANCHOR_TOLERANCE = 1
+
+# Shortest normalised `target` allowed to pair two entries by appearing in the auditor's evidence.
+# Without a floor a one-character target ("6") would be found inside most rows and claim an
+# arbitrary one. Three characters admits every reference code, name and multi-digit quantity in the
+# corpus; below that the pair still has the anchor+type route available.
+MIN_TARGET_MATCH = 3
+
+_PUNCTUATION = re.compile(r"[^0-9a-z]+")
+
+
+def normalise_evidence(value: object) -> str:
+    """Casefold, drop punctuation and whitespace: the comparison key for evidence text.
+
+    Deliberately aggressive. The blueprint quotes the script; the auditor retypes what it heard,
+    so the same span routinely differs by a comma, a capital, or a trailing full stop. Comparing
+    raw strings would call those different points, which is the whole defect this function exists
+    to close. Digits and letters survive, and those are what a reference code or a price IS.
+    """
+    if not isinstance(value, str):
+        return ""
+    return _PUNCTUATION.sub("", value.casefold())
 
 
 def read_json(path: Path, label: str) -> dict:
@@ -49,6 +71,19 @@ def anchor_of(entry: object):
     return None
 
 
+def _anchor_gap(item: object, row: object) -> int:
+    """Distance between two anchors; a huge number when either is missing.
+
+    A sentinel rather than an exception because the evidence-identity pass deliberately admits
+    rows with no usable anchor -- an auditor that recorded the right span but no turn index has
+    still recovered the point. Such a row simply loses every tie.
+    """
+    anchor, seen = anchor_of(item), anchor_of(row)
+    if anchor is None or seen is None:
+        return 1 << 30
+    return abs(seen - anchor)
+
+
 def compare(blueprint: dict, audit: dict) -> dict:
     planned = [item for item in blueprint.get("items", []) if isinstance(item, dict)]
     observed = [row for row in audit.get("blind_information_map", []) if isinstance(row, dict)]
@@ -56,36 +91,78 @@ def compare(blueprint: dict, audit: dict) -> dict:
     unmatched_observed = list(range(len(observed)))
     pairing: dict[int, int] = {}
 
-    def eligible(item: dict, position: int, exact_only: bool) -> bool:
-        """Can this planned item claim this observed row?
-
-        Proximity alone is too weak: planned [20, 21] against observed [20, 22] would pair both
-        up, hiding one unrecoverable point AND one unintended detail at once. An off-by-one
-        pairing must therefore also agree on detail type.
-        """
+    def near(item: dict, position: int) -> bool:
         anchor, seen = anchor_of(item), anchor_of(observed[position])
-        if anchor is None or seen is None:
-            return False
-        if seen == anchor:
-            return True
-        if exact_only or abs(seen - anchor) > ANCHOR_TOLERANCE:
-            return False
-        return observed[position].get("type") == item.get("type")
+        return (anchor is not None and seen is not None
+                and abs(seen - anchor) <= ANCHOR_TOLERANCE)
 
-    # Two passes so exact anchors claim their own row first. With one greedy pass, planned
-    # [10, 11] against observed [11] lets item 1 take turn 11 on tolerance, and the tool then
-    # blames item 2 -- the count is right but the identity is wrong, and the revise instruction
-    # sends the writer to fix an information point that is actually fine.
-    for exact_only in (True, False):
+    def same_evidence(item: dict, position: int) -> bool:
+        """Character-identical evidence, once punctuation and case are normalised away.
+
+        The strongest identity signal available and the reason it is checked before anything
+        else. Measured failure it fixes: a booking reference stated at turn 32 and confirmed at
+        turn 33 was recorded by the auditor as `number` where the blueprint called it `name`, so
+        neither the exact-anchor pass nor the type-gated tolerant pass could pair them -- and a
+        point the script says twice, in full, was reported 听不出来. The evidence string was
+        identical throughout. Anchor and type are both derived judgements about a span; the span
+        itself is not, so it outranks them.
+        """
+        planned_text = normalise_evidence(item.get("evidence"))
+        return bool(planned_text) and planned_text == normalise_evidence(
+            observed[position].get("evidence"))
+
+    def target_in_evidence(item: dict, position: int) -> bool:
+        """The planned ANSWER (`target`) appears in the row the auditor wrote, anchors adjacent.
+
+        The auditor writes down what it heard, so it routinely records a shorter or longer span
+        than the blueprint quotes: "HGR482" against "Your booking reference is HGR482", or the
+        confirmation sentence instead of the first mention. Full-string equality misses all of
+        those, but `target` is the one substring that must survive -- it is the answer a candidate
+        writes on the answer sheet, and the 命题铁律 (spec §4B-4) requires it to be spoken verbatim.
+        If it is inside the auditor's evidence, the auditor recovered this point.
+
+        Weaker than identity, so it carries one guard: proximity. NOT type -- type is exactly what
+        disagrees in the case this exists to catch, and gating on it would restore the defect.
+        """
+        target = normalise_evidence(item.get("target"))
+        seen_text = normalise_evidence(observed[position].get("evidence"))
+        if len(target) < MIN_TARGET_MATCH or not seen_text or target not in seen_text:
+            return False
+        return near(item, position)
+
+    def exact_anchor(item: dict, position: int) -> bool:
+        anchor, seen = anchor_of(item), anchor_of(observed[position])
+        return anchor is not None and seen is not None and seen == anchor
+
+    def near_same_type(item: dict, position: int) -> bool:
+        """Proximity alone is too weak: planned [20, 21] against observed [20, 22] would pair
+        both up, hiding one unrecoverable point AND one unintended detail at once. An off-by-one
+        pairing with nothing in common but its anchor must therefore also agree on detail type.
+        """
+        return near(item, position) and observed[position].get("type") == item.get("type")
+
+    # Passes run strongest-signal-first, and a row claimed by an earlier pass is gone. Ordering by
+    # strength rather than by convenience is the whole design:
+    #
+    #   1. identical evidence -- the same span written down twice; nothing outranks it.
+    #   2. exact anchor -- kept ahead of every tolerant rule so planned [10, 11] against observed
+    #      [11] cannot let item 1 take turn 11 on tolerance and leave the tool blaming item 2.
+    #      The count would be right and the identity wrong, and the revise instruction would send
+    #      the writer to fix an information point that is actually fine.
+    #   3. planned target inside the auditor's evidence + adjacent anchor -- the same answer span
+    #      written down at a different length.
+    #   4. adjacent anchor + same type -- no shared text at all, so it needs both guards.
+    #
+    # Pass 1 is intentionally free of anchor and type conditions. Passes 3 and 4 both require
+    # proximity, so neither can pair two entries that share nothing.
+    for admits in (same_evidence, exact_anchor, target_in_evidence, near_same_type):
         for index, item in enumerate(planned):
             if index in pairing:
                 continue
-            candidates = [p for p in unmatched_observed if eligible(item, p, exact_only)]
-            hit = min(
-                candidates,
-                key=lambda p: abs(anchor_of(observed[p]) - anchor_of(item)),
-                default=None,
-            )
+            candidates = [p for p in unmatched_observed if admits(item, p)]
+            # Closest anchor wins among equally admissible rows. Entries with no usable anchor
+            # sort last rather than raising: pass 1 admits them, and `abs(None - n)` would crash.
+            hit = min(candidates, key=lambda p: _anchor_gap(item, observed[p]), default=None)
             if hit is not None:
                 pairing[index] = hit
                 unmatched_observed.remove(hit)

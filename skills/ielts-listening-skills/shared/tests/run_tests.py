@@ -304,6 +304,131 @@ def test_indirect_confirmation_is_optional() -> None:
           str(got.get("errors")))
 
 
+def test_remaining_rules_do_not_reject_real_papers() -> None:
+    """The client's audit: "真题能过的，校验就应该过" -- confirm no over-strict rule is left.
+
+    Every remaining rule that appends to `errors` was measured against the 27 usable archived
+    papers (31 minus the 4 known-bad ones). Five rejected real papers and are fixed here; this
+    test pins each fix with the concrete paper shape that failed, so the numbers cannot silently
+    regress. Percentages are of the 27:
+
+    | rule                          | rejected | verdict                                     |
+    |-------------------------------|----------|---------------------------------------------|
+    | spelling sequence present     |  14 (52%)| downgraded to a warning                     |
+    | blueprint split == {5,6}      |  20 (74%)| widened to 3-7, matching the sibling rule   |
+    | short narration 70-110 words  |   1 ( 4%)| ceiling raised to 115 (real max is 111)     |
+    | each half >= 8 turns          |   1 ( 4%)| floor lowered to 7 (real min is 7)          |
+    | numeric detail present        |   1 ( 4%)| \\b\\d+\\b -> \\d ("80th" is a numeral)        |
+    | question-range regex          |   1 ( 4%)| \\s+ -> \\s* ("questions1~4" occurs)          |
+
+    Left hard on purpose, and NOT relaxed: exactly 2 main speakers + 1 narrator, exactly 10 items,
+    contiguous question groups, dialogue 450-750 words / 20-48 turns, and every output-schema rule.
+    The one paper still rejected (snap_038) opens with a worked EXAMPLE question, giving it four
+    narrator turns; that is a real structural difference from what we generate, not an over-strict
+    rule, so the rule stands.
+    """
+    print("remaining rules do not reject real papers")
+    import copy
+    import tempfile
+
+    base = json.loads((FIXTURES / "material_valid.json").read_text(encoding="utf-8"))
+    blueprint = json.loads((FIXTURES / "blueprint_valid.json").read_text(encoding="utf-8"))
+    turns = base["listening_material_parts"][0]["script"]["turns"]
+    narr = [i for i, t in enumerate(turns) if t["speaker"] == "speaker1"]
+    scratch = Path(tempfile.mkdtemp())
+
+    def verdict(material: dict, bp: dict) -> dict:
+        mp, bpp = scratch / "m.json", scratch / "b.json"
+        mp.write_text(json.dumps(material, ensure_ascii=False), encoding="utf-8")
+        bpp.write_text(json.dumps(bp, ensure_ascii=False), encoding="utf-8")
+        out = run(VALIDATE, str(mp), "--blueprint", str(bpp), "--json").stdout
+        return json.loads(out) if out.strip() else {}
+
+    # 1. A 1-4/5-10 split, declared consistently in BOTH narration and blueprint. This is the
+    # commonest real split (9/27) and used to pass the narration rule and then fail the blueprint
+    # one, so the generator could not satisfy both at once.
+    shifted = copy.deepcopy(base)
+    sturns = shifted["listening_material_parts"][0]["script"]["turns"]
+    sturns[narr[0]]["text"] = re.sub(r"1 to \d+", "1 to 4", sturns[narr[0]]["text"])
+    sturns[narr[1]]["text"] = re.sub(r"\d+ to 10", "5 to 10", sturns[narr[1]]["text"])
+    shifted_bp = copy.deepcopy(blueprint)
+    shifted_bp["split_after"] = 4
+    for item in shifted_bp["items"]:
+        item["group"] = 1 if item["number"] <= 4 else 2
+    got = verdict(shifted, shifted_bp)
+    check("a consistent 1-4/5-10 split is accepted by BOTH the narration and blueprint rules",
+          not [e for e in (got.get("errors") or []) if "split" in e.lower()],
+          str(got.get("errors")))
+
+    # But a blueprint that splits somewhere else than the narration announced is still an error:
+    # the candidate would be told to answer 1-5 while the blueprint groups 1-4.
+    disagreeing = copy.deepcopy(blueprint)
+    disagreeing["split_after"] = 4
+    for item in disagreeing["items"]:
+        item["group"] = 1 if item["number"] <= 4 else 2
+    got = verdict(base, disagreeing)
+    check("a blueprint split that contradicts the narration is still rejected",
+          any("split_after" in e for e in (got.get("errors") or [])),
+          str(got.get("errors")))
+
+    # 2. No letter-by-letter spelling: 14/27 real papers carry none, so it is advisory now.
+    plain = copy.deepcopy(base)
+    pturns = plain["listening_material_parts"][0]["script"]["turns"]
+    for turn in pturns:
+        turn["text"] = re.sub(r"\b(?:[A-Z]\s*[-,]\s*){2,}[A-Z]\b|\b[A-Z](?:-[A-Z]){2,}\b"
+                              r"|\bdouble\s+[A-Z]\b", "Sutcliff", turn["text"])
+    got = verdict(plain, blueprint)
+    check("a script with no spelling sequence is a warning, not an error",
+          not [e for e in (got.get("errors") or []) if "spelling" in e]
+          and any("spelling" in w for w in (got.get("warnings") or [])),
+          str(got.get("errors")))
+
+    # What replaces it as the hard rule: a name-typed item must exist and one must be confirmed.
+    # That is the property a 填空题 needs, and it is NOT relaxed.
+    nameless = copy.deepcopy(blueprint)
+    for item in nameless["items"]:
+        if item["type"] == "name":
+            item["type"], item["confirmed"] = "option", False
+    got = verdict(base, nameless)
+    check("a blueprint with no confirmed name-typed item is still rejected",
+          any("spelled-name" in e for e in (got.get("errors") or [])),
+          str(got.get("errors")))
+
+    # 3. "80th" as the only numeral (snap_002's real shape): `\b\d+\b` found nothing there.
+    ordinal = copy.deepcopy(base)
+    oturns = ordinal["listening_material_parts"][0]["script"]["turns"]
+    for i, turn in enumerate(oturns):
+        if turn["speaker"] != "speaker1":
+            oturns[i]["text"] = re.sub(r"\d+", lambda m: m.group(0) + "th", turn["text"])
+    got = verdict(ordinal, blueprint)
+    check("a digit glued to a suffix counts as numeric information",
+          not [e for e in (got.get("errors") or []) if "numeric information" in e],
+          str(got.get("errors")))
+
+    # A dialogue with no digit at all is still rejected: the spec §3 requires one.
+    wordy = copy.deepcopy(base)
+    wturns = wordy["listening_material_parts"][0]["script"]["turns"]
+    for turn in wturns:
+        if turn["speaker"] != "speaker1":
+            turn["text"] = re.sub(r"[\d$£€]", "", turn["text"])
+    got = verdict(wordy, blueprint)
+    check("a dialogue with no digit at all is still rejected",
+          any("numeric information" in e for e in (got.get("errors") or [])),
+          str(got.get("errors")))
+
+    # 4. "questions1~4" with no space -- snap_022_scripts_topic8163's real wording.
+    tight = copy.deepcopy(base)
+    tturns = tight["listening_material_parts"][0]["script"]["turns"]
+    tturns[narr[0]]["text"] = re.sub(r"questions\s+1\s+to\s+(\d+)", r"questions1~\1",
+                                     tturns[narr[0]]["text"], flags=re.I)
+    tturns[narr[1]]["text"] = re.sub(r"questions\s+(\d+)\s+to\s+10", r"questions\1~10",
+                                     tturns[narr[1]]["text"], flags=re.I)
+    got = verdict(tight, blueprint)
+    check("an un-spaced question range is still parsed as a split",
+          not [e for e in (got.get("errors") or []) if "contiguous" in e or "split_after" in e],
+          str(got.get("errors")))
+
+
 def test_grouping_cannot_be_faked() -> None:
     """A shared group label must not stand in for a constructible table (D2)."""
     print("question-type grouping cannot be faked")
@@ -464,6 +589,98 @@ def test_cross_check() -> None:
     check("same-type off-by-one drift still matches", result["ok"] is True, json.dumps(result))
 
 
+def test_cross_check_pairs_on_evidence_text() -> None:
+    """A false 听不出来 tells a writer to rewrite a point that is fine (D8).
+
+    Measured defect: a booking reference stated at turn 32 ("Your booking reference is HGR482")
+    and confirmed at turn 33 ("I've noted HGR482") was reported unrecoverable. Pairing used only
+    `turn_index` within ANCHOR_TOLERANCE plus exact `type` equality, and the auditor had recorded
+    the code as `number` where the blueprint called it `name` -- so the exact-anchor pass could not
+    fire (32 != 33) and the tolerant pass was gated on the type that disagreed. The evidence string
+    was character-identical the whole time and was never looked at.
+
+    Both directions are covered here: the point must now pair, AND the two properties that keep
+    the tool from blaming the wrong item must still hold (they are asserted in test_cross_check
+    and re-asserted below against the evidence-aware passes).
+    """
+    print("cross-check pairs on evidence text (D8)")
+    sys.path.insert(0, str(SKILLS / "shared"))
+    from cross_check import compare  # noqa: PLC0415 - keeps the suite standalone
+
+    def planned(**over):
+        item = {"number": 1, "type": "name", "target": "HGR482",
+                "evidence": "Your booking reference is HGR482", "turn_index": 32}
+        item.update(over)
+        return {"items": [item]}
+
+    def heard(**over):
+        row = {"seq": 1, "type": "number", "evidence": "Your booking reference is HGR482.",
+               "turn_index": 33}
+        row.update(over)
+        return {"blind_information_map": [row]}
+
+    # ---- the HGR482 shape itself, and the ways the auditor writes the same span -------------
+    for label, audit in (
+        ("identical evidence, adjacent turn, disagreeing type", heard()),
+        ("auditor recorded only the answer span", heard(evidence="HGR482")),
+        ("auditor recorded the confirmation sentence", heard(evidence="I've noted HGR482")),
+        ("evidence differs only by punctuation and case",
+         heard(evidence="your booking reference is hgr482!")),
+    ):
+        result = compare(planned(), audit)
+        check(f"recovered: {label}",
+              result["ok"] is True and result["matched"] == 1, json.dumps(result))
+
+    # Identity outranks proximity: the same span recorded far away is still the same span, and an
+    # anchor the auditor got wrong is a worse reason to cry 听不出来 than no anchor at all.
+    result = compare(planned(), heard(turn_index=2))
+    check("identical evidence pairs even when the anchor is far off",
+          result["ok"] is True, json.dumps(result))
+    result = compare(planned(), heard(turn_index="not an int"))
+    check("identical evidence pairs even with no usable auditor anchor",
+          result["ok"] is True, json.dumps(result))
+
+    # ---- the other direction: evidence must not become a licence to pair anything ------------
+    result = compare(planned(), heard(evidence="the price is 40 pounds"))
+    check("an unrelated row at an adjacent turn with a different type stays unpaired",
+          result["ok"] is False and [r["number"] for r in result["unrecoverable"]] == [1],
+          json.dumps(result))
+
+    # A short target must not be found inside every row. `MIN_TARGET_MATCH` is what stops it.
+    result = compare(
+        planned(target="6", evidence="six", turn_index=10),
+        {"blind_information_map": [{"seq": 1, "type": "number",
+                                    "evidence": "sixty-six pounds", "turn_index": 11}]},
+    )
+    check("a 1-character target does not claim a row by substring",
+          result["ok"] is False, json.dumps(result))
+
+    # And the two documented properties survive the new pass order, stated against evidence text
+    # rather than the synthetic anchors used in test_cross_check.
+    two_planned = {"items": [
+        {"number": 1, "type": "name", "target": "Sutcliff",
+         "evidence": "the surname is Sutcliff", "turn_index": 20},
+        {"number": 2, "type": "number", "target": "40 kilograms",
+         "evidence": "the limit is 40 kilograms", "turn_index": 21},
+    ]}
+    result = compare(two_planned, {"blind_information_map": [
+        {"seq": 1, "type": "name", "evidence": "the surname is Sutcliff", "turn_index": 20},
+        {"seq": 2, "type": "option", "evidence": "email or post", "turn_index": 22},
+    ]})
+    check("planned [20,21] vs observed [20,22] still reports one missing AND one unintended",
+          [r["number"] for r in result["unrecoverable"]] == [2]
+          and len(result["unintended_target"]) == 1, json.dumps(result))
+
+    result = compare({"items": [
+        {"number": 1, "type": "name", "target": "a1", "evidence": "point one", "turn_index": 10},
+        {"number": 2, "type": "name", "target": "b2", "evidence": "point two", "turn_index": 11},
+    ]}, {"blind_information_map": [
+        {"seq": 1, "type": "name", "evidence": "point two", "turn_index": 11},
+    ]})
+    check("the item whose evidence the auditor recorded is the one credited",
+          [r["number"] for r in result["unrecoverable"]] == [1], json.dumps(result))
+
+
 def test_render_report() -> None:
     print("report rendering (R7)")
     audit = json.loads((FIXTURES / "audit_valid.json").read_text(encoding="utf-8"))
@@ -522,6 +739,7 @@ def main() -> int:
         test_closing_rules_match_the_real_corpus,
         test_mode_and_split_rules_match_the_real_corpus,
         test_indirect_confirmation_is_optional,
+        test_remaining_rules_do_not_reject_real_papers,
         test_grouping_cannot_be_faked,
         test_spelled_name_rule_not_vacuous,
         test_metrics_absent_when_unmeasured,
@@ -529,6 +747,7 @@ def main() -> int:
         test_audit_fixtures_are_coherent,
         test_fixture_halves_are_balanced,
         test_cross_check,
+        test_cross_check_pairs_on_evidence_text,
         test_render_report,
         test_archive_samples_do_not_crash,
     ):

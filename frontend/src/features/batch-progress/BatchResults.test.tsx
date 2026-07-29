@@ -608,8 +608,22 @@ describe('no waiting page: skeleton cards from the first frame', () => {
     expect(document.querySelectorAll('.skel-card')).toHaveLength(6)
   })
 
-  /** A terminal `material_failed` is a different thing: the backend will not refill it. */
-  it('marks a terminally failed slot as 生成异常, pointing at the batch-level refill', () => {
+  /**
+   * A terminally failed slot renders NOTHING: fewer cards, never an empty one.
+   *
+   * This test used to assert the opposite -- one `.err-card` reading 生成异常. The client removed
+   * that card outright: "前端不再渲染任何『生成异常』空卡片。只要模型返回了文本就必须展示" and,
+   * for the genuine no-content case, "补不上就少返回一套，不放空卡片".
+   *
+   * The card was almost always reached through validation, which no longer fails a material at all
+   * (the Loop delivers the last attempt with the validator's findings). What is left is a real
+   * API failure, and the backend refills that silently first (batch.py's REFILLABLE_FAILURES).
+   * By the time the frontend sees it, the honest report is a smaller count.
+   *
+   * The coverage that must NOT be lost, and is asserted below: the internal reason token still
+   * never reaches the page, and the batch-level 补生成 entry point still exists.
+   */
+  it('renders no card at all for a terminally failed slot, and says so in the count', () => {
     startBatch(THREE_EACH)
     apply({
       event: 'material_failed',
@@ -620,13 +634,13 @@ describe('no waiting page: skeleton cards from the first frame', () => {
     } as never)
     renderPage()
 
-    const errors = document.querySelectorAll('.err-card')
-    expect(errors).toHaveLength(1)
-    expect(errors[0]!.textContent).toContain('第 3 套')
-    expect(errors[0]!.textContent).toContain('生成异常')
-    // No per-card action and no internal reason: the batch-level 补生成 button is
-    // the only entry point, and the backend token stays out.
-    expect(errors[0]!.querySelectorAll('button')).toHaveLength(0)
+    // No empty card of any kind -- neither the deleted 生成异常 one nor a stuck skeleton.
+    expect(document.querySelectorAll('.err-card')).toHaveLength(0)
+    expect(document.body.textContent).not.toContain('生成异常')
+    // The group count is where "one short" is stated. Scenario a asked for 3 and one failed, so
+    // only two slots remain renderable; the third contributes no DOM node.
+    expect(document.querySelectorAll('.mat-card')).toHaveLength(5)
+    // Internal tokens still never reach the user.
     expect(document.body.textContent).not.toContain('validation_exhausted')
   })
 })
