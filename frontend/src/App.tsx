@@ -7,7 +7,7 @@ import { ScenarioSelectPage } from '@/features/scenario-select/ScenarioSelectPag
 import { BatchProgressPage } from '@/features/batch-progress/BatchProgressPage'
 import { MaterialPage } from '@/features/material-reader/MaterialPage'
 import { ComparePage } from '@/features/compare/ComparePage'
-import { QuarantinePage } from '@/features/quarantine/QuarantinePage'
+import { ReviewQueuePage } from '@/features/review-queue/ReviewQueuePage'
 import { useBatchStore } from '@/stores/batchStore'
 
 /**
@@ -40,7 +40,7 @@ function TopBar() {
   const batchId = useBatchStore((s) => s.batchId)
   return (
     <div className="topbar">
-      <h1>IELTS Part 1 材料生成与审阅</h1>
+      <h1>IELTS Part 1 材料生成</h1>
       {/* Nav only once there is a session: every destination is behind
           RequireAuth, so offering them to an anonymous visitor on /login just
           bounces them back to the form they are already looking at. */}
@@ -49,16 +49,23 @@ function TopBar() {
           <NavLink to="/" end className={({ isActive }) => (isActive ? 'active' : '')}>
             场景选择
           </NavLink>
-          {batchId && (
+          {/* 客户版式的三个页签：场景选择 / 生成结果 / 审核队列。
+              「生成结果」在没有批次时也在位，只是不可点——页签列表跳着变会让人
+              以为功能消失了。 */}
+          {batchId ? (
             <NavLink
               to={`/batches/${batchId}`}
               className={({ isActive }) => (isActive ? 'active' : '')}
             >
-              当前批次
+              生成结果
             </NavLink>
+          ) : (
+            <span className="nav-disabled" title="提交一个批次后即可查看">
+              生成结果
+            </span>
           )}
-          <NavLink to="/quarantine" className={({ isActive }) => (isActive ? 'active' : '')}>
-            隔离区
+          <NavLink to="/review-queue" className={({ isActive }) => (isActive ? 'active' : '')}>
+            审核队列
           </NavLink>
           {/* /dev/fixtures is deliberately NOT linked: dev harness, see above. */}
         </nav>
@@ -118,10 +125,10 @@ export function App() {
           }
         />
         <Route
-          path="/quarantine"
+          path="/review-queue"
           element={
             <RequireAuth>
-              <QuarantinePage />
+              <ReviewQueuePage />
             </RequireAuth>
           }
         />

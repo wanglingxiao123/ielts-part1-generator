@@ -13,7 +13,8 @@ import { describe, expect, it } from 'vitest'
 // ?raw rather than node:fs: tsconfig.app deliberately excludes node types so app
 // code cannot reach for them, and vitest resolves ?raw the same way vite does.
 import RAW from './__fixtures__/real-batch.sse.txt?raw'
-import { decodeWireFrame, mapStage, stageDetailLabel } from './agentcore'
+import { decodeWireFrame, mapStage } from './agentcore'
+import { advancePhase, PHASE_LABEL, phaseOfStage } from '@/domain/progressStages'
 import { analyseFormGroups } from '@/domain/formGroups'
 import { FALLBACK_CONFIG } from '@/config/runtimeConfig'
 import { joinArtifacts } from '@/domain/joinArtifacts'
@@ -84,16 +85,53 @@ describe('stage mapping', () => {
     expect(mapStage('infra_retry', 'revising')).toBe('revising')
   })
 
-  it('keeps retry and repair visible instead of silently re-showing 生成中', () => {
-    expect(stageDetailLabel('regenerating')).not.toBeNull()
-    expect(stageDetailLabel('anchors_repaired')).not.toBeNull()
-    expect(stageDetailLabel('generating')).toBeNull()
-  })
-
-  it('folds regenerating onto generating for the six-dot track', () => {
+  it('folds regenerating onto generating for the §8 stage field', () => {
     const stages: MaterialStage[] = ['generating', 'validating', 'auditing', 'revising']
     for (const s of stages) expect(mapStage(s, 'queued')).toBe(s)
     expect(mapStage('regenerating', 'validating')).toBe('generating')
+  })
+
+  /**
+   * This replaces the old `stageDetailLabel` assertions, which required each
+   * retry stage to carry a user-visible label ("校验未过，重新生成"). The intent
+   * is preserved and inverted: a retry must still be HANDLED distinctly from a
+   * first attempt — that is what `raw_stage` is for — but it must not be
+   * rendered as a failure. The mapping is what enforces it now.
+   */
+  it('places every stage the real batch emitted on the user-facing progression', () => {
+    const names = new Set(
+      wireEvents()
+        .filter((e) => e.type === 'stage')
+        .map((e) => e.stage as string),
+    )
+    // Retry / repair stages are real and must be classified, not guessed at.
+    expect(names).toContain('regenerating')
+    expect(names).toContain('anchors_repaired')
+    for (const name of names) {
+      const phase = phaseOfStage(name)
+      // `infra_retry` is deliberately null — it re-runs whatever it interrupted.
+      if (name === 'infra_retry') expect(phase).toBeNull()
+      else expect(phase, name).not.toBeNull()
+    }
+  })
+
+  it('never shows a retry as a step backwards', () => {
+    // 校验 → 重新生成 → 校验 must read as "still checking", not "back to writing":
+    // the user cannot act on the system retrying itself.
+    const checking = phaseOfStage('validating')
+    const regenerating = phaseOfStage('regenerating')
+    expect(regenerating).not.toBe(checking)
+    expect(advancePhase(checking, regenerating)).toBe(checking)
+    // …while genuine forward motion still moves.
+    expect(advancePhase(checking, phaseOfStage('re_auditing'))).toBe('reviewing')
+  })
+
+  it('exposes no internal stage name as user-facing copy', () => {
+    const labels = Object.values(PHASE_LABEL)
+    expect(labels).toEqual(['生成', '校验', '修改', '复评'])
+    for (const label of labels) {
+      expect(label).not.toMatch(/未过|重试|失败|regenerat|retry|refill/i)
+    }
   })
 })
 

@@ -126,7 +126,7 @@ export function clusteredAudit(): Audit {
   return audit
 }
 
-/* ── FAIL / quarantine variant ───────────────────────────────────────────── */
+/* ── FAIL variant ────────────────────────────────────────────────────────── */
 
 export function failedAudit(): Audit {
   const audit = clone(BASE_AUDIT_WITH_GAP)
@@ -229,7 +229,6 @@ export function buildRecord(kind: FixtureKind, o: RecordOverrides): MaterialReco
       return {
         ...base,
         verdict: 'PASS',
-        quarantined: false,
         blueprint: BASE_BLUEPRINT,
         audit: BASE_AUDIT_ALIGNED,
         cross_check: CROSS_CHECK_ALIGNED,
@@ -238,7 +237,6 @@ export function buildRecord(kind: FixtureKind, o: RecordOverrides): MaterialReco
       return {
         ...base,
         verdict: 'PASS_WITH_MINOR_EDITS',
-        quarantined: false,
         blueprint: clusteredBlueprint(),
         audit: clusteredAudit(),
         cross_check: CROSS_CHECK_WITH_GAP,
@@ -247,10 +245,11 @@ export function buildRecord(kind: FixtureKind, o: RecordOverrides): MaterialReco
       return {
         ...base,
         verdict: 'FAIL',
-        quarantined: true,
-        quarantine_reason: {
+        // Delivered and selectable like any other: the card states the
+        // shortcoming, the user decides.
+        audit_rejection: {
           code: 'VERDICT_FAIL',
-          message: '最终判定 FAIL：答案原词未在对话中出现（critical）',
+          message: '评价环节判为不达标：答案原词未在对话中出现',
         },
         blueprint: BASE_BLUEPRINT,
         audit: failedAudit(),
@@ -286,7 +285,6 @@ export function buildRecord(kind: FixtureKind, o: RecordOverrides): MaterialReco
       return {
         ...base,
         verdict: 'PASS',
-        quarantined: false,
         degraded: true,
         blueprint: BLUEPRINT_BAD_ANCHOR,
         audit: BASE_AUDIT_ALIGNED,

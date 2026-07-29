@@ -25,7 +25,7 @@ import { DistributionStrip } from './DistributionStrip'
 const KINDS: Array<{ kind: FixtureKind; label: string; note: string }> = [
   { kind: 'balanced', label: '均衡（blueprint_valid）', note: '10 点铺满全篇' },
   { kind: 'clustered', label: '扎堆（clustered 变体）', note: '⑥⑦⑧ 挤在 turn 27–29' },
-  { kind: 'failed', label: 'FAIL（隔离）', note: 'critical 缺陷' },
+  { kind: 'failed', label: '评价判为不达标', note: 'critical 缺陷；仍可选用' },
   { kind: 'anchorMismatch', label: '锚点失配', note: '信息点 3 的 evidence 不在 turn 14' },
 ]
 

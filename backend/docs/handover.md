@@ -44,23 +44,38 @@ Generate request fields:
 |---|---|---|
 | `batch_started` | once, first | `total`, `deadline_at`, `config` |
 | `stage` | each stage transition | `slot_id`, `scenario`, `stage`, `attempt` |
-| `material_completed` | per material, first-finished-first | `material`, `blueprint`, `audit`, `cross_check`, `selected_version`, `route`, `degraded`, `note`, `timings` |
+| `material_completed` | per material, first-finished-first | `material`, `blueprint`, `audit`, `cross_check`, `selected_version`, `route`, `degraded`, `refill_rounds`, `note`, `timings` |
 | `material_failed` | per failed or skipped material | `reason`, `detail`, `skipped` |
-| `batch_completed` | once, last | `succeeded`, `failed`, `skipped`, `degraded`, `stage_timings`, `slots` |
+| `batch_completed` | once, last | `succeeded`, `failed`, `skipped`, `degraded`, `refilled`, `stage_timings`, `slots` |
 | `batch_failed` | malformed request only | `reason`, `detail` |
 
 `stage` values in order: `generating`, `validating`, `regenerating`, `auditing`, `audited`,
-`revising`, `anchors_repaired`, `re_auditing`, `infra_retry`.
+`revising`, `anchors_repaired`, `re_auditing`, `infra_retry`, `refilling`, `refill_abandoned`.
+
+`refilling` / `refill_abandoned` belong to the NOT_ASSESSABLE refill (below). They are
+observability, not user-facing state: exactly one `material_completed` or `material_failed` is
+still emitted per slot however many attempts it took.
 
 `stage` doubles as the heartbeat. Do not filter it out at the transport layer — AgentCore closes
 connections idle for 900s and a single material takes minutes.
 
 ## Fields that matter downstream
 
-**`route`** — routing advice only; this task never writes S3.
+**`route`** — always `pending`. There is no quarantine state: a user who asked for two materials
+receives two, and a `FAIL` one comes back like any other with its shortcomings stated on the card
+so the user decides. It is selectable and it gets audio.
 
-- `pending` — verdict `PASS` or `PASS_WITH_MINOR_EDITS`
-- `quarantine` — verdict `FAIL` or `NOT_ASSESSABLE`
+`NOT_ASSESSABLE` never reaches the user at all — see refill below.
+
+**`refill_rounds`** / **`refilled`** — a slot whose audit came back `NOT_ASSESSABLE` produced no
+usable script: no text to read and no defect list to weigh, so there is nothing on a card to
+decide with. That slot is re-run, up to `MAX_REFILL_ROUNDS` (2) further attempts and only while
+`Budget.may_start()` allows it, so the user still receives the count they asked for. When the
+budget runs out first the batch returns what it has rather than failing; a slot still unassessable
+after the last attempt is reported `material_failed` with `reason: "not_assessable"`.
+
+`FAIL` is **not** refilled. It is usable-but-flawed, and regenerating it would spend the user's
+budget hiding a material they asked to see.
 
 **`selected_version`** — `"initial"` or `"revised"`. The three artifacts always come from the same
 version; `audit` is never the score of a different script than `material`.
@@ -92,4 +107,24 @@ a batch that reports partial results as success would be worse than the timeout 
 | `audit_failed` | audit step unusable after retries |
 | `validator_unavailable` | a skill script crashed or timed out (infrastructure, not content) |
 | `skipped_time_budget` | not started; insufficient remaining budget |
+| `not_assessable` | every attempt, including refills, produced a script the audit could not read |
 | `unhandled_error` | unexpected exception, contained to this slot |
+
+## Candidate card fields
+
+`list_candidates` (and the record behind each `material_id`) carries three derived fields the card
+grid renders without loading the scripts. All three are pure Python — `backend/deterministic/cards.py`
+— and involve no model call: a per-card request would eat into the 15-minute wall, and a generated
+summary would make two identical materials describe themselves differently.
+
+- `preview_first_line` — the first non-narration turn. `speaker1` is the exam narrator, whose turn
+  is identical rubric in every material, so it is skipped.
+- `preview_summary` — one Chinese line, topic + distraction type, e.g.
+  `预订海滨酒店，含拼读 + 价格修正干扰`. Topic comes from the scenario catalogue's `title_zh`;
+  features from the blueprint's `correction`, `indirect_confirmation` and per-item `distractor`.
+- `flagged_points` — ascending item numbers a reviewer should look at, for the ten-dot strip.
+  Anchor mismatch, clustering and out-of-order points only: defects that cost a candidate a written
+  answer. Thresholds are `frontend/public/config.json`'s `CLUSTER_SPAN` / `CLUSTER_MIN_POINTS`,
+  reused rather than reinvented.
+
+There is no `expects_audio`: every candidate is selectable and every selection is synthesised.

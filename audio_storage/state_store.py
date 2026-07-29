@@ -12,17 +12,28 @@ state change happens; the history is what the change *is*.
 
 The two hard parts, both fully exercised against InMemoryObjectStore:
 
-1. **Verdict routing.** FAIL and NOT_ASSESSABLE go to quarantine with a machine-readable
-   reason and no audio -- a reviewer's time is scarce, and a known-bad material in the review
-   queue is a net cost to them. A degraded material (revise/re-audit skipped for time
-   budget) that still audited PASS goes to pending carrying `degraded: true`: degraded is not
-   the same as unfit, and the quality bar stays single.
+1. **Every published material goes to pending.** There is no quarantine: the product owner's
+   rule is that a user who asked for two materials gets two, and a flawed one is returned with
+   its shortcomings stated so the user can decide. A FAIL material is therefore synthesised and
+   published exactly like a PASS one; only its `audit.json` differs. A degraded material
+   (revise/re-audit skipped for time budget) also goes to pending carrying `degraded: true`:
+   degraded is not the same as unfit, and the quality bar stays single.
+
+   Earlier revisions of this module routed FAIL / NOT_ASSESSABLE into a `quarantine/` state with
+   no audio. Buckets written before that change still hold a `quarantine/` prefix. Nothing here
+   scans it -- `STATES` no longer lists it, so it is inert data rather than a crash, and no
+   migration is required.
 
 2. **copy + delete is not atomic.** So the transition is six steps with an intent marker and
    forward-only recovery. Every crash point leaves either the source or the destination
    complete, never neither -- and the read side hides the window where both are complete.
    Rolling back would need a second code path for a case that forward recovery already
    handles idempotently.
+
+The completeness sentinel (`audio/manifest.json`, written last) is what makes point 2 safe to
+read: a material is visible only once every clip it promises exists. With quarantine gone there
+is exactly one completeness rule for every state, which is one fewer way to publish a half-built
+material by accident.
 """
 
 from __future__ import annotations
@@ -39,27 +50,27 @@ PENDING = "pending"
 APPROVED = "approved"
 REJECTED = "rejected"
 PRODUCTION = "production"
-QUARANTINE = "quarantine"
 
-STATES = (PENDING, APPROVED, REJECTED, PRODUCTION, QUARANTINE)
+STATES = (PENDING, APPROVED, REJECTED, PRODUCTION)
 
 # Business rule, so it lives in code where a config mistake cannot widen it. Note the
 # absence of pending -> production: skipping review is the transition this whitelist exists
 # to refuse.
 ALLOWED_TRANSITIONS: Dict[str, Tuple[str, ...]] = {
-    PENDING: (APPROVED, REJECTED, QUARANTINE),
+    PENDING: (APPROVED, REJECTED),
     APPROVED: (PRODUCTION, REJECTED),
     REJECTED: (PENDING,),
-    QUARANTINE: (PENDING,),
     PRODUCTION: (REJECTED,),
 }
 
 PASS_VERDICTS = ("PASS", "PASS_WITH_MINOR_EDITS")
-QUARANTINE_VERDICTS = ("FAIL", "NOT_ASSESSABLE")
+# Verdicts a *published* material may carry. FAIL and NOT_ASSESSABLE no longer divert it
+# anywhere: they are recorded in audit.json and the frontend states the shortcomings.
+FLAWED_VERDICTS = ("FAIL", "NOT_ASSESSABLE")
+KNOWN_VERDICTS = PASS_VERDICTS + FLAWED_VERDICTS
 
 MANIFEST_NAME = "audio/manifest.json"
 TRANSITION_MARKER = "_transition.json"
-QUARANTINE_REASON = "quarantine_reason.json"
 HISTORY_PREFIX = "_history"
 
 _MATERIAL_ID_RE = re.compile(r"^\d{8}-[a-z0-9][a-z0-9-]*-[0-9a-f]{8}$")
@@ -143,44 +154,28 @@ class ReconcileReport:
 
 
 def verdict_of(audit: dict) -> str:
+    """Normalise the audit's verdict, defaulting an unreadable one to NOT_ASSESSABLE.
+
+    NOT_ASSESSABLE is the honest reading of an audit nobody can parse: no usable script was
+    assessed. The orchestrator treats that as "re-run this slot" rather than "hand it over",
+    so a broken generation step still cannot publish silently.
+    """
     verdict = audit.get("verdict") if isinstance(audit, dict) else None
-    if verdict not in PASS_VERDICTS + QUARANTINE_VERDICTS:
-        # Unknown verdicts go to quarantine, not pending: an unreadable audit is a reason to
-        # withhold from review, and defaulting the other way would let a broken generation
-        # step publish silently.
+    if verdict not in KNOWN_VERDICTS:
         return "NOT_ASSESSABLE"
     return verdict
 
 
 def route_for_verdict(verdict: str) -> str:
-    return QUARANTINE if verdict in QUARANTINE_VERDICTS else PENDING
+    """Always ``pending``. Kept as a function, not inlined, for two reasons.
 
-
-def quarantine_reason(audit: dict) -> dict:
-    """Machine-readable, not prose: the review UI and metrics both consume this."""
-    findings = [f for f in (audit.get("findings") or []) if isinstance(f, dict)]
-    verdict = verdict_of(audit)
-    return {
-        "verdict": verdict,
-        "assessable": bool(audit.get("assessable", verdict != "NOT_ASSESSABLE")),
-        "critical_count": sum(f.get("severity") == "critical" for f in findings),
-        "major_count": sum(f.get("severity") == "major" for f in findings),
-        "minor_count": sum(f.get("severity") == "minor" for f in findings),
-        "score_total": (audit.get("score") or {}).get("total"),
-        "findings_digest": [
-            {
-                "severity": f.get("severity"),
-                "rule": f.get("rule"),
-                "turn_index": f.get("turn_index"),
-            }
-            for f in findings
-            if f.get("severity") in ("critical", "major")
-        ],
-        "reason_code": (
-            "no_assessable_script" if verdict == "NOT_ASSESSABLE" else "hard_defects_present"
-        ),
-        "has_audio": False,
-    }
+    It remains the single place that decides where a published material lands, and it keeps the
+    call sites honest about the fact that a verdict does NOT choose a destination: the product
+    owner's rule is that every material the user asked for comes back, flaws stated. Deleting it
+    would scatter a bare ``PENDING`` literal across publish paths and invite a future "just this
+    one verdict goes somewhere else".
+    """
+    return PENDING
 
 
 def _dumps(payload: dict) -> bytes:
@@ -241,34 +236,32 @@ class StateStore:
         self._store.put(prefix + "blueprint.json", _dumps(blueprint))
         self._store.put(prefix + "audit.json", _dumps(audit))
 
-        if state == QUARANTINE:
-            # No audio by design: the material was never selected, so it was never
-            # synthesised. That is not incompleteness (R10).
-            self._store.put(prefix + QUARANTINE_REASON, _dumps(quarantine_reason(audit)))
-        else:
-            if manifest is None:
-                raise StateStoreError(
-                    "a {0} material needs a manifest; without one the read side treats it "
-                    "as incomplete and it will never become visible".format(state)
-                )
-            if degraded:
-                manifest = dict(manifest)
-                manifest["degraded"] = True
-                manifest["degraded_reason"] = degraded_reason or "revise/re-audit skipped"
-            for key, body in (audio or {}).items():
-                self._store.put(prefix + key, body)
-            missing = [
-                clip["key"]
-                for clip in manifest.get("clips", [])
-                if not self._store.head(prefix + clip["key"])
-            ]
-            if missing:
-                # The sentinel is withheld rather than written over a gap, so the frontend
-                # cannot read a half-built material (design.md §4.5).
-                raise StateStoreError(
-                    "refusing to write the manifest: audio objects missing {0}".format(missing)
-                )
-            self._store.put(prefix + MANIFEST_NAME, _dumps(manifest))
+        # Every state needs the sentinel, whatever the verdict. There is no longer an exemption
+        # for a material published without audio, so "no manifest" means exactly one thing:
+        # incomplete.
+        if manifest is None:
+            raise StateStoreError(
+                "a {0} material needs a manifest; without one the read side treats it "
+                "as incomplete and it will never become visible".format(state)
+            )
+        if degraded:
+            manifest = dict(manifest)
+            manifest["degraded"] = True
+            manifest["degraded_reason"] = degraded_reason or "revise/re-audit skipped"
+        for key, body in (audio or {}).items():
+            self._store.put(prefix + key, body)
+        missing = [
+            clip["key"]
+            for clip in manifest.get("clips", [])
+            if not self._store.head(prefix + clip["key"])
+        ]
+        if missing:
+            # The sentinel is withheld rather than written over a gap, so the frontend
+            # cannot read a half-built material (design.md §4.5).
+            raise StateStoreError(
+                "refusing to write the manifest: audio objects missing {0}".format(missing)
+            )
+        self._store.put(prefix + MANIFEST_NAME, _dumps(manifest))
 
         self._write_history(
             TransitionRecord(
@@ -304,9 +297,10 @@ class StateStore:
             # source is still the only real copy.
             if all(k.endswith(TRANSITION_MARKER) for k in keys):
                 continue
-            has_manifest = (prefix + MANIFEST_NAME) in keys
-            # Quarantine is complete without audio; every other state needs the sentinel.
-            complete = has_manifest or (state == QUARANTINE and (prefix + QUARANTINE_REASON) in keys)
+            # One completeness rule for every state: the sentinel is present or the material is
+            # not readable. No verdict earns an exemption, so a crash mid-synthesis can never
+            # leave something that looks whole.
+            complete = (prefix + MANIFEST_NAME) in keys
             refs.append(MaterialRef(material_id, state, scenario_key, complete=complete))
         return refs
 
@@ -393,7 +387,6 @@ class StateStore:
             ("blueprint.json", "blueprint"),
             ("audit.json", "audit"),
             (MANIFEST_NAME, "manifest"),
-            (QUARANTINE_REASON, "quarantine_reason"),
         ):
             try:
                 bundle[field_name] = json.loads(self._store.get(ref.prefix + name))
@@ -596,12 +589,8 @@ class StateStore:
         the material. Cheaper than a resynthesis and catches an object deleted underneath."""
         ref = self.locate(material_id)
         bundle = self.get_material(material_id)
-        if ref.state == QUARANTINE:
-            return {
-                "ok": bundle.get("quarantine_reason") is not None,
-                "state": ref.state,
-                "expected_audio": False,
-            }
+        # No verdict-dependent branch: every published material is expected to carry audio, so a
+        # missing manifest is a defect rather than a category.
         manifest = bundle.get("manifest")
         if not manifest:
             return {"ok": False, "state": ref.state, "errors": ["no manifest"]}

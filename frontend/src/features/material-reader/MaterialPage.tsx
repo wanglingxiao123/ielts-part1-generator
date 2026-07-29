@@ -29,7 +29,10 @@ export function MaterialPage() {
 
   // Audio is owned here, not inside a child that would hand a fresh pool object
   // back up on every render (that loops).
-  const audioEnabled = Boolean(record && !record.quarantined)
+  // Audio exists only after the material is selected; before that there is
+  // nothing to poll for. Rejected materials are no longer excluded — if the user
+  // selected one, they get audio for it like any other.
+  const audioEnabled = Boolean(record)
   const { status: audioStatus, error: audioError } = useAudioStatus(
     materialId ?? '',
     audioEnabled,
@@ -105,13 +108,7 @@ export function MaterialPage() {
     <div className="page-wide">
       <div className="row" style={{ marginBottom: 8 }}>
         <h2 style={{ margin: 0 }}>{view.scenario.slice(0, 70)}</h2>
-        <span className={`flag ${record.quarantined ? 'flag-bad' : 'flag-good'}`}>
-          {record.verdict}
-        </span>
         <span className="mono muted">{record.material_id}</span>
-        <span>
-          总分 <strong className="mono">{view.audit.score.total}</strong>
-        </span>
         {view.crossCheck.unrecoverable.length > 0 && (
           <span className="flag flag-bad" title="试听的人没听出这些点，考生也听不出来">
             {view.crossCheck.unrecoverable.length} 个点听不出来
@@ -128,10 +125,12 @@ export function MaterialPage() {
         </Link>
       </div>
 
-      {record.quarantined && record.quarantine_reason && (
-        <div className="banner banner-bad">
-          <strong>本材料已隔离（{record.quarantine_reason.code}）</strong>
-          <div>{record.quarantine_reason.message}</div>
+      {/* 评价环节的判定在这里说成一句缺点，而不是一个状态：材料照样可读、可选，
+          只是把「它哪里不行」摆出来让审阅者自己决定。分数与 verdict 枚举不出现。 */}
+      {record.audit_rejection && (
+        <div className="banner banner-warn">
+          <strong>这一套有明显缺陷</strong>
+          <div>{record.audit_rejection.message}。仍可选用，建议先通读全文确认。</div>
         </div>
       )}
 

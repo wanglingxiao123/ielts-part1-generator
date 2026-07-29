@@ -36,6 +36,7 @@ __all__ = [
     "MaterialResult",
     "VERDICT_RANK",
     "Candidate",
+    "is_assessable",
     "is_clean",
     "pick_better",
     "route_for",
@@ -111,7 +112,11 @@ class MaterialResult(object):
                  # Assigned by batch.py once the material is offered for selection. They are not
                  # constructor arguments because the Loop does not know about S3 or scenario keys
                  # -- it produces a material, and publication is somebody else's decision.
-                 "material_id", "scenario_key", "group_key")
+                 "material_id", "scenario_key", "group_key",
+                 # How many NOT_ASSESSABLE attempts batch.py discarded before this one. Not a
+                 # constructor argument for the same reason as the three above: whether a retry is
+                 # affordable is a scheduling question the Loop has no way to answer.
+                 "refill_rounds")
 
     def __init__(
         self,
@@ -153,6 +158,7 @@ class MaterialResult(object):
         self.material_id: Optional[str] = None
         self.scenario_key: Optional[str] = None
         self.group_key: Optional[str] = None
+        self.refill_rounds = 0
 
     def as_dict(self) -> Dict[str, Any]:
         if not self.ok:
@@ -162,6 +168,7 @@ class MaterialResult(object):
                 "ok": False,
                 "reason": self.reason,
                 "detail": self.detail,
+                "refill_rounds": self.refill_rounds,
                 "timings": self.timings,
             }
         candidate = self.candidate
@@ -183,6 +190,10 @@ class MaterialResult(object):
             "note": self.note,
             "degraded": self.degraded,
             "degraded_reason": self.degraded_reason,
+            # How many unassessable attempts were discarded before this material. Reported for
+            # observability -- the user is not shown it, but a batch quietly spending its budget
+            # on refills is something an operator has to be able to see.
+            "refill_rounds": self.refill_rounds,
             "anchor_repairs": self.anchor_repairs,
             "warnings": self.warnings,
             "timings": self.timings,
@@ -221,12 +232,37 @@ def pick_better(before: Candidate, after: Candidate) -> Candidate:
 def route_for(candidate: Candidate) -> str:
     """Routing advice for the audio-storage task. This task never writes S3.
 
-    Degraded materials are routed on their own verdict with no extra penalty (design.md §9): a
-    degraded material only skipped one optimisation pass, and applying a second standard would
-    mean the same script is treated differently for being scheduled last. That is scheduling
-    noise, not a quality signal. ``degraded: true`` keeps the reviewer informed.
+    Always ``pending``, whatever the verdict. A FAIL material is returned to the user like any
+    other: the frontend states its shortcomings and the user decides whether to use it. Withholding
+    it would mean a user who asked for two materials received one, which is the outcome the product
+    owner ruled out.
+
+    Degraded materials are likewise unpenalised (design.md §9): a degraded material only skipped
+    one optimisation pass, and applying a second standard would mean the same script is treated
+    differently for being scheduled last. That is scheduling noise, not a quality signal.
+    ``degraded: true`` keeps the reviewer informed.
     """
-    return "pending" if VERDICT_RANK.get(candidate.verdict, 0) > 0 else "quarantine"
+    return "pending"
+
+
+def is_assessable(result: "MaterialResult") -> bool:
+    """Did this slot produce something a user can actually judge?
+
+    False only for NOT_ASSESSABLE, which means the audit found no usable script: nothing to read,
+    nothing to weigh, nothing to listen to. batch.py re-runs such a slot rather than returning a
+    blank card.
+
+    Note what this is NOT: a quality gate. FAIL is assessable -- the user is shown the defects and
+    chooses. Widening this predicate to cover FAIL would silently reintroduce quarantine, this
+    time as an invisible regeneration loop that spends the user's whole time budget hiding
+    materials they asked to see.
+    """
+    if not result.ok or result.candidate is None:
+        return False
+    verdict = result.candidate.verdict
+    # An unrecognised verdict counts as unassessable, matching state_store.verdict_of: an audit
+    # nobody can read is not evidence that the material is fine.
+    return verdict in VERDICT_RANK and verdict != "NOT_ASSESSABLE"
 
 
 async def _with_infra_retries(operation: Callable, label: str, emit: Callable) -> Any:

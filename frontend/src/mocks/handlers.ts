@@ -111,7 +111,10 @@ const knownKeys = new Set(
   SCENARIO_CATALOG.categories.flatMap((c) => c.scenarios.map((s) => s.key)),
 )
 
-/** Seeds the quarantine view so it is reviewable without running a batch. */
+/**
+ * Seeds a couple of audit-rejected materials so the "flawed but selectable" card
+ * is reachable without waiting for a batch to produce one.
+ */
 function seedStandalone() {
   if (standaloneMaterials.size > 0) return
   const seeds: Array<{ kind: FixtureKind; scenarioKey: string }> = [
@@ -120,7 +123,7 @@ function seedStandalone() {
     { kind: 'failed', scenarioKey: 'employment-vacancy' },
   ]
   seeds.forEach((s, i) => {
-    const id = `seed-quarantine-${i + 1}`
+    const id = `seed-rejected-${i + 1}`
     const rec = buildRecord(s.kind, {
       materialId: id,
       batchId: 'seed-batch',
@@ -129,9 +132,9 @@ function seedStandalone() {
     })
     if (i === 2) {
       rec.verdict = 'NOT_ASSESSABLE'
-      rec.quarantine_reason = {
+      rec.audit_rejection = {
         code: 'NOT_ASSESSABLE',
-        message: '脚本结构不完整，评价方无法评定（与 FAIL 同处隔离，但原因不同）',
+        message: '评价环节未能给出结论，本套的质量没有经过复核',
       }
     }
     standaloneMaterials.set(id, rec)
@@ -156,8 +159,7 @@ function findMaterial(materialId: string): MaterialRecord | undefined {
           index: e.index,
           status: 'done',
           verdict: e.verdict,
-          quarantined: e.quarantined,
-          quarantine_reason: e.quarantine_reason ?? null,
+          audit_rejection: e.audit_rejection ?? null,
           degraded: e.degraded ?? false,
           material: e.material,
           blueprint: e.blueprint,
@@ -193,7 +195,6 @@ function snapshotOf(batch: MockBatch): BatchSnapshot {
         stage: 're_auditing',
         attempt: 1,
         verdict: e.verdict,
-        quarantined: e.quarantined,
       })
     }
   }
@@ -207,7 +208,7 @@ function snapshotOf(batch: MockBatch): BatchSnapshot {
     total: batch.total,
     completed: list.filter((i) => i.status === 'done').length,
     failed: 0,
-    quarantined: list.filter((i) => i.quarantined).length,
+    audit_rejected: list.filter((i) => findMaterial(i.material_id)?.audit_rejection).length,
     seq_high: batch.events[batch.events.length - 1]?.seq ?? 0,
     items: list,
   }
@@ -324,8 +325,10 @@ const mockTransport = async (spec: RequestSpec): Promise<unknown> => {
         if (m) all.push(m)
       }
     }
-    const filtered =
-      status === 'quarantine' ? all.filter((m) => m.quarantined) : status ? [] : all
+    // No status partitions the materials any more: every material routes to
+    // pending and is selectable. An unrecognised filter yields nothing rather
+    // than silently returning everything.
+    const filtered = status ? [] : all
     const response: MaterialListResponse = { materials: filtered, next_cursor: null }
     return response
   }

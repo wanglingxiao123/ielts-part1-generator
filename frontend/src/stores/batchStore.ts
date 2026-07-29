@@ -15,6 +15,7 @@ import type {
   MaterialStage,
   SseEvent,
 } from '@/contracts/api'
+import { advancePhase, phaseOfProgress, type ProgressPhase } from '@/domain/progressStages'
 
 export type ConnectionState =
   | 'idle'
@@ -28,8 +29,20 @@ export type ConnectionState =
 
 export interface BatchItemState extends BatchItemSnapshot {
   failure?: { code: string; message: string; attempts: number } | null
-  /** Real-backend stage name with no §8 equivalent; shown as a sub-label. */
-  subStage?: string | null
+  /**
+   * The backend's own stage name. A machine token, NOT display copy: it feeds
+   * `domain/progressStages.ts` and nothing else. See SseProgressEvent.raw_stage.
+   */
+  rawStage?: string | null
+  /**
+   * User-facing progression (生成→校验→修改→复评), advance-only.
+   *
+   * Held in the store rather than derived per render because monotonicity needs
+   * the previous value: a `regenerating` event maps back to 生成, and recomputing
+   * from the latest event alone would make the display walk backwards — exactly
+   * the "the system failed and started over" reading the client rejected.
+   */
+  phase?: ProgressPhase | null
 }
 
 export interface BatchState {
@@ -129,8 +142,7 @@ function materialFromEvent(
     index: event.index,
     status: 'done',
     verdict: event.verdict,
-    quarantined: event.quarantined,
-    quarantine_reason: event.quarantine_reason ?? null,
+    audit_rejection: event.audit_rejection ?? null,
     degraded: event.degraded ?? false,
     material: event.material,
     blueprint: event.blueprint,
@@ -207,8 +219,12 @@ export const useBatchStore = create<BatchState & Actions>((set, get) => ({
             stage: event.stage,
             attempt: event.attempt,
             verdict: prev?.verdict,
-            quarantined: prev?.quarantined,
-            subStage: event.sub_stage ?? null,
+            rawStage: event.raw_stage ?? null,
+            // Advance-only: see BatchItemState.phase.
+            phase: advancePhase(
+              prev?.phase ?? null,
+              phaseOfProgress({ stage: event.stage, rawStage: event.raw_stage }),
+            ),
           }
           if (!itemOrder.includes(event.material_id)) {
             itemOrder = [...itemOrder, event.material_id]
@@ -226,7 +242,7 @@ export const useBatchStore = create<BatchState & Actions>((set, get) => ({
             stage: 're_auditing',
             attempt: items[event.material_id]?.attempt ?? 1,
             verdict: event.verdict,
-            quarantined: event.quarantined,
+            phase: 'reviewing',
           }
           if (!itemOrder.includes(event.material_id)) {
             itemOrder = [...itemOrder, event.material_id]
@@ -291,7 +307,7 @@ export const useBatchStore = create<BatchState & Actions>((set, get) => ({
             stage: 're_auditing' as MaterialStage,
             attempt: 1,
             verdict: m.verdict,
-            quarantined: m.quarantined,
+            phase: 'reviewing' as ProgressPhase,
           },
         ]),
       ),
@@ -305,3 +321,21 @@ export const selectItem = (materialId: string) => (s: BatchState) => s.items[mat
 export const selectCompleted = (s: BatchState) => Object.keys(s.materials).length
 export const selectReadyMaterials = (s: BatchState): MaterialRecord[] =>
   s.itemOrder.map((id) => s.materials[id]).filter((m): m is MaterialRecord => Boolean(m))
+
+/**
+ * The furthest phase reached by any material still in flight — the batch-wide
+ * "正在校验" caption.
+ *
+ * Read off the in-flight items only. Including the finished ones would peg the
+ * caption at 复评 the moment the first material lands, while five others are
+ * still being written.
+ */
+export function selectActivePhase(s: BatchState): ProgressPhase | null {
+  let furthest: ProgressPhase | null = null
+  for (const id of s.itemOrder) {
+    const item = s.items[id]
+    if (!item || item.status === 'done' || item.status === 'failed') continue
+    furthest = advancePhase(furthest, item.phase ?? null)
+  }
+  return furthest
+}

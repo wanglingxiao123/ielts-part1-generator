@@ -17,6 +17,7 @@ from backend.orchestration import loop as loop_module
 from backend.orchestration.loop import (
     Candidate,
     MaterialResult,
+    is_assessable,
     is_clean,
     pick_better,
     route_for,
@@ -479,12 +480,14 @@ class TestRouting:
         assert route_for(candidate("PASS", 90)) == "pending"
         assert route_for(candidate("PASS_WITH_MINOR_EDITS", 70)) == "pending"
 
-    def test_fail_routes_to_quarantine(self):
-        assert route_for(candidate("FAIL", 40)) == "quarantine"
-        assert route_for(candidate("NOT_ASSESSABLE", 0)) == "quarantine"
+    def test_fail_also_routes_to_pending(self):
+        """Was "FAIL routes to quarantine". The client's rule replaces it: a flawed material is
+        returned to the user with its shortcomings stated, and the user decides."""
+        assert route_for(candidate("FAIL", 40)) == "pending"
+        assert route_for(candidate("NOT_ASSESSABLE", 0)) == "pending"
 
     @pytest.mark.asyncio
-    async def test_selected_fail_is_quarantined(self, harness):
+    async def test_a_selected_fail_is_delivered_to_pending_not_withheld(self, harness):
         harness.validate_results = [ok_validation(), ok_validation()]
         harness.audit_results = [audit_doc("FAIL", 45, findings=[{"severity": "major",
                                                                   "rule": "r", "evidence": "e",
@@ -494,7 +497,37 @@ class TestRouting:
                                                                   "fix": "f"}])]
         harness.crosscheck_results = [clean_crosscheck(), clean_crosscheck()]
         result = await run_one(FakeScenario(), "slot-1", harness.emit)
-        assert result.route == "quarantine"
+        assert result.ok and result.route == "pending"
+        # The verdict is not softened on the way out: the card needs it to state the shortcomings.
+        assert result.candidate.verdict == "FAIL"
+
+
+class TestAssessability:
+    """`is_assessable` is what batch.py refills on. It must separate "flawed" from "unreadable"."""
+
+    def test_a_fail_is_assessable_and_therefore_never_refilled(self):
+        result = MaterialResult("slot-1", "s", True, candidate("FAIL", 40), "initial", "pending")
+        assert is_assessable(result)
+
+    def test_pass_verdicts_are_assessable(self):
+        for verdict in ("PASS", "PASS_WITH_MINOR_EDITS"):
+            result = MaterialResult("slot-1", "s", True, candidate(verdict, 80), "initial",
+                                    "pending")
+            assert is_assessable(result), verdict
+
+    def test_not_assessable_is_not(self):
+        result = MaterialResult("slot-1", "s", True, candidate("NOT_ASSESSABLE", 0), "initial",
+                                "pending")
+        assert not is_assessable(result)
+
+    def test_an_unreadable_verdict_is_not_assessable_either(self):
+        """Matches state_store.verdict_of: an audit nobody can parse is not evidence of quality."""
+        result = MaterialResult("slot-1", "s", True, candidate("SOMETHING_NEW", 80), "initial",
+                                "pending")
+        assert not is_assessable(result)
+
+    def test_a_failed_slot_is_not_assessable(self):
+        assert not is_assessable(MaterialResult("slot-1", "s", False, reason="model_error"))
 
 
 class TestTimeBudgetDegradation:
@@ -525,7 +558,9 @@ class TestTimeBudgetDegradation:
         assert result.route == "pending"
 
     @pytest.mark.asyncio
-    async def test_degraded_failing_material_still_quarantines(self, harness):
+    async def test_a_degraded_failing_material_is_still_delivered(self, harness):
+        """Was "still quarantines". Degrading is not a quality penalty and neither is FAIL a
+        reason to withhold, so the material comes back carrying both flags."""
         harness.validate_results = [ok_validation()]
         harness.audit_results = [audit_doc("FAIL", 40, findings=[{"severity": "critical",
                                                                   "rule": "r", "evidence": "e",
@@ -533,7 +568,8 @@ class TestTimeBudgetDegradation:
         harness.crosscheck_results = [clean_crosscheck()]
         result = await run_one(FakeScenario(), "slot-1", harness.emit,
                               allow_revision=lambda: False)
-        assert result.route == "quarantine" and result.degraded
+        assert result.ok and result.route == "pending" and result.degraded
+        assert result.candidate.verdict == "FAIL"
 
 
 class TestIsClean:

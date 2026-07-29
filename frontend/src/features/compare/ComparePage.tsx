@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { api } from '@/api/endpoints'
 import { ApiError } from '@/api/http'
+import { scenarioMeta } from '@/config/scenarioMeta'
 import { getThresholds } from '@/config/runtimeConfig'
 import type { MaterialRecord } from '@/contracts/api'
 import { buildFacts, compareCandidates } from '@/domain/compare'
@@ -20,6 +21,9 @@ const LABELS = ['候选 A', '候选 B', '候选 C', '候选 D']
 
 export function ComparePage() {
   const { scenarioKey } = useParams<{ scenarioKey: string }>()
+  // ?a=&b= is how the results page hands over the two cards the user point-
+  // selected. Absent (a direct link, a bookmark) it falls back to the first two.
+  const [search] = useSearchParams()
   const thresholds = getThresholds()
 
   // Subscribe to the two stable references and derive with useMemo. A selector
@@ -53,9 +57,11 @@ export function ComparePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scenarioKey, fromStore.length])
 
-  // FAIL / NOT_ASSESSABLE never enter the compare view (prd R7).
-  const candidates = records.filter((r) => !r.quarantined)
-  const quarantined = records.filter((r) => r.quarantined)
+  // Every material is comparable now, audit-rejected ones included: the client's
+  // rule is that a flawed material is shown with its shortcomings stated, and
+  // hiding it here would silently remove the very comparison a reviewer wants
+  // ("is the flawed one still better than the alternative?").
+  const candidates = records
 
   const views = useMemo(() => candidates.map(joinFromRecord), [candidates])
   const facts = useMemo(
@@ -72,6 +78,16 @@ export function ComparePage() {
   )
 
   const [pair, setPair] = useState<[number, number]>([0, 1])
+
+  // Honour ?a=&b= once the records are in hand. Runs on id, not on index, so a
+  // late-arriving material cannot shift the pair out from under the user.
+  useEffect(() => {
+    const a = candidates.findIndex((c) => c.material_id === search.get('a'))
+    const b = candidates.findIndex((c) => c.material_id === search.get('b'))
+    if (a >= 0 && b >= 0 && a !== b) setPair([a, b])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [records, search])
+
   const comparison = useMemo(() => {
     const a = facts[pair[0]]
     const b = facts[pair[1]]
@@ -107,38 +123,14 @@ export function ComparePage() {
     )
   }
 
-  if (candidates.length === 0) {
-    return (
-      <div className="page">
-        <div className="banner banner-bad">
-          <strong>本场景无可选材料</strong>
-          <div>
-            {quarantined.length} 套全部被隔离，无法进行对比。请重新生成本场景。
-            <div style={{ marginTop: 8 }}>
-              <Link className="btn" to="/">
-                重新生成本场景
-              </Link>{' '}
-              <Link className="btn" to="/quarantine">
-                查看隔离区
-              </Link>
-            </div>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
   const showPair = candidates.length >= 2 && comparison !== null
 
   return (
     <div className="page-wide">
       <div className="row" style={{ marginBottom: 8 }}>
         <h2 style={{ margin: 0 }}>
-          场景：{scenarioKey} — {candidates.length} 套候选
+          {scenarioMeta(scenarioKey ?? '').titleZh} — {candidates.length} 套候选
         </h2>
-        {quarantined.length > 0 && (
-          <span className="flag flag-neutral">{quarantined.length} 套已隔离，不进对比</span>
-        )}
         <label style={{ fontSize: 12 }}>
           <input
             type="checkbox"

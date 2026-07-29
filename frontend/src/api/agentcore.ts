@@ -239,43 +239,42 @@ const STAGE_MAP: Record<string, MaterialStage> = {
   queued: 'queued',
   generating: 'generating',
   regenerating: 'generating',
+  // A NOT_ASSESSABLE slot being silently re-run to fill the requested count. It
+  // starts over, so it is a `generating` stage in §8 terms.
+  refilling: 'generating',
   validating: 'validating',
   anchors_repaired: 'validating',
   auditing: 'auditing',
   audited: 'auditing',
   revising: 'revising',
   re_auditing: 're_auditing',
-  // infra_retry keeps whatever stage it interrupted; handled at the call site.
+  // infra_retry / refill_abandoned keep whatever stage they interrupted;
+  // handled at the call site.
 }
 
 export function mapStage(name: string, previous: MaterialStage): MaterialStage {
-  if (name === 'infra_retry') return previous
+  if (name === 'infra_retry' || name === 'refill_abandoned') return previous
   return STAGE_MAP[name] ?? previous
 }
 
-/** Backend stage names with no §8 equivalent, surfaced verbatim as a sub-label. */
-export function stageDetailLabel(name: string): string | null {
-  if (name === 'regenerating') return '校验未过，重新生成'
-  if (name === 'anchors_repaired') return '锚点已自动修复'
-  if (name === 'infra_retry') return '基础设施重试'
-  if (name === 'audited') return '初评完成'
-  return null
-}
-
-/* ── verdict / quarantine derivation ─────────────────────────────────────── */
+/* ── verdict derivation ──────────────────────────────────────────────────── */
 
 /**
- * `route` is the backend's own routing decision (state_store.route_for_verdict).
- * Trusting it over re-deriving from the verdict keeps one authority: if the
- * backend routed to quarantine, the material IS quarantined regardless of what
- * the frontend would have concluded.
+ * A material the audit rejected is still offered to the user.
+ *
+ * `route: 'quarantine'` used to hide the material behind a separate 隔离区 page
+ * and strip it of audio. That concept is gone: the client's rule is that a
+ * flawed material is returned, its shortcomings are stated, and the user
+ * decides. So the route is recorded on the record — audio synthesis still keys
+ * off it server-side — but it withholds nothing from the reviewer, and the
+ * reason is phrased as a shortcoming rather than as a sentence.
  */
-function quarantineReason(audit: Audit, route: string): MaterialRecord['quarantine_reason'] {
+function auditRejection(audit: Audit, route: string): MaterialRecord['audit_rejection'] {
   if (route !== 'quarantine') return null
   if (audit.verdict === 'NOT_ASSESSABLE') {
     return {
       code: 'NOT_ASSESSABLE',
-      message: '评价方无法评定本材料（与 FAIL 同处隔离，但原因不同）',
+      message: '评价环节未能给出结论，本套的质量没有经过复核',
     }
   }
   const critical = audit.findings.filter((f) => f.severity === 'critical')
@@ -283,8 +282,8 @@ function quarantineReason(audit: Audit, route: string): MaterialRecord['quaranti
     code: 'VERDICT_FAIL',
     message:
       critical.length > 0
-        ? `最终判定 ${audit.verdict}：${critical[0]!.rule}`
-        : `最终判定 ${audit.verdict}`,
+        ? `评价环节判为不达标：${critical[0]!.rule}`
+        : '评价环节判为不达标',
   }
 }
 
@@ -295,7 +294,7 @@ const FAILURE_TEXT: Record<string, string> = {
   validator_unavailable: '校验脚本不可用',
   audit_failed: '评价环节失败',
   skipped_time_budget: '时间预算不足，本套未开始（15 分钟同步硬限）',
-  unhandled_error: '未预期的后端异常，本套已隔离失败',
+  unhandled_error: '后端出现未预期的异常，本套未能生成',
   bad_request: '请求不被后端接受',
 }
 
@@ -405,7 +404,6 @@ function emit(session: Session, build: (seq: number) => SseEvent | null): void {
 }
 
 function toRecord(session: Session, slot: Slot, wire: WireMaterialCompleted): MaterialRecord {
-  const quarantined = wire.route === 'quarantine'
   return {
     material_id: slot.materialId,
     batch_id: session.batchId,
@@ -413,8 +411,7 @@ function toRecord(session: Session, slot: Slot, wire: WireMaterialCompleted): Ma
     index: slot.index,
     status: 'done',
     verdict: wire.audit.verdict as Verdict,
-    quarantined,
-    quarantine_reason: quarantineReason(wire.audit, wire.route),
+    audit_rejection: auditRejection(wire.audit, wire.route),
     degraded: wire.degraded,
     material: wire.material,
     blueprint: wire.blueprint,
@@ -444,14 +441,14 @@ function applyWire(session: Session, wire: WireEvent): void {
       slot.stage = mapStage(wire.stage, slot.stage)
       slot.attempt = wire.attempt ?? slot.attempt
       slot.status = 'running'
-      const label = stageDetailLabel(wire.stage)
       emit(session, (seq) => ({
         event: 'progress',
         seq,
         material_id: slot.materialId,
         stage: slot.stage,
         attempt: slot.attempt,
-        sub_stage: label,
+        // Verbatim, untranslated: the consumer is the progress mapping, not a label.
+        raw_stage: wire.stage,
       }))
       break
     }
@@ -468,8 +465,7 @@ function applyWire(session: Session, wire: WireEvent): void {
         scenario_key: record.scenario_key,
         index: record.index,
         verdict: record.verdict,
-        quarantined: record.quarantined,
-        quarantine_reason: record.quarantine_reason ?? null,
+        audit_rejection: record.audit_rejection ?? null,
         degraded: record.degraded ?? false,
         material: record.material,
         blueprint: record.blueprint,
@@ -509,7 +505,8 @@ function applyWire(session: Session, wire: WireEvent): void {
         status,
         completed: wire.succeeded,
         failed: wire.failed,
-        quarantined: [...session.slots.values()].filter((s) => s.record?.quarantined).length,
+        audit_rejected: [...session.slots.values()].filter((s) => s.record?.audit_rejection)
+          .length,
       }))
       break
     }
@@ -530,7 +527,7 @@ function applyWire(session: Session, wire: WireEvent): void {
         status: 'partial',
         completed: 0,
         failed: session.total || 1,
-        quarantined: 0,
+        audit_rejected: 0,
       }))
       break
     }
@@ -647,7 +644,7 @@ function startBatch(session: Session, payload: unknown): Promise<void> {
           status: 'partial',
           completed: [...session.slots.values()].filter((s) => s.record).length,
           failed: 0,
-          quarantined: 0,
+          audit_rejected: 0,
         }))
       }
     } catch (err) {
@@ -668,7 +665,7 @@ function startBatch(session: Session, payload: unknown): Promise<void> {
         status: 'partial',
         completed: [...session.slots.values()].filter((s) => s.record).length,
         failed: 0,
-        quarantined: 0,
+        audit_rejected: 0,
       }))
     }
   })()
@@ -795,7 +792,6 @@ function snapshot(session: Session): BatchSnapshot {
       stage: slot.stage,
       attempt: slot.attempt,
       verdict: slot.record?.verdict,
-      quarantined: slot.record?.quarantined,
       error: slot.failure?.message ?? null,
     }
   })
@@ -807,7 +803,9 @@ function snapshot(session: Session): BatchSnapshot {
     total: session.total,
     completed: items.filter((i) => i.status === 'done').length,
     failed: items.filter((i) => i.status === 'failed').length,
-    quarantined: items.filter((i) => i.quarantined).length,
+    audit_rejected: session.slotOrder.filter(
+      (id) => session.slots.get(id)?.record?.audit_rejection,
+    ).length,
     seq_high: session.seq,
     items,
   }
@@ -1090,9 +1088,9 @@ const agentCoreTransport: Transport = async (spec: RequestSpec): Promise<unknown
     const status = query.get('status')
     const scenarioKey = query.get('scenario_key')
     let all = knownMaterials()
-    if (status === 'quarantine') all = all.filter((m) => m.quarantined)
-    else if (status === 'pending') all = all.filter((m) => !m.quarantined)
-    else if (status === 'discarded') all = []
+    // Every material routes to `pending` now; `submitted` is the review queue,
+    // which lives in the frontend session until the backend records selections.
+    if (status === 'discarded') all = []
     if (scenarioKey) all = all.filter((m) => m.scenario_key === scenarioKey)
     const response: MaterialListResponse = { materials: all, next_cursor: null }
     return response

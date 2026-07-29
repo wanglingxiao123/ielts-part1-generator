@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import time
 import types
 from unittest import mock
@@ -25,7 +26,7 @@ from audio_storage import synthesize as synth
 from audio_storage.manifest import extract_turns
 from audio_storage.mp3_duration import duration_ms
 from audio_storage.object_store import InMemoryObjectStore
-from audio_storage.state_store import PENDING, QUARANTINE, StateStore
+from audio_storage.state_store import PENDING, StateStore
 from backend.orchestration import publish as publish_module
 from backend.orchestration.candidate_store import InMemoryCandidateStore
 from backend.orchestration.publish import (
@@ -268,7 +269,14 @@ class TestSelection:
 
 
 class TestVerdictRouting:
-    async def test_a_failed_material_is_quarantined_without_audio(
+    """The client's rule: whatever the verdict, the user gets the material they asked for.
+
+    These tests used to pin the opposite -- that a FAIL was quarantined and voiced nothing. The
+    intent is preserved and inverted: the same properties are still asserted (where it lands,
+    whether Polly was called, what is in the prefix), now with the answers the product requires.
+    """
+
+    async def test_a_failed_material_is_selectable_and_gets_audio(
         self, wiring, material, blueprint, audit_aligned, clone
     ):
         audit = clone(audit_aligned)
@@ -281,32 +289,57 @@ class TestVerdictRouting:
             MATERIAL_ID, registry=wiring["registry"], state_store=wiring["state_store"],
             backing=wiring["backing"], polly=wiring["polly"], wait=True,
         )
-        assert result["status"] == "quarantined"
-        assert result["state"] == QUARANTINE
-        # Not one billable request: voicing a material no reviewer should see is pure waste.
-        assert wiring["raw"].requests == []
+        assert result["status"] == "ready", result
+        assert result["state"] == PENDING
+        # Billed like any other material: the user chose it knowing the defects, so they intend
+        # to listen to it.
+        turns = extract_turns(material)
+        assert len(wiring["raw"].requests) == len(turns)
         ref = wiring["state_store"].locate(MATERIAL_ID)
         keys = wiring["backing"].list_keys(ref.prefix)
-        assert not [k for k in keys if k.endswith(".mp3")]
-        assert ref.prefix + "quarantine_reason.json" in keys
+        assert sum(1 for k in keys if k.endswith(".mp3")) == len(turns)
+        assert ref.prefix + "audio/manifest.json" in keys
+        # The quarantine sidecar is gone; audit.json is the only record of the verdict, and the
+        # frontend states the shortcomings from it.
+        assert not [k for k in keys if "quarantine" in k]
+        assert json.loads(wiring["backing"].get(ref.prefix + "audit.json"))["verdict"] == "FAIL"
 
-    async def test_not_assessable_routes_like_fail_but_says_why(
+    async def test_a_failed_material_is_listed_in_pending_like_any_other(
         self, wiring, material, blueprint, audit_aligned, clone
     ):
-        import json
-
+        """It must be reachable through the normal listing, not a separate view."""
         audit = clone(audit_aligned)
-        audit["verdict"] = "NOT_ASSESSABLE"
-        audit["assessable"] = False
+        audit["verdict"] = "FAIL"
         wiring["registry"].register(make_candidate(material, blueprint, audit))
         await select_material(
             MATERIAL_ID, registry=wiring["registry"], state_store=wiring["state_store"],
             backing=wiring["backing"], polly=wiring["polly"], wait=True,
         )
+        listed = wiring["state_store"].list_materials(PENDING)["items"]
+        assert [r.material_id for r in listed] == [MATERIAL_ID]
+        assert wiring["state_store"].verify_material(MATERIAL_ID)["ok"]
+
+    async def test_a_not_assessable_selection_is_still_published_with_audio(
+        self, wiring, material, blueprint, audit_aligned, clone
+    ):
+        """NOT_ASSESSABLE is refilled upstream (batch.py), so it should not reach select at all.
+
+        If it somehow does -- a stale candidate from an earlier batch, say -- there is no longer a
+        second code path to fall into. It publishes to pending with audio like everything else,
+        which is a strictly better failure mode than a state nothing else understands.
+        """
+        audit = clone(audit_aligned)
+        audit["verdict"] = "NOT_ASSESSABLE"
+        audit["assessable"] = False
+        wiring["registry"].register(make_candidate(material, blueprint, audit))
+        result = await select_material(
+            MATERIAL_ID, registry=wiring["registry"], state_store=wiring["state_store"],
+            backing=wiring["backing"], polly=wiring["polly"], wait=True,
+        )
+        assert result["status"] == "ready" and result["state"] == PENDING
         ref = wiring["state_store"].locate(MATERIAL_ID)
-        reason = json.loads(wiring["backing"].get(ref.prefix + "quarantine_reason.json"))
-        assert ref.state == QUARANTINE
-        assert reason["reason_code"] == "no_assessable_script"
+        assert ref.state == PENDING
+        assert not [k for k in wiring["backing"].list_keys(ref.prefix) if "quarantine" in k]
 
     async def test_a_degraded_pass_reaches_pending_carrying_its_flag(
         self, wiring, material, blueprint, audit_aligned

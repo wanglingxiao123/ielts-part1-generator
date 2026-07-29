@@ -24,8 +24,7 @@ export interface JoinInput {
   audit: Audit
   crossCheck: CrossCheck
   verdict?: Audit['verdict']
-  quarantined?: boolean
-  quarantineReason?: { code: string; message: string } | null
+  auditRejection?: { code: string; message: string } | null
   degraded?: boolean
 }
 
@@ -39,8 +38,7 @@ export function joinFromRecord(record: MaterialRecord): ViewMaterial {
     audit: record.audit,
     crossCheck: record.cross_check,
     verdict: record.verdict,
-    quarantined: record.quarantined,
-    quarantineReason: record.quarantine_reason ?? null,
+    auditRejection: record.audit_rejection ?? null,
     degraded: record.degraded ?? false,
   })
 }
@@ -150,8 +148,7 @@ export function joinArtifacts(input: JoinInput): ViewMaterial {
     scenarioKey: input.scenarioKey,
     index: input.index,
     verdict: input.verdict ?? input.audit.verdict,
-    quarantined: input.quarantined ?? false,
-    quarantineReason: input.quarantineReason ?? null,
+    auditRejection: input.auditRejection ?? null,
     degraded: input.degraded ?? false,
     scenario: part.scenario,
     turns: viewTurns,

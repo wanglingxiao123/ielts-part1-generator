@@ -97,10 +97,10 @@ function Shell({ start = '/' }: { start?: string }) {
             }
           />
           <Route
-            path="/quarantine"
+            path="/review-queue"
             element={
               <RequireAuth>
-                <div>隔离区页</div>
+                <div>审核队列页</div>
               </RequireAuth>
             }
           />
@@ -167,16 +167,16 @@ describe('login', () => {
         return ok({ user: USER })
       },
     })
-    render(<Shell start="/quarantine" />)
+    render(<Shell start="/review-queue" />)
 
     await screen.findByRole('button', { name: '登录' })
     await userEvent.type(screen.getByLabelText('邮箱'), USER.email)
     await userEvent.type(screen.getByLabelText('密码'), 'hunter2hunter2')
     await userEvent.click(screen.getByRole('button', { name: '登录' }))
 
-    // Back to /quarantine, not to '/': RequireAuth passed the attempted path in
-    // router state and LoginPage honoured it.
-    expect(await screen.findByText('隔离区页')).toBeInTheDocument()
+    // Back to /review-queue, not to '/': RequireAuth passed the attempted path
+    // in router state and LoginPage honoured it.
+    expect(await screen.findByText('审核队列页')).toBeInTheDocument()
   })
 
   it('renders bad credentials as a Chinese sentence, never a raw code', async () => {

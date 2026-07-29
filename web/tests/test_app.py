@@ -301,7 +301,7 @@ def test_index_is_served_to_a_logged_in_user(client):
 
 def test_spa_fallback_serves_index_for_a_client_route(client):
     register(client)
-    for route in ["/batches/abc", "/compare/accommodation-rental", "/quarantine", "/gallery"]:
+    for route in ["/batches/abc", "/compare/accommodation-rental", "/materials/abc", "/gallery"]:
         response = client.get(route)
         assert response.status_code == 200, route
         assert "spa" in response.text, route

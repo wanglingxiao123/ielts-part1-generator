@@ -20,7 +20,8 @@ from __future__ import annotations
 import copy
 from typing import Any, Dict, List, Optional, Tuple
 
-__all__ = ["AnchorRepairResult", "repair_anchors", "find_evidence_turns"]
+__all__ = ["AnchorRepairResult", "repair_anchors", "find_evidence_turns", "anchor_holds",
+           "dialogue_turns"]
 
 NARRATOR = "speaker1"
 
@@ -103,12 +104,25 @@ def find_evidence_turns(turns: List[Dict[str, Any]], evidence: str) -> List[int]
     return [index for index, turn in enumerate(turns) if _carries(turn, needle)]
 
 
-def _anchor_holds(turns: List[Dict[str, Any]], index: Any, evidence: str) -> bool:
+def anchor_holds(turns: List[Dict[str, Any]], index: Any, evidence: str) -> bool:
+    """Does ``turns[index]`` really carry ``evidence``?
+
+    The single definition of "the annotation is beside the right sentence". Exported because the
+    card summary needs the same answer that repair does, and a second copy of this predicate is
+    exactly how the card and the reader would come to disagree about which points are suspect.
+    """
     if isinstance(index, bool) or not isinstance(index, int):
         return False
     if not 0 <= index < len(turns):
         return False
+    if not isinstance(evidence, str) or not evidence.strip():
+        return False
     return _carries(turns[index], evidence.casefold())
+
+
+# Retained as a private alias: this module's own call sites read better with the underscore, and
+# renaming them would churn the repair logic for no behavioural gain.
+_anchor_holds = anchor_holds
 
 
 def repair_anchors(material: Dict[str, Any], blueprint: Dict[str, Any]) -> AnchorRepairResult:

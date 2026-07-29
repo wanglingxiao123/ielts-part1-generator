@@ -14,7 +14,8 @@ import yaml
 
 from .. import paths
 
-__all__ = ["Scenario", "ScenarioCatalogue", "load_catalogue", "InvalidScenario"]
+__all__ = ["Scenario", "ScenarioCatalogue", "load_catalogue", "title_for_key",
+           "InvalidScenario"]
 
 # Control characters (except tab/newline) plus prompt-injection markers. A custom scenario is
 # free-form user text that lands in a system-prompted model call, so it is filtered rather than
@@ -157,3 +158,31 @@ def load_catalogue(path: Optional[Any] = None) -> ScenarioCatalogue:
     if not isinstance(raw, dict):
         raise ValueError("scenarios.yaml must contain a mapping")
     return ScenarioCatalogue(raw)
+
+
+_titles: Optional[Dict[str, str]] = None
+
+
+def title_for_key(scenario_key: str) -> str:
+    """The Chinese topic for an S3 scenario_key, or "" when there is none.
+
+    Used by the candidate card summary, which is built on a request already up against the
+    15-minute wall -- so the catalogue is read once per process and cached. A custom scenario's
+    key is a hash with no title, and "" is the honest answer: the summary then renders its
+    feature list alone rather than inventing a topic.
+
+    Never raises. A missing or malformed scenarios.yaml must not turn a generated material into
+    a failed one over a display string.
+    """
+    global _titles
+    if _titles is None:
+        try:
+            catalogue = load_catalogue()
+            _titles = {
+                str(entry.get("id")): str(entry.get("title_zh") or "")
+                for category in catalogue.categories
+                for entry in category["scenarios"]
+            }
+        except Exception:  # noqa: BLE001 - a display string is never worth failing a batch
+            _titles = {}
+    return _titles.get(str(scenario_key), "")

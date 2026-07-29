@@ -44,9 +44,15 @@ export function DecisionBar({
 
   return (
     <div className="decision-bar">
+      {/* No verdict badge: `PASS_WITH_MINOR_EDITS` is the Agent's own enum for its
+          own output, and the client ruled it out as a badge anywhere. The score
+          stays — this is the compare view, where two candidates are weighed
+          against each other and the delta is the thing being weighed; the rows
+          below deliberately outrank it. `degraded` is spelled out in Chinese
+          rather than left as the backend's field name. */}
       <div className="row" style={{ marginBottom: 6 }}>
         <strong>{facts.label}</strong>
-        <span className="flag flag-neutral">{facts.view.verdict}</span>
+        <span className="status-badge">待审核</span>
         <span>
           <strong className="mono">{facts.total}</strong> 分
           {scoreDiff !== 0 && (
@@ -58,7 +64,11 @@ export function DecisionBar({
             </span>
           )}
         </span>
-        {facts.view.degraded && <span className="flag flag-warn">degraded</span>}
+        {facts.view.degraded && (
+          <span className="flag flag-warn" title="首次评价即通过，未经修改与复评环节">
+            未经修改环节
+          </span>
+        )}
       </div>
 
       {/* 1: a point the blind auditor could not hear at all — no question can be

@@ -25,7 +25,37 @@ export interface MockBatchPlan {
   tickMs: number
 }
 
-const STAGES = ['queued', 'generating', 'validating', 'auditing', 'revising', 're_auditing'] as const
+/**
+ * The stage sequence the REAL backend emits, retries included.
+ *
+ * `regenerating` and `infra_retry` are here on purpose: they are the events that
+ * used to leak "校验未过，重新生成" onto a card, so the mock must produce them or
+ * the dev server would never exercise the path that has to hide them.
+ */
+const STAGES = [
+  'queued',
+  'generating',
+  'validating',
+  'regenerating',
+  'generating',
+  'validating',
+  'auditing',
+  'infra_retry',
+  'revising',
+  're_auditing',
+] as const
+
+/** §8's six-stage space, for the `stage` field. `raw_stage` keeps the real name. */
+const STAGE_TO_CONTRACT: Record<(typeof STAGES)[number], string> = {
+  queued: 'queued',
+  generating: 'generating',
+  regenerating: 'generating',
+  validating: 'validating',
+  auditing: 'auditing',
+  infra_retry: 'auditing',
+  revising: 'revising',
+  re_auditing: 're_auditing',
+}
 
 export class MockBatch {
   readonly events: SseEvent[] = []
@@ -94,8 +124,7 @@ export class MockBatch {
         scenario_key: rec.scenario_key,
         index: rec.index,
         verdict: rec.verdict,
-        quarantined: rec.quarantined,
-        quarantine_reason: rec.quarantine_reason ?? null,
+        audit_rejection: rec.audit_rejection ?? null,
         degraded: rec.degraded ?? false,
         material: rec.material,
         blueprint: rec.blueprint,
@@ -108,7 +137,7 @@ export class MockBatch {
       status: neverComplete > 0 ? 'partial' : 'done',
       completed: deliverable,
       failed: 0,
-      quarantined: materials.filter((m) => m.kind === 'failed').length,
+      audit_rejected: materials.filter((m) => m.kind === 'failed').length,
     } as never)
   }
 
@@ -133,8 +162,9 @@ export class MockBatch {
           this.emit({
             event: 'progress',
             material_id: m.materialId,
-            stage,
-            attempt: 1,
+            stage: STAGE_TO_CONTRACT[stage],
+            attempt: stage === 'regenerating' ? 2 : 1,
+            raw_stage: stage,
           } as never)
         })
       })
@@ -152,8 +182,7 @@ export class MockBatch {
             scenario_key: rec.scenario_key,
             index: rec.index,
             verdict: rec.verdict,
-            quarantined: rec.quarantined,
-            quarantine_reason: rec.quarantine_reason ?? null,
+            audit_rejection: rec.audit_rejection ?? null,
             degraded: rec.degraded ?? false,
             material: rec.material,
             blueprint: rec.blueprint,
@@ -182,7 +211,7 @@ export class MockBatch {
         status: neverComplete > 0 ? 'partial' : 'done',
         completed,
         failed: 0,
-        quarantined: materials.filter((m) => m.kind === 'failed').length,
+        audit_rejected: materials.filter((m) => m.kind === 'failed').length,
       } as never)
     })
   }

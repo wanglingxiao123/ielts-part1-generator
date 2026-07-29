@@ -16,10 +16,14 @@ selected, and underneath, ``synthesize_material`` skips any clip whose cache key
 the object in S3. So even a lost job record cannot cause a second charge -- the expensive
 guarantee does not depend on this process's memory.
 
-**Routing is not this module's decision.** ``state_store.publish_material`` routes on the audit
-verdict, and a FAIL or NOT_ASSESSABLE material is written to quarantine with no audio at all.
-Synthesis is skipped in that case: paying to voice a material that no reviewer should see is
-waste, and quarantine having no audio is expected rather than incomplete.
+**Every candidate is selectable and every selection is synthesised.** There is no verdict that
+withholds audio. The product owner's rule: a user who asked for two materials receives two, a
+flawed one included, with its shortcomings stated on the card so the user decides. So a FAIL
+material takes exactly the same path as a PASS one -- ``audit.json`` is the only difference, and
+the frontend reads it.
+
+(A NOT_ASSESSABLE material never reaches selection: ``run_batch`` re-runs that slot, because an
+empty or structurally broken script gives the user nothing to judge and no text to read.)
 """
 
 from __future__ import annotations
@@ -47,12 +51,7 @@ QUEUED = "queued"
 SYNTHESIZING = "synthesizing"
 READY = "ready"
 FAILED = "failed"
-QUARANTINED = "quarantined"
 NOT_REQUESTED = "not_requested"
-
-# Verdicts that never get audio. Mirrors state_store.QUARANTINE_VERDICTS, but this module must
-# not import audio_storage at module scope: backend.tests import it without AWS configured.
-_QUARANTINE_VERDICTS = ("FAIL", "NOT_ASSESSABLE")
 
 
 class SelectionError(RuntimeError):
@@ -134,14 +133,47 @@ class Candidate:
         self.created_at = time.time()
         self.state = "offered"
 
-    @property
-    def expects_audio(self) -> bool:
-        return self.verdict not in _QUARANTINE_VERDICTS
+    def card_fields(self) -> Dict[str, Any]:
+        """The three derived fields the card grid renders. Never raises.
+
+        Computed on demand rather than at construction: ``from_record`` rebuilds a Candidate on
+        every load, and paying for three scans of the script on a path that only wanted the
+        verdict would be waste.
+
+        Failures degrade to empty values. These are display strings; a card missing its preview
+        line is a cosmetic loss, while an exception here would propagate into `register` and cost
+        the user a material they can otherwise select and listen to.
+        """
+        try:
+            from ..deterministic import cards
+            from .scenarios import title_for_key
+
+            return {
+                "preview_first_line": cards.preview_first_line(self.material),
+                "preview_summary": cards.preview_summary(
+                    self.material, self.blueprint, title_for_key(self.scenario_key)
+                ),
+                "flagged_points": cards.flagged_points(self.material, self.blueprint),
+            }
+        except Exception:  # noqa: BLE001 - see docstring
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "card fields unavailable for %s", self.material_id, exc_info=True
+            )
+            return {"preview_first_line": "", "preview_summary": "", "flagged_points": []}
 
     def as_dict(self) -> Dict[str, Any]:
         """Summary for the candidate list. Excludes the artifacts: a list of six candidates
-        would otherwise carry six full scripts, and the UI only needs the verdict to render."""
-        return {
+        would otherwise carry six full scripts, and the UI only needs the verdict to render.
+
+        The three card fields ARE included, precisely because they let the grid render without the
+        scripts -- they are a few hundred bytes each and replace ~15KB of material per card.
+
+        There is no `expects_audio`: every candidate is selectable and every selection is
+        synthesised, so a field gating that would only ever be true.
+        """
+        payload = {
             "material_id": self.material_id,
             "scenario_key": self.scenario_key,
             "group_key": self.group_key,
@@ -150,9 +182,10 @@ class Candidate:
             "score": self.score,
             "degraded": self.degraded,
             "degraded_reason": self.degraded_reason,
-            "expects_audio": self.expects_audio,
             "state": self.state,
         }
+        payload.update(self.card_fields())
+        return payload
 
     def as_record(self) -> Dict[str, Any]:
         """Everything needed to reconstruct this candidate in another process.
@@ -511,25 +544,13 @@ def _publish_blocking(
     completeness sentinel is for.
     """
     from audio_storage import synthesize as synth
-    from audio_storage.state_store import QUARANTINE, route_for_verdict, verdict_of
+    from audio_storage.state_store import route_for_verdict, verdict_of
 
+    # No verdict branch: the user picked this material, so it gets voiced. A FAIL script the user
+    # chose knowing its defects is a material they intend to listen to.
     verdict = verdict_of(candidate.audit)
     state = route_for_verdict(verdict)
     job.state = state
-
-    if state == QUARANTINE:
-        # No synthesis at all. Not an optimisation: a quarantined material is one a reviewer
-        # should not be handed, so voicing it spends money to produce something nobody plays.
-        state_store.publish_material(
-            candidate.material, candidate.blueprint, candidate.audit,
-            scenario_key=candidate.scenario_key, material_id=candidate.material_id,
-            actor=actor, degraded=candidate.degraded,
-            degraded_reason=candidate.degraded_reason,
-        )
-        job.status = QUARANTINED
-        job.finished_at = time.time()
-        _persist(registry, job)
-        return
 
     def on_event(name: str, detail: Dict[str, Any]) -> None:
         if name == "synthesis_started":

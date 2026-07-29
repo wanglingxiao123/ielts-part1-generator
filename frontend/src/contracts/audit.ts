@@ -10,7 +10,7 @@
  */
 export interface IELTSListeningPart1AuditResult {
   /**
-   * Underscore form for programmatic handling; rendered with spaces in the Markdown report. FAIL and NOT_ASSESSABLE both route to quarantine.
+   * Underscore form for programmatic handling; rendered with spaces in the Markdown report. FAIL is a usable-but-flawed material and is delivered with its findings; NOT_ASSESSABLE means no usable script was found, and the orchestrator re-runs that slot rather than delivering it.
    */
   verdict: 'PASS' | 'PASS_WITH_MINOR_EDITS' | 'FAIL' | 'NOT_ASSESSABLE'
   assessable: boolean

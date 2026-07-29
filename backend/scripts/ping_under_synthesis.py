@@ -124,7 +124,7 @@ async def main() -> int:
         progress = []
         while True:
             status = audio_status(material_id)
-            if status["status"] in ("ready", "failed", "quarantined"):
+            if status["status"] in ("ready", "failed"):
                 break
             during.append(await sample_ping(client, base + "/ping"))
             progress.append(status["progress"]["done"])

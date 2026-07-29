@@ -49,8 +49,8 @@ export interface ViewMaterial {
   scenarioKey: string
   index: number
   verdict: Verdict
-  quarantined: boolean
-  quarantineReason: { code: string; message: string } | null
+  /** Audit rejection, if any. A shortcoming to state — it gates nothing. */
+  auditRejection: { code: string; message: string } | null
   degraded: boolean
   scenario: string
   turns: ViewTurn[]

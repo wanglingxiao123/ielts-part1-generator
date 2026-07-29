@@ -1,8 +1,22 @@
-"""Batch scheduling, concurrency gate and time budget (design.md §8, §9).
+"""Batch scheduling, concurrency gate, time budget and NOT_ASSESSABLE refill (design.md §8, §9).
 
 The 15-minute synchronous limit on AgentCore Runtime is not adjustable, so it is a real product
 constraint. The budget here converts it from "the platform severs the connection and the whole
 batch is lost" into "in-flight materials finish, un-started ones are reported as skipped".
+
+**Refill.** A slot that ends NOT_ASSESSABLE produced nothing a user can act on: the audit could
+not find a usable script, so there is no full text to read and no defect list to weigh. Returning
+it would hand the user a blank card, so the slot is re-run instead and the user simply receives
+the count they asked for. FAIL is *not* refilled -- a FAIL material is usable-but-flawed, and the
+product owner's rule is that it comes back with its shortcomings stated.
+
+The refill is bounded twice over, because an unbounded one would hang the request until the
+platform kills it:
+
+* ``MAX_REFILL_ROUNDS`` rounds, whatever happens. Each round re-runs at most the outstanding
+  slots, so the total extra work is bounded by rounds x slots and cannot grow.
+* ``Budget.may_start()`` before every attempt. When it refuses, the batch returns what it has.
+  Fewer materials than asked for beats a 504 that loses all of them.
 """
 
 from __future__ import annotations
@@ -13,10 +27,10 @@ import time
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from . import events
-from .loop import MaterialResult, run_one
+from .loop import MaterialResult, is_assessable, run_one
 from .scenarios import Scenario
 
-__all__ = ["BatchRequest", "Budget", "run_batch"]
+__all__ = ["BatchRequest", "Budget", "run_batch", "MAX_REFILL_ROUNDS"]
 
 # Concurrency follows the batch size up to this ceiling, rather than being pinned at 3. The
 # comment here used to claim it defaulted to the scenario count while the code said 3, so a batch
@@ -35,6 +49,15 @@ SAFETY_MARGIN_SECONDS = float(os.environ.get("IELTS_SAFETY_MARGIN", "90"))
 P95_PER_MATERIAL = float(os.environ.get("IELTS_P95_PER_MATERIAL", "240"))
 # A revision plus re-audit is roughly half the calls for a material.
 REVISION_COST_SECONDS = float(os.environ.get("IELTS_REVISION_COST", "120"))
+
+# How many times the batch will re-run NOT_ASSESSABLE slots before giving up.
+#
+# 2 is a judgement, not a measurement: one round covers the transient case (a truncated response,
+# a model that lost the schema once), and by the third identical outcome the scenario itself is
+# more likely at fault than the attempt. The number matters less than its existence -- with the
+# budget check as the real governor, this bound is what guarantees termination even if the clock
+# is generous, e.g. a small batch with hours of headroom in a test.
+MAX_REFILL_ROUNDS = int(os.environ.get("IELTS_MAX_REFILL_ROUNDS", "2"))
 
 # Marks the end of the event stream. A unique object, so it can never collide with an event dict.
 _SENTINEL = object()
@@ -86,17 +109,21 @@ class BatchRequest(object):
         self.budget = budget or Budget()
 
 
-async def _run_slot(
+async def _attempt_slot(
     scenario: Scenario,
     slot_id: str,
     semaphore: asyncio.Semaphore,
     budget: Budget,
     queue: asyncio.Queue,
-    group_key: str = "",
 ) -> MaterialResult:
-    """Run one slot, forwarding stage events and never letting its failure escape.
+    """One pass of the Loop for one slot. Emits stage events; no terminal event, no registration.
 
-    Each slot's exceptions are caught here. One material's crash must not take down a batch that
+    Terminal events and registration belong to ``_run_slot``, which knows whether this pass is the
+    one being kept. Registering here would publish a NOT_ASSESSABLE candidate the refill is about
+    to replace -- it would show up in ``list_candidates`` and compete for the group's single
+    selection against the material that actually gets returned.
+
+    Exceptions are caught rather than raised. One material's crash must not take down a batch that
     five other materials are still progressing through.
     """
 
@@ -105,40 +132,115 @@ async def _run_slot(
 
     async with semaphore:
         if not budget.may_start():
-            result = MaterialResult(
+            return MaterialResult(
                 slot_id, scenario.id, False, reason="skipped_time_budget",
                 detail={"remaining": round(budget.remaining(), 1), "needed": budget.p95},
             )
-            await queue.put(events.material_skipped(slot_id, scenario.id, "skipped_time_budget"))
-            return result
         try:
-            result = await run_one(scenario, slot_id, emit, allow_revision=budget.may_revise)
+            return await run_one(scenario, slot_id, emit, allow_revision=budget.may_revise)
         except Exception as exc:  # noqa: BLE001 - isolation is the requirement
-            result = MaterialResult(
+            return MaterialResult(
                 slot_id, scenario.id, False, reason="unhandled_error",
                 detail="%s: %s" % (type(exc).__name__, str(exc)[:400]),
             )
-        if result.ok:
-            # A material_id is minted here, not at selection time, because the id is what the
-            # frontend uses to refer to a candidate before any audio exists. Registering also
-            # decides which candidates compete for one choice (group_key).
-            try:
-                _register(result, scenario, group_key)
-            except Exception as exc:  # noqa: BLE001 - see _register's docstring
-                # Name the exception type as well as the message: the failure that mattered in
-                # practice was a silent fallback to in-memory storage, and "AudioNotConfigured"
-                # says which of the many possible causes it was.
-                result.warnings.append(
-                    "candidate_not_registered: %s: %s" % (type(exc).__name__, str(exc)[:200])
-                )
-                import logging
-                logging.getLogger(__name__).warning(
-                    "candidate registration failed for slot %s", result.slot_id, exc_info=True
-                )
-        await queue.put(
-            events.material_completed(result) if result.ok else events.material_failed(result)
+
+
+async def _run_slot(
+    scenario: Scenario,
+    slot_id: str,
+    semaphore: asyncio.Semaphore,
+    budget: Budget,
+    queue: asyncio.Queue,
+    group_key: str = "",
+    max_refill_rounds: int = MAX_REFILL_ROUNDS,
+) -> MaterialResult:
+    """Deliver one material for this slot, re-running the Loop while it is NOT_ASSESSABLE.
+
+    Bounded by ``1 + max_refill_rounds`` attempts *and* by ``budget.may_start()`` before each one,
+    so it terminates on the clock in production and on the count even when the clock is generous.
+
+    The user sees one card per slot either way: a discarded attempt emits a ``refilling`` stage
+    event for observability and no ``material_completed`` / ``material_failed``. Emitting a failure
+    per discarded attempt would show the user a broken material and then a good one for the same
+    slot, which is exactly the internal machinery the product owner asked to keep off the page.
+    """
+    result = await _attempt_slot(scenario, slot_id, semaphore, budget, queue)
+    rounds_used = 0
+
+    for round_number in range(1, max_refill_rounds + 1):
+        # Only an unassessable *success* is refilled. A slot that failed -- model unreachable, the
+        # validator gone, a crash -- is reported as it happened: those failures are diagnosed by
+        # an operator, and re-running them would triple the wall-clock cost of a broken dependency
+        # inside a request that has fifteen minutes total. `skipped_time_budget` in particular
+        # attempted nothing, so its own skip is already the honest report.
+        if not result.ok or is_assessable(result):
+            break
+        if not budget.may_start():
+            # Out of clock. Return what exists: fewer materials than requested beats a 504 that
+            # loses the whole batch, and the slots that did finish are already registered.
+            await queue.put(events.stage(
+                slot_id, scenario.id, "refill_abandoned",
+                {"round": round_number, "remaining": round(budget.remaining(), 1),
+                 "needed": budget.p95},
+            ))
+            break
+        await queue.put(events.stage(
+            slot_id, scenario.id, "refilling",
+            {"round": round_number, "of": max_refill_rounds, "cause": "not_assessable"},
+        ))
+        rounds_used = round_number
+        attempt = await _attempt_slot(scenario, slot_id, semaphore, budget, queue)
+        if attempt.reason == "skipped_time_budget":
+            # The budget drained while this attempt waited on the semaphore. Keep the previous
+            # result: reporting `skipped_time_budget` here would tell an operator nothing was
+            # attempted for this slot, when in fact a whole material was generated and audited.
+            await queue.put(events.stage(
+                slot_id, scenario.id, "refill_abandoned",
+                {"round": round_number, "remaining": round(budget.remaining(), 1),
+                 "needed": budget.p95},
+            ))
+            rounds_used = round_number - 1
+            break
+        result = attempt
+
+    if result.ok and not is_assessable(result):
+        # Every attempt came back unassessable and the bound was reached. Reported as a slot
+        # failure rather than handed over: a material the audit could not read has no full text
+        # for the user to check and no defect list for them to weigh, so there is nothing on the
+        # card to decide with.
+        result = MaterialResult(
+            slot_id, scenario.id, False, reason="not_assessable",
+            detail={"attempts": rounds_used + 1,
+                    "verdict": result.candidate.verdict if result.candidate else None},
+            timings=result.timings,
         )
+    result.refill_rounds = rounds_used
+
+    if result.reason == "skipped_time_budget":
+        await queue.put(events.material_skipped(slot_id, scenario.id, "skipped_time_budget"))
         return result
+
+    if result.ok:
+        # A material_id is minted here, not at selection time, because the id is what the
+        # frontend uses to refer to a candidate before any audio exists. Registering also
+        # decides which candidates compete for one choice (group_key).
+        try:
+            _register(result, scenario, group_key)
+        except Exception as exc:  # noqa: BLE001 - see _register's docstring
+            # Name the exception type as well as the message: the failure that mattered in
+            # practice was a silent fallback to in-memory storage, and "AudioNotConfigured"
+            # says which of the many possible causes it was.
+            result.warnings.append(
+                "candidate_not_registered: %s: %s" % (type(exc).__name__, str(exc)[:200])
+            )
+            import logging
+            logging.getLogger(__name__).warning(
+                "candidate registration failed for slot %s", result.slot_id, exc_info=True
+            )
+    await queue.put(
+        events.material_completed(result) if result.ok else events.material_failed(result)
+    )
+    return result
 
 
 def _register(result: MaterialResult, scenario: Scenario, group_key: str) -> None:
@@ -233,11 +335,16 @@ async def run_batch(request: BatchRequest) -> AsyncIterator[Dict[str, Any]]:
         failed=sum(1 for r in results if not r.ok and r.reason != "skipped_time_budget"),
         skipped=sum(1 for r in results if r.reason == "skipped_time_budget"),
         degraded=sum(1 for r in results if r.degraded),
+        # Refills are counted, not hidden. The user is not shown them, but a batch that spent half
+        # its budget re-running unassessable slots is the single most useful thing an operator can
+        # know about it, and it is invisible from the outside otherwise.
+        refilled=sum(r.refill_rounds for r in results),
         stage_timings=_aggregate_timings(results),
         slots=[
             {"slot_id": r.slot_id, "scenario": r.scenario_id, "ok": r.ok,
              "route": r.route, "note": r.note, "reason": r.reason,
-             "degraded": r.degraded, "total_seconds": r.timings.get("total")}
+             "degraded": r.degraded, "refill_rounds": r.refill_rounds,
+             "total_seconds": r.timings.get("total")}
             for r in results
         ],
     )

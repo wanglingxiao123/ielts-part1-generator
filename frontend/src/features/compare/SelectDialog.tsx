@@ -19,11 +19,18 @@ export function SelectDialog({
       <div className="dialog" onClick={(e) => e.stopPropagation()}>
         <h2>确认选定这一套？</h2>
         <div style={{ fontSize: 13 }}>
+          {/* No verdict enum (see DecisionBar); the rejection, if any, is stated
+              as a sentence below — which is the form a reviewer about to spend
+              money on this material can actually act on. */}
           <div className="row">
             <span className="mono">{record.material_id}</span>
-            <span className="flag flag-neutral">{record.verdict}</span>
             <span>{record.audit.score.total} 分</span>
           </div>
+          {record.audit_rejection && (
+            <div className="banner banner-warn" style={{ marginTop: 8 }}>
+              <div>{record.audit_rejection.message}。仍可选定，建议先通读全文确认。</div>
+            </div>
+          )}
           <ul style={{ margin: '10px 0 0 18px', padding: 0 }}>
             <li>
               将对 <strong>{turns}</strong> 个 turn 逐段调用 Polly 合成语音，

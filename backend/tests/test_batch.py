@@ -29,19 +29,30 @@ class FakeScenario:
         self.default_count = 1
 
 
-def stub_candidate() -> Candidate:
+def stub_candidate(verdict: str = "PASS") -> Candidate:
     """Minimal delivered version. MaterialResult refuses a success without one."""
     return Candidate(
         GenOutput({}, {}),
-        {"verdict": "PASS", "score": {"total": 85, "dimensions": {}}, "findings": []},
+        {"verdict": verdict, "score": {"total": 85, "dimensions": {}}, "findings": []},
         CrossCheckResult({"ok": True, "matched": 10}),
         "initial",
     )
 
 
-def succeeded(slot_id, scenario_id, **kwargs) -> MaterialResult:
-    return MaterialResult(slot_id, scenario_id, True, stub_candidate(), "initial", "pending",
-                          **kwargs)
+def succeeded(slot_id, scenario_id, verdict="PASS", **kwargs) -> MaterialResult:
+    return MaterialResult(slot_id, scenario_id, True, stub_candidate(verdict), "initial",
+                          "pending", **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def no_registration(monkeypatch):
+    """Registration needs a candidate store; these tests are about scheduling.
+
+    Patched to a no-op rather than left to fail: `_run_slot` downgrades a registration error to a
+    warning, so without this every assertion about slot outcomes would still pass while quietly
+    exercising the error path instead of the one under test.
+    """
+    monkeypatch.setattr(batch_module, "_register", lambda result, scenario, group_key: None)
 
 
 @pytest.fixture
@@ -122,6 +133,288 @@ class TestTimeBudgetBehaviour:
                                budget=Budget(hard_limit=200, margin=0, p95=10, revision_cost=500))
         [event async for event in run_batch(request)]
         assert seen["allowed"] is False
+
+
+class TestNotAssessableRefill:
+    """A NOT_ASSESSABLE slot is re-run so the user still receives the count they asked for.
+
+    The user must not perceive it: one terminal event per slot however many attempts it took.
+    And it must be bounded twice -- on the attempt count and on `Budget.may_start()` -- because
+    the whole batch runs inside one synchronous 15-minute AgentCore request and an unbounded loop
+    would hang it until the platform kills it.
+    """
+
+    async def test_a_not_assessable_slot_is_rerun_until_it_yields_a_usable_material(
+        self, monkeypatch
+    ):
+        attempts = {"n": 0}
+
+        async def flaky(scenario, slot_id, emit, allow_revision):
+            attempts["n"] += 1
+            verdict = "NOT_ASSESSABLE" if attempts["n"] == 1 else "PASS"
+            return succeeded(slot_id, scenario.id, verdict, timings={"total": 1.0})
+
+        monkeypatch.setattr(batch_module, "run_one", flaky)
+        request = BatchRequest([FakeScenario("a")], concurrency=1,
+                               budget=Budget(hard_limit=900, margin=0, p95=1))
+        events = [event async for event in run_batch(request)]
+
+        assert attempts["n"] == 2
+        summary = events[-1]
+        assert summary["succeeded"] == 1 and summary["failed"] == 0
+        assert summary["refilled"] == 1
+        # The count is met: exactly one material for the one slot requested.
+        completed = [e for e in events if e["type"] == "material_completed"]
+        assert len(completed) == 1
+        assert completed[0]["audit"]["verdict"] == "PASS"
+
+    async def test_the_user_sees_no_failure_for_a_discarded_attempt(self, monkeypatch):
+        """The refill is invisible. A material_failed per discarded attempt would show the user a
+        broken material and then a good one for the same slot."""
+        attempts = {"n": 0}
+
+        async def flaky(scenario, slot_id, emit, allow_revision):
+            attempts["n"] += 1
+            return succeeded(slot_id, scenario.id,
+                             "NOT_ASSESSABLE" if attempts["n"] == 1 else "PASS")
+
+        monkeypatch.setattr(batch_module, "run_one", flaky)
+        request = BatchRequest([FakeScenario("a")], concurrency=1,
+                               budget=Budget(hard_limit=900, margin=0, p95=1))
+        events = [event async for event in run_batch(request)]
+
+        assert [e["type"] for e in events if e["type"].startswith("material_")] == [
+            "material_completed"
+        ]
+        # Observable to an operator, though: silence would make a batch spending its budget on
+        # refills indistinguishable from one that simply ran slowly.
+        refilling = [e for e in events if e.get("stage") == "refilling"]
+        assert len(refilling) == 1
+        assert refilling[0]["detail"]["cause"] == "not_assessable"
+
+    async def test_every_slot_of_a_multi_slot_batch_is_refilled_to_the_requested_count(
+        self, monkeypatch
+    ):
+        """"无论如何用户要求生成2篇，我们就得返回2篇"."""
+        seen: dict = {}
+
+        async def flaky(scenario, slot_id, emit, allow_revision):
+            seen[slot_id] = seen.get(slot_id, 0) + 1
+            return succeeded(slot_id, scenario.id,
+                             "NOT_ASSESSABLE" if seen[slot_id] == 1 else "PASS")
+
+        monkeypatch.setattr(batch_module, "run_one", flaky)
+        request = BatchRequest([FakeScenario("a"), FakeScenario("a")], concurrency=2,
+                               budget=Budget(hard_limit=900, margin=0, p95=1))
+        events = [event async for event in run_batch(request)]
+
+        assert len([e for e in events if e["type"] == "material_completed"]) == 2
+        assert events[-1]["succeeded"] == 2 and events[-1]["refilled"] == 2
+
+    async def test_a_fail_is_never_refilled(self, monkeypatch):
+        """The client's rule: a FAIL material is usable-but-flawed and must come back. Refilling
+        it would spend the user's budget hiding a material they asked to see."""
+        attempts = {"n": 0}
+
+        async def always_fail(scenario, slot_id, emit, allow_revision):
+            attempts["n"] += 1
+            return succeeded(slot_id, scenario.id, "FAIL")
+
+        monkeypatch.setattr(batch_module, "run_one", always_fail)
+        request = BatchRequest([FakeScenario("a")], concurrency=1,
+                               budget=Budget(hard_limit=900, margin=0, p95=1))
+        events = [event async for event in run_batch(request)]
+
+        assert attempts["n"] == 1
+        assert events[-1]["succeeded"] == 1 and events[-1]["refilled"] == 0
+        completed = [e for e in events if e["type"] == "material_completed"]
+        assert completed[0]["audit"]["verdict"] == "FAIL"
+        assert completed[0]["route"] == "pending"
+
+    async def test_the_attempt_count_is_bounded_even_with_unlimited_time(self, monkeypatch):
+        """The bound that guarantees termination when the clock is generous -- a small batch with
+        hours of headroom, or a test. Without it this is an infinite loop."""
+        attempts = {"n": 0}
+
+        async def never_assessable(scenario, slot_id, emit, allow_revision):
+            attempts["n"] += 1
+            return succeeded(slot_id, scenario.id, "NOT_ASSESSABLE")
+
+        monkeypatch.setattr(batch_module, "run_one", never_assessable)
+        request = BatchRequest([FakeScenario("a")], concurrency=1,
+                               budget=Budget(hard_limit=10 ** 6, margin=0, p95=1))
+        events = [event async for event in run_batch(request)]
+
+        assert attempts["n"] == batch_module.MAX_REFILL_ROUNDS + 1
+        # Nothing usable was produced, so the slot is reported failed rather than handed over:
+        # a card with no readable script gives the user nothing to decide with.
+        summary = events[-1]
+        assert summary["succeeded"] == 0 and summary["failed"] == 1
+        failure = [e for e in events if e["type"] == "material_failed"][0]
+        assert failure["reason"] == "not_assessable"
+        assert failure["detail"]["attempts"] == batch_module.MAX_REFILL_ROUNDS + 1
+
+    async def test_the_refill_stops_when_the_budget_is_exhausted(self, monkeypatch):
+        """The hard constraint: the batch runs inside one 15-minute synchronous request. When the
+        budget cannot fund another attempt the batch returns what exists rather than failing."""
+        attempts = {"n": 0}
+        budget = Budget(hard_limit=900, margin=0, p95=100)
+
+        async def burn(scenario, slot_id, emit, allow_revision):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                # The first attempt consumes the clock, so no refill can be afforded.
+                monkeypatch.setattr(time, "monotonic", lambda: budget.deadline - 10)
+            return succeeded(slot_id, scenario.id, "NOT_ASSESSABLE")
+
+        monkeypatch.setattr(batch_module, "run_one", burn)
+        request = BatchRequest([FakeScenario("a")], concurrency=1, budget=budget)
+        events = [event async for event in run_batch(request)]
+
+        assert attempts["n"] == 1, "no refill may start once may_start() refuses"
+        assert not [e for e in events if e.get("stage") == "refilling"]
+        # Abandonment is recorded so an operator can tell "ran out of time" from "gave up".
+        abandoned = [e for e in events if e.get("stage") == "refill_abandoned"]
+        assert len(abandoned) == 1 and abandoned[0]["detail"]["round"] == 1
+        # And the batch still completes: a partial result beats a 504 that loses everything.
+        assert events[-1]["type"] == "batch_completed"
+        assert events[-1]["refilled"] == 0
+
+    async def test_slots_that_finished_are_kept_when_a_later_refill_runs_out_of_budget(
+        self, monkeypatch
+    ):
+        budget = Budget(hard_limit=900, margin=0, p95=100)
+        calls: list = []
+
+        async def mixed(scenario, slot_id, emit, allow_revision):
+            calls.append(slot_id)
+            if scenario.id == "good":
+                return succeeded(slot_id, scenario.id, "PASS")
+            monkeypatch.setattr(time, "monotonic", lambda: budget.deadline - 10)
+            return succeeded(slot_id, scenario.id, "NOT_ASSESSABLE")
+
+        monkeypatch.setattr(batch_module, "run_one", mixed)
+        request = BatchRequest([FakeScenario("good"), FakeScenario("bad")], concurrency=1,
+                               budget=budget)
+        events = [event async for event in run_batch(request)]
+
+        summary = events[-1]
+        assert summary["succeeded"] == 1, summary
+        assert summary["failed"] + summary["skipped"] == 1
+        assert len([e for e in events if e["type"] == "material_completed"]) == 1
+
+    async def test_a_refill_starved_at_the_semaphore_keeps_the_attempt_that_ran(
+        self, monkeypatch
+    ):
+        """If the clock drains while a refill waits for a concurrency slot, the slot must not be
+        reported `skipped_time_budget` -- that would tell an operator nothing was attempted when a
+        whole material was in fact generated and audited."""
+        attempts = {"n": 0}
+
+        class DrainingBudget(Budget):
+            """Allows the first attempt and the refill decision, then refuses.
+
+            Subclassed rather than monkeypatched because Budget uses __slots__, and the timing
+            being reproduced is exactly a `may_start` that answered yes and then no.
+            """
+
+            __slots__ = ("calls",)
+
+            def __init__(self, **kwargs):
+                super().__init__(**kwargs)
+                self.calls = 0
+
+            def may_start(self):
+                self.calls += 1
+                return self.calls <= 2 and super().may_start()
+
+        async def drain_between_attempts(scenario, slot_id, emit, allow_revision):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                return succeeded(slot_id, scenario.id, "NOT_ASSESSABLE")
+            raise AssertionError("the second attempt must be refused before it runs")
+
+        monkeypatch.setattr(batch_module, "run_one", drain_between_attempts)
+        budget = DrainingBudget(hard_limit=900, margin=0, p95=100)
+        request = BatchRequest([FakeScenario("a")], concurrency=1, budget=budget)
+        events = [event async for event in run_batch(request)]
+
+        summary = events[-1]
+        assert summary["skipped"] == 0, summary
+        assert summary["failed"] == 1
+        assert [e for e in events if e["type"] == "material_failed"][0]["reason"] == \
+            "not_assessable"
+        assert [e for e in events if e.get("stage") == "refill_abandoned"]
+
+    async def test_a_slot_skipped_for_time_is_not_refilled(self, monkeypatch):
+        """Nothing was attempted, so there is nothing to re-run. The skip is the honest report."""
+        async def never_called(*args, **kwargs):
+            raise AssertionError("no slot should start with an exhausted budget")
+
+        monkeypatch.setattr(batch_module, "run_one", never_called)
+        request = BatchRequest([FakeScenario("a")], concurrency=1,
+                               budget=Budget(hard_limit=0, margin=0))
+        events = [event async for event in run_batch(request)]
+
+        assert events[-1]["skipped"] == 1 and events[-1]["refilled"] == 0
+        assert not [e for e in events if e.get("stage") in ("refilling", "refill_abandoned")]
+
+    async def test_a_crashed_slot_is_reported_not_refilled(self, monkeypatch):
+        """Only NOT_ASSESSABLE is refilled. A crash means a broken dependency an operator has to
+        see, and re-running it would triple the cost of that breakage inside a 15-minute request."""
+        attempts = {"n": 0}
+
+        async def boom(scenario, slot_id, emit, allow_revision):
+            attempts["n"] += 1
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(batch_module, "run_one", boom)
+        request = BatchRequest([FakeScenario("a")], concurrency=1,
+                               budget=Budget(hard_limit=900, margin=0, p95=1))
+        events = [event async for event in run_batch(request)]
+
+        assert attempts["n"] == 1
+        assert events[-1]["failed"] == 1 and events[-1]["refilled"] == 0
+        assert [e for e in events if e["type"] == "material_failed"][0]["reason"] == \
+            "unhandled_error"
+
+    async def test_a_model_error_is_reported_not_refilled(self, monkeypatch):
+        attempts = {"n": 0}
+
+        async def unreachable(scenario, slot_id, emit, allow_revision):
+            attempts["n"] += 1
+            return MaterialResult(slot_id, scenario.id, False, reason="model_error",
+                                  detail="timeout")
+
+        monkeypatch.setattr(batch_module, "run_one", unreachable)
+        request = BatchRequest([FakeScenario("a")], concurrency=1,
+                               budget=Budget(hard_limit=900, margin=0, p95=1))
+        events = [event async for event in run_batch(request)]
+
+        assert attempts["n"] == 1
+        assert [e for e in events if e["type"] == "material_failed"][0]["reason"] == "model_error"
+
+    async def test_a_discarded_attempt_is_never_registered_as_a_candidate(self, monkeypatch):
+        """It would appear in list_candidates and compete for the group's single selection against
+        the material that actually gets returned."""
+        registered: list = []
+        attempts = {"n": 0}
+
+        async def flaky(scenario, slot_id, emit, allow_revision):
+            attempts["n"] += 1
+            return succeeded(slot_id, scenario.id,
+                             "NOT_ASSESSABLE" if attempts["n"] == 1 else "PASS")
+
+        def record(result, scenario, group_key):
+            registered.append(result.candidate.verdict)
+
+        monkeypatch.setattr(batch_module, "run_one", flaky)
+        monkeypatch.setattr(batch_module, "_register", record)
+        request = BatchRequest([FakeScenario("a")], concurrency=1,
+                               budget=Budget(hard_limit=900, margin=0, p95=1))
+        [event async for event in run_batch(request)]
+
+        assert registered == ["PASS"]
 
 
 class TestBatchEvents:

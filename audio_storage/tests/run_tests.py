@@ -29,6 +29,7 @@ from audio_storage import (
     manifest as manifest_module,
     mp3_duration,
     ssml,
+    state_store as state_store_module,
     synthesize,
     voice,
 )
@@ -43,8 +44,8 @@ from audio_storage.state_store import (
     APPROVED,
     PENDING,
     PRODUCTION,
-    QUARANTINE,
     REJECTED,
+    STATES,
     IllegalTransition,
     InjectedCrash,
     MaterialNotFound,
@@ -1412,6 +1413,11 @@ def test_single_turn_resynthesis() -> None:
 
 
 def _publish(store_state, *, verdict="PASS", material_id=MATERIAL_ID, degraded=False):
+    """Publish one material. Every verdict takes the same path -- audio, then the sentinel.
+
+    There is no longer a verdict-dependent branch here, which is the point: a FAIL material is
+    published exactly like a PASS one and only `audit.json` differs.
+    """
     material, blueprint = load("material_valid.json"), load("blueprint_valid.json")
     audit = load("audit_valid.json")
     audit = copy.deepcopy(audit)
@@ -1422,9 +1428,6 @@ def _publish(store_state, *, verdict="PASS", material_id=MATERIAL_ID, degraded=F
             {"severity": "major", "rule": "points too clustered", "turn_index": 12},
         ]
         audit["assessable"] = verdict != "NOT_ASSESSABLE"
-        return store_state.publish_material(
-            material, blueprint, audit, scenario_key=SCENARIO_KEY, material_id=material_id
-        )
     turns = turns_of(material)
     m = manifest_module.build_manifest(
         material,
@@ -1449,58 +1452,112 @@ def _publish(store_state, *, verdict="PASS", material_id=MATERIAL_ID, degraded=F
 
 
 def test_verdict_routing() -> None:
-    print("verdict routing (R10, design.md §9.1)")
-    for verdict, expected in (
-        ("PASS", PENDING),
-        ("PASS_WITH_MINOR_EDITS", PENDING),
-        ("FAIL", QUARANTINE),
-        ("NOT_ASSESSABLE", QUARANTINE),
-    ):
+    """Every verdict lands in pending, with audio, and is listed.
+
+    This test used to pin the opposite for FAIL / NOT_ASSESSABLE: quarantine, no audio, a
+    machine-readable `quarantine_reason.json`, invisible to the pending queue. The product owner's
+    rule replaced it -- a user who asks for two materials receives two, and a flawed one is
+    returned with its shortcomings stated so the user decides. The assertions are inverted rather
+    than dropped, so the same properties are still covered: destination, audio, and visibility.
+    """
+    print("verdict routing (every verdict -> pending, with audio)")
+    for verdict in ("PASS", "PASS_WITH_MINOR_EDITS", "FAIL", "NOT_ASSESSABLE"):
         backing = InMemoryObjectStore()
         store = StateStore(backing)
         ref = _publish(store, verdict=verdict)
-        check("{0} routes to {1}".format(verdict, expected), ref.state == expected, ref.state)
+        check("{0} routes to pending".format(verdict), ref.state == PENDING, ref.state)
+
+    check("quarantine is no longer a state at all", "quarantine" not in STATES, str(STATES))
 
     backing = InMemoryObjectStore()
     store = StateStore(backing)
     _publish(store, verdict="FAIL")
     bundle = store.get_material(MATERIAL_ID)
-    reason = bundle["quarantine_reason"]
-    check("quarantine reason is machine-readable", isinstance(reason, dict) and reason["verdict"] == "FAIL")
-    check("severity counts are broken out", reason["critical_count"] == 1 and reason["major_count"] == 1)
-    check("a reason code is present for the UI", reason["reason_code"] == "hard_defects_present")
-    check("findings digest lists the hard defects", len(reason["findings_digest"]) == 2)
-    # Quarantined material was never selected, so it was never synthesised. R10 says that is
-    # expected, not incomplete.
-    check("quarantined material has no audio", bundle["manifest"] is None and reason["has_audio"] is False)
     check(
-        "quarantined material is nonetheless listed (a reviewer must be able to see it)",
-        [r.material_id for r in store.list_materials(QUARANTINE)["items"]] == [MATERIAL_ID],
+        "the verdict and its findings travel in audit.json, which is the frontend's source",
+        bundle["audit"]["verdict"] == "FAIL" and len(bundle["audit"]["findings"]) == 2,
     )
-    check("FAIL never reaches pending", store.list_materials(PENDING)["items"] == [])
-
-    backing = InMemoryObjectStore()
-    store = StateStore(backing)
-    _publish(store, verdict="NOT_ASSESSABLE")
-    reason = store.get_material(MATERIAL_ID)["quarantine_reason"]
     check(
-        "NOT_ASSESSABLE is distinguished from FAIL by reason, not by destination",
-        reason["reason_code"] == "no_assessable_script" and reason["assessable"] is False,
-        json.dumps(reason),
+        "a FAIL material has audio like any other (the user may choose to listen to it)",
+        bundle["manifest"] is not None and len(bundle["manifest"]["clips"]) == len(turns_of(load("material_valid.json"))),
+    )
+    check(
+        "no quarantine sidecar is written",
+        not [k for k in backing.list_keys("") if "quarantine" in k],
+    )
+    check(
+        "a FAIL material is listed in pending alongside the rest, not in a separate view",
+        [r.material_id for r in store.list_materials(PENDING)["items"]] == [MATERIAL_ID],
+    )
+    check(
+        "verify_material holds a FAIL material to the same completeness standard",
+        store.verify_material(MATERIAL_ID)["ok"] is True,
+        json.dumps(store.verify_material(MATERIAL_ID), default=str),
     )
 
     backing = InMemoryObjectStore()
     store = StateStore(backing)
-    bad_audit = {"verdict": "SOMETHING_NEW"}
+    ref = _publish(store, verdict="NOT_ASSESSABLE")
+    check(
+        "NOT_ASSESSABLE is recorded, not diverted -- the orchestrator re-runs such a slot upstream",
+        ref.state == PENDING and store.get_material(MATERIAL_ID)["audit"]["assessable"] is False,
+    )
+
+    backing = InMemoryObjectStore()
+    store = StateStore(backing)
+    material = load("material_valid.json")
+    m = manifest_module.build_manifest(
+        material, material_id=MATERIAL_ID, scenario_key=SCENARIO_KEY,
+        voice_map=voice.resolve_voice_map(MATERIAL_ID), clips=_build_clips(turns_of(material)),
+        synthesized_at="2026-07-28T09:15:03Z", blueprint=load("blueprint_valid.json"),
+    )
     ref = store.publish_material(
-        load("material_valid.json"), load("blueprint_valid.json"), bad_audit,
+        material, load("blueprint_valid.json"), {"verdict": "SOMETHING_NEW"},
         scenario_key=SCENARIO_KEY, material_id=MATERIAL_ID,
+        audio={c["key"]: _silent_mp3(20) for c in m["clips"]}, manifest=m,
     )
     check(
-        "an unrecognised verdict quarantines rather than publishing",
-        ref.state == QUARANTINE,
+        "an unrecognised verdict still publishes to pending, normalised to NOT_ASSESSABLE",
+        ref.state == PENDING and state_store_module.verdict_of({"verdict": "SOMETHING_NEW"}) == "NOT_ASSESSABLE",
         ref.state,
     )
+
+
+def test_legacy_quarantine_prefix_is_inert() -> None:
+    """Real buckets still hold a `quarantine/` prefix from before the concept was removed.
+
+    No migration is written for it, so the requirement is only that the code does not crash or
+    miscount: `quarantine` is not in STATES, so nothing scans it, and a material sitting there is
+    simply not found rather than half-visible.
+    """
+    print("legacy quarantine/ prefix in a real bucket")
+    backing = InMemoryObjectStore()
+    store = StateStore(backing)
+    stale = "quarantine/{0}/20260101-accommodation-rental-deadbeef/".format(SCENARIO_KEY)
+    backing.put(stale + "material.json", b"{}")
+    backing.put(stale + "audit.json", b'{"verdict": "FAIL"}')
+    backing.put(stale + "quarantine_reason.json", b"{}")
+    _publish(store, verdict="PASS")
+
+    check(
+        "listing pending is unaffected by the stale prefix",
+        [r.material_id for r in store.list_materials(PENDING)["items"]] == [MATERIAL_ID],
+    )
+    check(
+        "asking for the removed state is a clear error, not a silent empty page",
+        _raises(StateStoreError, lambda: store.list_materials("quarantine")),
+    )
+    check(
+        "reconcile ignores it rather than reporting the whole bucket as broken",
+        store.reconcile().ok,
+        json.dumps(store.reconcile().actions),
+    )
+    check(
+        "a material left in the stale prefix is simply not found",
+        _raises(MaterialNotFound,
+                lambda: store.locate("20260101-accommodation-rental-deadbeef")),
+    )
+    check("the stale objects are untouched (no destructive migration)", backing.head(stale + "material.json"))
 
 
 def test_degraded_routing() -> None:
@@ -1508,7 +1565,7 @@ def test_degraded_routing() -> None:
     backing = InMemoryObjectStore()
     store = StateStore(backing)
     ref = _publish(store, verdict="PASS", degraded=True)
-    check("a degraded PASS still goes to pending, not quarantine", ref.state == PENDING, ref.state)
+    check("a degraded PASS goes to pending carrying its flag", ref.state == PENDING, ref.state)
     manifest_json = store.get_material(MATERIAL_ID)["manifest"]
     check(
         "the degraded marker travels with it so the frontend can say so",
@@ -2045,6 +2102,7 @@ def main() -> int:
         test_synthesis_refuses_before_it_pays,
         test_single_turn_resynthesis,
         test_verdict_routing,
+        test_legacy_quarantine_prefix_is_inert,
         test_degraded_routing,
         test_publish_guards,
         test_incomplete_is_invisible,

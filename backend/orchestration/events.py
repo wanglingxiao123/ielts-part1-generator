@@ -81,11 +81,17 @@ def batch_completed(
     degraded: int,
     stage_timings: Dict[str, Any],
     slots: List[Dict[str, Any]],
+    refilled: int = 0,
 ) -> Dict[str, Any]:
-    """Batch summary. Skipped and degraded counts are reported, never hidden.
+    """Batch summary. Skipped, degraded and refilled counts are reported, never hidden.
 
     Presenting a partial batch as a success would make the time-budget mechanism worse than the
     504 it replaces -- at least a 504 is visibly a failure.
+
+    ``refilled`` is the total number of NOT_ASSESSABLE attempts the batch discarded and re-ran.
+    Invisible to the user by design (they asked for N materials and got N), but an operator needs
+    it: a rising refill count is how a degrading scenario prompt announces itself, and without this
+    number it would only show up as batches mysteriously running out of time.
     """
     return {
         "type": "batch_completed",
@@ -93,6 +99,7 @@ def batch_completed(
         "failed": failed,
         "skipped": skipped,
         "degraded": degraded,
+        "refilled": refilled,
         "stage_timings": stage_timings,
         "slots": slots,
         "at": time.time(),

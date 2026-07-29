@@ -107,7 +107,6 @@ export interface BatchItemSnapshot {
   stage: MaterialStage
   attempt: number
   verdict?: Verdict
-  quarantined?: boolean
   error?: string | null
 }
 
@@ -119,7 +118,11 @@ export interface BatchSnapshot {
   total: number
   completed: number
   failed: number
-  quarantined: number
+  /**
+   * Materials the audit rejected. A COUNT ONLY — these materials are delivered
+   * and selectable like any other; see `MaterialRecord.audit_rejection`.
+   */
+  audit_rejected: number
   seq_high: number
   items: BatchItemSnapshot[]
 }
@@ -138,8 +141,14 @@ export interface MaterialRecord {
   index: number
   status: MaterialItemStatus
   verdict: Verdict
-  quarantined: boolean
-  quarantine_reason?: { code: string; message: string } | null
+  /**
+   * Set when the audit rejected this material (FAIL / NOT_ASSESSABLE).
+   *
+   * It does NOT gate anything in the UI: the material is shown, readable and
+   * selectable. This is a shortcoming to state, and the only place `verdict` is
+   * allowed to influence user-visible copy — never as a status badge.
+   */
+  audit_rejection?: { code: string; message: string } | null
   /** Skipped revise+re-audit; must be surfaced, not silently treated as complete. */
   degraded?: boolean
   material: Material
@@ -191,12 +200,18 @@ export interface SseProgressEvent {
   stage: MaterialStage
   attempt: number
   /**
-   * Real backend emits stages §8 did not model (`regenerating`,
-   * `anchors_repaired`, `infra_retry`, `audited`). They map onto the six §8
-   * stages for the dot track, and the original name is carried here so the card
-   * can say "校验未过，重新生成" rather than silently re-showing "生成中".
+   * The backend's own stage name, verbatim, for stages §8 did not model
+   * (`regenerating`, `anchors_repaired`, `infra_retry`, `audited`, `refilling`,
+   * `refill_abandoned`). Carried because folding it into one of the six §8
+   * stages loses information the progress mapping needs — `regenerating` and
+   * `generating` are the same §8 stage but not the same event.
+   *
+   * A MACHINE TOKEN. It must never reach the DOM: these names describe the
+   * system retrying itself, and a user told "校验未过，重新生成" is being handed
+   * an internal failure they can neither act on nor should see.
+   * `domain/progressStages.ts` is the only permitted consumer.
    */
-  sub_stage?: string | null
+  raw_stage?: string | null
 }
 
 export interface SseMaterialEvent {
@@ -206,8 +221,7 @@ export interface SseMaterialEvent {
   scenario_key: string
   index: number
   verdict: Verdict
-  quarantined: boolean
-  quarantine_reason?: { code: string; message: string } | null
+  audit_rejection?: { code: string; message: string } | null
   degraded?: boolean
   material: Material
   blueprint: Blueprint
@@ -230,7 +244,7 @@ export interface SseBatchDoneEvent {
   status: 'done' | 'partial'
   completed: number
   failed: number
-  quarantined: number
+  audit_rejected: number
 }
 
 export interface SsePingEvent {
