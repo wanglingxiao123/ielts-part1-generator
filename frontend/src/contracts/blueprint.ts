@@ -39,9 +39,9 @@ export interface IELTSListeningPart1InformationPointBlueprint {
     marker: string
   }
   /**
-   * Dialogue-internal indirect confirmation. answer_term MUST be the target of some item -- the spec's 命题铁律 requires the answer word itself to be spoken aloud, with indirect reference only adding listening difficulty on top.
+   * Optional. The paraphrase/indirect-reference cycle, when the material uses one. Measured over the 27 usable archived papers: only 4 contain an indirect reference, while 24 use 先说后改 and 21 use a qualifier. The spec asks for 2-3 distraction cycles chosen from five mechanisms (§4B-4), not for this specific one, so requiring it made the generator chase a convention the real papers rarely follow.
    */
-  indirect_confirmation: {
+  indirect_confirmation?: {
     answer_term: string
     reference_phrase: string
   }

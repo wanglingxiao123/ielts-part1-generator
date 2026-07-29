@@ -249,6 +249,61 @@ def test_mode_and_split_rules_match_the_real_corpus() -> None:
           str(got.get("errors")))
 
 
+def test_indirect_confirmation_is_optional() -> None:
+    """Requiring a paraphrase cycle in every material contradicted the spec and the corpus.
+
+    §4B-4 asks for 2-3 distraction cycles chosen from five mechanisms; it never singles this one
+    out. Measured over the 27 usable archived papers: 先说后改 in 24, a qualifier in 21, an
+    indirect reference in only 4. The schema nonetheless listed `indirect_confirmation` as
+    required, so a live batch spent all three generation attempts failing on
+    "indirect answer term must occur before its reference phrase" and returned one material short.
+
+    What must NOT relax: when the field IS present, the answer term still has to be spoken before
+    the phrase referring back to it. That is the 命题铁律 (§4B-4) -- the key has to exist verbatim
+    in the audio -- and it is the reason the check exists at all.
+    """
+    print("indirect_confirmation is optional")
+    import copy
+    import tempfile
+
+    blueprint = json.loads((FIXTURES / "blueprint_valid.json").read_text(encoding="utf-8"))
+    scratch = Path(tempfile.mkdtemp())
+
+    def verdict(bp: dict) -> dict:
+        path = scratch / "b.json"
+        path.write_text(json.dumps(bp, ensure_ascii=False), encoding="utf-8")
+        out = run(VALIDATE, str(FIXTURES / "material_valid.json"), "--blueprint", str(path),
+                  "--json").stdout
+        return json.loads(out) if out.strip() else {}
+
+    without = copy.deepcopy(blueprint)
+    without.pop("indirect_confirmation", None)
+    got = verdict(without)
+    check("a blueprint with no indirect_confirmation is accepted",
+          got.get("ok") is True, str(got.get("errors")))
+
+    # Distraction density is still enforced separately, so dropping this one cannot yield a
+    # material with no distractors at all.
+    thin = copy.deepcopy(without)
+    for item in thin["items"]:
+        item["distractor"] = False
+    got = verdict(thin)
+    check("distractor density is still required without it",
+          any("2-3 distractor" in e for e in (got.get("errors") or [])),
+          str(got.get("errors")))
+
+    # And the iron rule survives: a reference phrase preceding its answer term is still an error.
+    reversed_pair = copy.deepcopy(blueprint)
+    reversed_pair["indirect_confirmation"] = {
+        "answer_term": blueprint["indirect_confirmation"]["reference_phrase"],
+        "reference_phrase": blueprint["indirect_confirmation"]["answer_term"],
+    }
+    got = verdict(reversed_pair)
+    check("an answer term after its reference is still rejected",
+          any("before its reference phrase" in e for e in (got.get("errors") or [])),
+          str(got.get("errors")))
+
+
 def test_grouping_cannot_be_faked() -> None:
     """A shared group label must not stand in for a constructible table (D2)."""
     print("question-type grouping cannot be faked")
@@ -466,6 +521,7 @@ def main() -> int:
         test_malformed_turns_stay_reportable,
         test_closing_rules_match_the_real_corpus,
         test_mode_and_split_rules_match_the_real_corpus,
+        test_indirect_confirmation_is_optional,
         test_grouping_cannot_be_faked,
         test_spelled_name_rule_not_vacuous,
         test_metrics_absent_when_unmeasured,

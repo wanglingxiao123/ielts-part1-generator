@@ -18,7 +18,10 @@ TOP_KEYS = {"model", "extracted_at", "test_package", "content_kind", "source_htm
 PART_KEYS = {"reference", "test_package", "scenario", "script", "source_htmls"}
 SCRIPT_KEYS = {"reference", "test_package", "turns", "speaker_count"}
 FORBIDDEN_KEYS = {"candidate_questions", "questions", "answer_key", "answers", "item_evidence", "analysis", "quality_check"}
-BLUEPRINT_KEYS = {"narration_mode", "split_after", "question_type_coverage", "items", "correction", "indirect_confirmation"}
+BLUEPRINT_KEYS = {"narration_mode", "split_after", "question_type_coverage", "items", "correction"}
+# Present in only 4 of the 27 usable archived papers, while the spec (§4B-4) asks for 2-3
+# distraction cycles chosen from five mechanisms rather than for this one specifically.
+BLUEPRINT_OPTIONAL_KEYS = {"indirect_confirmation"}
 ITEM_KEYS = {"number", "group", "type", "target", "evidence", "turn_index", "item_form", "form_group", "distractor", "confirmed"}
 ITEM_FORMS = {"form", "table", "multiple_choice", "note"}
 TABLE_FORMS = {"form", "table"}
@@ -50,8 +53,18 @@ def words(value: str) -> int:
     return len(re.findall(r"\b[\w'-]+\b", value))
 
 
-def exact_keys(value: dict, expected: set[str], label: str, errors: list[str]) -> None:
-    missing, extra = sorted(expected - value.keys()), sorted(value.keys() - expected)
+def exact_keys(
+    value: dict, expected: set[str], label: str, errors: list[str],
+    optional: set[str] | None = None,
+) -> None:
+    """Keys must be exactly `expected`, except that `optional` ones may be absent.
+
+    An unexpected key is still an error either way: a typo'd field name would otherwise be
+    silently ignored, which is how a blueprint can look complete and carry nothing.
+    """
+    allowed = expected | (optional or set())
+    missing = sorted(expected - (optional or set()) - value.keys())
+    extra = sorted(value.keys() - allowed)
     if missing:
         errors.append(f"{label} missing fields: {missing}")
     if extra:
@@ -188,7 +201,7 @@ def validate_blueprint(blueprint: object, turns: list[dict], midpoint: int, firs
     if not isinstance(blueprint, dict):
         errors.append("blueprint must be an object")
         return "full"
-    exact_keys(blueprint, BLUEPRINT_KEYS, "blueprint", errors)
+    exact_keys(blueprint, BLUEPRINT_KEYS, "blueprint", errors, BLUEPRINT_OPTIONAL_KEYS)
     mode = blueprint.get("narration_mode")
     if mode not in {"full", "short"}:
         errors.append("blueprint.narration_mode must be full or short")
@@ -287,8 +300,15 @@ def validate_blueprint(blueprint: object, turns: list[dict], midpoint: int, firs
         if min(earlier[0], final[0], marker[0]) < 0 or not earlier < marker < final:
             errors.append("correction must contain earlier value, then replacement marker, then final value")
     indirect = blueprint.get("indirect_confirmation")
-    if not isinstance(indirect, dict):
-        errors.append("blueprint.indirect_confirmation must be an object")
+    # Optional, because the spec asks for 2-3 distraction cycles drawn from five mechanisms
+    # (§4B-4) and never singles this one out. Measured over the 27 usable archived papers:
+    # 先说后改 appears in 24 and a qualifier in 21, but an indirect reference in only 4.
+    # Requiring it made the generator chase a convention the real papers rarely use, and it was
+    # the single error that exhausted all three attempts on a live batch.
+    if indirect is None:
+        pass
+    elif not isinstance(indirect, dict):
+        errors.append("blueprint.indirect_confirmation must be an object when present")
     else:
         exact_keys(indirect, {"answer_term", "reference_phrase"}, "blueprint.indirect_confirmation", errors)
         answer_term = indirect.get("answer_term")

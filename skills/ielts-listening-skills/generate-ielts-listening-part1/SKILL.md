@@ -24,7 +24,8 @@ Read [references/specification.md](references/specification.md) completely befor
 
 2. Build the ten-item blueprint.
    - Plan ten factual targets in strict order, divided into two groups such as 1-5 / 6-10.
-   - Include at least one spelled name/proper noun, one numeric target, one genuine self-correction, and one dialogue-internal indirect confirmation whose answer term is also an item target.
+   - Include at least one spelled name/proper noun, one numeric target, and one genuine self-correction.
+   - A dialogue-internal indirect confirmation is optional. Add one only when it fits the scene naturally; if you do, its answer term must also be an item target and must be spoken in full before the phrase that refers back to it. The spec asks for 2-3 distraction cycles drawn from five mechanisms (self-correction, paraphrase, option trap, negation, qualifier) -- forcing a paraphrase into every material is not one of them, and only 4 of the 27 real papers contain one.
    - Mark at least three points as confirmed, including a spelled name and a numeric detail.
    - Plan question-type support: give each point an `item_form`, group comparable points with a shared `form_group` so one group holds 3+ points, mark at least 2 points `multiple_choice`, and record the same layout in `question_type_coverage`.
    - Use only 2-3 deliberate distractor-bearing cycles.
