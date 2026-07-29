@@ -9,11 +9,23 @@
  *
  * sticky at the top of the scroll container so the judgement never requires
  * scrolling (prd R4).
+ *
+ * Coordinate maths lives in `domain/distributionAxis.ts`, shared verbatim with the
+ * result card's `DistributionThumb`. One placement implementation, so the
+ * thumbnail and this strip cannot disagree about where a point sits.
  */
 import { useMemo } from 'react'
 import type { DistributionMetrics } from '@/domain/distribution'
+import {
+  axisPercent,
+  axisSpan,
+  axisTicks,
+  axisWidthPercent,
+  declaredGroupBrackets,
+  pileIndex,
+} from '@/domain/distributionAxis'
 import type { FormGroupAnalysis } from '@/domain/formGroups'
-import { circled, ITEM_FORM_LABEL, type ViewMaterial } from '@/domain/types'
+import { circled, type ViewMaterial } from '@/domain/types'
 import { assessUsability, READINESS_FLAG, READINESS_LABEL } from '@/domain/usability'
 
 interface Props {
@@ -27,8 +39,6 @@ interface Props {
   compact?: boolean
 }
 
-const TICK_STEP = 8
-
 export function DistributionStrip({
   view,
   metrics,
@@ -41,11 +51,10 @@ export function DistributionStrip({
   // Same metrics object the marks above are drawn from, so the picture and the
   // sentence beneath it cannot disagree.
   const verdict = useMemo(() => assessUsability(metrics), [metrics])
-  const span = Math.max(1, metrics.dialogueTurnCount - 1)
-  const pct = (ordinal: number) => `${(ordinal / span) * 100}%`
-
-  const ticks: number[] = []
-  for (let o = 0; o <= span; o += TICK_STEP) ticks.push(o)
+  const span = axisSpan(metrics)
+  const pct = (ordinal: number) => axisPercent(ordinal, span)
+  const ticks = axisTicks(span)
+  const brackets = declaredGroupBrackets(view, groups, span)
 
   return (
     <div className="strip">
@@ -58,19 +67,7 @@ export function DistributionStrip({
 
       <div
         className="strip-axis"
-        style={
-          compact
-            ? { height: 48 }
-            : {
-                height:
-                  60 +
-                  Math.max(
-                    1,
-                    groups.groups.filter((g) => !g.ungrouped && g.numbers.length > 1).length,
-                  ) *
-                    22,
-              }
-        }
+        style={compact ? { height: 48 } : { height: 60 + Math.max(1, brackets.length) * 22 }}
       >
         <div className="axis-line" />
 
@@ -91,7 +88,7 @@ export function DistributionStrip({
             className="gap-shade"
             style={{
               left: pct(g.fromOrdinal),
-              width: `${((g.toOrdinal - g.fromOrdinal) / span) * 100}%`,
+              width: `${axisWidthPercent(g.fromOrdinal, g.toOrdinal, span)}%`,
             }}
             title={`这 ${g.size} 轮里没有可考的信息点`}
           />
@@ -105,7 +102,7 @@ export function DistributionStrip({
               className="cluster-shade"
               style={{
                 left: `calc(${pct(c.ordinalStart)} - 9px)`,
-                width: `calc(${((c.ordinalEnd - c.ordinalStart) / span) * 100}% + 18px)`,
+                width: `calc(${axisWidthPercent(c.ordinalStart, c.ordinalEnd, span)}% + 18px)`,
                 height: 36 + (metrics.points.filter((p) => c.numbers.includes(p.number)).length - 1) * 4,
               }}
             />
@@ -126,7 +123,7 @@ export function DistributionStrip({
           // Vertical pile index among points sharing this exact ordinal. Two
           // items on one turn would otherwise be pixel-identical and the second
           // invisible — hiding the worst case behind the mark that looks fine.
-          const pile = metrics.points.slice(0, i).filter((q) => q.ordinal === p.ordinal).length
+          const pile = pileIndex(metrics.points, i)
           return (
             <span key={p.number}>
               {pile === 0 && <span className="axis-stem" style={{ left: pct(p.ordinal) }} />}
@@ -172,29 +169,19 @@ export function DistributionStrip({
             form_group=null bucket would assert that those points belong
             together, which is exactly what a null form_group denies. */}
         {!compact &&
-          groups.groups
-            .filter((g) => !g.ungrouped && g.numbers.length > 1)
-            .map((g, gi) => {
-              const startOrd = view.turns[g.turnStart]?.dialogueOrdinal ?? 0
-              const endOrd = view.turns[g.turnEnd]?.dialogueOrdinal ?? startOrd
-              return (
-                <div
-                  key={`fg${g.name ?? 'null'}-${g.itemForm}`}
-                  className={`group-span${g.spanWarn ? ' warn' : ''}`}
-                  style={{
-                    left: pct(startOrd),
-                    width: `max(14px, ${((endOrd - startOrd) / span) * 100}%)`,
-                    top: 50 + gi * 22,
-                  }}
-                >
-                  <span>
-                    {ITEM_FORM_LABEL[g.itemForm]}
-                    {g.name ? ` ${g.name}` : ''}：{g.numbers.map((n) => circled(n)).join('')}
-                    {g.spanWarn ? ' ⚠ 跨度太宽，考生要跨半篇回忆' : ''}
-                  </span>
-                </div>
-              )
-            })}
+          brackets.map((b, gi) => (
+            <div
+              key={b.key}
+              className={`group-span${b.warn ? ' warn' : ''}`}
+              style={{
+                left: b.left,
+                width: `max(14px, ${b.widthPercent}%)`,
+                top: 50 + gi * 22,
+              }}
+            >
+              <span>{b.label}</span>
+            </div>
+          ))}
 
         {playingOrdinal != null && (
           <div className="playhead" style={{ left: pct(playingOrdinal) }} />

@@ -8,9 +8,18 @@
  */
 import { describe, expect, it } from 'vitest'
 import { FALLBACK_CONFIG } from '@/config/runtimeConfig'
+import type { BatchItemSnapshot, MaterialRecord } from '@/contracts/api'
 import { buildRecord } from '@/mocks/fixtures'
+import {
+  BACKEND_CONCURRENCY,
+  describeBatchEstimate,
+  estimateBatchSeconds,
+  waveCount,
+  WAVE_SECONDS,
+} from './batchEstimate'
 import { computeDistribution } from './distribution'
 import { joinFromRecord } from './joinArtifacts'
+import { arrivedByScenario, buildResultGroups } from './resultSlots'
 import {
   buildCardPreview,
   firstDialogueLine,
@@ -176,6 +185,11 @@ describe('progress phases', () => {
     expect(describeProgress({ completed: 6, total: 6, phase: null, finished: true })).toBe(
       '6 套材料已全部生成',
     )
+    // Finished but short: saying "已全部生成" here would contradict the 生成异常
+    // cards sitting on the same page, and a self-contradicting page reads as a bug.
+    expect(describeProgress({ completed: 4, total: 6, phase: null, finished: true })).toBe(
+      '已生成 4 / 6 套，其余未能生成',
+    )
     for (const text of [running, describeProgress({ completed: 6, total: 6, phase: null, finished: true })]) {
       expect(text).not.toMatch(/未过|重试|重新生成|失败|第 \d+ 次/)
     }
@@ -259,5 +273,219 @@ describe('card preview', () => {
 
   it('reports the degraded material as having skipped revise + re-audit', () => {
     expect(previewOf('anchorMismatch', 'm-mis').shortcomings.join(' ')).toContain('复评')
+  })
+})
+
+/* ── 提交前的耗时预估：必须建模并发，不能按串行算 ──────────────────────────── */
+
+describe('batch estimate models concurrency, not serial execution', () => {
+  it('scales with the number of WAVES, not the number of sets', () => {
+    // Up to MAX_CONCURRENCY sets run at once, so 1..6 sets is one wave.
+    expect(waveCount(1)).toBe(1)
+    expect(waveCount(BACKEND_CONCURRENCY)).toBe(1)
+    expect(waveCount(BACKEND_CONCURRENCY + 1)).toBe(2)
+    expect(waveCount(0)).toBe(0)
+    // 2, 4 and 6 sets all take one wave: the estimate must therefore be equal
+    // for all three. The old serial formula made 6 sets three times 2 sets.
+    const [two, four, six] = [2, 4, 6].map((n) => estimateBatchSeconds(n))
+    expect(two).toEqual(four)
+    expect(four).toEqual(six)
+    expect(six).toEqual([WAVE_SECONDS[0], WAVE_SECONDS[1]])
+  })
+
+  it('predicts about 3–4 minutes for a single wave, matching the measured batch', () => {
+    // Measured on AWS: a real 4-material batch ran 182–230s end to end.
+    for (const total of [2, 4, 6]) {
+      const [min, max] = estimateBatchSeconds(total)
+      expect(min).toBe(182)
+      expect(max).toBe(230)
+      expect(describeBatchEstimate(total)).toBe('约 3–4 分钟')
+    }
+  })
+
+  /**
+   * The bug this replaces: `total * 100/60 … total * 160/60` told a user
+   * "7–11 分钟" for the batch that was actually measured at 182–230s. A user who
+   * believes that trims scenarios they could in fact afford to submit.
+   */
+  it('never reports the serial figure the old formula produced', () => {
+    const serialMin = Math.round((4 * 100) / 60) // 7
+    const [min] = estimateBatchSeconds(4)
+    expect(Math.round(min / 60)).toBeLessThan(serialMin)
+    expect(describeBatchEstimate(4)).not.toContain('7')
+    expect(describeBatchEstimate(4)).not.toContain('11')
+  })
+
+  it('reports a range rather than false precision, and nothing at all for an empty batch', () => {
+    expect(describeBatchEstimate(0)).toBe('—')
+    expect(describeBatchEstimate(4)).toMatch(/^约 \d+–\d+ 分钟$/)
+    // A lower concurrency (the backend's IELTS_CONCURRENCY can be lowered on
+    // 429s) means more waves, and the estimate has to follow.
+    expect(waveCount(6, 3)).toBe(2)
+    expect(estimateBatchSeconds(6, 3)).toEqual([364, 460])
+  })
+})
+
+/* ── 骨架卡位：材料到达之前就得知道要铺几张 ────────────────────────────────── */
+
+describe('result slots', () => {
+  /** Mid-flight is the default; `batchFinished` is exercised on its own below. */
+  const build = (input: Omit<Parameters<typeof buildResultGroups>[0], 'batchFinished'>) =>
+    buildResultGroups({ ...input, batchFinished: false })
+
+  const item = (
+    scenarioKey: string,
+    index: number,
+    status: BatchItemSnapshot['status'] = 'pending',
+  ): BatchItemSnapshot => ({
+    material_id: `${scenarioKey}-${index}`,
+    scenario_key: scenarioKey,
+    index,
+    status,
+    stage: 'queued',
+    attempt: 0,
+  })
+
+  const material = (scenarioKey: string, index: number, id: string): MaterialRecord =>
+    buildRecord('balanced', { materialId: id, batchId: 'b1', scenarioKey, index })
+
+  const REQUESTED = [
+    { scenarioKey: 'accommodation-rental', count: 3 },
+    { scenarioKey: 'booking-hotel', count: 3 },
+  ]
+
+  it('gives every scenario as many skeletons as the user asked for, before any event', () => {
+    const groups = build({ requested: REQUESTED, items: [], materials: {} })
+    expect(groups.map((g) => g.scenarioKey)).toEqual([
+      'accommodation-rental',
+      'booking-hotel',
+    ])
+    for (const g of groups) {
+      expect(g.slots).toHaveLength(3)
+      expect(g.slots.map((s) => s.state)).toEqual(['skeleton', 'skeleton', 'skeleton'])
+      expect(g.slots.map((s) => s.index)).toEqual([0, 1, 2])
+      expect(g.arrived).toBe(0)
+    }
+  })
+
+  it('honours a per-scenario count of 1 and of the batch maximum alike', () => {
+    for (const count of [1, 2, 6]) {
+      const groups = build({
+        requested: [{ scenarioKey: 'booking-hotel', count }],
+        items: [],
+        materials: {},
+      })
+      expect(groups[0]!.slots).toHaveLength(count)
+    }
+  })
+
+  /** The whole point: a material REPLACES its skeleton rather than adding a card. */
+  it('replaces one skeleton, keeping the slot count and the slot key stable', () => {
+    const before = build({ requested: REQUESTED, items: [], materials: {} })
+    const after = build({
+      requested: REQUESTED,
+      items: [item('accommodation-rental', 1, 'done')],
+      materials: { 'mat-x': material('accommodation-rental', 1, 'mat-x') },
+    })
+
+    const group = after.find((g) => g.scenarioKey === 'accommodation-rental')!
+    expect(group.slots).toHaveLength(3) // not 4
+    expect(group.slots.map((s) => s.state)).toEqual(['skeleton', 'material', 'skeleton'])
+    expect(group.arrived).toBe(1)
+    expect(group.slots[1]!.materialId).toBe('mat-x')
+    // Same React key before and after → the skeleton is replaced, not remounted
+    // alongside the real card.
+    const keysBefore = before.find((g) => g.scenarioKey === 'accommodation-rental')!.slots.map((s) => s.key)
+    expect(group.slots.map((s) => s.key)).toEqual(keysBefore)
+  })
+
+  /**
+   * A slot the backend silently re-runs (audit returned NOT_ASSESSABLE → the
+   * `refilling` stage event, no `material_failed`) must keep showing a skeleton.
+   * The user is not supposed to perceive the refill at all.
+   */
+  it('keeps a silently refilled slot as a skeleton, never as an error', () => {
+    const groups = build({
+      requested: [{ scenarioKey: 'booking-hotel', count: 2 }],
+      // `running`, because that is all a refill produces: stage events.
+      items: [item('booking-hotel', 0, 'running'), item('booking-hotel', 1, 'running')],
+      materials: {},
+    })
+    expect(groups[0]!.slots.map((s) => s.state)).toEqual(['skeleton', 'skeleton'])
+  })
+
+  /** A terminal `material_failed` — the backend will NOT refill that one. */
+  it('shows an error slot only for a terminal failure', () => {
+    const groups = build({
+      requested: [{ scenarioKey: 'booking-hotel', count: 2 }],
+      items: [item('booking-hotel', 0, 'failed'), item('booking-hotel', 1, 'running')],
+      materials: {},
+    })
+    expect(groups[0]!.slots.map((s) => s.state)).toEqual(['error', 'skeleton'])
+  })
+
+  /**
+   * Once the batch reaches a terminal state, an unfilled slot will never be
+   * filled — the time budget skipped it, or its failure event never arrived. A
+   * skeleton shimmering forever is worse than saying the set did not come out.
+   */
+  it('stops shimmering an unfilled slot once the batch is done', () => {
+    const groups = buildResultGroups({
+      requested: [{ scenarioKey: 'booking-hotel', count: 2 }],
+      items: [item('booking-hotel', 0, 'done')],
+      materials: { 'mat-1': material('booking-hotel', 0, 'mat-1') },
+      batchFinished: true,
+    })
+    expect(groups[0]!.slots.map((s) => s.state)).toEqual(['material', 'error'])
+  })
+
+  /**
+   * After a reload `requested` is gone (it lives in memory), so the shape has to
+   * come from the snapshot's items — otherwise a refresh mid-batch would show
+   * fewer cards than the batch actually has.
+   */
+  it('reconstructs the shape from snapshot items when the request is gone', () => {
+    const groups = build({
+      requested: [],
+      items: [
+        item('booking-hotel', 0),
+        item('booking-hotel', 1),
+        item('booking-hotel', 2),
+        item('accommodation-rental', 0),
+      ],
+      materials: {},
+    })
+    expect(groups.map((g) => [g.scenarioKey, g.slots.length])).toEqual([
+      ['booking-hotel', 3],
+      ['accommodation-rental', 1],
+    ])
+  })
+
+  it('still shows a material that arrived outside the plan rather than dropping it', () => {
+    const groups = build({
+      requested: [{ scenarioKey: 'booking-hotel', count: 1 }],
+      items: [],
+      materials: {
+        planned: material('booking-hotel', 0, 'planned'),
+        surprise: material('booking-hotel', 4, 'surprise'),
+        other: material('service-refund', 0, 'other'),
+      },
+    })
+    const hotel = groups.find((g) => g.scenarioKey === 'booking-hotel')!
+    expect(hotel.slots.map((s) => s.materialId)).toEqual(['planned', 'surprise'])
+    expect(groups.find((g) => g.scenarioKey === 'service-refund')!.arrived).toBe(1)
+  })
+
+  it('feeds the 每场景至少选 1 套 rule with arrived materials only', () => {
+    const groups = build({
+      requested: REQUESTED,
+      items: [],
+      materials: { 'mat-a': material('accommodation-rental', 0, 'mat-a') },
+    })
+    const byScenario = arrivedByScenario(groups)
+    expect(byScenario.get('accommodation-rental')).toEqual(['mat-a'])
+    // A scenario with only skeletons contributes no ids, so the rule cannot be
+    // deadlocked by cards that do not exist yet.
+    expect(byScenario.get('booking-hotel')).toEqual([])
   })
 })

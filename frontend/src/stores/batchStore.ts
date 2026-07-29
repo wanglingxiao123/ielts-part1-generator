@@ -16,6 +16,7 @@ import type {
   SseEvent,
 } from '@/contracts/api'
 import { advancePhase, phaseOfProgress, type ProgressPhase } from '@/domain/progressStages'
+import type { RequestedScenario } from '@/domain/resultSlots'
 
 export type ConnectionState =
   | 'idle'
@@ -49,6 +50,16 @@ export interface BatchState {
   batchId: string | null
   status: BatchStatus
   total: number
+  /**
+   * 用户提交时选的「每场景几套」，顺序即他勾选的顺序。
+   *
+   * 结果页要在**第一个 material 事件之前**就铺出全部卡位（骨架卡），所以这个形状
+   * 必须一起带过来：`items` 虽然也够用，但那是后端回的，而客户要的是「提交后立刻
+   * 看到结构」——这份数据在 POST 返回的那一刻就在手上了。
+   *
+   * 刷新后为空数组：那时页面从快照的 `items` 反推形状（见 domain/resultSlots.ts）。
+   */
+  requested: RequestedScenario[]
   createdAt: number | null
   seqHigh: number
   seenSeqs: Set<number>
@@ -65,7 +76,12 @@ export interface BatchState {
 interface Actions {
   reset: () => void
   startCreating: () => void
-  initBatch: (input: { batchId: string; total: number; items: BatchItemSnapshot[] }) => void
+  initBatch: (input: {
+    batchId: string
+    total: number
+    items: BatchItemSnapshot[]
+    requested?: RequestedScenario[]
+  }) => void
   applySnapshot: (snapshot: BatchSnapshot) => void
   applyEvent: (event: SseEvent) => boolean
   setConnection: (state: ConnectionState, attempt?: number, error?: string | null) => void
@@ -76,6 +92,7 @@ const EMPTY: BatchState = {
   batchId: null,
   status: 'queued',
   total: 0,
+  requested: [],
   createdAt: null,
   seqHigh: 0,
   seenSeqs: new Set(),
@@ -159,12 +176,13 @@ export const useBatchStore = create<BatchState & Actions>((set, get) => ({
 
   startCreating: () => set({ connection: 'creating', lastError: null }),
 
-  initBatch: ({ batchId, total, items }) =>
+  initBatch: ({ batchId, total, items, requested }) =>
     set({
       ...EMPTY,
       seenSeqs: new Set(),
       batchId,
       total,
+      requested: requested ?? [],
       createdAt: Date.now(),
       status: 'running',
       items: Object.fromEntries(items.map((i) => [i.material_id, i])),

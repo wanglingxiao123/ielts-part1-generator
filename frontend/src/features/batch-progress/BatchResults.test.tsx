@@ -79,10 +79,18 @@ interface Plan {
   kind: FixtureKind
 }
 
-function startBatch(plan: Plan[]) {
+/** The per-scenario counts the user chose, as ScenarioSelectPage records them. */
+function requestedFrom(plan: Plan[]) {
+  const counts = new Map<string, number>()
+  for (const p of plan) counts.set(p.scenarioKey, Math.max(counts.get(p.scenarioKey) ?? 0, p.index + 1))
+  return [...counts].map(([scenarioKey, count]) => ({ scenarioKey, count }))
+}
+
+function startBatch(plan: Plan[], requested = requestedFrom(plan)) {
   useBatchStore.getState().initBatch({
     batchId: BATCH,
     total: plan.length,
+    requested,
     items: plan.map((p) => ({
       material_id: p.materialId,
       scenario_key: p.scenarioKey,
@@ -276,7 +284,13 @@ describe('layout', () => {
     expect(document.body.textContent).not.toContain('accommodation-rental')
   })
 
-  it('labels each card 第 N 套 and gives it ten numbered points', () => {
+  /**
+   * Was: ten numbered dots in a row. Now: the same ten points, placed on a turn
+   * axis. The intent is unchanged — every information point is accounted for on
+   * the card — but the numbers are circled and their POSITION now carries the
+   * information the flat row did not.
+   */
+  it('labels each card 第 N 套 and plots all ten points on a turn axis', () => {
     startBatch(TWO_SCENARIOS)
     deliverAll(TWO_SCENARIOS)
     renderPage()
@@ -285,10 +299,18 @@ describe('layout', () => {
     expect(screen.getAllByText('第 2 套')).toHaveLength(2)
     expect(screen.getAllByText('信息点分布（10/10）')).toHaveLength(4)
     const card = document.querySelector('[data-material="m1"]')!
-    expect(card.querySelectorAll('.point-dot')).toHaveLength(10)
-    expect([...card.querySelectorAll('.point-dot')].map((d) => d.textContent)).toEqual([
+    const dots = [...card.querySelectorAll<HTMLElement>('.dist-thumb-dot')]
+    expect(dots).toHaveLength(10)
+    expect(dots.map((d) => d.dataset.point)).toEqual([
       '1', '2', '3', '4', '5', '6', '7', '8', '9', '10',
     ])
+    expect(dots.map((d) => d.textContent)).toEqual([
+      '①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩',
+    ])
+    // Axis ticks at a few key positions only, not one per turn.
+    const ticks = [...card.querySelectorAll('.dist-thumb-tick')].map((t) => t.textContent)
+    expect(ticks[0]).toBe('0')
+    expect(ticks.length).toBeLessThanOrEqual(6)
   })
 
   it('marks the clustered card点 yellow and the balanced one blue', () => {
@@ -298,8 +320,37 @@ describe('layout', () => {
 
     const balanced = document.querySelector('[data-material="m1"]')!
     const clustered = document.querySelector('[data-material="m2"]')!
-    expect(balanced.querySelectorAll('.point-dot.flagged')).toHaveLength(0)
-    expect(clustered.querySelectorAll('.point-dot.flagged').length).toBeGreaterThan(0)
+    expect(balanced.querySelectorAll('.dist-thumb-dot.warn')).toHaveLength(0)
+    expect(clustered.querySelectorAll('.dist-thumb-dot.warn').length).toBeGreaterThan(0)
+  })
+
+  /**
+   * The thumbnail is a compact view of the SAME computation as the reader's full
+   * strip, so the clustered fixture's defining defect has to be visible on the
+   * card: the clustered dots sit at their true (nearly coincident) positions and
+   * a bracket marks the form-group span.
+   */
+  it('shows the clustering on the thumbnail: coincident dots and a group bracket', () => {
+    startBatch(TWO_SCENARIOS)
+    deliverAll(TWO_SCENARIOS)
+    renderPage()
+
+    const clustered = document.querySelector('[data-material="m2"]')!
+    const lefts = [...clustered.querySelectorAll<HTMLElement>('.dist-thumb-dot')].map(
+      (d) => d.style.left,
+    )
+    // The overlap IS the finding (design.md §3.3): marks are NOT spread out to
+    // avoid each other, so at least two of them share a horizontal position.
+    expect(new Set(lefts).size).toBeLessThan(lefts.length)
+
+    // A flagged dot names the defect in its tooltip, in the spec's vocabulary.
+    const warned = clustered.querySelector('.dist-thumb-dot.warn')!
+    expect(warned.getAttribute('title')).toMatch(/密度过高|需要看一眼/)
+
+    // form_group clustering is bracketed beneath the axis on the balanced card
+    // too — the bracket states the group's turn span, it is not a defect flag.
+    const balanced = document.querySelector('[data-material="m1"]')!
+    expect(balanced.querySelectorAll('.dist-thumb-bracket').length).toBeGreaterThan(0)
   })
 
   it('previews the first line of dialogue and a one-line summary', () => {
@@ -340,7 +391,175 @@ describe('layout', () => {
   })
 })
 
-/* ── 3. 勾选与提交 ───────────────────────────────────────────────────────── */
+/* ── 3. 没有等待页：骨架卡 ───────────────────────────────────────────────── */
+
+/**
+ * The client's complaint: before the first material arrived the page showed one
+ * line of text ("正在生成，第一套完成后会立刻出现在这里。"). They asked for the
+ * results-page STRUCTURE to be visible immediately instead — no separate loading
+ * page, no blank screen, no waiting for the whole batch.
+ */
+describe('no waiting page: skeleton cards from the first frame', () => {
+  const THREE_EACH: Plan[] = [
+    { materialId: 'a0', scenarioKey: 'accommodation-rental', index: 0, kind: 'balanced' },
+    { materialId: 'a1', scenarioKey: 'accommodation-rental', index: 1, kind: 'clustered' },
+    { materialId: 'a2', scenarioKey: 'accommodation-rental', index: 2, kind: 'balanced' },
+    { materialId: 'b0', scenarioKey: 'booking-hotel', index: 0, kind: 'balanced' },
+    { materialId: 'b1', scenarioKey: 'booking-hotel', index: 1, kind: 'balanced' },
+    { materialId: 'b2', scenarioKey: 'booking-hotel', index: 2, kind: 'balanced' },
+  ]
+
+  it('renders N skeletons per scenario, N being the count the user chose', () => {
+    startBatch(THREE_EACH)
+    renderPage()
+
+    // Two scenario groups, three skeletons each — before any material event.
+    const sections = document.querySelectorAll('.scn-group')
+    expect(sections).toHaveLength(2)
+    for (const section of sections) {
+      expect(section.querySelectorAll('.skel-card')).toHaveLength(3)
+      expect(section.querySelectorAll('.mat-card:not(.skel-card)')).toHaveLength(0)
+    }
+    // Each skeleton names its scenario and says it is being generated.
+    expect(screen.getAllByLabelText('租房咨询 第 1 套 生成中')).toHaveLength(1)
+    expect(screen.getAllByText('生成中…')).toHaveLength(6)
+    expect(screen.getAllByText('租房咨询')).toHaveLength(4) // group head + 3 skeletons
+
+    // The single line of prose the client rejected is gone.
+    expect(document.body.textContent).not.toContain('第一套完成后会立刻出现在这里')
+  })
+
+  it('follows the chosen per-scenario count rather than a fixed number', () => {
+    const oneEach: Plan[] = [
+      { materialId: 'x', scenarioKey: 'booking-hotel', index: 0, kind: 'balanced' },
+    ]
+    startBatch(oneEach)
+    renderPage()
+    expect(document.querySelectorAll('.skel-card')).toHaveLength(1)
+  })
+
+  it('turns one skeleton into a real card without duplicating the slot', async () => {
+    startBatch(THREE_EACH)
+    const { rerender } = renderPage()
+    expect(document.querySelectorAll('.mat-card')).toHaveLength(6)
+
+    deliver(buildRecord('balanced', {
+      materialId: 'a1',
+      batchId: BATCH,
+      scenarioKey: 'accommodation-rental',
+      index: 1,
+    }))
+    rerender(
+      <MemoryRouter initialEntries={[`/batches/${BATCH}`]}>
+        <Routes>
+          <Route path="/batches/:batchId" element={<BatchProgressPage />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    // Still six cards: one of them is now real, and it is 第 2 套 of that group.
+    expect(document.querySelectorAll('.mat-card')).toHaveLength(6)
+    expect(document.querySelectorAll('.skel-card')).toHaveLength(5)
+    const real = document.querySelector('[data-material="a1"]')!
+    expect(real.textContent).toContain('第 2 套')
+    expect(real.className).toContain('fade-in')
+    const group = document.querySelectorAll('.scn-group')[0]!
+    expect(group.querySelectorAll('.mat-card')).toHaveLength(3)
+    // The delivered card is readable immediately.
+    expect(within(group as HTMLElement).getAllByRole('link', { name: '阅读全文' })).toHaveLength(1)
+  })
+
+  it('reads 已完成 M/N from the first frame, with N the planned total', () => {
+    startBatch(THREE_EACH)
+    const { rerender } = renderPage()
+    expect(screen.getByText('已完成 0/6')).toBeInTheDocument()
+
+    deliver(buildRecord('balanced', {
+      materialId: 'b0',
+      batchId: BATCH,
+      scenarioKey: 'booking-hotel',
+      index: 0,
+    }))
+    rerender(
+      <MemoryRouter initialEntries={[`/batches/${BATCH}`]}>
+        <Routes>
+          <Route path="/batches/:batchId" element={<BatchProgressPage />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    expect(screen.getByText('已完成 1/6')).toBeInTheDocument()
+  })
+
+  it('keeps 提交审核 disabled until the first real card exists', () => {
+    startBatch(THREE_EACH)
+    const { rerender } = renderPage()
+
+    // The bar is present (it must not pop into existence later) but disabled.
+    expect(screen.getByRole('button', { name: '提交审核' })).toBeDisabled()
+    expect(screen.getByText('（等第一套到达后即可勾选）')).toBeInTheDocument()
+
+    deliver(buildRecord('balanced', {
+      materialId: 'a0',
+      batchId: BATCH,
+      scenarioKey: 'accommodation-rental',
+      index: 0,
+    }))
+    rerender(
+      <MemoryRouter initialEntries={[`/batches/${BATCH}`]}>
+        <Routes>
+          <Route path="/batches/:batchId" element={<BatchProgressPage />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    // Still disabled — booking-hotel has no pick yet — but the wording moved on
+    // to the actual rule, and the card is selectable.
+    expect(screen.getByText('（每场景至少选 1 套）')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /第 1 套：选择/ })).toBeInTheDocument()
+  })
+
+  /**
+   * A slot the backend silently re-runs (audit → NOT_ASSESSABLE → `refilling`)
+   * must keep looking like ordinary generation. The point of the refill is that
+   * the user does not perceive it.
+   */
+  it('shows no error state for a slot the backend is silently refilling', () => {
+    startBatch(THREE_EACH)
+    progress('a0', 'generating', 'refilling', 2)
+    progress('a1', 'auditing', 'audited')
+    renderPage()
+
+    expect(document.querySelectorAll('.err-card')).toHaveLength(0)
+    const body = document.body.textContent ?? ''
+    expect(body).not.toContain('生成异常')
+    expect(body).not.toContain('自动重试')
+    expect(body).not.toContain('refilling')
+    expect(document.querySelectorAll('.skel-card')).toHaveLength(6)
+  })
+
+  /** A terminal `material_failed` is a different thing: the backend will not refill it. */
+  it('marks a terminally failed slot as 生成异常, pointing at the batch-level refill', () => {
+    startBatch(THREE_EACH)
+    apply({
+      event: 'material_failed',
+      material_id: 'a2',
+      code: 'validation_exhausted',
+      message: '确定性校验连续三次未通过',
+      attempts: 3,
+    } as never)
+    renderPage()
+
+    const errors = document.querySelectorAll('.err-card')
+    expect(errors).toHaveLength(1)
+    expect(errors[0]!.textContent).toContain('第 3 套')
+    expect(errors[0]!.textContent).toContain('生成异常')
+    // No per-card action and no internal reason: the batch-level 补生成 button is
+    // the only entry point, and the backend token stays out.
+    expect(errors[0]!.querySelectorAll('button')).toHaveLength(0)
+    expect(document.body.textContent).not.toContain('validation_exhausted')
+  })
+})
+
+/* ── 4. 勾选与提交 ───────────────────────────────────────────────────────── */
 
 describe('selection and submission', () => {
   it('selects a card on checkbox click and reflects the count', async () => {
@@ -413,7 +632,7 @@ describe('selection and submission', () => {
   })
 })
 
-/* ── 4. 对比模式 ─────────────────────────────────────────────────────────── */
+/* ── 5. 对比模式 ─────────────────────────────────────────────────────────── */
 
 describe('compare mode', () => {
   it('shows the purple banner with an A/B legend when entered', async () => {
@@ -483,7 +702,7 @@ describe('compare mode', () => {
   })
 })
 
-/* ── 5. 重连行为必须保留 ─────────────────────────────────────────────────── */
+/* ── 6. 重连行为必须保留 ─────────────────────────────────────────────────── */
 
 describe('reconnect behaviour is preserved', () => {
   it('says the delivered materials are unaffected while reconnecting', () => {

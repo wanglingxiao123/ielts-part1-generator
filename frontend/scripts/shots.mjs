@@ -3,6 +3,7 @@
 //   node scripts/shots.mjs
 import { mkdir } from 'node:fs/promises'
 import { chromium } from 'playwright'
+import { pickScenarios, submitBatch } from './pickScenarios.mjs'
 import { signIn } from './signIn.mjs'
 
 const OUT = '/tmp/shots'
@@ -37,11 +38,10 @@ async function ctx2Run() {
 
   await p2.goto(BASE, { waitUntil: 'networkidle' })
   await signIn(p2, BASE)
-  await p2.locator('.scn-row:has-text("booking-hotel") input[type=checkbox]').first().check()
-  await p2.locator('.summary-bar button').click()
-  await p2.waitForURL(/\/batches\//)
+  await pickScenarios(p2, ['booking-hotel'])
+  await submitBatch(p2)
   await p2.waitForFunction(
-    () => document.querySelectorAll('.mat-card .flag-good, .mat-card .flag-bad').length >= 2,
+    () => document.querySelectorAll('.mat-card:not(.skel-card):not(.err-card)').length >= 2,
     null,
     { timeout: 40000 },
   )
@@ -112,57 +112,64 @@ async function ctx2Run() {
 console.log('1. scenario selection')
 await page.goto(BASE, { waitUntil: 'networkidle' })
 await signIn(page, BASE)
-await page.waitForSelector('.scn-row')
+await page.waitForSelector('.scn-chip')
 const catCount = await page.locator('.scn-cat').count()
-const scnCount = await page.locator('.scn-row input[type=checkbox]').count()
+const scnCount = await page.locator('.scn-chip').count()
 console.log(`   categories=${catCount} scenarios=${scnCount}`)
+console.log(`   per-category counts = ${(await page.locator('.scn-cat-count').allInnerTexts()).join(' / ')}`)
 await shot('01-scenario-empty')
 
 // pick 3 scenarios x2 = 6, at the limit
-for (const key of ['booking-hotel', 'booking-car-rental', 'accommodation-rental']) {
-  await page.locator(`.scn-row:has-text("${key}") input[type=checkbox]`).first().check()
-}
+await pickScenarios(page, ['booking-hotel', 'booking-car-rental', 'accommodation-rental'], 2)
 await shot('02-scenario-at-limit')
-const submitDisabledAt6 = await page.locator('.summary-bar button').isDisabled()
+const submitDisabledAt6 = await page.locator('.summary-bar button.btn-primary').isDisabled()
 console.log(`   at 6: submit disabled = ${submitDisabledAt6}`)
+console.log(`   estimate at 6 = ${(await page.locator('.scn-bar-left').innerText()).replace(/\n/g, ' | ')}`)
+console.log(`   selected tags = ${(await page.locator('.scn-tag').allInnerTexts()).join(' / ')}`)
 
-// push to 7 → must be blocked BEFORE submit
-await page.locator('.scn-row:has-text("booking-hotel") .stepper button:last-child').first().click()
+// 3 scenarios × 3 = 9 → must be blocked BEFORE submit
+await pickScenarios(page, [], 3)
 await page.waitForTimeout(150)
 const overText = await page.locator('.summary-bar').innerText()
-const submitDisabledAt7 = await page.locator('.summary-bar button').isDisabled()
-console.log(`   at 7: submit disabled = ${submitDisabledAt7}`)
+const submitDisabledOver = await page.locator('.summary-bar button.btn-primary').isDisabled()
+console.log(`   at 9: submit disabled = ${submitDisabledOver}`)
 console.log(`   summary: ${overText.replace(/\n/g, ' | ')}`)
 await shot('03-scenario-over-limit')
 
-// back to 6 and add a custom scenario alongside (drop one checkbox first)
-await page.locator('.scn-row:has-text("booking-hotel") .stepper button:first-child').first().click()
-await page.locator('.scn-row:has-text("accommodation-rental") input[type=checkbox]').first().uncheck()
+// Back under the cap and add a custom scenario alongside two chips: the custom
+// field COEXISTS with the checked chips (客户: 与上方勾选共存，可同时提交).
+await pickScenarios(page, [], 2)
+await page.locator('.scn-tag', { hasText: '租房咨询' }).click()
 await page.locator('textarea').fill('A student phones a bike shop about repairing a bicycle.')
 await page.waitForTimeout(150)
+console.log(`   with custom = ${(await page.locator('.scn-bar-left').innerText()).replace(/\n/g, ' | ')}`)
 await shot('04-scenario-custom')
 
 // ── 2. SSE progressive arrival ───────────────────────────────────────────────
 console.log('2. SSE batch progress')
-await page.locator('.summary-bar button').click()
-await page.waitForURL(/\/batches\//)
+await submitBatch(page)
+// Skeletons are up before any material: the results-page structure is the
+// loading state, there is no separate waiting page.
+await page.waitForSelector('.skel-card')
+console.log(`   skeletons before first material = ${await page.locator('.skel-card').count()}`)
+console.log(`   progress = ${await page.locator('.progress-count').innerText()}`)
 await page.waitForTimeout(1200)
 const early = await page.locator('.mat-card').count()
-const doneEarly = await page.locator('.mat-card .flag-good, .mat-card .flag-bad').count()
+const doneEarly = await page.locator('.mat-card:not(.skel-card):not(.err-card)').count()
 console.log(`   after ~1.2s: cards=${early} finished=${doneEarly}`)
 await shot('05-batch-partial')
 
 await page.waitForTimeout(4000)
-const midDone = await page.locator('.mat-card .flag-good, .mat-card .flag-bad').count()
+const midDone = await page.locator('.mat-card:not(.skel-card):not(.err-card)').count()
 console.log(`   after ~5s: finished=${midDone}`)
 await shot('06-batch-more')
 
 await page.waitForFunction(
-  () => document.querySelectorAll('.mat-card .flag-good, .mat-card .flag-bad').length >= 6,
+  () => document.querySelectorAll('.mat-card:not(.skel-card):not(.err-card)').length >= 6,
   null,
   { timeout: 30000 },
 )
-const allDone = await page.locator('.mat-card .flag-good, .mat-card .flag-bad').count()
+const allDone = await page.locator('.mat-card:not(.skel-card):not(.err-card)').count()
 console.log(`   all arrived: finished=${allDone}`)
 await shot('07-batch-done')
 

@@ -10,9 +10,19 @@
  *    （见 progressStages.ts），所以重试看起来就是「还在生成」。
  *
  * 2. **版式。** 按场景分组，每组一行自适应卡片；卡片上只有第 N 套、统一的
- *    「待审核」、圆形勾选框、十个信息点圆点、预览两行、一个「阅读全文」。
+ *    「待审核」、圆形勾选框、信息点时间轴缩略图、预览两行、一个「阅读全文」。
  *    评价方的内部评级（PASS / MINOR_EDITS / FAIL）不做徽章——客户明确要求统一
- *    「待审核」。缺陷通过黄色圆点和缺陷小结说出来，材料照样可选。
+ *    「待审核」。缺陷通过黄点和缺陷小结说出来，材料照样可选。
+ *
+ * 3. **没有等待页。** 提交后直接进这一页，并在**第一个 material 事件之前**就把
+ *    全部卡位铺成灰色骨架卡（场景名 + 生成中… + shimmer）。每套材料到达时把它
+ *    自己那张骨架**替换**成真卡并淡入。卡位形状来自用户提交时选的每场景数量
+ *    （store 的 `requested`，刷新后退回按快照 items 反推）——见
+ *    domain/resultSlots.ts。客户明确否掉的三样：单独的加载页、白屏、等整批跑完
+ *    才显示。已到的卡必须立刻可读。
+ *
+ *    骨架**不区分**「排队中 / 生成中」：后端对某个版位的重试（`refilling`）是静默的，
+ *    而客户要的就是用户察觉不到重试，所以未到达的卡位一律是同一个「生成中…」。
  *
  * 保留下来的东西，一个都没动其行为：SSE 重连 + since_seq 补齐 + ConnectionBanner。
  * 批次是个长任务，连接断了不能丢结果，这条比版式重要。
@@ -25,10 +35,12 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api } from '@/api/endpoints'
 import { scenarioMeta } from '@/config/scenarioMeta'
 import { getConfig, getThresholds } from '@/config/runtimeConfig'
-import type { MaterialRecord } from '@/contracts/api'
 import { buildCardPreview, type CardPreview } from '@/domain/cardPreview'
-import { computeDistribution } from '@/domain/distribution'
+import { computeDistribution, type DistributionMetrics } from '@/domain/distribution'
+import { analyseFormGroups, type FormGroupAnalysis } from '@/domain/formGroups'
 import { joinFromRecord } from '@/domain/joinArtifacts'
+import { arrivedByScenario, buildResultGroups, type ResultSlot } from '@/domain/resultSlots'
+import type { ViewMaterial } from '@/domain/types'
 import {
   comparePairReady,
   EMPTY_PICK,
@@ -45,6 +57,7 @@ import {
 } from '@/domain/progressStages'
 import { selectActivePhase, useBatchStore } from '@/stores/batchStore'
 import { useReviewQueue } from '@/stores/reviewQueueStore'
+import { DistributionThumb } from './DistributionThumb'
 import { useBatchStream } from './useBatchStream'
 
 /* ── 连接状态提示（行为原样保留） ───────────────────────────────────────────── */
@@ -124,10 +137,60 @@ function PhaseTrack({ phase, finished }: { phase: ProgressPhase | null; finished
   )
 }
 
+/* ── 骨架卡 / 异常卡 ────────────────────────────────────────────────────────── */
+
+/**
+ * 未到达的卡位。提交后立刻铺满，每套材料到达时被真卡**替换**（key 相同）。
+ *
+ * 只有一句「生成中…」，不分「排队中 / 生成中 / 修改中」：后端对判不了的版位是静默
+ * 重跑的（`refilling`），客户要的就是用户察觉不到重试，所以卡位状态越少越诚实。
+ * 想知道整批到哪一段的，看顶部那一条四段进度。
+ */
+function SkeletonCard({ scenarioTitle, label }: { scenarioTitle: string; label: string }) {
+  return (
+    <div className="mat-card skel-card" aria-busy="true" aria-label={`${scenarioTitle} ${label} 生成中`}>
+      <div className="mat-card-top">
+        <span className="mat-card-label">{label}</span>
+        <span className="status-badge skel-badge">生成中…</span>
+      </div>
+      <div className="skel-scn">{scenarioTitle}</div>
+      <div className="skel-axis" />
+      <div className="skel-line" />
+      <div className="skel-line short" />
+    </div>
+  )
+}
+
+/**
+ * 终态失败的卡位。
+ *
+ * 只在收到 `material_failed` 时出现——那是后端**不再补**的失败（模型不可达、校验器
+ * 崩了这类，见 backend/orchestration/batch.py 的 `_run_slot`：它只静默补「成功但
+ * 评价方判不了」的版位）。因此这里不写「自动重试中」：那会是一句不会发生的承诺。
+ * 补这一套的入口是页面顶部整批那条「补生成这 N 套」，一个动作补齐，用户不用逐张点。
+ */
+function ErrorCard({ scenarioTitle, label }: { scenarioTitle: string; label: string }) {
+  return (
+    <div className="mat-card err-card" aria-label={`${scenarioTitle} ${label} 生成异常`}>
+      <div className="mat-card-top">
+        <span className="mat-card-label">{label}</span>
+        <span className="status-badge err-badge">生成异常</span>
+      </div>
+      <div className="skel-scn">{scenarioTitle}</div>
+      {/* 不写「自动重试中」：这是终态失败，`_run_slot` 只补跑 NOT_ASSESSABLE，模型不可达
+          或崩溃的一套不会自己回来。写一句后端不会兑现的承诺，用户只会一直等。 */}
+      <div className="err-note">这一套没有生成出来，页面下方可一次补齐。</div>
+    </div>
+  )
+}
+
 /* ── 一张材料卡 ─────────────────────────────────────────────────────────────── */
 
 interface CardProps {
   preview: CardPreview
+  view: ViewMaterial
+  metrics: DistributionMetrics
+  groups: FormGroupAnalysis
   selected: boolean
   compareMode: boolean
   /** 'a' | 'b' | null —— 对比模式下这张卡是 A 还是 B。 */
@@ -135,14 +198,24 @@ interface CardProps {
   onToggle: () => void
 }
 
-function MaterialCard({ preview, selected, compareMode, pickSide, onToggle }: CardProps) {
-  const flagged = new Set(preview.flaggedPoints)
+function MaterialCard({
+  preview,
+  view,
+  metrics,
+  groups,
+  selected,
+  compareMode,
+  pickSide,
+  onToggle,
+}: CardProps) {
   const label = `第 ${preview.index + 1} 套`
   // A selected card keeps looking selected inside compare mode. Hiding it there
   // reads as "entering compare mode threw my选择 away" — it does not, and the
   // bottom bar's count would then contradict the cards.
   const className = [
     'mat-card',
+    // 骨架被替换成真卡时淡入。CSS 动画，不是 JS 定时器：卡的到达时机由 SSE 决定。
+    'fade-in',
     selected ? 'selected' : '',
     pickSide === 'a' ? 'pick-a' : '',
     pickSide === 'b' ? 'pick-b' : '',
@@ -175,22 +248,14 @@ function MaterialCard({ preview, selected, compareMode, pickSide, onToggle }: Ca
         </span>
       </div>
 
-      <div className="point-section">
-        <div className="point-label">
-          信息点分布（{preview.pointTotal}/{preview.pointTotal}）
-        </div>
-        <div className="point-dots">
-          {preview.pointNumbers.map((n) => (
-            <span
-              key={n}
-              className={`point-dot${flagged.has(n) ? ' flagged' : ''}`}
-              title={flagged.has(n) ? `第 ${n} 题的信息点需要看一眼` : `第 ${n} 题的信息点`}
-            >
-              {n}
-            </span>
-          ))}
-        </div>
-      </div>
+      {/* 十个编号圆点换成时间轴缩略图：圆点只说明「有十个点」——每套都成立，等于
+          什么也没说。缩略图说的是十个点落在对话的哪里。 */}
+      <DistributionThumb
+        view={view}
+        metrics={metrics}
+        groups={groups}
+        flagged={preview.flaggedPoints}
+      />
 
       <div className="mat-preview">
         {preview.firstLine && <q>{preview.firstLine}</q>}
@@ -276,50 +341,63 @@ export function BatchProgressPage() {
   const items = store.itemOrder.map((id) => store.items[id]).filter((i) => i !== undefined)
   const pending = items.filter((i) => i!.status !== 'done')
 
-  /** 已到达的材料，按场景分组，场景内按第 N 套排序。 */
-  const groups = useMemo(() => {
-    const map = new Map<string, MaterialRecord[]>()
-    for (const id of store.itemOrder) {
-      const record = store.materials[id]
-      if (!record) continue
-      const list = map.get(record.scenario_key) ?? []
-      list.push(record)
-      map.set(record.scenario_key, list)
-    }
-    for (const list of map.values()) list.sort((a, b) => a.index - b.index)
-    return map
-  }, [store.itemOrder, store.materials])
+  /**
+   * 全部卡位（不只是已到达的），按场景分组、组内按第 N 套排序。
+   *
+   * 这是「没有等待页」的关键：卡位形状来自用户提交时选的每场景数量，所以在**任何
+   * material 事件之前**就已经知道要铺几张骨架卡。规则本身在
+   * domain/resultSlots.ts，纯函数、可单测。
+   */
+  const batchFinished = store.status === 'done' || store.status === 'partial'
+  const groups = useMemo(
+    () =>
+      buildResultGroups({
+        requested: store.requested,
+        items: store.itemOrder.map((id) => store.items[id]).filter((i) => i !== undefined),
+        materials: store.materials,
+        batchFinished,
+      }),
+    [store.requested, store.itemOrder, store.items, store.materials, batchFinished],
+  )
 
   /**
-   * 每张卡的预览。join + 分布计算不便宜，而一批最多 6 套却会随每次勾选重渲染，
-   * 所以按材料集合缓存——勾选、进对比模式都不会重算。
+   * 每张真卡要画的东西：预览 + 分布指标 + form_group 分析。
+   *
+   * join、分布、分组计算都不便宜，而一批最多 6 套却会随每次勾选重渲染，所以按材料
+   * 集合缓存——勾选、进对比模式都不会重算。分布指标只算一次并同时喂给缺陷小结和
+   * 时间轴缩略图，两处因此不可能不一致。
    */
-  const previews = useMemo(() => {
-    const out = new Map<string, CardPreview>()
-    for (const list of groups.values()) {
-      for (const record of list) {
-        const view = joinFromRecord(record)
-        out.set(record.material_id, buildCardPreview(record, view, computeDistribution(view, thresholds)))
-      }
+  const cards = useMemo(() => {
+    const out = new Map<
+      string,
+      { preview: CardPreview; view: ViewMaterial; metrics: DistributionMetrics; groups: FormGroupAnalysis }
+    >()
+    for (const record of Object.values(store.materials)) {
+      const view = joinFromRecord(record)
+      const metrics = computeDistribution(view, thresholds)
+      out.set(record.material_id, {
+        preview: buildCardPreview(record, view, metrics),
+        view,
+        metrics,
+        groups: analyseFormGroups(view, thresholds),
+      })
     }
     return out
-  }, [groups, thresholds])
+  }, [store.materials, thresholds])
 
-  const idsByScenario = useMemo(() => {
-    const map = new Map<string, string[]>()
-    for (const [key, list] of groups) map.set(key, list.map((r) => r.material_id))
-    return map
-  }, [groups])
+  const idsByScenario = useMemo(() => arrivedByScenario(groups), [groups])
 
   const rule = useMemo(
     () => evaluateSelection({ byScenario: idsByScenario, selected }),
     [idsByScenario, selected],
   )
 
-  const completed = [...groups.values()].reduce((n, list) => n + list.length, 0)
-  const finished = store.status === 'done' || store.status === 'partial'
-  const scenarioCount = groups.size
-  const perScenario = scenarioCount > 0 ? Math.round(store.total / scenarioCount) : 0
+  const completed = groups.reduce((n, g) => n + g.arrived, 0)
+  const finished = batchFinished
+  const scenarioCount = groups.length
+  const perScenario = groups[0]?.slots.length ?? 0
+  /** 计划总套数。骨架期 store.total 已经有值，所以进度条一开始就说得出分母。 */
+  const plannedTotal = store.total > 0 ? store.total : groups.reduce((n, g) => n + g.slots.length, 0)
 
   const doRetry = async () => {
     if (!batchId) return
@@ -356,7 +434,7 @@ export function BatchProgressPage() {
     const at = Date.now()
     submitToQueue(
       [...selected].flatMap((materialId) => {
-        const preview = previews.get(materialId)
+        const preview = cards.get(materialId)?.preview
         if (!preview) return []
         return [
           {
@@ -382,18 +460,26 @@ export function BatchProgressPage() {
         <div className="progress-track">
           <div
             className="progress-fill"
-            style={{ width: `${store.total > 0 ? (completed / store.total) * 100 : 0}%` }}
+            style={{ width: `${plannedTotal > 0 ? (completed / plannedTotal) * 100 : 0}%` }}
           />
         </div>
         <div className="results-stats">
           <span>
             {scenarioCount > 0 ? `${scenarioCount} 场景 × ${perScenario} 套 = ` : ''}
-            {store.total} 套材料
+            {plannedTotal} 套材料
           </span>
-          <span>{describeProgress({ completed, total: store.total, phase: activePhase, finished })}</span>
-          {finished ? (
+          {/* 「已完成 M/N」。骨架期 N 已经是计划总数，所以进度条一开始就有分母。 */}
+          <span className="progress-count">
+            已完成 {completed}/{plannedTotal}
+          </span>
+          <span>
+            {describeProgress({ completed, total: plannedTotal, phase: activePhase, finished })}
+          </span>
+          {/* 「全部完成」只在真的一套不缺时出现——旁边还有红色「生成异常」卡片却
+              打一个绿勾，读起来就是页面在骗人。 */}
+          {finished && completed >= plannedTotal ? (
             <span className="done-badge">✓ 全部完成</span>
-          ) : (
+          ) : finished ? null : (
             <PhaseTrack phase={activePhase} finished={false} />
           )}
           <span className="muted">已用 {elapsed}</span>
@@ -442,29 +528,33 @@ export function BatchProgressPage() {
         </div>
       )}
 
-      {completed === 0 && !snapshotError && (
-        <div className="panel panel-pad muted">
-          {finished ? '本批次没有生成出材料。' : '正在生成，第一套完成后会立刻出现在这里。'}
-        </div>
+      {/* 唯一还剩的空态：整批跑完了却一套都没出来。「正在生成，第一套完成后会出现
+          在这里」那句话没有了——现在页面从第一秒就是结果页的结构本身。 */}
+      {completed === 0 && finished && !snapshotError && (
+        <div className="panel panel-pad muted">本批次没有生成出材料。</div>
       )}
 
-      {[...groups.entries()].map(([scenarioKey, list]) => {
-        const meta = scenarioMeta(scenarioKey)
-        const comparing = compareScenario === scenarioKey
+      {groups.map((group) => {
+        const meta = scenarioMeta(group.scenarioKey)
+        const comparing = compareScenario === group.scenarioKey
         return (
-          <section className="scn-group" key={scenarioKey}>
+          <section className="scn-group" key={group.scenarioKey}>
             <div className="scn-group-head">
               <span className="scn-group-icon" aria-hidden="true">
                 {meta.icon}
               </span>
               <span className="scn-group-title">{meta.titleZh}</span>
               <span className="scn-group-tag">{meta.categoryZh}</span>
+              <span className="scn-group-count">
+                {group.arrived}/{group.slots.length}
+              </span>
               <span className="spacer" />
-              {list.length >= 2 && (
+              {/* 对比要两张**真卡**：拿一张骨架去比没有意义。 */}
+              {group.arrived >= 2 && (
                 <button
                   type="button"
                   className={`btn btn-sm${comparing ? '' : ' btn-compare'}`}
-                  onClick={() => (comparing ? leaveCompare() : enterCompare(scenarioKey))}
+                  onClick={() => (comparing ? leaveCompare() : enterCompare(group.scenarioKey))}
                 >
                   {comparing ? '退出对比' : '对比本场景'}
                 </button>
@@ -488,26 +578,38 @@ export function BatchProgressPage() {
             )}
 
             <div className="mat-row">
-              {list.map((record) => {
-                const preview = previews.get(record.material_id)
-                if (!preview) return null
+              {group.slots.map((slot: ResultSlot) => {
+                const label = `第 ${slot.index + 1} 套`
+                // key 是 (场景, 第 N 套)，骨架期和真卡期同一个值：React 因此把骨架
+                // **替换**成真卡，而不是在旁边多挂一张。
+                if (slot.state === 'error') {
+                  return <ErrorCard key={slot.key} scenarioTitle={meta.titleZh} label={label} />
+                }
+                const card = slot.materialId ? cards.get(slot.materialId) : undefined
+                if (!card || !slot.materialId) {
+                  return <SkeletonCard key={slot.key} scenarioTitle={meta.titleZh} label={label} />
+                }
+                const materialId = slot.materialId
                 const pickSide =
-                  comparing && pick[0] === record.material_id
+                  comparing && pick[0] === materialId
                     ? 'a'
-                    : comparing && pick[1] === record.material_id
+                    : comparing && pick[1] === materialId
                       ? 'b'
                       : null
                 return (
                   <MaterialCard
-                    key={record.material_id}
-                    preview={preview}
-                    selected={selected.has(record.material_id)}
+                    key={slot.key}
+                    preview={card.preview}
+                    view={card.view}
+                    metrics={card.metrics}
+                    groups={card.groups}
+                    selected={selected.has(materialId)}
                     compareMode={comparing}
                     pickSide={pickSide}
                     onToggle={() =>
                       comparing
-                        ? setPick((prev) => pickForCompare(prev, record.material_id))
-                        : setSelected((prev) => toggleSelection(prev, record.material_id))
+                        ? setPick((prev) => pickForCompare(prev, materialId))
+                        : setSelected((prev) => toggleSelection(prev, materialId))
                     }
                   />
                 )
@@ -517,13 +619,17 @@ export function BatchProgressPage() {
         )
       })}
 
-      {completed > 0 && (
+      {/* 底栏和卡位一起在位。「提交审核」在第一张真卡到达之前是禁用的——按钮跳着
+          出现会让人以为功能刚刚才有。 */}
+      {groups.length > 0 && (
         <div className="results-bar">
           <div className="bar-left">
             <span>
               已选择 <span className="count">{rule.selectedCount}</span> 套材料
             </span>
-            <span className="muted">（每场景至少选 1 套）</span>
+            <span className="muted">
+              {completed === 0 ? '（等第一套到达后即可勾选）' : '（每场景至少选 1 套）'}
+            </span>
             {rule.scenariosMissing.length > 0 && rule.selectedCount > 0 && (
               <span className="muted">
                 还差：

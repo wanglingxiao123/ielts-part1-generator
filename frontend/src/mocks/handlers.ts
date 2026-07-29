@@ -16,6 +16,7 @@ import type {
   SseEvent,
 } from '@/contracts/api'
 import { ApiError, setTransport, type RequestSpec } from '@/api/http'
+import { estimateBatchSeconds } from '@/domain/batchEstimate'
 import { setSseFetch } from '@/api/sseClient'
 import { setAuthFetch } from '@/auth/authApi'
 import { buildRecord, mockManifest, type FixtureKind } from './fixtures'
@@ -256,7 +257,8 @@ const mockTransport = async (spec: RequestSpec): Promise<unknown> => {
     const response: CreateBatchResponse = {
       batch_id: batchId,
       total,
-      estimated_seconds: [total * 100, total * 160],
+      // Concurrency-aware, same model as the pre-submit estimate the user saw.
+      estimated_seconds: estimateBatchSeconds(total),
       items: materials.map((m) => ({
         material_id: m.materialId,
         scenario_key: m.scenarioKey,

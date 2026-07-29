@@ -50,6 +50,7 @@ import type {
 import type { Audit, Blueprint, Material, Verdict } from '@/contracts'
 import { getConfig } from '@/config/runtimeConfig'
 import { CUSTOM_SCENARIO_KEY } from '@/config/scenarioTypes'
+import { estimateBatchSeconds } from '@/domain/batchEstimate'
 import {
   ApiError,
   CREDENTIALS,
@@ -769,7 +770,9 @@ async function createBatch(body: CreateBatchRequest): Promise<CreateBatchRespons
   return {
     batch_id: batchId,
     total,
-    estimated_seconds: [total * 150, total * 260],
+    // Concurrency-aware: the backend runs up to MAX_CONCURRENCY slots at once, so
+    // wall clock follows the WAVE count, not the set count. See domain/batchEstimate.ts.
+    estimated_seconds: estimateBatchSeconds(total),
     items: slotOrder.map((slotId) => {
       const slot = slots.get(slotId)!
       return {

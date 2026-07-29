@@ -44,6 +44,11 @@ const SCENARIO_ICON: Record<string, string> = {
 
 const FALLBACK_ICON = '📝'
 
+/** 大类图标，给场景选择页的分类标题用（那里没有单个场景可查）。 */
+export function categoryIcon(categoryId: string): string {
+  return CATEGORY_ICON[categoryId] ?? FALLBACK_ICON
+}
+
 const INDEX: Map<string, ScenarioMeta> = new Map(
   SCENARIO_CATALOG.categories.flatMap((category) =>
     category.scenarios.map((scenario): [string, ScenarioMeta] => [

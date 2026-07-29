@@ -8,6 +8,7 @@
 // passes, then exercises the player.
 import { mkdir, writeFile } from 'node:fs/promises'
 import { chromium } from 'playwright'
+import { pickScenarios, submitBatch } from './pickScenarios.mjs'
 import { signIn } from './signIn.mjs'
 
 const OUT = '/tmp/shots-audio'
@@ -45,18 +46,13 @@ for (const key of CANDIDATES) {
   note(`attempting ${key}`)
   await page.goto(BASE, { waitUntil: 'networkidle' })
   await signIn(page, BASE)
-  const row = page.locator(`.scn-row:has-text("${key}")`).first()
-  await row.locator('input[type=checkbox]').check()
-  for (let i = 0; i < 8; i += 1) {
-    const shown = Number((await row.locator('.stepper .mono').innerText()).trim())
-    if (shown === 1) break
-    await row.locator('.stepper button').first().click()
-  }
-  await page.locator('.summary-bar button').click()
-  await page.waitForURL(/\/batches\//, { timeout: 30_000 })
+  // One set only: this script just needs a material to synthesise, and real
+  // generation is expensive.
+  await pickScenarios(page, [key], 1)
+  await submitBatch(page)
   await page
     .waitForFunction(
-      () => document.querySelectorAll('.mat-card .flag-good, .mat-card .flag-bad').length >= 1,
+      () => document.querySelectorAll('.mat-card:not(.skel-card):not(.err-card)').length >= 1,
       null,
       { timeout: 10 * 60_000 },
     )

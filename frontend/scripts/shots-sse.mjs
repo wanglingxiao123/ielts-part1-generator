@@ -2,6 +2,7 @@
 // a partial terminal state with retry. Uses the mock's programmable options.
 import { mkdir } from 'node:fs/promises'
 import { chromium } from 'playwright'
+import { pickScenarios, submitBatch } from './pickScenarios.mjs'
 import { signIn } from './signIn.mjs'
 
 const OUT = '/tmp/shots'
@@ -24,11 +25,8 @@ async function run(label, mockOptions, steps) {
   }, mockOptions)
   await page.goto(BASE, { waitUntil: 'networkidle' })
   await signIn(page, BASE)
-  for (const key of ['booking-hotel', 'booking-car-rental', 'accommodation-rental']) {
-    await page.locator(`.scn-row:has-text("${key}") input[type=checkbox]`).first().check()
-  }
-  await page.locator('.summary-bar button').click()
-  await page.waitForURL(/\/batches\//)
+  await pickScenarios(page, ['booking-hotel', 'booking-car-rental', 'accommodation-rental'], 2)
+  await submitBatch(page)
   await steps(page, async (name, opts = {}) => {
     await page.screenshot({ path: `${OUT}/${name}.png`, ...opts })
     console.log(`  shot ${name}`)
@@ -40,7 +38,7 @@ async function run(label, mockOptions, steps) {
 console.log('A. disconnect after 4th material')
 await run('drop', { tickMs: 700, dropAfterMaterials: 4 }, async (page, shot) => {
   await page.waitForSelector('.banner-warn:has-text("连接中断")', { timeout: 40000 })
-  const kept = await page.locator('.mat-card .flag-good, .mat-card .flag-bad').count()
+  const kept = await page.locator('.mat-card:not(.skel-card):not(.err-card)').count()
   const bannerText = (await page.locator('.banner-warn').first().innerText()).replace(/\n/g, ' ')
   console.log(`   disconnected: kept ${kept} finished materials`)
   console.log(`   banner: ${bannerText}`)
@@ -55,11 +53,11 @@ await run('drop', { tickMs: 700, dropAfterMaterials: 4 }, async (page, shot) => 
   await shot('26-sse-recovered')
 
   await page.waitForFunction(
-    () => document.querySelectorAll('.mat-card .flag-good, .mat-card .flag-bad').length >= 6,
+    () => document.querySelectorAll('.mat-card:not(.skel-card):not(.err-card)').length >= 6,
     null,
     { timeout: 60000 },
   )
-  const final = await page.locator('.mat-card .flag-good, .mat-card .flag-bad').count()
+  const final = await page.locator('.mat-card:not(.skel-card):not(.err-card)').count()
   console.log(`   after recovery: finished=${final} (5th and 6th arrived)`)
   await shot('27-sse-recovered-complete')
   // The green "recovered" bar owns the banner slot for 3s; the persistent
@@ -73,7 +71,7 @@ await run('drop', { tickMs: 700, dropAfterMaterials: 4 }, async (page, shot) => 
 console.log('B. partial batch + retry')
 await run('partial', { tickMs: 500, neverComplete: 2 }, async (page, shot) => {
   await page.waitForSelector('.banner-warn:has-text("partial")', { timeout: 60000 })
-  const done = await page.locator('.mat-card .flag-good, .mat-card .flag-bad').count()
+  const done = await page.locator('.mat-card:not(.skel-card):not(.err-card)').count()
   const text = (await page.locator('.banner-warn').first().innerText()).replace(/\n/g, ' ')
   console.log(`   partial: ${done} finished`)
   console.log(`   banner: ${text.slice(0, 160)}`)

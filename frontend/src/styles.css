@@ -346,77 +346,140 @@ h3 {
   color: #14448f;
 }
 
-/* ── scenario select ─────────────────────────────────────────────────────── */
+/* ── scenario select（客户优化版版式） ───────────────────────────────────────── */
 
-.scn-cat {
-  margin-bottom: 14px;
+.scn-page {
+  max-width: 980px;
 }
 
-.scn-cat > h3 {
+.scn-page-sub {
+  margin: -6px 0 20px;
+  font-size: 13px;
+  color: var(--ink-3);
+}
+
+.scn-cat {
+  margin-bottom: 20px;
+}
+
+.scn-cat-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  border-bottom: 1px solid var(--line-2);
-  padding-bottom: 6px;
-  color: var(--ink);
-  font-size: 13px;
+  margin-bottom: 9px;
+}
+
+.scn-cat-icon {
+  font-size: 15px;
+}
+
+.scn-cat-name {
+  font-size: 14px;
   font-weight: 650;
 }
 
-.scn-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 8px;
-}
-
-.scn-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 8px 10px;
-}
-
-.scn-row.on {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-}
-
-.scn-row label {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-}
-
-.scn-row .key {
+/* 「N 个场景」——这一类里有几个可选，客户稿子里的计数徽章。 */
+.scn-cat-count {
   font-size: 11px;
   color: var(--ink-3);
-  font-family: var(--mono);
+  background: var(--line-2);
+  padding: 2px 8px;
+  border-radius: 100px;
 }
 
-.stepper {
+.scn-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.scn-chip {
   display: flex;
   align-items: center;
-  gap: 2px;
-}
-
-.stepper button {
-  width: 24px;
-  height: 24px;
-  border: 1px solid var(--line);
+  gap: 8px;
+  padding: 9px 13px;
   background: var(--panel);
-  border-radius: 4px;
-  line-height: 1;
+  border: 1.5px solid var(--line);
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+  transition:
+    border-color 0.15s,
+    background 0.15s;
 }
 
-.stepper span {
-  min-width: 24px;
+.scn-chip:hover {
+  border-color: #c1c7d0;
+  background: #fafbfc;
+}
+
+.scn-chip.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.scn-chip-box {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  border: 1.5px solid #c1c7d0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.scn-chip.on .scn-chip-box {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.scn-panel-title {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--ink-2);
+  margin-bottom: 10px;
+}
+
+.scn-settings,
+.scn-custom {
+  margin-top: 16px;
+}
+
+.scn-setting {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.scn-setting input {
+  width: 64px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font: inherit;
   text-align: center;
-  font-family: var(--mono);
+}
+
+.scn-custom textarea {
+  width: 100%;
+  font: inherit;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  resize: vertical;
+}
+
+.scn-custom-hint {
+  font-size: 11px;
+  margin-top: 6px;
 }
 
 .summary-bar {
@@ -429,6 +492,44 @@ h3 {
   align-items: center;
   gap: 16px;
   z-index: 30;
+}
+
+.scn-bar-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.scn-bar-left .count {
+  color: var(--accent);
+  font-size: 15px;
+}
+
+/* 已选场景标签。点一下就取消——底栏是最后一次复核的地方，在那里去掉一个场景
+   不该要求用户滚回上面找那个 chip。 */
+.scn-tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  max-width: 560px;
+}
+
+.scn-tag {
+  font-size: 11px;
+  padding: 3px 8px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: none;
+  border-radius: 4px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.scn-tag:hover {
+  background: #d3e4fd;
 }
 
 /* ── batch results (客户 v2 版式) ─────────────────────────────────────────── */
@@ -729,39 +830,201 @@ h3 {
   border-color: var(--r-compare);
 }
 
-.point-section {
+/* ── 卡片上的信息点时间轴缩略图 ─────────────────────────────────────────────
+   取代原来的一排 1–10 编号圆点。总高 ~46px（客户给的上限 40–50px），所以卡片不会
+   被它压住。轴宽 100%，随卡片宽度伸缩。
+
+   点按真实位置摆放、**不做水平避让**（design.md §3.3，和阅读页那条完整分布条同一条
+   规则）：挨在一起就是原文里真的挨在一起。ordinal 完全相同的点只做垂直堆叠。 */
+.dist-thumb {
   margin-bottom: 12px;
 }
 
-.point-label {
+.dist-thumb-label {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
   font-size: 11px;
   color: var(--r-ink-3);
-  margin-bottom: 6px;
+  margin-bottom: 2px;
 }
 
-.point-dots {
-  display: flex;
-  gap: 4px;
-  flex-wrap: wrap;
-}
-
-.point-dot {
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  background: var(--r-primary-soft);
-  color: var(--r-primary);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 10px;
-  font-weight: 600;
+.dist-thumb-span {
+  margin-left: auto;
   font-variant-numeric: tabular-nums;
 }
 
-.point-dot.flagged {
+.dist-thumb-axis {
+  position: relative;
+  height: 42px;
+  margin: 0 9px;
+}
+
+/* 浅灰轴线。 */
+.dist-thumb-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 19px;
+  height: 2px;
+  background: var(--r-line);
+  border-radius: 1px;
+}
+
+/* 只在 0 / 8 / 16 / 24 / 32 这几个位置标数字，不是每轮都标。
+   刻度在最下面一行，form_group 括号占 22–28px 那一层，两者不重叠。 */
+.dist-thumb-tick {
+  position: absolute;
+  top: 30px;
+  transform: translateX(-50%);
+  font-size: 9px;
+  color: #b3bac5;
+  font-family: var(--mono);
+}
+
+.dist-thumb-dot {
+  position: absolute;
+  transform: translateX(-50%);
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--r-primary-soft);
+  color: var(--r-primary);
+  border: 1px solid #b3d4ff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  line-height: 1;
+  font-weight: 700;
+}
+
+/* 黄点 = 需要看一眼（密度过高、锚点定位不到、题号回跳、盲评没听出来）。判据和
+   卡片下方的缺陷小结同源，不在缩略图里另立一套阈值。 */
+.dist-thumb-dot.warn {
   background: var(--r-status-bg);
   color: var(--r-status-fg);
+  border-color: #ffe380;
+  z-index: 2;
+}
+
+/* form_group 括号：括号长度就是那一组题的轮次跨度——宽括号意味着考生要跨半篇回忆
+   才能填完一张表。只有被声明过的组才画。 */
+.dist-thumb-bracket {
+  position: absolute;
+  top: 22px;
+  height: 6px;
+  border: 1.5px solid var(--r-ink-3);
+  border-top: none;
+  border-radius: 0 0 3px 3px;
+}
+
+.dist-thumb-bracket.warn {
+  border-color: #ff991f;
+}
+
+/* ── 骨架卡 / 异常卡 ─────────────────────────────────────────────────────────
+   提交后立刻铺满，材料到达时被真卡替换（同一个 React key）。 */
+.skel-card {
+  border-style: dashed;
+  overflow: hidden;
+}
+
+.skel-card:hover {
+  box-shadow: none;
+  border-color: var(--r-line);
+}
+
+.skel-card::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 -100%;
+  width: 100%;
+  background: linear-gradient(90deg, transparent, rgb(0 82 204 / 5%), transparent);
+  animation: shimmer 1.5s linear infinite;
+}
+
+@keyframes shimmer {
+  to {
+    left: 100%;
+  }
+}
+
+.skel-badge {
+  background: var(--r-primary-soft);
+  color: var(--r-primary);
+}
+
+.skel-scn {
+  font-size: 12px;
+  color: var(--r-ink-2);
+  margin-bottom: 10px;
+}
+
+/* 时间轴的占位，高度和真卡的缩略图一致，所以替换时卡片不会跳。 */
+.skel-axis {
+  height: 42px;
+  border-radius: 4px;
+  background: #f4f5f7;
+  margin: 0 9px 12px;
+}
+
+.skel-line {
+  height: 10px;
+  border-radius: 4px;
+  background: #f4f5f7;
+  margin-bottom: 6px;
+}
+
+.skel-line.short {
+  width: 58%;
+}
+
+.err-card {
+  border-color: var(--bad-line);
+  background: var(--bad-bg);
+}
+
+.err-card:hover {
+  box-shadow: none;
+  border-color: var(--bad-line);
+}
+
+.err-badge {
+  background: #ffe0e0;
+  color: var(--bad);
+}
+
+.err-note {
+  font-size: 11px;
+  color: var(--bad);
+}
+
+/* 骨架换成真卡时淡入。 */
+.fade-in {
+  animation: fade-in-up 0.35s ease-out;
+}
+
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.scn-group-count {
+  font-size: 11px;
+  color: var(--r-ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.progress-count {
+  font-variant-numeric: tabular-nums;
 }
 
 .mat-preview {

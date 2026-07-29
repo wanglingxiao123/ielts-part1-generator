@@ -3,7 +3,7 @@
 // Every page in the app is behind RequireAuth, so a bare `goto(BASE)` now lands
 // on /login rather than the scenario page. This registers-or-logs-in once per
 // browser context and leaves the page on the app, so each script's first
-// `waitForSelector('.scn-row')` still means what it did before.
+// `waitForSelector('.scn-chip')` still means what it did before.
 //
 // Idempotent: an existing session short-circuits, which is what makes it safe to
 // call before every goto in the scripts that navigate repeatedly.

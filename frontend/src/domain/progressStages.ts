@@ -100,8 +100,13 @@ export function describeProgress(input: {
   phase: ProgressPhase | null
   finished: boolean
 }): string {
-  if (input.finished || (input.total > 0 && input.completed >= input.total)) {
+  if (input.total > 0 && input.completed >= input.total) {
     return `${input.completed} 套材料已全部生成`
+  }
+  // 跑完了但没跑齐（partial）。说「已全部生成」会和页面上那几张红色的「生成异常」
+  // 卡片直接矛盾，而矛盾比缺一句话更像 bug。
+  if (input.finished) {
+    return `已生成 ${input.completed} / ${input.total} 套，其余未能生成`
   }
   const head = `已生成 ${input.completed} / ${input.total} 套`
   return input.phase ? `${head} · 正在${PHASE_LABEL[input.phase]}` : head

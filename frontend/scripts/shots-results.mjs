@@ -63,36 +63,66 @@ const leaks = []
 
 await page.goto(BASE, { waitUntil: 'networkidle' })
 await signIn(page, BASE)
-await page.waitForSelector('.scn-row')
+await page.waitForSelector('.scn-chip')
 
 // Three scenarios × 2 = 6, matching the client's "N 场景 × M 套" caption.
-for (const key of ['booking-hotel', 'accommodation-rental', 'employment-vacancy']) {
-  await page.locator(`.scn-row:has-text("${key}") input[type=checkbox]`).first().check()
+// Chips are labelled with the Chinese title now; the raw key is internal.
+for (const title of ['酒店预订', '租房咨询', '职位空缺咨询']) {
+  await page.locator(`.scn-chip:has-text("${title}")`).first().click()
 }
 await shot('00-scenario-select')
-await page.locator('.summary-bar button').click()
+console.log(`   selected chips = ${await page.locator('.scn-chip.on').count()}`)
+console.log(`   bottom bar = ${(await page.locator('.scn-bar-left').innerText()).replace(/\n/g, ' | ')}`)
+console.log(`   tags = ${await page.locator('.scn-tag').count()}`)
+await page.locator('.summary-bar button.btn-primary').click()
 await page.waitForURL(/\/batches\//)
 
-// Mid-flight: this is the moment the old page said 校验未过，重新生成.
-await page.waitForTimeout(1500)
-await shot('01-in-flight')
+// THE SKELETON STATE. Transient by nature, so it is captured as early as the
+// navigation allows: the client's requirement is that the results-page STRUCTURE
+// is on screen before the first material, with no separate loading page.
+await page.waitForSelector('.skel-card', { timeout: 10_000 })
+await shot('01-skeletons')
+console.log(`   skeleton cards = ${await page.locator('.skel-card').count()}`)
+console.log(`   real cards = ${await page.locator('.mat-card:not(.skel-card)').count()}`)
+console.log(`   groups = ${await page.locator('.scn-group').count()}`)
+console.log(`   progress = ${await page.locator('.progress-count').innerText()}`)
+console.log(`   submit disabled = ${await page.locator('button:has-text("提交审核")').isDisabled()}`)
+leaks.push(...(await assertClean('skeleton state')))
+
+// Mid-flight, part delivered: this is the moment the old page said 校验未过，重新生成.
+await page.waitForSelector('.mat-card:not(.skel-card)', { timeout: 60_000 })
+await page.waitForTimeout(400)
+await shot('02-partly-delivered')
+console.log(
+  `   mixed: ${await page.locator('.mat-card:not(.skel-card)').count()} real / ` +
+    `${await page.locator('.skel-card').count()} skeleton`,
+)
 leaks.push(...(await assertClean('mid-flight')))
 console.log(`   phase caption = ${await page.locator('.results-stats').innerText()}`)
 
-// All six delivered.
+// All six delivered — every skeleton has become a real card.
 await page.waitForSelector('.results-bar', { timeout: 60_000 })
-await page.waitForFunction(() => document.querySelectorAll('.mat-card').length >= 6, null, {
-  timeout: 60_000,
-})
+await page.waitForFunction(
+  () => document.querySelectorAll('.mat-card:not(.skel-card)').length >= 6,
+  null,
+  { timeout: 60_000 },
+)
 await page.waitForTimeout(800)
-await shot('02-all-delivered')
+await shot('03-all-delivered')
 leaks.push(...(await assertClean('delivered')))
 
 console.log(`   scenario groups = ${await page.locator('.scn-group').count()}`)
 console.log(`   cards = ${await page.locator('.mat-card').count()}`)
+console.log(`   skeletons left = ${await page.locator('.skel-card').count()}`)
 console.log(`   badges 待审核 = ${await page.locator('.status-badge:has-text("待审核")').count()}`)
-console.log(`   point dots on card 1 = ${await page.locator('.mat-card').first().locator('.point-dot').count()}`)
-console.log(`   flagged dots total = ${await page.locator('.point-dot.flagged').count()}`)
+console.log(
+  `   timeline dots on card 1 = ${await page.locator('.mat-card').first().locator('.dist-thumb-dot').count()}`,
+)
+console.log(`   flagged dots total = ${await page.locator('.dist-thumb-dot.warn').count()}`)
+console.log(`   group brackets total = ${await page.locator('.dist-thumb-bracket').count()}`)
+console.log(
+  `   timeline block height = ${await page.locator('.dist-thumb').first().evaluate((el) => el.getBoundingClientRect().height)}px`,
+)
 console.log(`   cards with a shortcomings list = ${await page.locator('.mat-flaws').count()}`)
 console.log(`   progress caption = ${await page.locator('.results-stats').innerText()}`)
 console.log(`   submit disabled with 0 selected = ${await page.locator('button:has-text("提交审核")').isDisabled()}`)
@@ -100,7 +130,7 @@ console.log(`   submit disabled with 0 selected = ${await page.locator('button:h
 // Selection: one scenario only → still blocked by the per-scenario rule.
 await page.locator('.scn-group').first().locator('.select-check').first().click()
 await page.waitForTimeout(200)
-await shot('03-one-selected')
+await shot('04-one-selected')
 console.log(`   count after 1 pick = ${await page.locator('.results-bar .count').innerText()}`)
 console.log(`   submit still disabled = ${await page.locator('button:has-text("提交审核")').isDisabled()}`)
 console.log(`   missing hint = ${await page.locator('.bar-left').innerText()}`)
@@ -110,7 +140,7 @@ for (const i of [1, 2]) {
   await page.locator('.scn-group').nth(i).locator('.select-check').first().click()
 }
 await page.waitForTimeout(200)
-await shot('04-all-scenarios-selected')
+await shot('05-all-scenarios-selected')
 console.log(`   count after 3 picks = ${await page.locator('.results-bar .count').innerText()}`)
 console.log(`   submit enabled = ${!(await page.locator('button:has-text("提交审核")').isDisabled())}`)
 console.log(`   selected cards = ${await page.locator('.mat-card.selected').count()}`)
@@ -118,17 +148,17 @@ console.log(`   selected cards = ${await page.locator('.mat-card.selected').coun
 // Compare mode.
 await page.locator('button:has-text("对比本场景")').first().click()
 await page.waitForSelector('.compare-banner')
-await shot('05-compare-mode')
+await shot('06-compare-mode')
 console.log(`   compare banner = ${(await page.locator('.compare-banner').innerText()).replace(/\n/g, ' | ')}`)
 await page.locator('.scn-group').first().locator('.select-check').first().click()
 await page.waitForTimeout(150)
 console.log(`   pick-a cards = ${await page.locator('.mat-card.pick-a').count()}`)
-await shot('06-compare-a-picked')
+await shot('07-compare-a-picked')
 await page.locator('.scn-group').first().locator('.select-check').nth(1).click()
 await page.waitForURL(/\/compare\//, { timeout: 10_000 })
 console.log(`   navigated to = ${new URL(page.url()).pathname}${new URL(page.url()).search}`)
 await page.waitForTimeout(1500)
-await shot('07-compare-view')
+await shot('08-compare-view')
 leaks.push(...(await assertClean('compare view')))
 
 // Back to the results page, submit, land in the review queue.
@@ -142,7 +172,7 @@ await page.waitForTimeout(200)
 await page.locator('button:has-text("提交审核")').click()
 await page.waitForURL(/review-queue/, { timeout: 10_000 })
 await page.waitForTimeout(500)
-await shot('08-review-queue')
+await shot('09-review-queue')
 console.log(`   queue rows = ${await page.locator('.q-row').count()}`)
 leaks.push(...(await assertClean('review queue')))
 
@@ -152,7 +182,7 @@ console.log(`   nav tabs = ${(await page.locator('.topbar nav').innerText()).rep
 // A flawed material, opened from the queue.
 await page.locator('.q-row a:has-text("阅读全文")').first().click()
 await page.waitForTimeout(1500)
-await shot('09-material-reader')
+await shot('10-material-reader')
 leaks.push(...(await assertClean('material reader')))
 
 console.log(`\nconsole errors: ${errors.length}`)

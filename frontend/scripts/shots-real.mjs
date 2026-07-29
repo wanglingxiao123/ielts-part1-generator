@@ -9,6 +9,7 @@
 // is a legitimate observed outcome rather than a script error.
 import { mkdir, writeFile } from 'node:fs/promises'
 import { chromium } from 'playwright'
+import { pickScenarios, submitBatch } from './pickScenarios.mjs'
 import { signIn } from './signIn.mjs'
 
 const OUT = '/tmp/shots-real'
@@ -50,33 +51,31 @@ await page.goto(BASE, { waitUntil: 'networkidle' })
 await signIn(page, BASE)
 await shot('01-scenario-select')
 
-for (const key of SCENARIOS) {
-  const row = page.locator(`.scn-row:has-text("${key}")`).first()
-  await row.locator('input[type=checkbox]').check()
-  // Step to COUNT in whichever direction is needed. Real generation is expensive,
-  // so the default is below the catalogue's default_count of 2, but a
-  // 2-candidate comparison needs stepping UP.
-  for (let i = 0; i < 8; i += 1) {
-    const shown = Number((await row.locator('.stepper .mono').innerText()).trim())
-    if (shown === COUNT) break
-    await row.locator('.stepper button').nth(shown > COUNT ? 0 : 1).click()
-  }
-}
+// One global 每场景生成数量 now, so COUNT is set once rather than stepped per row.
+// Real generation is expensive, hence the low default; a 2-candidate comparison
+// needs COUNT=2.
+await pickScenarios(page, SCENARIOS, COUNT)
+note(`estimate shown = ${(await page.locator('.scn-bar-left').innerText()).replace(/\n/g, ' | ')}`)
 await shot('02-scenarios-checked')
 
-await page.locator('.summary-bar button').click()
-await page.waitForURL(/\/batches\//, { timeout: 30_000 })
+await submitBatch(page)
 const batchUrl = page.url()
 note(`batch page ${batchUrl}`)
+
+// The skeleton grid is up immediately — the results-page structure IS the loading
+// state, so this also proves the shape was known before any material arrived.
+await page.waitForSelector('.skel-card', { timeout: 30_000 })
+note(`skeletons before first material = ${await page.locator('.skel-card').count()}`)
+await shot('02b-skeletons')
 
 // First stage event proves the SSE translation is live.
 await page
   .waitForFunction(
-    () => document.body.innerText.includes('生成中'),
+    () => document.querySelector('.phase-step.active, .phase-step.done') !== null,
     null,
     { timeout: 120_000 },
   )
-  .catch(() => note('WARN: no 生成中 within 120s'))
+  .catch(() => note('WARN: no phase progress within 120s'))
 await shot('03-batch-generating')
 
 // Progressive arrival: capture as each material resolves.
@@ -85,7 +84,7 @@ let seen = 0
 const deadline = Date.now() + BATCH_TIMEOUT_MS
 while (seen < expected && Date.now() < deadline) {
   const resolved = await page.evaluate(
-    () => document.querySelectorAll('.mat-card .flag-good, .mat-card .flag-bad').length,
+    () => document.querySelectorAll('.mat-card:not(.skel-card):not(.err-card)').length,
   )
   if (resolved > seen) {
     seen = resolved
