@@ -3,7 +3,13 @@
  * ranges computed in joinArtifacts — never by a runtime regex/substring search,
  * which would silently relocate a highlight onto a coincidentally matching turn.
  */
-import { circled, type ViewMaterial, type ViewTurn } from '@/domain/types'
+import {
+  circled,
+  SEVERITY_FLAG,
+  SEVERITY_LABEL,
+  type ViewMaterial,
+  type ViewTurn,
+} from '@/domain/types'
 
 interface Props {
   view: ViewMaterial
@@ -103,12 +109,10 @@ export function TurnList({
               {turn.findings.map((f, i) => (
                 <span
                   key={`f${i}`}
-                  className={`flag finding-chip ${
-                    f.severity === 'critical' ? 'flag-bad' : f.severity === 'major' ? 'flag-warn' : 'flag-neutral'
-                  }`}
-                  title={`${f.rule}\n修正：${f.fix}`}
+                  className={`flag finding-chip ${SEVERITY_FLAG[f.severity]}`}
+                  title={`${f.rule}\n建议改法：${f.fix}`}
                 >
-                  {f.severity}
+                  {SEVERITY_LABEL[f.severity]}
                 </span>
               ))}
               {onPlayTurn && (

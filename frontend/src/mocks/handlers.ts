@@ -17,6 +17,7 @@ import type {
 } from '@/contracts/api'
 import { ApiError, setTransport, type RequestSpec } from '@/api/http'
 import { setSseFetch } from '@/api/sseClient'
+import { setAuthFetch } from '@/auth/authApi'
 import { buildRecord, mockManifest, type FixtureKind } from './fixtures'
 import { MockBatch } from './mockSse'
 import { syntheticClipUrl } from './silentAudio'
@@ -396,6 +397,116 @@ const mockTransport = async (spec: RequestSpec): Promise<unknown> => {
   throw new ApiError(404, 'NOT_FOUND', `mock 未实现的端点：${spec.method} ${spec.path}`)
 }
 
+/* ── cookie auth (web/app.py /api/auth/*) ────────────────────────────────── */
+
+/**
+ * A fake accounts store for VITE_MOCK=1.
+ *
+ * `sessionStorage`, not a module variable, so a reload keeps you signed in —
+ * exactly as the real HttpOnly cookie does. A mock that logged you out on every
+ * F5 would make the dev server disagree with the deployment about the one
+ * property the login flow is built around.
+ *
+ * The domain allowlist mirrors what a deployed ALLOWED_EMAIL_DOMAINS produces, so
+ * the rejected-domain path is reachable without a backend.
+ */
+const MOCK_SESSION_KEY = 'bcielts.v1.mock.session'
+const MOCK_USERS_KEY = 'bcielts.v1.mock.users'
+const MOCK_ALLOWED_DOMAINS = ['amazon.com', 'example.com', 'local']
+const MOCK_MIN_PASSWORD = 8
+
+interface MockUser {
+  email: string
+  password: string
+  is_admin: boolean
+  created_at: number
+}
+
+function mockUsers(): Record<string, MockUser> {
+  try {
+    return JSON.parse(sessionStorage.getItem(MOCK_USERS_KEY) ?? '{}') as Record<string, MockUser>
+  } catch {
+    return {}
+  }
+}
+
+function putMockUser(user: MockUser) {
+  const users = mockUsers()
+  users[user.email] = user
+  sessionStorage.setItem(MOCK_USERS_KEY, JSON.stringify(users))
+}
+
+function authJson(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+function authFail(status: number, code: string, message: string): Response {
+  return authJson(status, { error: { code, message } })
+}
+
+function publicUser(user: MockUser) {
+  return { email: user.email, is_admin: user.is_admin, created_at: user.created_at }
+}
+
+async function mockAuthFetch(path: string, init: RequestInit): Promise<Response> {
+  await new Promise((r) => setTimeout(r, 120))
+  const body = init.body ? (JSON.parse(String(init.body)) as Record<string, string>) : {}
+  const email = (body.email ?? '').trim().toLowerCase()
+  const password = body.password ?? ''
+  const users = mockUsers()
+
+  if (path === '/auth/me') {
+    const current = sessionStorage.getItem(MOCK_SESSION_KEY)
+    const user = current ? users[current] : undefined
+    if (!user) return authFail(401, 'UNAUTHENTICATED', 'no session cookie')
+    return authJson(200, { user: publicUser(user) })
+  }
+
+  if (path === '/auth/logout') {
+    sessionStorage.removeItem(MOCK_SESSION_KEY)
+    return authJson(200, { ok: true })
+  }
+
+  if (path === '/auth/register') {
+    const domain = email.split('@')[1] ?? ''
+    if (!email.includes('@') || !MOCK_ALLOWED_DOMAINS.includes(domain)) {
+      return authFail(
+        403,
+        'EMAIL_DOMAIN_NOT_ALLOWED',
+        `邮箱域名不在允许列表内（当前允许：${MOCK_ALLOWED_DOMAINS.join(', ')}）`,
+      )
+    }
+    if (password.length < MOCK_MIN_PASSWORD) {
+      return authFail(400, 'WEAK_PASSWORD', `密码至少 ${MOCK_MIN_PASSWORD} 位`)
+    }
+    if (users[email]) return authFail(409, 'USER_EXISTS', '该邮箱已注册')
+    // First account is the admin, matching web/auth.py.
+    const user: MockUser = {
+      email,
+      password,
+      is_admin: Object.keys(users).length === 0,
+      created_at: Math.floor(Date.now() / 1000),
+    }
+    putMockUser(user)
+    sessionStorage.setItem(MOCK_SESSION_KEY, email)
+    return authJson(200, { user: publicUser(user) })
+  }
+
+  if (path === '/auth/login') {
+    const user = users[email]
+    if (!user || user.password !== password) {
+      return authFail(401, 'INVALID_CREDENTIALS', '邮箱或密码不正确')
+    }
+    sessionStorage.setItem(MOCK_SESSION_KEY, email)
+    return authJson(200, { user: publicUser(user) })
+  }
+
+  return authFail(404, 'NOT_FOUND', `mock 未实现的端点：${path}`)
+}
+
 /** Bridges MockBatch into a ReadableStream of real SSE wire frames. */
 function mockSseFetch(url: string, init: { signal: AbortSignal }): Promise<Response> {
   const parsed = new URL(url, window.location.origin)
@@ -472,7 +583,8 @@ export function installMocks() {
   }
   setTransport(mockTransport)
   setSseFetch((url, init) => mockSseFetch(url, init))
-  console.info('[mock] API + SSE mocked (VITE_MOCK=1)')
+  setAuthFetch(mockAuthFetch)
+  console.info('[mock] API + SSE + auth mocked (VITE_MOCK=1)')
 }
 
 /** Test/demo helper: force a fresh mock world. */

@@ -3,8 +3,10 @@
  * deliberately not score-first: total score is a single weighted scalar, and a
  * 3-4 point difference is not a decision, it just looks like one.
  */
-import { getThresholds } from '@/config/runtimeConfig'
+import { useMemo } from 'react'
 import type { CandidateFacts } from '@/domain/compare'
+import { circled, SEVERITY_FLAG, SEVERITY_LABEL } from '@/domain/types'
+import { assessUsability, READINESS_FLAG, READINESS_LABEL } from '@/domain/usability'
 
 function Row({
   rank,
@@ -35,9 +37,10 @@ export function DecisionBar({
   scoreDiff: number
   scoreDiffSignificant: boolean
 }) {
-  const t = getThresholds()
   const d = facts.distribution
   const m = facts.view.audit.metrics
+  const usability = useMemo(() => assessUsability(d), [d])
+  const wideGroups = facts.groups.groups.filter((g) => !g.ungrouped && g.canFormQuestion)
 
   return (
     <div className="decision-bar">
@@ -58,66 +61,85 @@ export function DecisionBar({
         {facts.view.degraded && <span className="flag flag-warn">degraded</span>}
       </div>
 
-      <Row rank={1} label="不可回收点（盲测）">
-        <strong className="mono">{facts.unrecoverable}</strong>{' '}
+      {/* 1: a point the blind auditor could not hear at all — no question can be
+          written from it, so this row leads. */}
+      <Row rank={1} label="听不出来的点">
         {facts.unrecoverable > 0 ? (
-          <span className="flag flag-bad">致命</span>
+          <span className="flag flag-bad">{facts.unrecoverable} 个，写不成题</span>
         ) : (
           <span className="flag flag-good">无</span>
         )}
       </Row>
-      <Row rank={2} label="意外考点">
-        <strong className="mono">{facts.unintendedTarget}</strong>{' '}
-        {facts.unintendedTarget > 0 && <span className="flag flag-warn">易歧义</span>}
+      <Row rank={2} label="计划外的可考细节">
+        {facts.unintendedTarget > 0 ? (
+          <span className="flag flag-warn">{facts.unintendedTarget} 处，可能出现第二个说得通的答案</span>
+        ) : (
+          <span className="flag flag-good">无</span>
+        )}
       </Row>
-      <Row rank={3} label="分布均匀度 / CV / 最大间隔">
-        <strong className="mono">{d.uniformity}</strong>{' '}
-        <span className="mono muted">
-          (CV {d.cv.toFixed(2)}
-          {d.cvWarn ? ` >${t.CV_WARN}` : ''})
-        </span>{' '}
-        最大 <strong className="mono">{d.maxGap}</strong>
-        {d.cvWarn && <span className="flag flag-warn">⚠</span>}
+      <Row rank={3} label="出题就绪度">
+        <span className={`flag ${READINESS_FLAG[usability.level]}`}>
+          {READINESS_LABEL[usability.level]}
+        </span>
+        {usability.problemCount > 0 && (
+          <span className="muted" style={{ fontSize: 11 }}>
+            {' '}
+            {usability.problemCount} 处待改
+          </span>
+        )}
       </Row>
-      <Row rank={3} label="前后段点数">
-        <span className="mono">
+      <Row rank={3} label="前后两组题量">
+        <span>
           {d.firstHalfCount} / {d.secondHalfCount}
         </span>{' '}
-        {d.balanced ? '✓' : <span className="flag flag-warn">失衡</span>}
+        {d.balanced ? '✓' : <span className="flag flag-warn">相差过大</span>}
       </Row>
-      <Row rank={4} label="分组可行性">
-        <span style={{ fontSize: 11 }}>
-          {/* Only declared groups: the form_group=null bucket's span is not a
-              grouping property, so printing it here made a decision signal out
-              of noise. */}
-          {facts.groups.groups
-            .filter((g) => !g.ungrouped && g.numbers.length > 1)
-            .map((g) => `${g.name} ${g.numbers.length}点跨${g.turnSpan}${g.spanWarn ? '⚠' : ''}`)
-            .join(' · ')}
-          {facts.groups.groups.some((g) => g.ungrouped) &&
-            ` · 未分组 ${facts.groups.groups
-              .filter((g) => g.ungrouped)
-              .reduce((n, g) => n + g.numbers.length, 0)} 点`}
-          {' · 多选 '}
-          {facts.groups.multipleChoiceCount}
-        </span>
-        {!facts.groups.hasViableQuestionGroup && <span className="flag flag-bad">无可成题组</span>}
+      <Row rank={4} label="能否成表格/表单题">
+        {facts.groups.hasViableQuestionGroup ? (
+          <span className="flag flag-good">
+            可以
+            {/* Only declared groups: the form_group=null bucket was never claimed
+                to belong together, so its span is not a grouping property. */}
+            {wideGroups.length > 0 && (
+              <>
+                （
+                {wideGroups
+                  .map((g) => `${g.name} 组 ${g.numbers.map((n) => circled(n)).join('')}`)
+                  .join('、')}
+                ）
+              </>
+            )}
+          </span>
+        ) : (
+          <span className="flag flag-bad">不行，没有 3 个以上同类点</span>
+        )}
+        {facts.groups.groups.some((g) => g.spanWarn) && (
+          <span className="flag flag-warn">有分组跨度太宽</span>
+        )}
       </Row>
-      <Row rank={5} label="缺陷计数">
-        <span className="mono">
-          {facts.defects.critical} critical
-          {facts.defects.critical > 0 && ' ⚠'} / {facts.defects.major} major
-          {facts.defects.major > 0 && ' ⚠'} / {facts.defects.minor} minor
-        </span>
+      <Row rank={5} label="评价指出的问题">
+        {facts.defects.critical + facts.defects.major + facts.defects.minor === 0 ? (
+          <span className="flag flag-good">无</span>
+        ) : (
+          <span style={{ fontSize: 11 }}>
+            {(['critical', 'major', 'minor'] as const)
+              .filter((sev) => facts.defects[sev] > 0)
+              .map((sev) => (
+                <span key={sev} className={`flag ${SEVERITY_FLAG[sev]}`} style={{ marginRight: 4 }}>
+                  {SEVERITY_LABEL[sev]} {facts.defects[sev]}
+                </span>
+              ))}
+          </span>
+        )}
       </Row>
       <Row rank={7} label="篇幅">
-        <span className="mono">
-          {m.dialogue_words} 词 / {m.dialogue_turns} 轮
+        <span>
+          {m.dialogue_words} 词 · {m.dialogue_turns} 轮
         </span>
       </Row>
 
       {/* Thumbnail distribution bar: density per 10th of the script. */}
-      <div className="spark" title="缩略分布：每格为全篇 1/10 内的点数">
+      <div className="spark" title="缩略分布：每格是全篇十二分之一里的信息点数">
         {Array.from({ length: 12 }, (_, i) => {
           const lo = (i / 12) * d.dialogueTurnCount
           const hi = ((i + 1) / 12) * d.dialogueTurnCount

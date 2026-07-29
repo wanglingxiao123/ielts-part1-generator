@@ -1,4 +1,6 @@
+import { lazy, Suspense } from 'react'
 import { NavLink, Route, Routes } from 'react-router-dom'
+import { LoginPage } from '@/auth/LoginPage'
 import { RequireAuth } from '@/auth/RequireAuth'
 import { useSession } from '@/auth/useSession'
 import { ScenarioSelectPage } from '@/features/scenario-select/ScenarioSelectPage'
@@ -6,8 +8,32 @@ import { BatchProgressPage } from '@/features/batch-progress/BatchProgressPage'
 import { MaterialPage } from '@/features/material-reader/MaterialPage'
 import { ComparePage } from '@/features/compare/ComparePage'
 import { QuarantinePage } from '@/features/quarantine/QuarantinePage'
-import { FixtureGalleryPage } from '@/features/material-reader/FixtureGalleryPage'
 import { useBatchStore } from '@/stores/batchStore'
+
+/**
+ * Fixture gallery: a DEVELOPMENT harness, not a product page.
+ *
+ * It reached the client as a top-level tab called 夹具对照 — a word from our
+ * test vocabulary, on a page that shows four hand-built fixtures rather than
+ * anything they generated. Reviewers reach a preview through
+ * 场景选择 → 批次 → 阅读/对比; a separate tab competes with that flow and
+ * suggests the fixtures are their materials.
+ *
+ * So: out of the nav, and reachable only under VITE_MOCK=1, which is how the
+ * fixture-backed dev server and scripts/shots.mjs already run.
+ *
+ * `import.meta.env.VITE_MOCK` is inlined as a literal at build time, so this
+ * whole branch — and with it the fixtures' script text — is tree-shaken out of
+ * the production bundle rather than merely being unreachable in it.
+ */
+const DEV_FIXTURES = import.meta.env.VITE_MOCK === '1'
+const FixtureGalleryPage = DEV_FIXTURES
+  ? lazy(() =>
+      import('@/features/material-reader/FixtureGalleryPage').then((m) => ({
+        default: m.FixtureGalleryPage,
+      })),
+    )
+  : () => null
 
 function TopBar() {
   const session = useSession()
@@ -15,37 +41,37 @@ function TopBar() {
   return (
     <div className="topbar">
       <h1>IELTS Part 1 材料生成与审阅</h1>
-      <nav>
-        <NavLink to="/" end className={({ isActive }) => (isActive ? 'active' : '')}>
-          场景选择
-        </NavLink>
-        {batchId && (
-          <NavLink
-            to={`/batches/${batchId}`}
-            className={({ isActive }) => (isActive ? 'active' : '')}
-          >
-            当前批次
+      {/* Nav only once there is a session: every destination is behind
+          RequireAuth, so offering them to an anonymous visitor on /login just
+          bounces them back to the form they are already looking at. */}
+      {session.isAuthenticated && (
+        <nav>
+          <NavLink to="/" end className={({ isActive }) => (isActive ? 'active' : '')}>
+            场景选择
           </NavLink>
-        )}
-        <NavLink to="/quarantine" className={({ isActive }) => (isActive ? 'active' : '')}>
-          隔离区
-        </NavLink>
-        <NavLink to="/gallery" className={({ isActive }) => (isActive ? 'active' : '')}>
-          夹具对照
-        </NavLink>
-      </nav>
+          {batchId && (
+            <NavLink
+              to={`/batches/${batchId}`}
+              className={({ isActive }) => (isActive ? 'active' : '')}
+            >
+              当前批次
+            </NavLink>
+          )}
+          <NavLink to="/quarantine" className={({ isActive }) => (isActive ? 'active' : '')}>
+            隔离区
+          </NavLink>
+          {/* /dev/fixtures is deliberately NOT linked: dev harness, see above. */}
+        </nav>
+      )}
       <div className="spacer" />
       <span className="who">
-        {session.username || '未登录'}
-        {session.roles.length > 0 && ` · ${session.roles.join('/')}`}
+        {session.email || '未登录'}
+        {session.isAdmin && ' · 管理员'}
       </span>
-      {session.mode === 'dev-bypass' && (
-        <span className="badge-dev" title="config.json auth.devBypass=true；线上必须为 false">
-          dev bypass · 未接 Cognito
-        </span>
-      )}
-      {session.mode === 'cognito' && (
-        <button type="button" className="btn btn-sm" onClick={session.signOut}>
+      {/* Gated on "is there a session", not on an auth mode: there is one login
+          path now, so 退出 is available whenever it can do anything. */}
+      {session.isAuthenticated && (
+        <button type="button" className="btn btn-sm" onClick={() => void session.signOut()}>
           退出
         </button>
       )}
@@ -58,6 +84,7 @@ export function App() {
     <div className="app">
       <TopBar />
       <Routes>
+        <Route path="/login" element={<LoginPage />} />
         <Route
           path="/"
           element={
@@ -98,15 +125,18 @@ export function App() {
             </RequireAuth>
           }
         />
-        <Route
-          path="/gallery"
-          element={
-            <RequireAuth>
-              <FixtureGalleryPage />
-            </RequireAuth>
-          }
-        />
-        <Route path="/auth/callback" element={<div className="page">登录回调处理中…</div>} />
+        {DEV_FIXTURES && (
+          <Route
+            path="/dev/fixtures"
+            element={
+              <RequireAuth>
+                <Suspense fallback={<div className="page">加载中…</div>}>
+                  <FixtureGalleryPage />
+                </Suspense>
+              </RequireAuth>
+            }
+          />
+        )}
         <Route path="*" element={<div className="page">页面不存在</div>} />
       </Routes>
     </div>

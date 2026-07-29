@@ -40,31 +40,40 @@ export interface RequestSpec {
 
 export type Transport = (spec: RequestSpec) => Promise<unknown>
 
-let tokenProvider: () => string | null = () => null
-/** Called on 401 after a silent-renew attempt fails. */
+/** Called on a 401, i.e. the session cookie is missing, expired or tampered. */
 let onUnauthorized: (() => void) | null = null
-
-export function setTokenProvider(fn: () => string | null) {
-  tokenProvider = fn
-}
 
 export function setUnauthorizedHandler(fn: () => void) {
   onUnauthorized = fn
 }
 
-export function authHeader(): Record<string, string> {
-  const token = tokenProvider()
-  return token ? { Authorization: `Bearer ${token}` } : {}
+/**
+ * Announce a 401 seen outside `realTransport`.
+ *
+ * The AgentCore adapter issues its own fetches (SigV4 shape, streaming), so the
+ * 401 branch below never runs in the deployed configuration. Without this the
+ * session-expiry path existed only in code no environment executes.
+ */
+export function notifyUnauthorized() {
+  onUnauthorized?.()
 }
+
+/**
+ * Credentials for every API call: the web tier's HttpOnly session cookie.
+ *
+ * There is no Authorization header anywhere in the frontend, deliberately. The
+ * SigV4-signed call to the AgentCore Runtime happens server-side in web/app.py,
+ * so the browser never holds an AWS credential; and the session cookie is
+ * HttpOnly, so JS could not read it to build a header even if it wanted to.
+ */
+export const CREDENTIALS: RequestCredentials = 'same-origin'
 
 export const realTransport: Transport = async (spec) => {
   const cfg = getConfig()
   const res = await fetch(`${cfg.apiBaseUrl}${spec.path}`, {
     method: spec.method,
-    headers: {
-      ...authHeader(),
-      ...(spec.body === undefined ? {} : { 'Content-Type': 'application/json' }),
-    },
+    credentials: CREDENTIALS,
+    headers: spec.body === undefined ? {} : { 'Content-Type': 'application/json' },
     body: spec.body === undefined ? undefined : JSON.stringify(spec.body),
     signal: spec.signal,
   })
@@ -78,7 +87,7 @@ export const realTransport: Transport = async (spec) => {
 
   if (res.status === 401) {
     onUnauthorized?.()
-    throw new ApiError(401, 'UNAUTHORIZED', '会话已过期，请重新登录')
+    throw new ApiError(401, 'UNAUTHENTICATED', '登录状态已失效，请重新登录')
   }
   if (!res.ok) {
     let body: ApiErrorBody | null = null

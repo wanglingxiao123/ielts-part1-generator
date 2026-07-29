@@ -419,12 +419,28 @@ def main() -> int:
         if narrator[0] != 0 or narrator[-1] != len(turns) - 1:
             errors.append("speaker1 must open and close the script")
         opening, midpoint_text, closing = (turns[i]["text"] for i in narrator)
+        # Read directly rather than waiting for validate_blueprint's return: two checks below are
+        # mode-dependent, and an invalid mode is reported there on its own.
+        narration_mode = (blueprint or {}).get("narration_mode") if isinstance(blueprint, dict) else None
         first, second = FIRST_RANGE_RE.search(opening), SECOND_RANGE_RE.search(midpoint_text)
         first_end, second_start = (int(first.group(1)), int(second.group(1))) if first and second else (0, 0)
-        if first_end not in {5, 6} or second_start != first_end + 1:
-            errors.append("narration must state 1-5/6-10 or 1-6/7-10")
-        if "once only" not in opening.casefold():
-            errors.append("opening must include once only")
+        # The spec writes "如 1–5 / 6–10 或 1–6 / 7–10" -- 如 means "such as", an illustration
+        # rather than an enumeration. Measured over the 27 usable archived papers, the real split
+        # points are (4,5)x9, (6,7)x8, (5,6)x6, (3,4)x2, (7,8)x1: restricting first_end to {5,6}
+        # passed only 14/27, while accepting a contiguous 3-7 passes 26/27. What actually matters
+        # is that the two ranges are contiguous and neither group is degenerate, so that is what
+        # is checked.
+        if not 3 <= first_end <= 7 or second_start != first_end + 1:
+            errors.append(
+                "narration must split questions 1-10 into two contiguous groups with the first "
+                "ending between 3 and 7; found 1-{0}/{1}-10".format(first_end, second_start)
+            )
+        # "once only" belongs to the whole-test preamble, which the spec says appears once per
+        # paper (§4A). Measured: 7/7 full-mode openings contain it and 0/20 short-mode ones do --
+        # a short opening starts at "Part one, you will hear...". Demanding it in short mode was
+        # unsatisfiable, and the generator spent every retry on it.
+        if narration_mode == "full" and "once only" not in opening.casefold():
+            errors.append("full opening must include once only")
         if not re.search(r"end of (?:section one|part 1|part one)", closing, re.I) or not CHECKING_RE.search(closing):
             errors.append("closing must identify Part 1 end and checking time")
         # A pointer to Part 2 is optional, and was wrong as a hard rule. Measured over the 30
@@ -442,14 +458,39 @@ def main() -> int:
                 if not pattern.search(opening):
                     errors.append(f"full opening must introduce {label}")
             if not 160 <= words(narration) <= 230:
-                errors.append(f"full narration must be 160-230 words; found {words(narration)}")
+                # Same reasoning as the dialogue count: the retry needs the direction and the gap.
+                # A full narration falls short when the whole-test preamble is paraphrased instead
+                # of quoted, so the remedy is named rather than left to be guessed.
+                errors.append(
+                    "full narration must be 160-230 words; found {0}. {1}".format(
+                        words(narration),
+                        "Quote the whole-test preamble in full rather than summarising it."
+                        if words(narration) < 160 else "Trim the narration; it carries no answers.",
+                    )
+                )
         elif not 70 <= words(narration) <= 110:
-            errors.append(f"short narration must be 70-110 words; found {words(narration)}")
+            errors.append(
+                "short narration must be 70-110 words; found {0} ({1} by {2})".format(
+                    words(narration),
+                    "short" if words(narration) < 70 else "long",
+                    abs(90 - words(narration)),
+                )
+            )
         dialogue_turns = [turn for turn in turns if turn.get("speaker") != "speaker1"]
         dialogue = " ".join(turn["text"] for turn in dialogue_turns)
         total_words, total_turns = total_words + words(dialogue), total_turns + len(dialogue_turns)
         if not 450 <= words(dialogue) <= 750:
-            errors.append(f"dialogue words outside 450-750: {words(dialogue)}")
+            # The gap is spelled out because this message is fed back to the generator on retry.
+            # "outside 450-750: 401" told it only that it failed; a draft 200 words short of the
+            # 600-650 target came back 401, 430, 419 across three attempts. Naming the shortfall
+            # and the target turns a re-roll into a correction.
+            count = words(dialogue)
+            short_by = 625 - count
+            errors.append(
+                "dialogue words outside 450-750: {0} ({1} the 600-650 target by {2} words)".format(
+                    count, "under" if short_by > 0 else "over", abs(short_by)
+                )
+            )
         elif not 600 <= words(dialogue) <= 650:
             warnings.append(f"dialogue words outside preferred 600-650: {words(dialogue)}")
         if not 20 <= len(dialogue_turns) <= 48:

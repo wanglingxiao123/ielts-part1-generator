@@ -1,14 +1,14 @@
 /**
  * SSE over fetch + ReadableStream (design.md §5.2).
  *
- * Not EventSource: it cannot set an Authorization header, so the token would
- * have to travel in the query string and land in ALB / CloudWatch access logs.
- * Reconnection with since_seq has to be hand-written either way — the native
- * retry semantics are not sufficient here.
+ * Not EventSource: reconnection with since_seq has to be hand-written — the
+ * native retry semantics replay from the start rather than from a sequence
+ * number — and EventSource cannot pass an AbortSignal, which is how a navigation
+ * away tears the stream down here.
  */
 import { getConfig } from '@/config/runtimeConfig'
 import type { SseEvent } from '@/contracts/api'
-import { authHeader } from './http'
+import { CREDENTIALS } from './http'
 
 export interface SseHandlers {
   onEvent: (event: SseEvent) => void
@@ -52,7 +52,11 @@ function jitter(ms: number): number {
 
 export type SseFetch = (
   url: string,
-  init: { headers: Record<string, string>; signal: AbortSignal },
+  init: {
+    headers: Record<string, string>
+    signal: AbortSignal
+    credentials: RequestCredentials
+  },
 ) => Promise<Response>
 
 let sseFetch: SseFetch = (url, init) => fetch(url, init)
@@ -144,7 +148,8 @@ export function openBatchStream(options: SseStreamOptions): SseController {
       const since = options.sinceSeq()
       const url = `${cfg.apiBaseUrl}/batches/${options.batchId}/stream?since_seq=${since}`
       const res = await sseFetch(url, {
-        headers: { ...authHeader(), Accept: 'text/event-stream' },
+        headers: { Accept: 'text/event-stream' },
+        credentials: CREDENTIALS,
         signal: abort.signal,
       })
       if (!res.ok || !res.body) throw new Error(`stream ${res.status}`)

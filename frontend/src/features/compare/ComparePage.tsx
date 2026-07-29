@@ -2,23 +2,24 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api } from '@/api/endpoints'
 import { ApiError } from '@/api/http'
-import { useCan } from '@/auth/useSession'
 import { getThresholds } from '@/config/runtimeConfig'
 import type { MaterialRecord } from '@/contracts/api'
 import { buildFacts, compareCandidates } from '@/domain/compare'
+import type { DistributionMetrics } from '@/domain/distribution'
 import { computeDistribution } from '@/domain/distribution'
 import { analyseFormGroups } from '@/domain/formGroups'
 import { joinFromRecord } from '@/domain/joinArtifacts'
+import { SEVERITY_LABEL } from '@/domain/types'
 import { useBatchStore } from '@/stores/batchStore'
 import { MaterialReader } from '../material-reader/MaterialReader'
 import { DecisionBar } from './DecisionBar'
 import { SelectDialog } from './SelectDialog'
+import { UsabilityCompare } from './UsabilityCompare'
 
 const LABELS = ['候选 A', '候选 B', '候选 C', '候选 D']
 
 export function ComparePage() {
   const { scenarioKey } = useParams<{ scenarioKey: string }>()
-  const canSelect = useCan('material.select')
   const thresholds = getThresholds()
 
   // Subscribe to the two stable references and derive with useMemo. A selector
@@ -193,13 +194,27 @@ export function ComparePage() {
 
       {showPair && (
         <div className="panel panel-pad" style={{ marginBottom: 10 }}>
-          <h3>差异摘要（规则生成，非模型）</h3>
+          <h3>哪一套更好出题</h3>
           <div>{comparison.summary}</div>
           <ul style={{ margin: '6px 0 0 18px', padding: 0, fontSize: 12 }} className="muted">
             {comparison.reasons.map((r, i) => (
               <li key={i}>{r}</li>
             ))}
           </ul>
+          {/* Rows are the four questions a question-writer asks; each cell is
+              that candidate's answer, in their vocabulary. Same source as each
+              candidate's own distribution strip, so the two cannot disagree. */}
+          <UsabilityCompare
+            columns={pair
+              .map((idx) => {
+                const f = facts[idx]
+                return f ? { label: f.label, metrics: f.distribution } : null
+              })
+              .filter((c): c is { label: string; metrics: DistributionMetrics } => c !== null)}
+          />
+          <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
+            结论由规则推出，不经模型；同一份数据同时驱动上方结论与每套自己的分布预览。
+          </div>
         </div>
       )}
 
@@ -235,8 +250,10 @@ export function ComparePage() {
                 {comparison && comparison.dimensionDeltas.length > 0 && (
                   <div className="dim-diff" style={{ marginTop: 8 }}>
                     <h3>
-                      维度差异（仅列 |Δ|≥{thresholds.DIMENSION_DIFF_SHOWN}，
-                      其余 {comparison.hiddenDimensionCount} 项折叠）
+                      评分差别明显的方面
+                      <span className="muted" style={{ fontWeight: 400 }}>
+                        （另有 {comparison.hiddenDimensionCount} 项两套差不多，未列出）
+                      </span>
                     </h3>
                     {comparison.dimensionDeltas.map((d) => {
                       const mine = side === 0 ? d.a : d.b
@@ -260,7 +277,7 @@ export function ComparePage() {
                 )}
                 {view.audit.findings.filter((x) => x.turn_index != null).length > 0 && (
                   <div style={{ marginTop: 8 }}>
-                    <h3>可跳转缺陷</h3>
+                    <h3>需要看一眼的地方</h3>
                     {view.audit.findings
                       .filter((x) => x.turn_index != null)
                       .map((x, i) => (
@@ -280,7 +297,7 @@ export function ComparePage() {
                             }))
                           }
                         >
-                          {x.severity} → turn {x.turn_index}
+                          {SEVERITY_LABEL[x.severity]} · turn {x.turn_index}
                         </button>
                       ))}
                   </div>
@@ -299,7 +316,7 @@ export function ComparePage() {
               <button
                 type="button"
                 className="btn btn-primary"
-                disabled={!canSelect || selectedId !== null}
+                disabled={selectedId !== null}
                 onClick={() => setDialogFor(record)}
               >
                 {discarded ? '已弃用' : `选定 ${f.label} → 合成语音`}

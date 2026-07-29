@@ -8,6 +8,7 @@ cross-check, and that the archived samples do not crash the deterministic metric
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -175,6 +176,77 @@ def test_closing_rules_match_the_real_corpus() -> None:
     check("a closing with no checking time is still rejected",
           any("checking time" in e for e in (parsed.get("errors") or [])),
           str(parsed.get("errors")))
+
+
+def test_mode_and_split_rules_match_the_real_corpus() -> None:
+    """Two more rules that rejected real papers and drove regeneration.
+
+    `once only` belongs to the whole-test preamble: 7/7 full-mode openings in the archive carry
+    it, 0/20 short-mode ones do, so requiring it unconditionally was unsatisfiable in short mode.
+    The split rule accepted only first_end 5 or 6, but the real papers split at (4,5)x9, (6,7)x8,
+    (5,6)x6, (3,4)x2, (7,8)x1 -- 14/27 passing, versus 26/27 once a contiguous 3-7 is allowed.
+    The spec says "如 1-5 / 6-10", where 如 introduces an example.
+    """
+    print("narration mode and split rules match the real corpus")
+    import copy
+    import tempfile
+
+    base = json.loads((FIXTURES / "material_valid.json").read_text(encoding="utf-8"))
+    blueprint = json.loads((FIXTURES / "blueprint_valid.json").read_text(encoding="utf-8"))
+    turns = base["listening_material_parts"][0]["script"]["turns"]
+    narr = [i for i, t in enumerate(turns) if t["speaker"] == "speaker1"]
+    scratch = Path(tempfile.mkdtemp())
+
+    def verdict(material: dict, bp: dict) -> dict:
+        mp, bpp = scratch / "m.json", scratch / "b.json"
+        mp.write_text(json.dumps(material, ensure_ascii=False), encoding="utf-8")
+        bpp.write_text(json.dumps(bp, ensure_ascii=False), encoding="utf-8")
+        out = run(VALIDATE, str(mp), "--blueprint", str(bpp), "--json").stdout
+        return json.loads(out) if out.strip() else {}
+
+    # A short-mode opening with no "once only" is what 20 of the 27 real papers look like.
+    short_bp = copy.deepcopy(blueprint)
+    short_bp["narration_mode"] = "short"
+    short = copy.deepcopy(base)
+    short["listening_material_parts"][0]["script"]["turns"][narr[0]]["text"] = (
+        "Part one. You will hear a conversation between a woman and a letting agent. "
+        "First, you have some time to look at questions 1 to 5. "
+        "Now listen carefully and answer questions 1 to 5.")
+    got = verdict(short, short_bp)
+    check("short-mode opening without 'once only' is not an error",
+          not [e for e in (got.get("errors") or []) if "once only" in e],
+          str(got.get("errors")))
+
+    # But a full-mode opening still must carry it: that is where the spec puts it.
+    full_bp = copy.deepcopy(blueprint)
+    full_bp["narration_mode"] = "full"
+    stripped = copy.deepcopy(base)
+    stripped["listening_material_parts"][0]["script"]["turns"][narr[0]]["text"] = (
+        turns[narr[0]]["text"].replace("once only", "one time"))
+    got = verdict(stripped, full_bp)
+    check("full-mode opening without 'once only' is still rejected",
+          any("once only" in e for e in (got.get("errors") or [])),
+          str(got.get("errors")))
+
+    # The most common real split (1-4 / 5-10) used to be rejected outright.
+    shifted = copy.deepcopy(base)
+    sturns = shifted["listening_material_parts"][0]["script"]["turns"]
+    sturns[narr[0]]["text"] = re.sub(r"1 to \d+", "1 to 4", sturns[narr[0]]["text"])
+    sturns[narr[1]]["text"] = re.sub(r"\d+ to 10", "5 to 10", sturns[narr[1]]["text"])
+    got = verdict(shifted, blueprint)
+    check("a 1-4/5-10 split is not rejected for its range",
+          not [e for e in (got.get("errors") or []) if "contiguous groups" in e],
+          str(got.get("errors")))
+
+    # A non-contiguous split is still a real defect: question 5 would belong to no group.
+    broken = copy.deepcopy(base)
+    bturns = broken["listening_material_parts"][0]["script"]["turns"]
+    bturns[narr[0]]["text"] = re.sub(r"1 to \d+", "1 to 4", bturns[narr[0]]["text"])
+    bturns[narr[1]]["text"] = re.sub(r"\d+ to 10", "7 to 10", bturns[narr[1]]["text"])
+    got = verdict(broken, blueprint)
+    check("a non-contiguous split is still rejected",
+          any("contiguous groups" in e for e in (got.get("errors") or [])),
+          str(got.get("errors")))
 
 
 def test_grouping_cannot_be_faked() -> None:
@@ -393,6 +465,7 @@ def main() -> int:
         test_new_checks_catch_defects,
         test_malformed_turns_stay_reportable,
         test_closing_rules_match_the_real_corpus,
+        test_mode_and_split_rules_match_the_real_corpus,
         test_grouping_cannot_be_faked,
         test_spelled_name_rule_not_vacuous,
         test_metrics_absent_when_unmeasured,

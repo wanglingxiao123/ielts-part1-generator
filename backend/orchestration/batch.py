@@ -18,10 +18,16 @@ from .scenarios import Scenario
 
 __all__ = ["BatchRequest", "Budget", "run_batch"]
 
-# Concurrency defaults to the scenario count. GPT-5.6's TPM/RPM on the mantle channel was not
-# documented at planning time, so this is an environment variable: on 429s, lower it rather than
-# adding retries, since retries push total elapsed time toward the 15-minute wall.
-DEFAULT_CONCURRENCY = int(os.environ.get("IELTS_CONCURRENCY", "3"))
+# Concurrency follows the batch size up to this ceiling, rather than being pinned at 3. The
+# comment here used to claim it defaulted to the scenario count while the code said 3, so a batch
+# of 4 ran three materials and then one alone -- the last slot paying full latency by itself and
+# roughly doubling perceived wall time.
+#
+# Per-material latency is dominated by waiting on the model, not by local CPU, so slots cost
+# little to hold open. The ceiling exists only because GPT-5.6's TPM/RPM on the mantle channel is
+# undocumented: on 429s, lower IELTS_CONCURRENCY rather than adding retries, since retries push
+# total elapsed time toward the 15-minute request wall.
+MAX_CONCURRENCY = int(os.environ.get("IELTS_CONCURRENCY", "6"))
 HARD_LIMIT_SECONDS = float(os.environ.get("IELTS_HARD_LIMIT", "900"))
 SAFETY_MARGIN_SECONDS = float(os.environ.get("IELTS_SAFETY_MARGIN", "90"))
 # Conservative starting estimate, replaced by measured p95 (see docs/timing.md). Too low a value
@@ -70,11 +76,13 @@ class BatchRequest(object):
     def __init__(
         self,
         slots: List[Scenario],
-        concurrency: int = DEFAULT_CONCURRENCY,
+        concurrency: Optional[int] = None,
         budget: Optional[Budget] = None,
     ) -> None:
         self.slots = slots
-        self.concurrency = max(1, concurrency)
+        # No point holding more slots open than there is work: a batch of 2 with concurrency 6
+        # would report a misleading 6 in its config event.
+        self.concurrency = max(1, min(concurrency or MAX_CONCURRENCY, len(slots) or 1))
         self.budget = budget or Budget()
 
 

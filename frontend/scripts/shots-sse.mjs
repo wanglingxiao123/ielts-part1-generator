@@ -2,6 +2,7 @@
 // a partial terminal state with retry. Uses the mock's programmable options.
 import { mkdir } from 'node:fs/promises'
 import { chromium } from 'playwright'
+import { signIn } from './signIn.mjs'
 
 const OUT = '/tmp/shots'
 const BASE = 'http://localhost:5173'
@@ -22,6 +23,7 @@ async function run(label, mockOptions, steps) {
     window.__MOCK_OPTIONS__ = opts
   }, mockOptions)
   await page.goto(BASE, { waitUntil: 'networkidle' })
+  await signIn(page, BASE)
   for (const key of ['booking-hotel', 'booking-car-rental', 'accommodation-rental']) {
     await page.locator(`.scn-row:has-text("${key}") input[type=checkbox]`).first().check()
   }

@@ -1,84 +1,95 @@
 /**
- * Cognito auth (design.md §7.1): oidc-client-ts + react-oidc-context,
- * Hosted UI, Authorization Code + PKCE, no client secret.
+ * Session state over the web tier's cookie API (web/app.py `/api/auth/*`).
  *
- * DEV BYPASS: `auth.devBypass` in config.json short-circuits to a fake session.
- * The AWS credentials on this machine are expired, so the User Pool cannot be
- * reached; the bypass keeps the app reviewable without weakening the real path —
- * the guard, the role plumbing and the 401 interceptor are the same code either
- * way, and a deployed config.json must set devBypass:false.
+ * Replaces an oidc-client-ts / Cognito Hosted UI provider. Cognito was never
+ * deployed — its hosted login refuses HTTP callbacks for any host but localhost,
+ * and this deployment is plain HTTP on a Fargate task IP — so the web tier owns
+ * accounts itself. The old provider's `devBypass` flag papered over that with a
+ * fake session, which meant the only two configurations were "fake login" and
+ * "redirect to a Hosted UI that does not exist".
+ *
+ * The cookie is HttpOnly, so mounting cannot read a session out of storage: the
+ * single source of truth is `GET /api/auth/me`, called once on mount. That probe
+ * is also why `isLoading` exists — rendering the login form before it answers
+ * would flash a form at an already-signed-in user on every reload.
  */
-import { useMemo, type ReactNode } from 'react'
-import { AuthProvider as OidcProvider, useAuth as useOidcAuth } from 'react-oidc-context'
-import { WebStorageStateStore } from 'oidc-client-ts'
-import { getConfig } from '@/config/runtimeConfig'
-import { rolesFromGroups } from './permissions'
-import { RETURN_TO_KEY, SessionContext, type Session } from './sessionContext'
-
-const DEV_SESSION: Omit<Session, 'signIn' | 'signOut'> = {
-  isAuthenticated: true,
-  isLoading: false,
-  idToken: null,
-  username: 'dev@local',
-  sub: 'dev-local-sub',
-  roles: ['generator', 'reviewer'],
-  mode: 'dev-bypass',
-  error: null,
-}
-
-function CognitoSession({ children }: { children: ReactNode }) {
-  const auth = useOidcAuth()
-  const session = useMemo<Session>(() => {
-    const profile = auth.user?.profile as Record<string, unknown> | undefined
-    return {
-      isAuthenticated: auth.isAuthenticated,
-      isLoading: auth.isLoading,
-      idToken: auth.user?.id_token ?? null,
-      username:
-        (profile?.email as string | undefined) ??
-        (profile?.['cognito:username'] as string | undefined) ??
-        '',
-      sub: (profile?.sub as string | undefined) ?? '',
-      roles: rolesFromGroups(profile?.['cognito:groups']),
-      mode: 'cognito',
-      error: auth.error?.message ?? null,
-      signIn: (returnTo) => {
-        if (returnTo) sessionStorage.setItem(RETURN_TO_KEY, returnTo)
-        void auth.signinRedirect()
-      },
-      signOut: () => void auth.signoutRedirect(),
-    }
-  }, [auth])
-  return <SessionContext.Provider value={session}>{children}</SessionContext.Provider>
-}
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import * as authApi from './authApi'
+import type { AuthUser } from './authApi'
+import { SessionContext, type Session } from './sessionContext'
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const cfg = getConfig()
+  const [user, setUser] = useState<AuthUser | null>(null)
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
-  if (cfg.auth.devBypass) {
-    const session: Session = { ...DEV_SESSION, signIn: () => {}, signOut: () => {} }
-    return <SessionContext.Provider value={session}>{children}</SessionContext.Provider>
-  }
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const found = await authApi.me()
+        if (!cancelled) {
+          setUser(found)
+          setError(null)
+        }
+      } catch (err) {
+        // Only a transport/5xx failure lands here; `me()` maps 401 → null.
+        if (!cancelled) setError(err instanceof Error ? err.message : '无法确认登录状态')
+      } finally {
+        if (!cancelled) setIsLoading(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
-  return (
-    <OidcProvider
-      authority={cfg.auth.authority}
-      client_id={cfg.auth.clientId}
-      redirect_uri={`${window.location.origin}/auth/callback`}
-      post_logout_redirect_uri={window.location.origin}
-      response_type="code"
-      scope={cfg.auth.scope}
-      // access/id tokens stay in memory; only the refresh state is persisted.
-      // A pure SPA cannot use httpOnly cookies without a BFF (prd Open Q4).
-      userStore={new WebStorageStateStore({ store: window.sessionStorage })}
-      automaticSilentRenew
-      onSigninCallback={() => {
-        const returnTo = sessionStorage.getItem(RETURN_TO_KEY)
-        sessionStorage.removeItem(RETURN_TO_KEY)
-        window.history.replaceState({}, '', returnTo || '/')
-      }}
-    >
-      <CognitoSession>{children}</CognitoSession>
-    </OidcProvider>
+  const signIn = useCallback(async (email: string, password: string) => {
+    const next = await authApi.login(email, password)
+    setUser(next)
+    setError(null)
+  }, [])
+
+  const signUp = useCallback(async (email: string, password: string) => {
+    const next = await authApi.register(email, password)
+    setUser(next)
+    setError(null)
+  }, [])
+
+  /**
+   * Never rejects. Sign-out has no failure a user could act on, and the top bar
+   * calls it as `void signOut()` — a rejecting promise there is an unhandled
+   * rejection, not an error message.
+   *
+   * The local session is dropped even when the request failed, so the UI matches
+   * what the user asked for. That is best-effort by design at both ends:
+   * web/auth.py's token is stateless, so logout only ever clears the cookie and a
+   * token that escaped stays valid until it expires.
+   */
+  const signOut = useCallback(async () => {
+    try {
+      await authApi.logout()
+    } catch (err) {
+      console.warn('[auth] logout request failed; clearing the local session anyway:', err)
+    }
+    setUser(null)
+    setError(null)
+  }, [])
+
+  const session = useMemo<Session>(
+    () => ({
+      isAuthenticated: user !== null,
+      isLoading,
+      user,
+      email: user?.email ?? '',
+      isAdmin: user?.is_admin ?? false,
+      error,
+      signIn,
+      signUp,
+      signOut,
+    }),
+    [user, isLoading, error, signIn, signUp, signOut],
   )
+
+  return <SessionContext.Provider value={session}>{children}</SessionContext.Provider>
 }

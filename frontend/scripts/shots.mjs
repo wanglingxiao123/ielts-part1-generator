@@ -3,6 +3,7 @@
 //   node scripts/shots.mjs
 import { mkdir } from 'node:fs/promises'
 import { chromium } from 'playwright'
+import { signIn } from './signIn.mjs'
 
 const OUT = '/tmp/shots'
 const BASE = 'http://localhost:5173'
@@ -35,6 +36,7 @@ async function ctx2Run() {
   }
 
   await p2.goto(BASE, { waitUntil: 'networkidle' })
+  await signIn(p2, BASE)
   await p2.locator('.scn-row:has-text("booking-hotel") input[type=checkbox]').first().check()
   await p2.locator('.summary-bar button').click()
   await p2.waitForURL(/\/batches\//)
@@ -109,6 +111,7 @@ async function ctx2Run() {
 // ── 1. scenario selection ────────────────────────────────────────────────────
 console.log('1. scenario selection')
 await page.goto(BASE, { waitUntil: 'networkidle' })
+await signIn(page, BASE)
 await page.waitForSelector('.scn-row')
 const catCount = await page.locator('.scn-cat').count()
 const scnCount = await page.locator('.scn-row input[type=checkbox]').count()
@@ -172,16 +175,19 @@ console.log(`   after reload: cards=${afterReload} url=${page.url() === batchUrl
 await shot('08-batch-after-reload')
 
 // ── 3. fixture gallery: balanced vs clustered ────────────────────────────────
-console.log('3. fixture gallery')
-await page.goto(`${BASE}/gallery`, { waitUntil: 'networkidle' })
+// Dev harness at /dev/fixtures, VITE_MOCK=1 only, deliberately not in the nav
+// (it shows hand-built fixtures, which a reviewer reads as their own material).
+// This script already runs against the mock server, so the route is available.
+console.log('3. fixture gallery (dev harness)')
+await page.goto(`${BASE}/dev/fixtures`, { waitUntil: 'networkidle' })
 await page.waitForSelector('.strip-axis')
 await shot('09-gallery-strips', { fullPage: true })
 await page.locator('.strip').first().screenshot({ path: `${OUT}/10-strip-balanced.png` })
 await page.locator('.strip').nth(1).screenshot({ path: `${OUT}/11-strip-clustered.png` })
 
 // metric table values
-const rows = await page.locator('.panel:has-text("指标对照") tbody tr').allInnerTexts()
-console.log('   metric table:')
+const rows = await page.locator('.panel:has-text("出题就绪度对照") .usability-cmp tbody tr').allInnerTexts()
+console.log('   usability table:')
 for (const r of rows) console.log(`     ${r.replace(/\n/g, ' | ')}`)
 
 // ── 4. full reader, clustered then balanced ──────────────────────────────────
@@ -231,7 +237,7 @@ console.log(`   balanced overlaps=${JSON.stringify(overlapBal)}`)
 await page.locator('button:has-text("锚点失配")').click()
 await page.waitForTimeout(600)
 const bannerVisible = await page.locator('.banner-bad:has-text("旁注可能错位")').count()
-const redFlag = await page.locator('.ann-card .flag-bad:has-text("锚点失配")').count()
+const redFlag = await page.locator('.ann-card .flag-bad:has-text("旁注位置可疑")').count()
 console.log(`   anchorMismatch: banner=${bannerVisible} red flags=${redFlag}`)
 await shot('14-reader-anchor-mismatch')
 
@@ -241,14 +247,14 @@ await page.goto(`${BASE}/compare/booking-hotel`, { waitUntil: 'networkidle' })
 await page.waitForTimeout(1200)
 const audioControls = await page.locator('.player, audio, button:has-text("播放")').count()
 console.log(`   audio controls present in compare = ${audioControls}`)
-const summary = await page.locator('.panel:has-text("差异摘要")').count()
+const summary = await page.locator('.panel:has-text("哪一套更好出题")').count()
 if (summary) {
-  console.log(`   summary: ${(await page.locator('.panel:has-text("差异摘要") > div').first().innerText()).slice(0, 200)}`)
+  console.log(`   summary: ${(await page.locator('.panel:has-text("哪一套更好出题") > div').first().innerText()).slice(0, 200)}`)
 }
 await shot('15-compare', { fullPage: true })
 
 // finding jump
-const jumpBtn = page.locator('button:has-text("→ turn")').first()
+const jumpBtn = page.locator('.cmp-col button:has-text("· turn")').first()
 if (await jumpBtn.count()) {
   const label = await jumpBtn.innerText()
   await jumpBtn.click()

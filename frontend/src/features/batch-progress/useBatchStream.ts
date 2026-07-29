@@ -22,10 +22,13 @@ export interface BatchStreamApi {
 }
 
 export function useBatchStream(): BatchStreamApi {
-  const { sub } = useSession()
+  // The email is the account identity now that there is no Cognito `sub`. It is
+  // only a namespace for locally persisted batch state, and the web tier
+  // lower-cases addresses before minting a session, so it is stable per account.
+  const { email } = useSession()
 
-  const connect = useCallback((batchId: string) => connectBatchStream(batchId, sub), [sub])
-  const resumePersisted = useCallback(() => loadPersisted(sub), [sub])
+  const connect = useCallback((batchId: string) => connectBatchStream(batchId, email), [email])
+  const resumePersisted = useCallback(() => loadPersisted(email), [email])
 
   return {
     connect,

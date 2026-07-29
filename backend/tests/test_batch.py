@@ -190,6 +190,31 @@ class TestBatchEvents:
         [event async for event in run_batch(request)]
         assert peak["max"] <= 2
 
+    async def test_a_batch_runs_all_its_slots_at_once_by_default(self, monkeypatch):
+        """Every other test passes `concurrency` explicitly, so the DEFAULT was never covered --
+        which is how the module comment ("defaults to the scenario count") and the code (a hard 3)
+        drifted apart unnoticed. A batch of 4 therefore ran 3 materials and then the 4th alone,
+        paying a full material's latency twice over for no reason."""
+        peak = {"now": 0, "max": 0}
+
+        async def tracked(scenario, slot_id, emit, allow_revision):
+            peak["now"] += 1
+            peak["max"] = max(peak["max"], peak["now"])
+            await asyncio.sleep(0.02)
+            peak["now"] -= 1
+            return succeeded(slot_id, scenario.id)
+
+        monkeypatch.setattr(batch_module, "run_one", tracked)
+        request = BatchRequest([FakeScenario(str(i)) for i in range(4)])
+        assert request.concurrency == 4
+        [event async for event in run_batch(request)]
+        assert peak["max"] == 4
+
+    def test_concurrency_never_exceeds_the_work_available(self):
+        """Otherwise the config event advertises a parallelism the batch cannot use."""
+        assert BatchRequest([FakeScenario("a"), FakeScenario("b")]).concurrency == 2
+        assert BatchRequest([FakeScenario("a")]).concurrency == 1
+
 
 class TestScenarioCatalogue:
     def test_all_six_specification_categories_are_present(self, catalogue):

@@ -1,8 +1,15 @@
 /**
+ * DEVELOPMENT HARNESS — not a product page.
+ *
  * Side-by-side balanced vs clustered, on the SAME script with the SAME ten
  * points — only turn_index differs. This is the review gate from implement.md
  * phase 4: a stranger must be able to point at the clustered one within three
  * seconds without reading any code.
+ *
+ * Routed at /dev/fixtures under VITE_MOCK=1 only, and not in the nav: it shows
+ * hand-built fixtures, which a reviewer will read as their own generated
+ * material. Reviewers reach a preview via 场景选择 → 批次 → 阅读/对比.
+ * See App.tsx.
  */
 import { useMemo, useState } from 'react'
 import { getThresholds } from '@/config/runtimeConfig'
@@ -10,6 +17,7 @@ import { computeDistribution } from '@/domain/distribution'
 import { analyseFormGroups } from '@/domain/formGroups'
 import { joinFromRecord } from '@/domain/joinArtifacts'
 import { buildRecord, type FixtureKind } from '@/mocks/fixtures'
+import { UsabilityCompare } from '../compare/UsabilityCompare'
 import { MaterialReader } from './MaterialReader'
 import { QuestionTypePanel } from './QuestionTypePanel'
 import { DistributionStrip } from './DistributionStrip'
@@ -54,9 +62,12 @@ export function FixtureGalleryPage() {
   return (
     <div className="page-wide">
       <div className="row" style={{ marginBottom: 10 }}>
-        <h2 style={{ margin: 0 }}>夹具对照</h2>
+        <h2 style={{ margin: 0 }}>开发用固定样例</h2>
+        {/* Says out loud that this is not the client's material — the previous
+            title (夹具对照) meant nothing outside our own test vocabulary. */}
+        <span className="flag flag-warn">DEV ONLY · 非生成结果</span>
         <span className="muted" style={{ fontSize: 12 }}>
-          同一份脚本、同样十个信息点，只有 turn_index 不同
+          手工构造的样例，用于验证渲染；同一份脚本、同样十个信息点，只有 turn_index 不同
         </span>
         <div className="spacer" style={{ flex: 1 }} />
         <button
@@ -101,45 +112,46 @@ export function FixtureGalleryPage() {
           </div>
 
           <div className="panel panel-pad" style={{ marginTop: 12 }}>
-            <h3>指标对照（domain/distribution.ts 的确定性输出）</h3>
-            <table className="qt-table">
-              <thead>
-                <tr>
-                  <th>指标</th>
-                  <th>均衡</th>
-                  <th>扎堆</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(
-                  [
-                    ['间隔序列', (m: typeof balanced.metrics) => m.gaps.join(', ')],
-                    ['最大间隔', (m: typeof balanced.metrics) => String(m.maxGap)],
-                    ['间隔 CV', (m: typeof balanced.metrics) => m.cv.toFixed(3)],
-                    ['均匀度', (m: typeof balanced.metrics) => `${m.uniformity}/100`],
-                    [
-                      '检出扎堆',
-                      (m: typeof balanced.metrics) =>
-                        m.clusters.length === 0
-                          ? '无'
-                          : m.clusters
-                              .map((c) => `${c.numbers.join('/')} @ turn ${c.turnStart}–${c.turnEnd}`)
-                              .join('; '),
-                    ],
-                    [
-                      '前后段点数',
-                      (m: typeof balanced.metrics) => `${m.firstHalfCount} / ${m.secondHalfCount}`,
-                    ],
-                  ] as const
-                ).map(([label, fn]) => (
-                  <tr key={label}>
-                    <td>{label}</td>
-                    <td className="mono">{fn(balanced.metrics)}</td>
-                    <td className="mono">{fn(clustered.metrics)}</td>
+            <h3>出题就绪度对照</h3>
+            <UsabilityCompare
+              columns={[
+                { label: '均衡', metrics: balanced.metrics },
+                { label: '扎堆', metrics: clustered.metrics },
+              ]}
+            />
+            {/* Dev-only escape hatch: the raw numbers stay reachable for
+                debugging a threshold, but collapsed so the page still reads as
+                a conclusion first. */}
+            <details style={{ marginTop: 8 }}>
+              <summary className="muted" style={{ fontSize: 11, cursor: 'pointer' }}>
+                原始度量（调试用）
+              </summary>
+              <table className="qt-table" style={{ marginTop: 6 }}>
+                <thead>
+                  <tr>
+                    <th />
+                    <th>均衡</th>
+                    <th>扎堆</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {(
+                    [
+                      ['gaps', (m: typeof balanced.metrics) => m.gaps.join(', ')],
+                      ['maxGap', (m: typeof balanced.metrics) => String(m.maxGap)],
+                      ['cv', (m: typeof balanced.metrics) => m.cv.toFixed(3)],
+                      ['uniformity', (m: typeof balanced.metrics) => String(m.uniformity)],
+                    ] as const
+                  ).map(([label, fn]) => (
+                    <tr key={label}>
+                      <td className="mono">{label}</td>
+                      <td className="mono">{fn(balanced.metrics)}</td>
+                      <td className="mono">{fn(clustered.metrics)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </details>
           </div>
         </>
       ) : (

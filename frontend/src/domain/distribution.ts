@@ -50,6 +50,20 @@ export interface DistributionMetrics {
   clusters: Cluster[]
   /** Gaps at least 2x the mean — the "empty stretch" callouts. */
   wideGaps: Array<{ index: number; size: number; fromOrdinal: number; toOrdinal: number }>
+  /**
+   * Adjacent pairs where a HIGHER question number is spoken before a lower one
+   * (spec §4B-2 线性顺序性: 音频出现顺序必须等于题号顺序，几乎不回跳).
+   *
+   * Pure ordering of the already-placed points — no threshold involved. Points
+   * sharing one ordinal are tie-broken by number, so a single turn carrying two
+   * points is never reported as a jump-back.
+   */
+  outOfOrder: Array<{
+    spokenFirst: number
+    spokenSecond: number
+    turnFirst: number
+    turnSecond: number
+  }>
   cvWarn: boolean
   balanced: boolean
   notes: string[]
@@ -171,6 +185,22 @@ export function computeDistribution(
       return { index: g.index, size: g.size, fromOrdinal, toOrdinal }
     })
 
+  // Linearity (spec §4B-2). `points` is sorted by ordinal, so any place where
+  // the item number decreases is an audible jump back to an earlier question.
+  const outOfOrder: DistributionMetrics['outOfOrder'] = []
+  for (let i = 1; i < points.length; i += 1) {
+    const prev = points[i - 1]!
+    const cur = points[i]!
+    if (cur.number < prev.number && cur.ordinal > prev.ordinal) {
+      outOfOrder.push({
+        spokenFirst: prev.number,
+        spokenSecond: cur.number,
+        turnFirst: prev.turnIndex,
+        turnSecond: cur.turnIndex,
+      })
+    }
+  }
+
   const notes: string[] = []
   for (const c of clusters) {
     notes.push(
@@ -179,6 +209,12 @@ export function computeDistribution(
   }
   for (const g of wideGaps) {
     notes.push(`对话轮次 ${g.fromOrdinal}→${g.toOrdinal} 存在 ${g.size} 轮空档`)
+  }
+  for (const o of outOfOrder) {
+    notes.push(
+      `第 ${o.spokenSecond} 题的信息（turn ${o.turnSecond}）出现在第 ${o.spokenFirst} 题` +
+        `（turn ${o.turnFirst}）之后，题号回跳`,
+    )
   }
   if (unplacedNumbers.length > 0) {
     notes.push(`${unplacedNumbers.map((n) => `#${n}`).join('')} 锚点无法定位，未计入分布指标`)
@@ -201,6 +237,7 @@ export function computeDistribution(
     splitOrdinal,
     clusters,
     wideGaps,
+    outOfOrder,
     cvWarn: cv > thresholds.CV_WARN,
     balanced: Math.abs(firstHalfCount - secondHalfCount) <= 1,
     notes,

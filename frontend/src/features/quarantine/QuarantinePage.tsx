@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '@/api/endpoints'
 import type { MaterialRecord } from '@/contracts/api'
+import { SEVERITY_LABEL } from '@/domain/types'
 
 /**
  * Quarantine (prd R7). FAIL and NOT_ASSESSABLE both land here (design.md §11),
@@ -75,8 +76,10 @@ export function QuarantinePage() {
                 {r.quarantine_reason?.message ?? '未提供隔离原因'}
                 <div className="muted">
                   总分 {r.audit.score.total} ·{' '}
-                  {r.audit.findings.filter((f) => f.severity === 'critical').length} critical ·{' '}
-                  {r.audit.findings.filter((f) => f.severity === 'major').length} major
+                  {SEVERITY_LABEL.critical}{' '}
+                  {r.audit.findings.filter((f) => f.severity === 'critical').length} 处 ·{' '}
+                  {SEVERITY_LABEL.major}{' '}
+                  {r.audit.findings.filter((f) => f.severity === 'major').length} 处
                 </div>
               </span>
               <Link className="btn btn-sm" to={`/materials/${r.material_id}`}>

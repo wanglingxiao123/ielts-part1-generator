@@ -39,17 +39,17 @@ export interface Thresholds {
   CALIBRATED: boolean
 }
 
+/**
+ * No `auth` section, deliberately.
+ *
+ * The Cognito shape (authority / clientId / cognitoDomain / scope / devBypass)
+ * is gone: authentication is a same-origin HttpOnly session cookie issued by the
+ * web tier, which needs no client-side configuration at all — there is nothing an
+ * operator could get wrong here, and no flag that could ship a fake session.
+ */
 export interface RuntimeConfig {
   contractVersion: string
   apiBaseUrl: string
-  auth: {
-    authority: string
-    clientId: string
-    cognitoDomain: string
-    scope: string
-    /** Skips Cognito for local review. Must be false in deployed configs. */
-    devBypass: boolean
-  }
   thresholds: Thresholds
   limits: { maxBatch: number; hardLimitSeconds: number; warnAtSeconds: number }
   flags: {
@@ -73,13 +73,6 @@ export interface RuntimeConfig {
 export const FALLBACK_CONFIG: RuntimeConfig = {
   contractVersion: '1',
   apiBaseUrl: '/api',
-  auth: {
-    authority: '',
-    clientId: '',
-    cognitoDomain: '',
-    scope: 'openid profile email',
-    devBypass: true,
-  },
   thresholds: {
     CV_WARN: 0.75,
     CV_FAIL: 1.15,
@@ -107,7 +100,6 @@ export async function loadRuntimeConfig(): Promise<RuntimeConfig> {
     current = {
       ...FALLBACK_CONFIG,
       ...body,
-      auth: { ...FALLBACK_CONFIG.auth, ...body.auth },
       thresholds: { ...FALLBACK_CONFIG.thresholds, ...body.thresholds },
       limits: { ...FALLBACK_CONFIG.limits, ...body.limits },
       flags: { ...FALLBACK_CONFIG.flags, ...body.flags },

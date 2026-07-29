@@ -4,6 +4,8 @@ import { joinFromRecord } from './joinArtifacts'
 import { computeDistribution } from './distribution'
 import { analyseFormGroups } from './formGroups'
 import { buildFacts, compareCandidates } from './compare'
+import { assessUsability } from './usability'
+import { CONTENT_RULES, contentFacts, distractionMap, distractionOf } from './pointFacts'
 import { buildPlaylist, entryForTurn, nextPlayable } from './playlist'
 import { buildRecord, mockManifest } from '@/mocks/fixtures'
 import type { Blueprint } from '@/contracts'
@@ -130,6 +132,136 @@ describe('distribution', () => {
     expect(d.points).toHaveLength(9)
     expect(d.notes.some((n) => n.includes('锚点无法定位'))).toBe(true)
   })
+
+  /**
+   * Linearity (spec §4B-2 线性顺序性). Both fixtures are in order; the check has
+   * to be able to see a violation, or it is decoration.
+   */
+  it('reports no jump-back on either fixture', () => {
+    expect(dBal.outOfOrder).toEqual([])
+    expect(dClu.outOfOrder).toEqual([])
+  })
+
+  it('catches a question whose information is spoken after a later question', () => {
+    const bp = structuredClone(balanced.blueprint) as Blueprint
+    // Swap points 2 and 3: #3 now speaks at turn 8, #2 at turn 10 → 题号回跳.
+    const i2 = bp.items.find((i) => i.number === 2)!
+    const i3 = bp.items.find((i) => i.number === 3)!
+    i2.turn_index = 10
+    i2.evidence = balanced.turns[10]!.text
+    i3.turn_index = 8
+    i3.evidence = balanced.turns[8]!.text
+    const d = computeDistribution({ ...balanced, blueprint: bp }, T)
+    expect(d.outOfOrder).toEqual([
+      { spokenFirst: 3, spokenSecond: 2, turnFirst: 8, turnSecond: 10 },
+    ])
+    expect(d.notes.some((n) => n.includes('题号回跳'))).toBe(true)
+  })
+
+  it('does not call two points on one turn a jump-back', () => {
+    const bp = structuredClone(balanced.blueprint) as Blueprint
+    // #5 moved onto #4's turn: same ordinal, so there is no audible reordering.
+    const i5 = bp.items.find((i) => i.number === 5)!
+    i5.turn_index = 12
+    i5.evidence = balanced.turns[12]!.text
+    expect(computeDistribution({ ...balanced, blueprint: bp }, T).outOfOrder).toEqual([])
+  })
+})
+
+/**
+ * The reviewer-facing translation layer. These assertions are about the WORDS a
+ * question-writer reads, because that is the thing that was broken: the metrics
+ * were correct all along and still unusable.
+ */
+describe('usability verdict', () => {
+  const vBal = assessUsability(computeDistribution(balanced, T))
+  const vClu = assessUsability(computeDistribution(clustered, T))
+
+  it('reads out a conclusion, never a coefficient', () => {
+    const all = [vBal, vClu].flatMap((v) => [v.headline, ...v.checks.map((c) => c.detail)])
+    for (const text of all) {
+      for (const jargon of ['CV', '均匀度', 'uniformity', '间隔', '阈值']) {
+        expect(text, text).not.toContain(jargon)
+      }
+    }
+  })
+
+  it('turns the 6/7/8 cluster into "考生来不及记" rather than a cluster count', () => {
+    const pace = vClu.checks.find((c) => c.key === 'pace')!
+    expect(pace.level).toBe('needsWork')
+    expect(pace.detail).toContain('⑥⑦⑧ 挤在 turn 27–29')
+    expect(pace.detail).toContain('来不及记')
+    // The balanced fixture has no cluster, so its pace check must pass — the two
+    // must not both read as "有问题" or the signal is worthless.
+    expect(vBal.checks.find((c) => c.key === 'pace')!.level).toBe('ready')
+  })
+
+  it('blocks question writing when the question order jumps back', () => {
+    const bp = structuredClone(balanced.blueprint) as Blueprint
+    const i2 = bp.items.find((i) => i.number === 2)!
+    const i3 = bp.items.find((i) => i.number === 3)!
+    i2.turn_index = 10
+    i2.evidence = balanced.turns[10]!.text
+    i3.turn_index = 8
+    i3.evidence = balanced.turns[8]!.text
+    const v = assessUsability(computeDistribution({ ...balanced, blueprint: bp }, T))
+    expect(v.level).toBe('blocked')
+    expect(v.headline).toContain('暂不能直接出题')
+    expect(v.checks.find((c) => c.key === 'order')!.detail).toContain('题号回跳')
+  })
+
+  it('says nothing about anchors when every point is placed', () => {
+    // A row reading "10 个点都定位到了" is the kind of noise this redesign removes.
+    expect(vBal.checks.some((c) => c.key === 'anchor')).toBe(false)
+    const bp = structuredClone(balanced.blueprint) as Blueprint
+    bp.items[0]!.turn_index = 999
+    const v = assessUsability(computeDistribution({ ...balanced, blueprint: bp }, T))
+    const anchor = v.checks.find((c) => c.key === 'anchor')!
+    expect(anchor.level).toBe('blocked')
+    expect(anchor.detail).toContain('①')
+  })
+
+  it('agrees with the metrics it was derived from', () => {
+    // The whole point of deriving the words from DistributionMetrics: the strip's
+    // shading and the sentence beneath it cannot contradict each other.
+    const d = computeDistribution(clustered, T)
+    const paceProblem = vClu.checks.find((c) => c.key === 'pace')!.level !== 'ready'
+    expect(paceProblem).toBe(d.clusters.length > 0 || d.cvWarn)
+    const coverageProblem = vClu.checks.find((c) => c.key === 'coverage')!.level !== 'ready'
+    expect(coverageProblem).toBe(d.wideGaps.length > 0)
+  })
+})
+
+/** 干扰机制必须说出是哪一种（规范 §4B-4），而不是一个 boolean。 */
+describe('pointFacts', () => {
+  it('resolves each distractor to the mechanism the blueprint declares', () => {
+    const bp = balanced.blueprint
+    const kinds = distractionMap(bp)
+    // #5 is the correction target ("still in primary school"), #7's answer word
+    // ("house") is the one referred to indirectly as "the latter".
+    expect(kinds.get(5)).toBe('correction')
+    expect(kinds.get(7)).toBe('paraphrase')
+    // Non-distractors get no entry at all — 「非干扰」 is not a finding.
+    for (const item of bp.items.filter((i) => !i.distractor)) {
+      expect(kinds.has(item.number)).toBe(false)
+    }
+  })
+
+  it('falls back to 干扰 when a distractor matches neither declared mechanism', () => {
+    const bp = structuredClone(balanced.blueprint) as Blueprint
+    const item = bp.items.find((i) => i.number === 9)!
+    expect(item.distractor).toBe(true) // declared, but not the correction/paraphrase one
+    expect(distractionOf(item, bp)).toBe('unspecified')
+  })
+
+  it('counts the content requirements the spec states, not invented ones', () => {
+    const f = contentFacts(balanced.blueprint)
+    expect(f.spellingNumbers).toEqual([1]) // §3: ≥1 处姓名拼读
+    expect(f.spellingUnconfirmed).toEqual([]) // 拼读点已被复述确认
+    expect(f.confirmedNumbers.length).toBeGreaterThanOrEqual(CONTENT_RULES.MIN_CONFIRMED)
+    expect(f.distractions.length).toBeGreaterThanOrEqual(CONTENT_RULES.MIN_DISTRACTORS)
+    expect(f.typeKindCount).toBeGreaterThanOrEqual(CONTENT_RULES.MIN_TYPE_KINDS)
+  })
 })
 
 describe('formGroups', () => {
@@ -243,7 +375,9 @@ describe('compare', () => {
     const r = compareCandidates(a, b, T)
     expect(r.lean).toBe('A')
     expect(r.decidedBy).toBe(1)
-    expect(r.summary).toContain('不可回收点')
+    // The reason names the CONSEQUENCE ("写不成题"), not the internal term
+    // 不可回收点 — that phrase meant nothing to the reviewer.
+    expect(r.summary).toContain('没听出来，写不成题')
     expect(r.summary).toContain('倾向 候选 A')
   })
 
@@ -257,12 +391,15 @@ describe('compare', () => {
     expect(r.lean).toBe('tie')
   })
 
-  it('falls through to uniformity when the fatal signals tie', () => {
+  it('falls through to distribution when the fatal signals tie', () => {
     const r = compareCandidates(factsFor(balanced, 'A'), factsFor(clustered, 'B'), T)
     expect(r.lean).toBe('A')
     // clustered has 1 unrecoverable in its cross_check fixture, so priority 1
-    // decides; assert the uniformity reason is still surfaced to the reviewer.
-    expect(r.reasons.some((x) => x.includes('分布更均匀'))).toBe(true)
+    // decides; assert the distribution reason is still surfaced — and phrased as
+    // what it costs the candidate, not as a CV comparison.
+    expect(r.reasons.some((x) => x.includes('铺得更开，考生有时间记录'))).toBe(true)
+    expect(r.reasons.some((x) => x.includes('信息点连着给'))).toBe(true)
+    expect(r.reasons.every((x) => !x.includes('CV'))).toBe(true)
   })
 
   it('lists only dimensions differing by at least DIMENSION_DIFF_SHOWN', () => {

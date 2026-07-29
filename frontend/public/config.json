@@ -1,12 +1,6 @@
 {
   "contractVersion": "1",
   "apiBaseUrl": "/api",
-  "auth": {
-    "mode": "session-cookie",
-    "loginPath": "/login",
-    "meEndpoint": "/api/auth/me",
-    "devBypass": true
-  },
   "thresholds": {
     "CV_WARN": 0.75,
     "CV_FAIL": 1.15,

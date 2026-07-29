@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from .orchestration.batch import DEFAULT_CONCURRENCY, BatchRequest, Budget
+from .orchestration.batch import MAX_CONCURRENCY, BatchRequest, Budget
 from .orchestration.scenarios import InvalidScenario, Scenario, ScenarioCatalogue
 
 __all__ = ["BadRequest", "parse_generate_request"]
@@ -79,7 +79,7 @@ def parse_generate_request(
     catalogue: ScenarioCatalogue, payload: Dict[str, Any]
 ) -> BatchRequest:
     slots = _expand(catalogue, payload)
-    concurrency = payload.get("concurrency", DEFAULT_CONCURRENCY)
+    concurrency = payload.get("concurrency", MAX_CONCURRENCY)
     try:
         concurrency = max(1, int(concurrency))
     except (TypeError, ValueError):

@@ -9,6 +9,7 @@
 // is a legitimate observed outcome rather than a script error.
 import { mkdir, writeFile } from 'node:fs/promises'
 import { chromium } from 'playwright'
+import { signIn } from './signIn.mjs'
 
 const OUT = '/tmp/shots-real'
 const BASE = 'http://localhost:5173'
@@ -46,6 +47,7 @@ const note = (msg) => {
 note(`scenarios=${SCENARIOS.join(',')} count=${COUNT}`)
 
 await page.goto(BASE, { waitUntil: 'networkidle' })
+await signIn(page, BASE)
 await shot('01-scenario-select')
 
 for (const key of SCENARIOS) {

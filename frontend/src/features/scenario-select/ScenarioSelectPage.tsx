@@ -2,7 +2,6 @@ import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '@/api/endpoints'
 import { ApiError } from '@/api/http'
-import { useCan } from '@/auth/useSession'
 import { SCENARIO_CATALOG } from '@/config/scenarios.generated'
 import { CUSTOM_SCENARIO_KEY } from '@/config/scenarioTypes'
 import type { CreateBatchRequest } from '@/contracts/api'
@@ -13,7 +12,6 @@ const CATALOG = SCENARIO_CATALOG
 
 export function ScenarioSelectPage() {
   const navigate = useNavigate()
-  const canCreate = useCan('batch.create')
   const stream = useBatchStream()
   const store = useBatchStore()
 
@@ -231,9 +229,8 @@ export function ScenarioSelectPage() {
         <button
           type="button"
           className="btn btn-primary"
-          disabled={overLimit || total === 0 || busy || !canCreate}
+          disabled={overLimit || total === 0 || busy}
           onClick={() => void submit()}
-          title={!canCreate ? '当前角色无生成权限' : undefined}
         >
           {busy ? '提交中…' : `提交生成 ${total} 套`}
         </button>

@@ -179,6 +179,7 @@ export function MaterialReader({
                   <AnnotationCard
                     key={card.id}
                     card={card}
+                    blueprint={view.blueprint}
                     selectedItem={state.selectedItem}
                     mismatches={view.anchorMismatches}
                     onSelect={selectItem}

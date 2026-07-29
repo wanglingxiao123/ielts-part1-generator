@@ -13,12 +13,12 @@ import { savePersisted, useBatchStore } from '@/stores/batchStore'
 
 let controller: SseController | null = null
 let activeBatchId: string | null = null
-let activeSub = ''
+let activeOwner = ''
 
 function persist() {
   const s = useBatchStore.getState()
   if (!s.batchId) return
-  savePersisted(activeSub, {
+  savePersisted(activeOwner, {
     batchId: s.batchId,
     seqHigh: s.seqHigh,
     receivedIds: Object.keys(s.materials),
@@ -27,11 +27,11 @@ function persist() {
   })
 }
 
-export function connectBatchStream(batchId: string, sub: string): void {
+export function connectBatchStream(batchId: string, owner: string): void {
   if (activeBatchId === batchId && controller) return // idempotent
   disconnectBatchStream()
   activeBatchId = batchId
-  activeSub = sub
+  activeOwner = owner
 
   controller = openBatchStream({
     batchId,

@@ -10,10 +10,11 @@
  * sticky at the top of the scroll container so the judgement never requires
  * scrolling (prd R4).
  */
-import { getThresholds } from '@/config/runtimeConfig'
+import { useMemo } from 'react'
 import type { DistributionMetrics } from '@/domain/distribution'
 import type { FormGroupAnalysis } from '@/domain/formGroups'
 import { circled, ITEM_FORM_LABEL, type ViewMaterial } from '@/domain/types'
+import { assessUsability, READINESS_FLAG, READINESS_LABEL } from '@/domain/usability'
 
 interface Props {
   view: ViewMaterial
@@ -37,7 +38,9 @@ export function DistributionStrip({
   playingOrdinal,
   compact,
 }: Props) {
-  const t = getThresholds()
+  // Same metrics object the marks above are drawn from, so the picture and the
+  // sentence beneath it cannot disagree.
+  const verdict = useMemo(() => assessUsability(metrics), [metrics])
   const span = Math.max(1, metrics.dialogueTurnCount - 1)
   const pct = (ordinal: number) => `${(ordinal / span) * 100}%`
 
@@ -49,7 +52,7 @@ export function DistributionStrip({
       <div className="strip-title">
         <span>信息点分布</span>
         <span className="muted" style={{ fontWeight: 400 }}>
-          横轴为对话轮次（排除旁白）· 点位不避让，重叠即为扎堆信号
+          横轴＝对话进行到第几轮（不含旁白）· 点挨在一起，就是原文里真的挨在一起
         </span>
       </div>
 
@@ -90,7 +93,7 @@ export function DistributionStrip({
               left: pct(g.fromOrdinal),
               width: `${((g.toOrdinal - g.fromOrdinal) / span) * 100}%`,
             }}
-            title={`${g.size} 轮空档（对话轮次 ${g.fromOrdinal}→${g.toOrdinal}）`}
+            title={`这 ${g.size} 轮里没有可考的信息点`}
           />
         ))}
 
@@ -131,7 +134,7 @@ export function DistributionStrip({
                 type="button"
                 className={`axis-point${selectedItem === p.number ? '' : ' dim'}`}
                 style={{ left: pct(p.ordinal), top: 16 - pile * 13 }}
-                title={`信息点 ${p.number} · turn ${p.turnIndex} · 对话轮次 ${p.ordinal}`}
+                title={`第 ${p.number} 题的信息在 turn ${p.turnIndex}，点击跳到原文`}
                 onClick={() => onPickItem(p.number, p.turnIndex)}
               >
                 {circled(p.number)}
@@ -140,24 +143,23 @@ export function DistributionStrip({
           )
         })}
 
-        {/* Gap numbers so nobody has to count turns (design.md §3.3). */}
+        {/* Length of the EMPTY stretches only, so nobody has to count turns
+            (design.md §3.3). Every gap used to be numbered, which put a row of
+            bare digits (3 4 2 2 8 …) under the axis with nothing saying what
+            they counted. A number over shading reads as "this stretch is N
+            turns long with no point in it" — the only gap a question-writer
+            acts on. */}
         {!compact && (
           <div className="gap-row">
-            {metrics.gaps.map((g, i) => {
-              const fromOrd = i === 0 ? 0 : metrics.points[i - 1]!.ordinal
-              const toOrd = i === metrics.points.length ? span : metrics.points[i]!.ordinal
-              return (
-                <span
-                  key={`gn${i}`}
-                  className={`gap-num${i === metrics.maxGapIndex ? ' max' : ''}`}
-                  style={{ left: pct((fromOrd + toOrd) / 2) }}
-                  title={i === metrics.maxGapIndex ? '最大间隔' : undefined}
-                >
-                  {g}
-                  {i === metrics.maxGapIndex ? '◀' : ''}
-                </span>
-              )
-            })}
+            {metrics.wideGaps.map((g) => (
+              <span
+                key={`gn${g.index}`}
+                className="gap-num"
+                style={{ left: pct((g.fromOrdinal + g.toOrdinal) / 2) }}
+              >
+                {g.size} 轮无考点
+              </span>
+            ))}
           </div>
         )}
 
@@ -187,8 +189,8 @@ export function DistributionStrip({
                 >
                   <span>
                     {ITEM_FORM_LABEL[g.itemForm]}
-                    {g.name ? ` 组 ${g.name}` : ''} {g.numbers.length}点 跨{g.turnSpan}
-                    {g.spanWarn ? ' ⚠ 跨度过大' : ''}
+                    {g.name ? ` ${g.name}` : ''}：{g.numbers.map((n) => circled(n)).join('')}
+                    {g.spanWarn ? ' ⚠ 跨度太宽，考生要跨半篇回忆' : ''}
                   </span>
                 </div>
               )
@@ -199,39 +201,24 @@ export function DistributionStrip({
         )}
       </div>
 
-      <div className="strip-metrics">
-        <span className="metric">
-          前段 <strong>{metrics.firstHalfCount}</strong> / 后段{' '}
-          <strong>{metrics.secondHalfCount}</strong>{' '}
-          {metrics.balanced ? (
-            <span className="flag flag-good">均衡</span>
-          ) : (
-            <span className="flag flag-warn">失衡</span>
-          )}
-        </span>
-        <span className="metric">
-          最大间隔 <strong>{metrics.maxGap}</strong> / 最小 <strong>{metrics.minGap}</strong>
-        </span>
-        <span className="metric">
-          间隔 CV <strong>{metrics.cv.toFixed(2)}</strong>{' '}
-          {metrics.cvWarn && <span className="flag flag-warn">超阈值 {t.CV_WARN}</span>}
-        </span>
-        <span className="metric">
-          均匀度 <strong>{metrics.uniformity}</strong>/100
-          {!t.CALIBRATED && (
-            <span className="flag flag-neutral" title="阈值尚无真题基线，需人工校准">
-              参考值·阈值待校准
-            </span>
-          )}
-        </span>
-        {metrics.clusters.length > 0 && (
-          <span className="flag flag-warn">检出 {metrics.clusters.length} 处扎堆</span>
-        )}
+      {/* 结论，不是指标。同一份 metrics 既画上面的点位、也写这里的判断。 */}
+      <div className="strip-verdict">
+        <div className="verdict-headline">
+          <span className={`flag ${READINESS_FLAG[verdict.level]}`}>
+            {READINESS_LABEL[verdict.level]}
+          </span>
+          <span>{verdict.headline}</span>
+        </div>
+        <ul className="verdict-checks">
+          {verdict.checks.map((c) => (
+            <li key={c.key} className={c.level === 'ready' ? 'ok' : 'todo'}>
+              <span className="verdict-mark">{c.level === 'ready' ? '✓' : '!'}</span>
+              <span className="verdict-label">{c.label}</span>
+              <span className="verdict-detail">{c.detail}</span>
+            </li>
+          ))}
+        </ul>
       </div>
-
-      {metrics.notes.length > 0 && (
-        <div className="strip-notes">⚠ {metrics.notes.join('；')}</div>
-      )}
     </div>
   )
 }

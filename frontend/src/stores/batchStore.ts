@@ -86,13 +86,13 @@ export interface PersistedBatch {
 /** Version prefix so a stale shape is discarded rather than crashing (design §9). */
 const LS_PREFIX = 'bcielts.v1.batch.'
 
-export function persistKey(sub: string): string {
-  return `${LS_PREFIX}${sub}`
+export function persistKey(owner: string): string {
+  return `${LS_PREFIX}${owner}`
 }
 
-export function loadPersisted(sub: string): PersistedBatch | null {
+export function loadPersisted(owner: string): PersistedBatch | null {
   try {
-    const raw = localStorage.getItem(persistKey(sub))
+    const raw = localStorage.getItem(persistKey(owner))
     if (!raw) return null
     const parsed = JSON.parse(raw) as PersistedBatch
     if (typeof parsed.batchId !== 'string' || typeof parsed.seqHigh !== 'number') return null
@@ -102,17 +102,17 @@ export function loadPersisted(sub: string): PersistedBatch | null {
   }
 }
 
-export function savePersisted(sub: string, value: PersistedBatch): void {
+export function savePersisted(owner: string, value: PersistedBatch): void {
   try {
-    localStorage.setItem(persistKey(sub), JSON.stringify(value))
+    localStorage.setItem(persistKey(owner), JSON.stringify(value))
   } catch {
     /* quota / private mode — persistence is a convenience, not a requirement */
   }
 }
 
-export function clearPersisted(sub: string): void {
+export function clearPersisted(owner: string): void {
   try {
-    localStorage.removeItem(persistKey(sub))
+    localStorage.removeItem(persistKey(owner))
   } catch {
     /* ignore */
   }

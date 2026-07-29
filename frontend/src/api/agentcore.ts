@@ -50,7 +50,13 @@ import type {
 import type { Audit, Blueprint, Material, Verdict } from '@/contracts'
 import { getConfig } from '@/config/runtimeConfig'
 import { CUSTOM_SCENARIO_KEY } from '@/config/scenarioTypes'
-import { ApiError, authHeader, type RequestSpec, type Transport } from './http'
+import {
+  ApiError,
+  CREDENTIALS,
+  notifyUnauthorized,
+  type RequestSpec,
+  type Transport,
+} from './http'
 import { setSseFetch } from './sseClient'
 
 /* ── backend wire types (what /invocations really emits) ──────────────────── */
@@ -567,10 +573,16 @@ function invocationsUrl(): string {
 async function invoke<T>(payload: unknown, signal?: AbortSignal): Promise<T> {
   const res = await fetch(invocationsUrl(), {
     method: 'POST',
-    headers: { ...authHeader(), 'Content-Type': 'application/json' },
+    credentials: CREDENTIALS,
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
     signal,
   })
+  if (res.status === 401) {
+    // The web tier's /api gate, not the Runtime: the session cookie expired.
+    notifyUnauthorized()
+    throw new ApiError(401, 'UNAUTHENTICATED', '登录状态已失效，请重新登录')
+  }
   if (!res.ok) {
     throw new ApiError(res.status, 'BACKEND_ERROR', `后端返回 ${res.status}`)
   }
@@ -603,7 +615,8 @@ function startBatch(session: Session, payload: unknown): Promise<void> {
     try {
       const res = await fetch(invocationsUrl(), {
         method: 'POST',
-        headers: { ...authHeader(), 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+        credentials: CREDENTIALS,
+        headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
         body: JSON.stringify(payload),
       })
       if (!res.ok || !res.body) throw new Error(`invocations ${res.status}`)

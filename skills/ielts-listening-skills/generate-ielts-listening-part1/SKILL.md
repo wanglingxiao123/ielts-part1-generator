@@ -37,8 +37,11 @@ Read [references/specification.md](references/specification.md) completely befor
    - Follow this order: full test/scene introduction and first reading prompt; first dialogue half; midpoint reading prompt; second dialogue half; closing check prompt.
    - Make answer-bearing information follow the private target order without returning to earlier targets.
    - Keep narration free of answer content.
-   - Target 450-750 dialogue words, preferably 600-650; 20-48 dialogue turns, preferably 30-40; and at least 8 dialogue turns in each half.
+   - Aim for 600-650 dialogue words and 30-40 dialogue turns. These are the targets; 450 words and 20 turns are failure thresholds, not goals. Measured over the real past papers: the shortest dialogue is 477 words and the median is 605, so a draft near 450 is shorter than every real paper and will be rejected. Write past the target rather than up to it. At least 8 dialogue turns in each half.
+   - Narration: 160-230 words when `narration_mode` is `full`, 70-110 when `short`. Every real full narration runs 160-231 words, so the whole-test preamble has to be quoted in full rather than paraphrased.
    - Use short, natural, polite turns and everyday English.
+
+   - Set each item's `turn_index` to the **zero-based position in the material's `turns` array**, counting the narration turns. The opening narration is turn 0, so the first line of dialogue is turn 1. Copy the index from the array rather than counting by eye: an anchor one position off puts a reviewer's annotation beside the wrong sentence, and it is the single most common reason a draft is rejected. `evidence` must be a verbatim substring of that exact turn's text.
 
 4. Validate semantics privately.
    - Check that all ten private targets are unique and recoverable.

@@ -13,6 +13,7 @@ import type { DimensionKey, FindingSeverity } from '@/contracts'
 import type { Thresholds } from '@/config/runtimeConfig'
 import type { DistributionMetrics } from './distribution'
 import type { FormGroupAnalysis } from './formGroups'
+import { SEVERITY_LABEL } from './types'
 import type { ViewMaterial } from './types'
 
 export interface CandidateFacts {
@@ -120,8 +121,8 @@ export function compareCandidates(
     decide(
       1,
       favour,
-      `${worse.label} 有 ${worse.unrecoverable} 个不可回收点（盲读者听不出），` +
-        `${favour === 'A' ? a.label : b.label} 为 ${Math.min(a.unrecoverable, b.unrecoverable)}`,
+      `${worse.label} 有 ${worse.unrecoverable} 个信息点连试听的人都没听出来，写不成题；` +
+        `${favour === 'A' ? a.label : b.label} 为 ${Math.min(a.unrecoverable, b.unrecoverable)} 个`,
     )
   }
 
@@ -129,7 +130,11 @@ export function compareCandidates(
   if (a.unintendedTarget !== b.unintendedTarget) {
     const favour: Lean = a.unintendedTarget < b.unintendedTarget ? 'A' : 'B'
     const worse = favour === 'A' ? b : a
-    decide(2, favour, `${worse.label} 有 ${worse.unintendedTarget} 个意外考点，易产生歧义答案`)
+    decide(
+      2,
+      favour,
+      `${worse.label} 有 ${worse.unintendedTarget} 处计划外的可考细节，可能出现第二个说得通的答案`,
+    )
   }
 
   // 3 uniformity.
@@ -138,12 +143,16 @@ export function compareCandidates(
     const favour: Lean = uniDiff > 0 ? 'A' : 'B'
     const better = favour === 'A' ? a : b
     const worse = favour === 'A' ? b : a
+    // Say what the difference DOES to a question-writer, not the coefficient it
+    // came from. The specific bunched/empty spots live in the usability table.
+    const worseClusters = worse.distribution.clusters.length
     decide(
       3,
       favour,
-      `${better.label} 分布更均匀（CV ${better.distribution.cv.toFixed(2)} vs ` +
-        `${worse.distribution.cv.toFixed(2)}，最大间隔 ${better.distribution.maxGap} vs ` +
-        `${worse.distribution.maxGap}）`,
+      `${better.label} 的信息点铺得更开，考生有时间记录` +
+        (worseClusters > 0
+          ? `；${worse.label} 有 ${worseClusters} 处信息点连着给`
+          : `；${worse.label} 疏密不均，有大段无考点的空白`),
     )
   }
 
@@ -151,7 +160,11 @@ export function compareCandidates(
   if (a.groups.hasViableQuestionGroup !== b.groups.hasViableQuestionGroup) {
     const favour: Lean = a.groups.hasViableQuestionGroup ? 'A' : 'B'
     const worse = favour === 'A' ? b : a
-    decide(4, favour, `${worse.label} 无可成题的表格/表单组（需同构且 ≥3 点）`)
+    decide(
+      4,
+      favour,
+      `${worse.label} 出不了表格/表单题——同类信息点凑不满 3 个`,
+    )
   } else {
     const spanA = widestGroupSpan(a)
     const spanB = widestGroupSpan(b)
@@ -163,8 +176,8 @@ export function compareCandidates(
       decide(
         4,
         favour,
-        `${worse.label} 最宽分组跨度 ${Math.max(spanA, spanB)} 轮，` +
-          `超过 ${thresholds.GROUP_SPAN_WARN} 轮，表格题需跨半篇回忆`,
+        `${worse.label} 有一组表格题的信息点前后隔了 ${Math.max(spanA, spanB)} 轮，` +
+          `考生要跨半篇回忆才能填完`,
       )
     }
   }
@@ -174,7 +187,7 @@ export function compareCandidates(
     if (a.defects[sev] !== b.defects[sev]) {
       const favour: Lean = a.defects[sev] < b.defects[sev] ? 'A' : 'B'
       const worse = favour === 'A' ? b : a
-      decide(5, favour, `${worse.label} 有 ${worse.defects[sev]} 个 ${sev} 缺陷`)
+      decide(5, favour, `${worse.label} 有 ${worse.defects[sev]} 处「${SEVERITY_LABEL[sev]}」的问题`)
       break
     }
   }
@@ -196,7 +209,7 @@ export function compareCandidates(
   const bm = b.view.audit.metrics
   reasons.push(
     `篇幅 ${a.label} ${am.dialogue_words} 词 / ${am.dialogue_turns} 轮 · ` +
-      `${b.label} ${bm.dialogue_words} 词 / ${bm.dialogue_turns} 轮（硬限内差异视为风格）`,
+      `${b.label} ${bm.dialogue_words} 词 / ${bm.dialogue_turns} 轮（都在规定区间内，长短只是风格差别）`,
   )
 
   const dims = Object.keys(a.view.audit.score.dimensions) as DimensionKey[]

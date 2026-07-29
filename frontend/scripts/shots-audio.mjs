@@ -8,6 +8,7 @@
 // passes, then exercises the player.
 import { mkdir, writeFile } from 'node:fs/promises'
 import { chromium } from 'playwright'
+import { signIn } from './signIn.mjs'
 
 const OUT = '/tmp/shots-audio'
 const BASE = 'http://localhost:5173'
@@ -43,6 +44,7 @@ let readable = false
 for (const key of CANDIDATES) {
   note(`attempting ${key}`)
   await page.goto(BASE, { waitUntil: 'networkidle' })
+  await signIn(page, BASE)
   const row = page.locator(`.scn-row:has-text("${key}")`).first()
   await row.locator('input[type=checkbox]').check()
   for (let i = 0; i < 8; i += 1) {

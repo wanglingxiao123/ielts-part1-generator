@@ -5,6 +5,7 @@ import { getThresholds } from '@/config/runtimeConfig'
 import type { MaterialRecord } from '@/contracts/api'
 import { analyseFormGroups } from '@/domain/formGroups'
 import { joinFromRecord } from '@/domain/joinArtifacts'
+import { SEVERITY_FLAG, SEVERITY_LABEL } from '@/domain/types'
 import type { Playlist } from '@/domain/playlist'
 import { buildPlaylist } from '@/domain/playlist'
 import { useAudioStore } from '@/stores/audioStore'
@@ -111,15 +112,14 @@ export function MaterialPage() {
         <span>
           总分 <strong className="mono">{view.audit.score.total}</strong>
         </span>
-        <span>
-          不可回收{' '}
-          <strong className="mono" style={{ color: view.crossCheck.unrecoverable.length > 0 ? 'var(--bad)' : undefined }}>
-            {view.crossCheck.unrecoverable.length}
-          </strong>
-        </span>
+        {view.crossCheck.unrecoverable.length > 0 && (
+          <span className="flag flag-bad" title="试听的人没听出这些点，考生也听不出来">
+            {view.crossCheck.unrecoverable.length} 个点听不出来
+          </span>
+        )}
         {record.degraded && (
           <span className="flag flag-warn" title="首次评价即通过，未经修改与复评环节">
-            degraded · 未经修改环节
+            未经修改环节
           </span>
         )}
         <div className="spacer" style={{ flex: 1 }} />
@@ -154,21 +154,13 @@ export function MaterialPage() {
       <div className="split-2" style={{ marginTop: 12 }}>
         <QuestionTypePanel analysis={groups} />
         <div className="panel panel-pad">
-          <h3>评价缺陷（audit.findings）</h3>
+          <h3>评价指出的问题</h3>
           {view.audit.findings.length === 0 && <div className="muted">无缺陷记录</div>}
           {view.audit.findings.map((f, i) => (
             <div key={i} style={{ borderBottom: '1px solid var(--line-2)', padding: '6px 0' }}>
               <div className="row">
-                <span
-                  className={`flag ${
-                    f.severity === 'critical'
-                      ? 'flag-bad'
-                      : f.severity === 'major'
-                        ? 'flag-warn'
-                        : 'flag-neutral'
-                  }`}
-                >
-                  {f.severity}
+                <span className={`flag ${SEVERITY_FLAG[f.severity]}`}>
+                  {SEVERITY_LABEL[f.severity]}
                 </span>
                 <strong style={{ fontSize: 12 }}>{f.rule}</strong>
                 {f.turn_index != null ? (
@@ -192,7 +184,7 @@ export function MaterialPage() {
           ))}
           {view.audit.warnings && view.audit.warnings.length > 0 && (
             <div style={{ marginTop: 8 }}>
-              <h3>warnings（不构成失败）</h3>
+              <h3>提示（不影响采用）</h3>
               {view.audit.warnings.map((w) => (
                 <div key={w} className="muted" style={{ fontSize: 11 }}>
                   · {w}
@@ -201,28 +193,29 @@ export function MaterialPage() {
             </div>
           )}
           <div style={{ marginTop: 10 }}>
-            <h3>盲测对照（cross_check）</h3>
+            <h3>盲读复核：这些点听得出来吗</h3>
+            {/* 有人只读脚本、不看我们的信息点清单，把他听出来的和计划的对一遍。
+                他没听出来的点，考生也听不出来。 */}
             <div className="row" style={{ fontSize: 12 }}>
               <span>
-                matched <strong className="mono">{view.crossCheck.matched}</strong>
-                {view.crossCheck.planned != null && ` / 计划 ${view.crossCheck.planned}`}
+                计划 {view.crossCheck.planned ?? '—'} 个，听出{' '}
+                <strong>{view.crossCheck.matched}</strong> 个
               </span>
-              <span>
-                不可回收{' '}
-                <strong className="mono">
-                  {view.crossCheck.unrecoverable.map((r) => r.number).join(', ') || '—'}
-                </strong>
-              </span>
-              <span>
-                意外考点{' '}
-                <strong className="mono">
-                  {view.crossCheck.unintended_target.map((r) => `seq${r.audit_seq}`).join(', ') ||
-                    '—'}
-                </strong>
-              </span>
+              {view.crossCheck.unrecoverable.length > 0 ? (
+                <span className="flag flag-bad">
+                  第 {view.crossCheck.unrecoverable.map((r) => r.number).join('、')} 题没被听出来
+                </span>
+              ) : (
+                <span className="flag flag-good">十个点都听得出来</span>
+              )}
+              {view.crossCheck.unintended_target.length > 0 && (
+                <span className="flag flag-warn">
+                  另有 {view.crossCheck.unintended_target.length} 处计划外的可考细节
+                </span>
+              )}
               {view.crossCheck.ambiguous && view.crossCheck.ambiguous.length > 0 && (
                 <span className="flag flag-warn">
-                  歧义 {view.crossCheck.ambiguous.map((r) => r.number).join(', ')}
+                  第 {view.crossCheck.ambiguous.map((r) => r.number).join('、')} 题听着有歧义
                 </span>
               )}
             </div>
@@ -235,7 +228,7 @@ export function MaterialPage() {
                   className="btn btn-sm"
                   onClick={() => setJump({ turnIndex: r.turn_index, nonce: Date.now() })}
                 >
-                  不可回收 #{r.number} → turn {r.turn_index}
+                  第 {r.number} 题没听出来 · turn {r.turn_index}
                 </button>{' '}
                 {r.target && <span className="mono">{r.target}</span>} “{r.evidence}”
               </div>
@@ -247,14 +240,14 @@ export function MaterialPage() {
                   className="btn btn-sm"
                   onClick={() => setJump({ turnIndex: r.turn_index, nonce: Date.now() })}
                 >
-                  意外考点 seq{r.audit_seq} → turn {r.turn_index}
+                  计划外的可考细节 · turn {r.turn_index}
                 </button>{' '}
                 “{r.evidence}”
               </div>
             ))}
           </div>
           <div style={{ marginTop: 10 }}>
-            <h3>篇幅指标（audit.metrics）</h3>
+            <h3>篇幅</h3>
             <div className="row mono" style={{ fontSize: 12 }}>
               <span>对话 {view.audit.metrics.dialogue_words} 词</span>
               <span>{view.audit.metrics.dialogue_turns} 轮</span>
