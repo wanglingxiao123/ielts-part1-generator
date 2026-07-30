@@ -5,6 +5,7 @@ import { RequireAuth } from '@/auth/RequireAuth'
 import { useSession } from '@/auth/useSession'
 import { ScenarioSelectPage } from '@/features/scenario-select/ScenarioSelectPage'
 import { BatchProgressPage } from '@/features/batch-progress/BatchProgressPage'
+import { LatestBatchRoute } from '@/features/batch-progress/LatestBatchRoute'
 import { MaterialPage } from '@/features/material-reader/MaterialPage'
 import { ComparePage } from '@/features/compare/ComparePage'
 import { ReviewQueuePage } from '@/features/review-queue/ReviewQueuePage'
@@ -49,21 +50,19 @@ function TopBar() {
           <NavLink to="/" end className={({ isActive }) => (isActive ? 'active' : '')}>
             场景选择
           </NavLink>
-          {/* 客户版式的三个页签：场景选择 / 生成结果 / 审核队列。
-              「生成结果」在没有批次时也在位，只是不可点——页签列表跳着变会让人
-              以为功能消失了。 */}
-          {batchId ? (
-            <NavLink
-              to={`/batches/${batchId}`}
-              className={({ isActive }) => (isActive ? 'active' : '')}
-            >
-              生成结果
-            </NavLink>
-          ) : (
-            <span className="nav-disabled" title="提交一个批次后即可查看">
-              生成结果
-            </span>
-          )}
+          {/* 客户版式的三个页签：场景选择 / 生成结果 / 审核队列。三个都永远可点。
+              「生成结果」原来在没有活批次时是灰的，判据是 `store.batchId`——那是**本页会话**的
+              批次，刷新即空。于是 S3 里躺着十几个历史批次，用户打开页面却看到它是灰的，必须先勾一个
+              场景、提交一次生成才能看见以前的东西。客户的原话：「三个 Tab 应该始终都能切换，不存在
+              『灰置不可点』的情况。」
+              href 是静态的 `/batches`：「最近一批是哪一批」要发请求才知道，而顶栏不该有状态。
+              那个问题由 `LatestBatchRoute` 回答。活批次仍优先，见那个文件。 */}
+          <NavLink
+            to={batchId ? `/batches/${batchId}` : '/batches'}
+            className={({ isActive }) => (isActive ? 'active' : '')}
+          >
+            生成结果
+          </NavLink>
           <NavLink to="/review-queue" className={({ isActive }) => (isActive ? 'active' : '')}>
             审核队列
           </NavLink>
@@ -97,6 +96,15 @@ export function App() {
           element={
             <RequireAuth>
               <ScenarioSelectPage />
+            </RequireAuth>
+          }
+        />
+        {/* 无 id 的落地页，「生成结果」页签指向它。它自己去找最近一批。 */}
+        <Route
+          path="/batches"
+          element={
+            <RequireAuth>
+              <LatestBatchRoute />
             </RequireAuth>
           }
         />

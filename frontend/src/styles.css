@@ -104,17 +104,31 @@ a {
   font-weight: 600;
 }
 
-/* 「生成结果」在还没有批次时占位但不可点。 */
-.topbar nav .nav-disabled {
-  padding: 5px 10px;
-  border-radius: var(--radius);
-  color: var(--ink-3);
-  font-size: 13px;
-  cursor: not-allowed;
-}
-
 .topbar .spacer {
   flex: 1;
+}
+
+/* 「还没有生成过材料」那一屏。三个页签现在都永远可点，所以「点进来什么都没有」是一个要好好回答的
+   状态，而不是一个要靠灰置去回避的状态。 */
+.empty-batches {
+  max-width: 460px;
+  margin: 48px auto;
+  text-align: center;
+}
+
+.empty-batches-icon {
+  font-size: 34px;
+  margin-bottom: 10px;
+}
+
+.empty-batches h2 {
+  margin: 0 0 6px;
+  font-size: 16px;
+}
+
+.empty-batches p {
+  margin: 0 0 16px;
+  font-size: 13px;
 }
 
 .who {
