@@ -63,13 +63,31 @@ const INDEX: Map<string, ScenarioMeta> = new Map(
   ),
 )
 
-export function scenarioMeta(key: string): ScenarioMeta {
+/** 一段场景描述压成一行标题。整句太长，撑破卡片和侧栏。 */
+function asTitle(text: string): string {
+  const one = text.replace(/\s+/g, ' ').trim()
+  const clipped = one.length > 24 ? `${one.slice(0, 24)}…` : one
+  return clipped
+}
+
+/**
+ * `label` 是这个场景的实际描述文本，只有自定义场景需要它。
+ *
+ * 后端给自定义场景的 key 是 `custom-<sha1(文本)[:8]>`——为了同一段文本永远落在同一个 S3 前缀，
+ * 这是对的，但它不是给人看的。以前只认字面 `custom`，所以带哈希的那些落到最后一行兜底，
+ * 界面上就出现了「📝custom-6cf6e9b3 未分类」。现在带哈希的一律认作自定义场景，有文本就用文本。
+ */
+export function scenarioMeta(key: string, label?: string): ScenarioMeta {
   const hit = INDEX.get(key)
   if (hit) return hit
-  // 自定义场景走的是用户自己写的一段英文提示，没有目录条目；其余未知 key 说明
-  // 前端目录落后于后端，此时显示 key 本身比显示「未知场景」更有助于排查。
-  if (key === CUSTOM_SCENARIO_KEY) {
-    return { key, titleZh: '自定义场景', categoryZh: '自定义', icon: '✍️' }
+  if (key === CUSTOM_SCENARIO_KEY || key.startsWith(`${CUSTOM_SCENARIO_KEY}-`)) {
+    return {
+      key,
+      titleZh: label && label.trim() ? asTitle(label) : '自定义场景',
+      categoryZh: '自定义',
+      icon: '✍️',
+    }
   }
+  // 其余未知 key 说明前端目录落后于后端，显示 key 本身比「未知场景」更有助于排查。
   return { key, titleZh: key, categoryZh: '未分类', icon: FALLBACK_ICON }
 }

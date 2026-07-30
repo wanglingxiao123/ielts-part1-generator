@@ -46,6 +46,11 @@ export interface CardPreview {
   pointNumbers: number[]
   /** 需要看一眼的点号（黄点）。 */
   flaggedPoints: number[]
+  /**
+   * 材料自己声明的场景描述。目录里的场景不需要它（有中文名），自定义场景需要——它就是用户
+   * 输入的那段文本，而后端给的 key 是 `custom-<sha1>`，直接显示就是一串哈希。
+   */
+  scenarioText: string
 }
 
 /** 旁白是 speaker1。跳过它，返回第一句真实台词。 */
@@ -122,6 +127,7 @@ export function buildCardPreview(
 ): CardPreview {
   const pointNumbers = view.blueprint.items.map((i) => i.number).sort((a, b) => a - b)
   return {
+    scenarioText: view.scenario,
     materialId: record.material_id,
     scenarioKey: record.scenario_key,
     index: record.index,

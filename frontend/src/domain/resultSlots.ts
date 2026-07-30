@@ -88,13 +88,24 @@ function shapeFromItems(items: readonly BatchItemSnapshot[]): RequestedScenario[
   }))
 }
 
+/**
+ * 分组用的场景键。
+ *
+ * 规划时自定义场景叫 `custom`，材料回来时后端已经把它换成 `custom-<sha1(文本)[:8]>`（为了同一段
+ * 文本落在同一个 S3 前缀）。两个键当成两个场景，界面上就出现了两行——「✍️自定义场景 0/3」下面
+ * 一个空的，再来一个「📝custom-6cf6e9b3 未分类 3/3」装着真材料。归一化到 `custom` 即可合并。
+ */
+function groupKeyOf(scenarioKey: string): string {
+  return scenarioKey.startsWith('custom-') ? 'custom' : scenarioKey
+}
+
 export function buildResultGroups(input: Input): ResultGroup[] {
   const shape = input.requested.length > 0 ? input.requested : shapeFromItems(input.items)
 
   // (场景, 第 N 套) → 已到达的材料 / 已终态失败的版位。
   const arrivedAt = new Map<string, MaterialRecord>()
   for (const record of Object.values(input.materials)) {
-    arrivedAt.set(`${record.scenario_key}#${record.index}`, record)
+    arrivedAt.set(`${groupKeyOf(record.scenario_key)}#${record.index}`, record)
   }
   const failedAt = new Set<string>()
   for (const item of input.items) {
@@ -110,7 +121,8 @@ export function buildResultGroups(input: Input): ResultGroup[] {
     const slots: ResultSlot[] = []
     let arrived = 0
     for (let index = 0; index < Math.max(1, count); index += 1) {
-      const at = `${scenarioKey}#${index}`
+      // 归一化两侧：规划侧给的是 `custom`，到达侧可能是 `custom-<hash>`。
+      const at = `${groupKeyOf(scenarioKey)}#${index}`
       covered.add(at)
       const record = arrivedAt.get(at)
       if (record) {
@@ -148,7 +160,7 @@ export function buildResultGroups(input: Input): ResultGroup[] {
       state: 'material',
       materialId: record.material_id,
     }
-    const existing = groups.find((g) => g.scenarioKey === record.scenario_key)
+    const existing = groups.find((g) => groupKeyOf(g.scenarioKey) === groupKeyOf(record.scenario_key))
     if (existing) {
       existing.slots.push(slot)
       existing.slots.sort((a, b) => a.index - b.index)

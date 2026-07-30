@@ -751,7 +751,12 @@ export function BatchProgressPage() {
       )}
 
       {!historical.loading && groups.map((group) => {
-        const meta = scenarioMeta(group.scenarioKey)
+        // 自定义场景的标题取材料自己带的场景描述——它就是用户输入的那段文本。目录里没有这个
+        // 条目，所以没有它就只能显示 `custom-<hash>`，那串哈希对用户毫无意义。
+        const customLabel = group.slots
+          .map((slot) => (slot.materialId ? cards.get(slot.materialId)?.preview.scenarioText : null))
+          .find((text): text is string => Boolean(text && text.trim()))
+        const meta = scenarioMeta(group.scenarioKey, customLabel)
         const comparing = compareScenario === group.scenarioKey
         return (
           <section className="scn-group" key={group.scenarioKey}>

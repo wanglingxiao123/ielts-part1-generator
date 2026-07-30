@@ -265,6 +265,9 @@ describe('card preview', () => {
         'pointNumbers',
         'pointTotal',
         'scenarioKey',
+        // 场景描述，不是评价：目录场景用不到它，自定义场景靠它显示用户输入的文本而不是
+        // `custom-<sha1>`。列在这里是为了让这份清单继续是「卡片能拿到什么」的完整声明。
+        'scenarioText',
         'summary',
       ])
       // 那一行简述是「话题 + 考点」，不是判断：不许出现结论/整改用语。
