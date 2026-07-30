@@ -769,7 +769,9 @@ describe('compare mode', () => {
     await userEvent.click(screen.getByRole('button', { name: /第 2 套：点选进入对比/ }))
     await userEvent.click(screen.getByRole('button', { name: /打开完整对比/ }))
 
-    expect(navigations).toContain('/compare/accommodation-rental?a=m1&b=m2')
+    // `batch` 必须带上：对比页对历史批次没有别的取材料的路（见 ComparePage 的注释）。少了它，
+    // 那一页对任何跑完又刷新过的批次都是整屏「本场景暂无材料」。
+    expect(navigations).toContain(`/compare/accommodation-rental?a=m1&b=m2&batch=${BATCH}`)
   })
 
   /**

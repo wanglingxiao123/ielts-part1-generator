@@ -12,6 +12,7 @@ import { analyseFormGroups } from '@/domain/formGroups'
 import { joinFromRecord } from '@/domain/joinArtifacts'
 import { SEVERITY_LABEL } from '@/domain/types'
 import { useBatchStore } from '@/stores/batchStore'
+import { useHistoricalBatch } from '../batch-progress/useHistoricalBatch'
 import { MaterialReader } from '../material-reader/MaterialReader'
 import { DecisionBar } from './DecisionBar'
 import { SelectDialog } from './SelectDialog'
@@ -48,17 +49,36 @@ export function ComparePage() {
   const [selectError, setSelectError] = useState<string | null>(null)
   const [jump, setJump] = useState<Record<string, { turnIndex: number; nonce: number }>>({})
 
+  /**
+   * 材料从哪来：先看 batchStore，没有就取 `?batch=` 那一批的历史记录。
+   *
+   * 这里原来的退路是 `GET /materials?scenario_key=`——而真实后端**没有这条路由**（web 层只有
+   * `/api/batch-history`，见 `api/agentcore.ts` 顶部那张对照表）。store 只装当前活批次，所以
+   * 任何跑完又刷新过的批次点进这一页都是整屏「本场景暂无材料」，从结果页点「打开完整对比」
+   * 过来也一样——结果页的历史批次数据本来就不在 store 里。这条路径在真实部署上是 100% 坏的，
+   * 而所有测试都用 mock 答了那个不存在的接口，所以没人看见。
+   *
+   * 归一交给 `useHistoricalBatch`：那份记录的 `materials` 是宽松的 Partial 形状（sidecar 可能
+   * 只有摘要没有构件），把它变成 `MaterialRecord` 有若干条判断，抄第二份就会和结果页漂移。
+   */
+  const historyBatchId = search.get('batch')
+  const historical = useHistoricalBatch(historyBatchId ?? undefined, fromStore.length === 0)
   useEffect(() => {
     if (fromStore.length > 0) {
       setRecords(fromStore)
       return
     }
-    void api
-      .listMaterials({ scenario_key: scenarioKey })
-      .then((res) => setRecords(res.materials.filter((m) => m.scenario_key === scenarioKey)))
-      .catch(() => setRecords([]))
+    if (!historical.batch) {
+      setRecords([])
+      return
+    }
+    setRecords(
+      historical.batch.materialOrder
+        .map((id) => historical.batch!.materials[id]!)
+        .filter((m) => m.scenario_key === scenarioKey),
+    )
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scenarioKey, fromStore.length])
+  }, [scenarioKey, historical.batch, fromStore.length])
 
   // Every material is comparable now, audit-rejected ones included: the client's
   // rule is that a flawed material is shown with its shortcomings stated, and
@@ -67,18 +87,6 @@ export function ComparePage() {
   const candidates = records
 
   const views = useMemo(() => candidates.map(joinFromRecord), [candidates])
-  const facts = useMemo(
-    () =>
-      views.map((v, i) =>
-        buildFacts(
-          LABELS[i] ?? `候选 ${i + 1}`,
-          v,
-          computeDistribution(v, thresholds),
-          analyseFormGroups(v, thresholds),
-        ),
-      ),
-    [views, thresholds],
-  )
 
   const [pair, setPair] = useState<[number, number]>([0, 1])
 
@@ -90,6 +98,38 @@ export function ComparePage() {
     if (a >= 0 && b >= 0 && a !== b) setPair([a, b])
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [records, search])
+
+  /**
+   * 「候选 A / B」这个名字按**当前摆放位置**给，不按 `records` 里的下标。
+   *
+   * 原来是按下标（`views.map((v, i) => buildFacts(LABELS[i], ...))`）。那样一来名字取决于材料
+   * 到达/被记录的顺序，而摆放取决于 `pair`，两者无关：用户在结果页点第一张卡（界面标 A）进来，
+   * 左栏摆的确实是那一套，标题却写着「候选 B」——只要历史记录的顺序和他点的顺序相反就会这样，
+   * 而那是一半的概率。名字是给人指位置用的，所以它必须跟着位置。
+   */
+  const labelOf = useMemo(() => {
+    const map = new Map<number, string>()
+    pair.forEach((idx, side) => map.set(idx, LABELS[side] ?? `候选 ${side + 1}`))
+    // 不在当前两栏里的候选（顶部「切换对比」那一排）按下标续号，只用于按钮文字。
+    let next = pair.length
+    candidates.forEach((_, idx) => {
+      if (!map.has(idx)) map.set(idx, LABELS[next++] ?? `候选 ${next}`)
+    })
+    return map
+  }, [candidates, pair])
+
+  const facts = useMemo(
+    () =>
+      views.map((v, i) =>
+        buildFacts(
+          labelOf.get(i) ?? `候选 ${i + 1}`,
+          v,
+          computeDistribution(v, thresholds),
+          analyseFormGroups(v, thresholds),
+        ),
+      ),
+    [views, labelOf, thresholds],
+  )
 
   const comparison = useMemo(() => {
     const a = facts[pair[0]]
@@ -137,7 +177,7 @@ export function ComparePage() {
 
   // 优先用材料自己带的 batch_id：从历史批次点进来时 store 装的是当前活批次，用它会把用户送回
   // 另一批。一套材料都没有时（下面那个分支）只剩 store 可用，而那一屏最需要一个出路。
-  const backBatchId = records.find((r) => r.batch_id)?.batch_id ?? storeBatchId
+  const backBatchId = records.find((r) => r.batch_id)?.batch_id ?? historyBatchId ?? storeBatchId
 
   if (records.length === 0) {
     return (
@@ -184,11 +224,16 @@ export function ComparePage() {
             <span className="muted" style={{ fontSize: 12 }}>
               切换对比：
             </span>
-            {candidates.map((_, i) => (
+            {candidates.map((candidate, i) => (
               <button
                 key={i}
                 type="button"
                 className={`btn btn-sm${pair.includes(i) ? ' btn-primary' : ''}`}
+                /* 按钮上写「第 N 套」而不是「候选 A/B/C」。
+                 *
+                 * A/B 现在跟着摆放位置（见 `labelOf`），而摆放会被这些按钮改变——用它们当按钮名，
+                 * 按钮就会在用户手底下改名：点了「候选 C」，它当场变成「候选 B」，下一次想点回来
+                 * 已经找不到刚才那个名字了。「第 N 套」是这套材料的固有身份，不随摆放变。 */
                 /* 点一个候选：换掉**右**边那一栏，左边留着。
                  *
                  * 原来写的是 `([a]) => (a === i ? [a, i] : [a, i])`——两个分支返回同一个值，
@@ -199,7 +244,8 @@ export function ComparePage() {
                   setPair(([a, b]) => (a === i ? [a, b] : b === i ? [a, b] : [a, i]))
                 }
               >
-                {LABELS[i]}
+                第 {(candidate.index ?? i) + 1} 套
+                {pair.includes(i) ? `（${labelOf.get(i)?.replace('候选 ', '')}）` : ''}
               </button>
             ))}
           </span>

@@ -1012,7 +1012,12 @@ export function BatchProgressPage() {
                 thresholds={thresholds}
                 onOpenFull={() =>
                   navigate(
-                    `/compare/${group.scenarioKey}?a=${comparePair[0]}&b=${comparePair[1]}`,
+                    // `batch` 是必须带的：对比页对**历史**批次没有别的取材料的路。它优先读
+                    // batchStore，而 store 只装当前活批次；一个跑完又刷新过的批次在 store 里
+                    // 是空的，于是那一页整屏「本场景暂无材料」。旧的退路是
+                    // `GET /materials?scenario_key=`，而真实后端没有这条路由（web 层只有
+                    // batch-history），所以那条退路从来没生效过。
+                    `/compare/${group.scenarioKey}?a=${comparePair[0]}&b=${comparePair[1]}&batch=${batchId ?? ''}`,
                   )
                 }
               />

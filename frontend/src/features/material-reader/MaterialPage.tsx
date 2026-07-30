@@ -183,7 +183,11 @@ export function MaterialPage() {
           </span>
         )}
         <div className="spacer" style={{ flex: 1 }} />
-        <Link className="btn btn-sm" to={`/compare/${record.scenario_key}`}>
+        {/* 带上 batch：对比页对历史批次只能靠它取材料（见 ComparePage 顶部注释）。 */}
+        <Link
+          className="btn btn-sm"
+          to={`/compare/${record.scenario_key}?batch=${record.batch_id}`}
+        >
           对比本场景
         </Link>
       </div>
