@@ -150,7 +150,10 @@ export function buildResultGroups(input: Input): ResultGroup[] {
   // 后端交回了计划外的材料（场景对不上、或第 N 套超出计划）时也要显示出来：
   // 丢掉一套生成好的材料比多画一张卡糟糕得多。
   for (const record of Object.values(input.materials)) {
-    const at = `${record.scenario_key}#${record.index}`
+    // 必须和上面 `covered.add` 用同一个归一化，否则自定义场景的每一套都会被判成「计划外」
+    // 再画一次：规划侧记的是 `custom#0`，这里若按 `custom-<hash>#0` 去查就永远查不到，
+    // 6 套渲染成 12 套，计数也变成 24/18。
+    const at = `${groupKeyOf(record.scenario_key)}#${record.index}`
     if (covered.has(at)) continue
     covered.add(at)
     const slot: ResultSlot = {

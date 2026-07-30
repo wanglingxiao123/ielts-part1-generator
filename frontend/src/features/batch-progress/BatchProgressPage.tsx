@@ -751,11 +751,21 @@ export function BatchProgressPage() {
       )}
 
       {!historical.loading && groups.map((group) => {
-        // 自定义场景的标题取材料自己带的场景描述——它就是用户输入的那段文本。目录里没有这个
-        // 条目，所以没有它就只能显示 `custom-<hash>`，那串哈希对用户毫无意义。
-        const customLabel = group.slots
-          .map((slot) => (slot.materialId ? cards.get(slot.materialId)?.preview.scenarioText : null))
-          .find((text): text is string => Boolean(text && text.trim()))
+        // 自定义场景的标题用**用户输入的原文**，由后端随批次记录一起给回来（`custom_label`）。
+        //
+        // 一度用的是材料自带的 `material.scenario`，那是错的：模型会把「餐厅点餐」扩写成一整句
+        // "A customer phones a restaurant to book a family dinner..."，于是标题变成模型的改写而
+        // 不是用户的话，还长得撑破侧栏。目录场景不需要它（有中文名），所以只在这里用。
+        // 实时批次尚未落库，退回材料自带的场景句：它不是用户原文，但比一串哈希强，且这条路径
+        // 只在生成当下短暂用到——刷新后走的就是历史记录里的原文。
+        const customLabel =
+          historical.batch?.customLabel ||
+          group.slots
+            .map((slot) =>
+              slot.materialId ? cards.get(slot.materialId)?.preview.scenarioText : null,
+            )
+            .find((text): text is string => Boolean(text && text.trim())) ||
+          undefined
         const meta = scenarioMeta(group.scenarioKey, customLabel)
         const comparing = compareScenario === group.scenarioKey
         return (

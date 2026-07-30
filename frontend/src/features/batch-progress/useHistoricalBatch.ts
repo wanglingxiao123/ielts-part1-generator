@@ -34,6 +34,8 @@ export interface HistoricalBatch {
   materials: Record<string, MaterialRecord>
   materialOrder: string[]
   requestedTotal: number
+  /** 自定义场景的用户原文，用作分组标题。 */
+  customLabel: string
 }
 
 export interface HistoricalBatchState {
@@ -122,6 +124,7 @@ function toHistorical(detail: BatchHistoryDetail): HistoricalBatch {
     status: detail.status,
     submittedMaterialIds: detail.submitted_material_ids ?? [],
     requested: detail.scenarios.map((s) => ({ scenarioKey: s.scenario_key, count: s.count })),
+    customLabel: detail.custom_label ?? '',
     materials,
     materialOrder,
     requestedTotal: detail.requested_total,

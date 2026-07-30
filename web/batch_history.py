@@ -204,6 +204,9 @@ def derive(record: Dict[str, Any], *, now: Optional[float] = None) -> Dict[str, 
         "requested_total": int(_as_float(record.get("requested_total"))),
         "arrived": len(materials),
         "scenarios": [s for s in (record.get("scenarios") or []) if isinstance(s, dict)],
+        # 自定义场景的用户原文，没有则空串。前端拿它当分组标题——`material.scenario` 是模型扩写的
+        # 整句，不是用户输入的东西。
+        "custom_label": str(record.get("custom_label") or ""),
         "counts": record.get("counts") or {},
         "submitted_at": submitted_at,
         "submitted_by": record.get("submitted_by"),
@@ -354,9 +357,10 @@ class BatchHistory:
     # ── writes used by the recorder ──────────────────────────────────────────
 
     def recorder(self, batch_id: str, *, owner: str, requested_total: int,
+                 custom_label: str = "",
                  scenarios: List[Dict[str, Any]]) -> "BatchRecorder":
         return BatchRecorder(self, batch_id, owner=owner, requested_total=requested_total,
-                             scenarios=scenarios)
+                             scenarios=scenarios, custom_label=custom_label)
 
 
 class BatchRecorder:
@@ -367,7 +371,8 @@ class BatchRecorder:
     """
 
     def __init__(self, history: BatchHistory, batch_id: str, *, owner: str,
-                 requested_total: int, scenarios: List[Dict[str, Any]]) -> None:
+                 requested_total: int, scenarios: List[Dict[str, Any]],
+                 custom_label: str = "") -> None:
         self._history = history
         self._batch_id = batch_id
         self._lock = threading.Lock()
@@ -377,6 +382,9 @@ class BatchRecorder:
             "owner": owner,
             "created_at": time.time(),
             "requested_total": requested_total,
+            # 用户为自定义场景输入的原文。存在这里是因为别处都没有：材料自带的 `scenario` 是模型
+            # 扩写的完整英文句，而场景目录里当然没有自定义场景的条目。
+            "custom_label": custom_label,
             "scenarios": scenarios,
             "materials": [],
             "counts": {},

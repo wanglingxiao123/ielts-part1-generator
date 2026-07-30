@@ -530,6 +530,9 @@ class WebTier:
             # rather than from the payload because `plan_children` has already resolved counts and
             # the custom scenario into one material per child.
             scenarios=_scenario_shape(children),
+            # 自定义场景的用户原文。历史面板要显示它，而它在别处都不存在：材料自带的 `scenario`
+            # 是模型扩写的完整英文句，场景目录里也没有自定义场景的条目。
+            custom_label=fan.custom_label(),
         )
         return StreamingResponse(_frames(fan, recorder), media_type=SSE_CONTENT_TYPE,
                                  headers=_SSE_HEADERS)

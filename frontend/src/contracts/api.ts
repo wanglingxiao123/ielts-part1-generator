@@ -190,6 +190,8 @@ export interface BatchHistoryResponse {
  * and the artifacts are authoritative wherever both are present.
  */
 export interface BatchHistoryDetail extends Omit<BatchHistoryEntry, 'materials'> {
+  /** 自定义场景的用户原文；目录场景为空串。 */
+  custom_label?: string
   materials: Array<
     Omit<BatchHistoryMaterialSummary, 'verdict'> &
       Partial<Pick<BatchHistoryMaterialSummary, 'verdict'>> &

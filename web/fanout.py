@@ -452,6 +452,19 @@ class FanOut(object):
 
     # ── the merged stream ────────────────────────────────────────────────────
 
+
+    def custom_label(self) -> str:
+        """The text the user typed for the custom scenario, or "" when there was none."""
+        for child in self.children:
+            custom = child.payload.get("custom_scenario")
+            if isinstance(custom, dict):
+                hint = str(custom.get("prompt_hint") or custom.get("text") or "").strip()
+                if hint:
+                    return hint
+            elif isinstance(custom, str) and custom.strip():
+                return custom.strip()
+        return ""
+
     async def events(self) -> AsyncIterator[Dict[str, Any]]:
         """Yield one coherent batch's worth of events: one start, the middles, one completion.
 
@@ -472,6 +485,10 @@ class FanOut(object):
             # the URL, the history lookup, the candidate group keys -- has to agree with it.
             "batch_id": self.batch_id,
             "total": total,
+            # 用户为自定义场景输入的原文。必须从这里传出去：`material.scenario` 是模型自己扩写
+            # 的完整英文句（输入「餐厅点餐」会变成一整句 "A customer phones a restaurant to..."），
+            # 拿它当标题就是把模型的改写当成用户的话。历史记录里也没有别处存过这段原文。
+            "custom_label": self.custom_label(),
             # An upper bound the web tier can actually stand behind: each child gets its own 900s
             # wall, and at most `waves` of them run in series. The old value was one shared wall
             # for the whole batch, which is the constraint this change removed.

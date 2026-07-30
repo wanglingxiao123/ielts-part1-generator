@@ -388,6 +388,40 @@ describe('result slots', () => {
     { scenarioKey: 'booking-hotel', count: 3 },
   ]
 
+  /**
+   * 自定义场景的键在规划侧和到达侧不同：规划时是 `custom`，材料回来时后端已经换成
+   * `custom-<sha1(文本)[:8]>`（同一段文本落同一个 S3 前缀）。当成两个场景会一次错两回——
+   * 空的规划组 + 装着真材料的第二组，而且每套材料被判成「计划外」再画一次，6 套渲染成 12 套、
+   * 计数变成 24/18。客户两次都撞上了。
+   */
+  it('自定义场景的规划键与到达键归一到同一组，不重复渲染', () => {
+    const groups = build({
+      requested: [{ scenarioKey: 'custom', count: 2 }],
+      items: [],
+      materials: {
+        a: material('custom-6cf6e9b3', 0, 'a'),
+        b: material('custom-6cf6e9b3', 1, 'b'),
+      },
+    })
+    expect(groups).toHaveLength(1)
+    expect(groups[0]!.slots).toHaveLength(2)
+    expect(groups[0]!.arrived).toBe(2)
+    // 同一套材料只能出现一次。
+    const ids = groups[0]!.slots.map((s) => s.materialId)
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(ids).toEqual(['a', 'b'])
+  })
+
+  it('目录场景不受归一化影响', () => {
+    const groups = build({
+      requested: [{ scenarioKey: 'booking-hotel', count: 1 }],
+      items: [],
+      materials: { a: material('booking-hotel', 0, 'a') },
+    })
+    expect(groups).toHaveLength(1)
+    expect(groups[0]!.slots.map((s) => s.materialId)).toEqual(['a'])
+  })
+
   it('gives every scenario as many skeletons as the user asked for, before any event', () => {
     const groups = build({ requested: REQUESTED, items: [], materials: {} })
     expect(groups.map((g) => g.scenarioKey)).toEqual([
