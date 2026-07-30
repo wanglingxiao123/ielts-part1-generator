@@ -8,6 +8,10 @@ Route map:
     POST /api/auth/logout         clears it
     GET  /api/auth/me             current user
     POST /api/invocations         -> invoke_agent_runtime (JSON, relayed SSE, or a fanned-out batch)
+    GET  /api/batch-history                  batch history, newest first (web/batch_history.py)
+    GET  /api/batch-history/{id}             one historical batch, with its materials' artifacts
+    GET  /api/batch-history-material/{id}    one material by id alone, for the reader page
+    POST /api/batch-history/{id}/submit      records the 已提交 status
     GET  /login                   a server-rendered form, because the SPA has no local login UI
     GET  /*                       the frontend build, with SPA fallback to index.html
 
@@ -37,6 +41,12 @@ consume a token `/healthz` needs, because AgentCore kills a task whose health ch
 which would take every in-flight batch with it. Hence a `ThreadPoolExecutor` sized to the
 concurrency cap, and hence `/healthz` being `async def`: it now answers on the loop itself and
 cannot queue behind anything.
+
+**The batch-history routes live here and not on the Runtime.** A batch is a unit only the web tier
+knows about -- the Runtime is invoked once per material and never sees the group -- so the web tier
+is the only component that can record one. `web/batch_history.py` says what the record is and how
+its three statuses are derived; this module is only the routes and the wiring that feeds the
+recorder from the fanned-out stream.
 """
 
 from __future__ import annotations
@@ -65,6 +75,7 @@ from .auth import (
     InvalidSession,
     build_auth,
 )
+from .batch_history import BatchHistory, BatchRecorder, new_batch_id
 from .fanout import (
     FANOUT_CONCURRENCY,
     FanOut,
@@ -158,11 +169,15 @@ class WebTier:
 
     def __init__(self, auth: AuthService, runtime: AgentCoreRuntimeClient,
                  static_dir: str, *, cookie_secure: bool = False,
-                 fanout_concurrency: int = FANOUT_CONCURRENCY) -> None:
+                 fanout_concurrency: int = FANOUT_CONCURRENCY,
+                 history: Optional[BatchHistory] = None) -> None:
         self.auth = auth
         self.runtime = runtime
         self.static_dir = static_dir
         self.cookie_secure = cookie_secure
+        # Batch history. Injectable so a test can hand in an in-memory store; the default builds
+        # itself lazily on first use, so a tier that never sees a batch constructs no AWS client.
+        self.history = history if history is not None else BatchHistory()
         # email -> (runtimeSessionId, minted_at). Per-user so two reviewers do not share a
         # microVM, and so one user's long batch does not reset another's idle timer.
         #
@@ -263,6 +278,120 @@ class WebTier:
         async def invocations(request: Request) -> Any:
             return await self._invocations(request)
 
+        # ── batch history ────────────────────────────────────────────────────
+        #
+        # Plain routes rather than more `/api/invocations` actions: these read the web tier's own
+        # store and never call the Runtime, so routing them through the proxy would mean signing a
+        # SigV4 request to ask ourselves a question. Registered before the SPA catch-all, which
+        # would otherwise swallow every GET under this prefix.
+        #
+        # `/api/batch-history` and NOT `/api/batches`, which the frontend's adapter already owns for
+        # the §8 contract's session-scoped batch routes (`frontend/src/api/agentcore.ts`). Those two
+        # answer different questions -- "what is in this page session" versus "what was ever
+        # generated" -- and sharing a path would make which one you got depend on where the request
+        # was issued from.
+
+        @app.get("/api/batch-history")
+        async def list_batches(request: Request) -> JSONResponse:
+            user = request.scope.get(USER_SCOPE_KEY) or {}
+            from starlette.concurrency import run_in_threadpool
+
+            # In a threadpool: `load_all_indexes` is a LIST plus one GET per batch, all blocking
+            # boto3. On the loop it would stall `/healthz` for as long as S3 took.
+            try:
+                batches = await run_in_threadpool(
+                    self.history.list_batches, owner=str(user.get("email") or "") or None
+                )
+            except Exception as exc:  # noqa: BLE001 - surfaced in the frontend's error shape
+                return JSONResponse(
+                    _error_body("BATCH_HISTORY_UNAVAILABLE",
+                                "%s: %s" % (type(exc).__name__, str(exc)[:300])),
+                    status_code=502,
+                )
+            return JSONResponse({"batches": batches, "next_cursor": None})
+
+        @app.get("/api/batch-history/{batch_id}")
+        async def get_batch(batch_id: str) -> JSONResponse:
+            from starlette.concurrency import run_in_threadpool
+
+            try:
+                found = await run_in_threadpool(self.history.get_batch, batch_id)
+            except Exception as exc:  # noqa: BLE001
+                return JSONResponse(
+                    _error_body("BATCH_HISTORY_UNAVAILABLE",
+                                "%s: %s" % (type(exc).__name__, str(exc)[:300])),
+                    status_code=502,
+                )
+            if found is None:
+                return JSONResponse(
+                    _error_body("BATCH_NOT_FOUND",
+                                "没有找到批次 %s 的历史记录" % batch_id, batch_id=batch_id),
+                    status_code=404,
+                )
+            return JSONResponse(found)
+
+        @app.get("/api/batch-history-material/{material_id}")
+        async def get_history_material(material_id: str) -> JSONResponse:
+            """One material's artifacts by id alone, for the reader page of a historical batch.
+
+            A separate route rather than a query on `/api/batch-history/{id}`: the reader-page URL is
+            `/materials/{id}` and names no batch, so the batch id is genuinely not available to the
+            caller. Without this, 阅读全文 on a batch from last week is a link to "材料不存在".
+            """
+            from starlette.concurrency import run_in_threadpool
+
+            try:
+                found = await run_in_threadpool(self.history.get_material, material_id)
+            except Exception as exc:  # noqa: BLE001
+                return JSONResponse(
+                    _error_body("BATCH_HISTORY_UNAVAILABLE",
+                                "%s: %s" % (type(exc).__name__, str(exc)[:300])),
+                    status_code=502,
+                )
+            if found is None:
+                return JSONResponse(
+                    _error_body("MATERIAL_NOT_FOUND",
+                                "历史记录里没有材料 %s" % material_id, material_id=material_id),
+                    status_code=404,
+                )
+            return JSONResponse(found)
+
+        @app.post("/api/batch-history/{batch_id}/submit")
+        async def submit_batch(batch_id: str, request: Request) -> JSONResponse:
+            """Record the 已提交 status. The transition the backend did not have.
+
+            Deliberately not `action: select`: submitting for review is a reviewer stating their
+            picks, while `select` claims the candidate group, discards the siblings and pays Polly.
+            See web/batch_history.py's docstring.
+            """
+            user = request.scope.get(USER_SCOPE_KEY) or {}
+            body = _as_dict(await _json_body(request))
+            raw = body.get("material_ids")
+            if not isinstance(raw, list):
+                return JSONResponse(
+                    _error_body("bad_request", "material_ids must be a list"), status_code=400,
+                )
+            from starlette.concurrency import run_in_threadpool
+
+            try:
+                view = await run_in_threadpool(
+                    self.history.submit, batch_id, [str(m) for m in raw],
+                    actor=str(user.get("email") or "reviewer"),
+                )
+            except KeyError:
+                return JSONResponse(
+                    _error_body("BATCH_NOT_FOUND",
+                                "没有找到批次 %s 的历史记录" % batch_id, batch_id=batch_id),
+                    status_code=404,
+                )
+            except Exception as exc:  # noqa: BLE001
+                return JSONResponse(
+                    _error_body("BATCH_SUBMIT_FAILED",
+                                "%s: %s" % (type(exc).__name__, str(exc)[:300])),
+                    status_code=502,
+                )
+            return JSONResponse(view)
+
         @app.get("/login")
         def login_page() -> HTMLResponse:
             return HTMLResponse(_login_html())
@@ -312,7 +441,7 @@ class WebTier:
                                 "call"),
                     status_code=503,
                 )
-            return self._fanned_out_generate(payload)
+            return self._fanned_out_generate(payload, owner=str(user.get("email") or ""))
 
         session_id = self.session_for(str(user.get("email") or "anonymous"))
 
@@ -338,7 +467,8 @@ class WebTier:
                                      headers=_SSE_HEADERS)
         return JSONResponse(read_json(body))
 
-    def _fanned_out_generate(self, payload: Dict[str, Any]) -> StreamingResponse:
+    def _fanned_out_generate(self, payload: Dict[str, Any], *,
+                             owner: str = "") -> StreamingResponse:
         """One invocation per material, merged into the single stream the frontend already reads.
 
         Returns immediately with headers: the children are started by the generator, so the browser
@@ -347,16 +477,28 @@ class WebTier:
         a child that cannot be invoked at all becomes a `material_failed` frame inside the stream
         rather than a 502 that would lose the N-1 children that were fine.
 
-        The batch id is per-request and only namespaces the backend's candidate groups: two
+        The batch id is per-request and namespaces two things: the backend's candidate groups (two
         materials for the same scenario in one submission must compete for one user choice, and two
-        submissions must not.
+        submissions must not) and now the batch record too, which is why `new_batch_id` keeps the
+        same format rather than minting something prettier.
+
+        The recorder is attached here and fed by `_frames`. It is what makes a batch survive the
+        request that created it -- see web/batch_history.py.
         """
         self._batch_counter += 1
-        batch_id = "web-%d-%d" % (int(time.time() * 1000), self._batch_counter)
+        batch_id = new_batch_id(self._batch_counter)
         children, slot_ids = plan_children(payload, batch_id=batch_id)
         fan = FanOut(self.runtime, children, slot_ids, executor=self.executor(),
                      concurrency=self.fanout_concurrency)
-        return StreamingResponse(_frames(fan), media_type=SSE_CONTENT_TYPE,
+        recorder = self.history.recorder(
+            batch_id, owner=owner, requested_total=len(slot_ids),
+            # The plan's own view of the batch shape, so the history panel can render a scenario tag
+            # and a set count for a batch that produced nothing at all. Derived from `children`
+            # rather than from the payload because `plan_children` has already resolved counts and
+            # the custom scenario into one material per child.
+            scenarios=_scenario_shape(children),
+        )
+        return StreamingResponse(_frames(fan, recorder), media_type=SSE_CONTENT_TYPE,
                                  headers=_SSE_HEADERS)
 
     def _serve_static(self, full_path: str, request: Request) -> Any:
@@ -399,16 +541,46 @@ _SSE_HEADERS = {
 }
 
 
-async def _frames(fan: FanOut) -> AsyncIterator[bytes]:
+def _scenario_shape(children: Any) -> list:
+    """`[{scenario_key, count}]` in plan order, for the history panel's scenario tags.
+
+    Collapsed to one row per scenario with a count, because that is what the panel renders
+    ("🏨 酒店预订 × 2"). Order is the plan's order, which is the order the user picked the scenarios
+    in -- `plan_children` mirrors `backend/request.py`'s expansion, and the frontend's cards are laid
+    out the same way, so the panel's tags and the cards cannot disagree about which scenario came
+    first.
+    """
+    order: list = []
+    counts: Dict[str, int] = {}
+    for child in children:
+        key = str(getattr(child, "scenario", "") or "")
+        if key not in counts:
+            order.append(key)
+            counts[key] = 0
+        counts[key] += len(getattr(child, "slot_ids", ()) or ())
+    return [{"scenario_key": key, "count": counts[key]} for key in order]
+
+
+async def _frames(fan: FanOut, recorder: Optional[BatchRecorder] = None) -> AsyncIterator[bytes]:
     """Frame the merged event stream for the browser, one event per ASGI body message.
 
     An `async` generator, unlike `_relay`: the blocking reads already live on the fan-out's own
     threads, so there is nothing here for `iterate_in_threadpool` to protect the loop from. Each
     `yield` is still one `http.response.body` with `more_body=True`, which is the observable
     property the tests assert and the only thing progressive delivery means at this layer.
+
+    The recorder is fed here, and its every method is non-blocking on purpose: it hands snapshots to
+    its own worker thread. Writing S3 inline would put a multi-hundred-millisecond PUT between two
+    material cards, which is the one thing this generator exists not to do.
     """
     try:
+        if recorder is not None:
+            # Before the first frame, so a batch that dies immediately still leaves a record saying
+            # it was asked for.
+            recorder.start()
         async for event in fan.events():
+            if recorder is not None:
+                recorder.on_event(event)
             yield ("data: %s\n\n" % json.dumps(event, ensure_ascii=False)).encode("utf-8")
     except Exception as exc:  # noqa: BLE001 - mid-stream failure must still reach the client
         # Same contract as `_relay`: the frontend treats a stream that ends without a terminal
@@ -419,6 +591,10 @@ async def _frames(fan: FanOut) -> AsyncIterator[bytes]:
         yield ("data: %s\n\n" % json.dumps(broken)).encode("utf-8")
     finally:
         fan.close()
+        if recorder is not None:
+            # Also runs on a client disconnect (GeneratorExit), which is the case that matters: an
+            # abandoned batch keeps whatever materials it already delivered.
+            recorder.close()
 
 
 def _relay(body: Any) -> Iterator[bytes]:

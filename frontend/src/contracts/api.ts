@@ -127,6 +127,76 @@ export interface BatchSnapshot {
   items: BatchItemSnapshot[]
 }
 
+/* ── GET /api/batches — batch history (web/batch_history.py) ──────────────── */
+
+/**
+ * The three statuses the history panel filters on.
+ *
+ * Not `BatchStatus`. That one is about a run's outcome (queued/running/partial/done/failed) and is
+ * per-request; this one is about what a reviewer can still do with a batch, which is a fact about
+ * storage. A batch can perfectly well be `done` and `archived` at once, so collapsing them into one
+ * enum would force a choice between two things that are both true.
+ *
+ * `pending_selection` is derived (the candidates are still resolvable), `archived` is derived (they
+ * are not), and `submitted` is RECORDED — it is the transition the backend did not have before this
+ * feature. See web/batch_history.py's docstring for why each is what it is.
+ */
+export type BatchHistoryStatus = 'pending_selection' | 'submitted' | 'archived'
+
+export interface BatchHistoryMaterialSummary {
+  material_id: string
+  scenario_key: string
+  index?: number
+  slot_id?: string
+  verdict?: Verdict | ''
+  degraded?: boolean
+}
+
+export interface BatchHistoryEntry {
+  batch_id: string
+  /** Unix seconds, not an ISO string: the backend stores what `time.time()` gave it. */
+  created_at: number
+  completed_at?: number | null
+  status: BatchHistoryStatus
+  /**
+   * Whether a selection can still be made in this batch. Comes from the BACKEND rather than being
+   * re-derived here: 已提交 and 已归档 are read-only for different reasons, and a frontend that
+   * reimplemented the rule could get one of them subtly wrong and offer a control that cannot work.
+   */
+  read_only: boolean
+  /** The web task died mid-batch. The materials listed did arrive; the missing ones never will. */
+  interrupted: boolean
+  state: 'running' | 'complete' | string
+  requested_total: number
+  arrived: number
+  scenarios: Array<{ scenario_key: string; count: number }>
+  counts?: Record<string, number>
+  submitted_at?: number | null
+  submitted_by?: string | null
+  submitted_material_ids?: string[]
+  materials: BatchHistoryMaterialSummary[]
+}
+
+export interface BatchHistoryResponse {
+  batches: BatchHistoryEntry[]
+  next_cursor?: string | null
+}
+
+/**
+ * One batch with every recorded material's full artifacts. `GET /api/batch-history/{id}`.
+ *
+ * `verdict` is omitted from the summary half of the intersection: the summary allows `''` (the
+ * recorder writes it when a material arrived with no audit verdict) while `MaterialRecord` does not,
+ * and the artifacts are authoritative wherever both are present.
+ */
+export interface BatchHistoryDetail extends Omit<BatchHistoryEntry, 'materials'> {
+  materials: Array<
+    Omit<BatchHistoryMaterialSummary, 'verdict'> &
+      Partial<Pick<BatchHistoryMaterialSummary, 'verdict'>> &
+      Partial<Omit<MaterialRecord, 'material_id' | 'verdict'>>
+  >
+}
+
 export interface BatchListResponse {
   batches: Array<Pick<BatchSnapshot, 'batch_id' | 'status' | 'created_at' | 'total' | 'completed'>>
   next_cursor?: string | null

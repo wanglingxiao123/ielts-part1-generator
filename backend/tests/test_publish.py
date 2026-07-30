@@ -1132,3 +1132,80 @@ class TestAFailedSelectLeavesNothingStuck:
                 batch_mod._register(result, scenario, "batch-12:x")
 
         assert result.material_id is None
+
+
+class TestPlaybackOutlivesTheOfferWindow:
+    """试听 on a material from a batch older than `CANDIDATE_TTL_SECONDS`.
+
+    The batch-history panel makes this reachable for the first time. Before it, a reviewer could
+    only see materials from the page session that generated them, so nothing older than a browser
+    tab was ever clickable. Now a batch from last week has a row and an 阅读全文 link, and the
+    reader page offers 生成音频 -- so whether `preview_audio` still resolves the candidate is a
+    question the UI's honesty depends on rather than a hypothetical.
+
+    The answer is that it does, and the reason is narrow enough to be worth pinning: the TTL is
+    applied by `load_all` (the listing) and NOT by `load` (the direct read). `REGISTRY.get` goes
+    through `load`, so an aged-out candidate is invisible to `list_candidates` while still being
+    fully resolvable by id. If that ever changed -- a lifecycle rule on `_candidates/`, or a cutoff
+    added to `load` -- the history panel would start offering a button that 404s, which is exactly
+    what these tests exist to catch.
+    """
+
+    def _aged_store(self, material, blueprint, audit_aligned, *, extra_age=3600):
+        """An `S3CandidateStore` holding one candidate older than the offer window.
+
+        `S3CandidateStore` and not `InMemoryCandidateStore`: the in-memory one has no expiry at all,
+        so every assertion below would pass against it without testing anything. This is also the
+        backend that runs in the Runtime.
+        """
+        from backend.orchestration.candidate_store import (
+            CANDIDATE_TTL_SECONDS,
+            S3CandidateStore,
+        )
+
+        store = S3CandidateStore(InMemoryObjectStore())
+        candidate = make_candidate(material, blueprint, audit_aligned)
+        candidate.created_at = time.time() - CANDIDATE_TTL_SECONDS - extra_age
+        CandidateRegistry(store=store).register(candidate)
+        return store
+
+    def test_the_ttl_applies_to_the_listing_but_not_to_a_direct_read(
+        self, material, blueprint, audit_aligned
+    ):
+        """The precise asymmetry the history panel depends on.
+
+        Both halves matter. The first proves the expiry is real, so the second is not vacuous; the
+        second is what makes 试听 work on an old batch.
+        """
+        store = self._aged_store(material, blueprint, audit_aligned)
+        assert store.load_all() == []
+        assert store.load(MATERIAL_ID) is not None
+
+    def test_an_aged_candidate_is_still_resolvable_by_id(
+        self, material, blueprint, audit_aligned
+    ):
+        """`REGISTRY.get` goes through `load`, so it resolves what `list_candidates` has dropped.
+
+        Read through a SECOND registry over the same store: the in-process cache would otherwise
+        answer, and the storage path -- the only one with a TTL -- would never be exercised.
+        """
+        store = self._aged_store(material, blueprint, audit_aligned)
+        recovered = CandidateRegistry(store=store).get(MATERIAL_ID)
+        assert recovered.material_id == MATERIAL_ID
+        # The artifacts too, because synthesis needs the script and this instance never had it.
+        assert recovered.material == material
+
+    async def test_preview_audio_still_synthesises_an_aged_candidate(
+        self, wiring, material, blueprint, audit_aligned
+    ):
+        """End to end: the 生成音频 button a history row leads to actually produces playable audio."""
+        store = self._aged_store(material, blueprint, audit_aligned)
+        result = await preview_audio(
+            MATERIAL_ID, registry=CandidateRegistry(store=store),
+            state_store=wiring["state_store"], backing=wiring["backing"],
+            polly=wiring["polly"], wait=True,
+        )
+        assert result["status"] == "ready"
+        # Playable, not merely synthesised: `presign_audio` resolves through `locate`, which only
+        # sees a prefix whose completeness sentinel exists.
+        assert len(wiring["state_store"].presign_audio(MATERIAL_ID)) > 0

@@ -46,11 +46,18 @@
  *    lands. A placeholder never reaches an endpoint, because a placeholder card
  *    is a skeleton and a skeleton has no buttons.
  * 2. **Materials are cached in this module** so that GET-material / GET-materials /
- *    compare keep working. That cache is the ONLY store; a page reload loses the
- *    batch. This is reported honestly in the UI (see `sessionResumable`) rather
- *    than papered over — design.md §5.1 required the backend batch to be a job,
- *    and it is not one yet, so the frontend must not claim resumability it
- *    cannot deliver.
+ *    compare keep working while a batch is streaming. That cache still does not
+ *    survive a reload, and `sessionResumable` still says so.
+ *
+ *    What HAS changed is that losing it is no longer losing the batch. The web
+ *    tier now records every batch to S3 as its materials arrive
+ *    (`web/batch_history.py`), and `/api/batch-history` serves them back — which
+ *    is what the 历史批次 panel reads. So a reload loses the live STREAM and keeps
+ *    the RESULTS. The two stores answer different questions and are deliberately
+ *    not merged: this one is the in-flight batch with its stage events, that one
+ *    is every batch ever generated. `agentCoreTransport` therefore passes
+ *    `/batch-history` straight through to `realTransport` rather than translating
+ *    it — the Runtime is invoked once per material and has never heard of a batch.
  *
  * Everything above `request()` is untouched: call sites still speak §8.
  */
@@ -77,6 +84,7 @@ import {
   ApiError,
   CREDENTIALS,
   notifyUnauthorized,
+  realTransport,
   type RequestSpec,
   type Transport,
 } from './http'
@@ -1069,6 +1077,19 @@ const agentCoreTransport: Transport = async (spec: RequestSpec): Promise<unknown
   const query = new URLSearchParams(spec.path.split('?')[1] ?? '')
   const [, resource, id, sub] = path.split('/')
 
+  /**
+   * Batch history is served by the WEB TIER, over plain REST, so it is the one family of calls this
+   * adapter does not translate — it hands them to `realTransport` unchanged.
+   *
+   * That is the point of the whole feature: `/api/batch-history` reads S3 (`web/batch_history.py`),
+   * while everything else in this module reads the `sessions` Map below, which a reload discards.
+   * Routing history through `/invocations` would mean asking the Runtime about a grouping the
+   * Runtime has never heard of — it is invoked once per material and never sees a batch.
+   */
+  if (resource === 'batch-history' || resource === 'batch-history-material') {
+    return realTransport(spec)
+  }
+
   if (spec.method === 'POST' && resource === 'batches' && !id) {
     return createBatch(spec.body as CreateBatchRequest)
   }
@@ -1134,14 +1155,26 @@ const agentCoreTransport: Transport = async (spec: RequestSpec): Promise<unknown
 
   if (spec.method === 'GET' && resource === 'materials' && id && !sub) {
     const hit = findSlotByMaterial(id)
-    if (!hit?.slot.record) {
+    if (hit?.slot.record) return hit.slot.record
+    /**
+     * Not in this page session — so try the batch history before giving up.
+     *
+     * This fallback is what makes 阅读全文 work on a historical batch, and without it the history
+     * panel would lead straight to "材料不存在": the session cache only holds materials this page
+     * generated, and a batch from last week is by definition not one of them. The client's rule for
+     * a read-only batch is 「可看材料、可试听」, and both of those start on the reader page.
+     *
+     * The session cache is still tried FIRST: an in-flight batch's material is already in memory,
+     * and a network round trip to fetch what is sitting in a local Map would be slower and could
+     * disagree with the cards on screen.
+     */
+    return realTransport({ ...spec, path: `/batch-history-material/${id}` }).catch(() => {
       throw new ApiError(
         404,
         'MATERIAL_NOT_FOUND',
-        '材料不存在。后端没有材料查询端点，本页只持有当次会话生成的材料。',
+        '材料不存在：本页会话里没有它，历史记录里也没有。',
       )
-    }
-    return hit.slot.record
+    })
   }
 
   if (spec.method === 'GET' && resource === 'materials' && !id) {

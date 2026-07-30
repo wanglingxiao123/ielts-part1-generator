@@ -29,6 +29,20 @@
  *
  * 卡片上没有「试听」：语音在选定之后才合成，选之前不存在音频（也不该为被弃用的
  * 材料付 Polly 的钱）。
+ *
+ * 4. **左侧历史批次面板。** 这一页现在是「面板 + 内容区」两栏：左边 260px 的历史列表
+ *    （BatchHistoryPanel，可折叠），右边是当前选中批次的卡片。
+ *
+ *    它能存在是因为后端现在真的有批次记录了：web 层把每个批次随材料到达增量写进 S3
+ *    （`web/batch_history.py`），`/api/batch-history` 读回来。在这之前批次只活在
+ *    `api/agentcore.ts` 的一个 `Map` 里，刷新即失——所以「历史」过去不是没做，是没有数据。
+ *
+ *    **历史批次是只读的。** 客户的话：「已提交/已归档为只读视图——可看材料、可试听，但不能
+ *    修改选稿」。只读与否由**后端**给（`read_only`），不在这里重新推导：已提交和已归档只读的
+ *    理由不同，前端再算一遍就多一个会算错的地方。落地成三件事：勾选框禁用、底栏换成一句说明、
+ *    「提交审核」不出现。可读、可比、可试听（阅读页的「生成音频」）全都留着——试听走
+ *    `preview_audio`，它按 id 直接读候选（`load` 不套 TTL，只有 `list_candidates` 套），
+ *    所以一个上周的批次照样能听。
  */
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
@@ -58,8 +72,10 @@ import {
 } from '@/domain/progressStages'
 import { selectActivePhase, useBatchStore } from '@/stores/batchStore'
 import { useReviewQueue } from '@/stores/reviewQueueStore'
+import { BatchHistoryPanel } from './BatchHistoryPanel'
 import { DistributionThumb } from './DistributionThumb'
 import { useBatchStream } from './useBatchStream'
+import { useHistoricalBatch } from './useHistoricalBatch'
 
 /* ── 连接状态提示（行为原样保留） ───────────────────────────────────────────── */
 
@@ -192,6 +208,14 @@ interface CardProps {
   compareMode: boolean
   /** 'a' | 'b' | null —— 对比模式下这张卡是 A 还是 B。 */
   pickSide: 'a' | 'b' | null
+  /**
+   * 历史批次（已提交 / 已归档）的只读视图。
+   *
+   * 只关掉**选稿**：勾选框 `disabled`。阅读全文、时间轴、对比点选一个都不动，因为客户的原话是
+   * 「可看材料、可试听，但不能修改选稿」。用 `disabled` 而不是不渲染那个按钮：按钮消失会让人以为
+   * 这张卡缺了什么，而一个明确禁用并带上原因的控件说的是「这里本来能点，只是现在不能」。
+   */
+  readOnly: boolean
   onToggle: () => void
 }
 
@@ -203,6 +227,7 @@ function MaterialCard({
   selected,
   compareMode,
   pickSide,
+  readOnly,
   onToggle,
 }: CardProps) {
   const label = `第 ${preview.index + 1} 套`
@@ -227,16 +252,21 @@ function MaterialCard({
         <span className="row" style={{ gap: 8 }}>
           {/* 统一「待审核」。评价方的内部评级不出现在这里。 */}
           <span className="status-badge">待审核</span>
+          {/* 只读批次里对比照旧可用（点选 A/B 不改选稿），所以只在**非对比**模式下禁用。 */}
           <button
             type="button"
             className={`select-check${pickSide || selected ? ' checked' : ''}${
               pickSide === 'b' ? ' pick-b' : ''
             }`}
+            disabled={readOnly && !compareMode}
+            title={readOnly && !compareMode ? '历史批次是只读的，不能修改选稿' : undefined}
             aria-pressed={compareMode ? pickSide !== null : selected}
             aria-label={
               compareMode
                 ? `${label}：${pickSide ? `已选为材料 ${pickSide.toUpperCase()}` : '点选进入对比'}`
-                : `${label}：${selected ? '已选择' : '选择'}`
+                : readOnly
+                  ? `${label}：历史批次，不能修改选稿`
+                  : `${label}：${selected ? '已选择' : '选择'}`
             }
             onClick={onToggle}
           >
@@ -296,6 +326,22 @@ export function BatchProgressPage() {
   /** 正在对比的场景 key；null = 不在对比模式。 */
   const [compareScenario, setCompareScenario] = useState<string | null>(null)
   const [pick, setPick] = useState<ComparePick>(EMPTY_PICK)
+  /**
+   * 让历史面板在批次跑完之后重取一次列表。
+   *
+   * 面板自己不知道批次什么时候结束，页面知道（它拿着 SSE 的终态），所以由这里递增。
+   */
+  const [historyToken, setHistoryToken] = useState(0)
+
+  /**
+   * 这一批是不是「当前活批次」。
+   *
+   * `store.batchId` 是本页会话里正在跑（或刚跑完）的那一批。URL 里的 batchId 与它不同，说明用户
+   * 从历史面板点了另一批——那一批没有 SSE 可接、store 里也没有它的材料，只能从
+   * `/api/batch-history/{id}` 取。这个判据是两条数据路径的唯一分岔点。
+   */
+  const isLiveBatch = Boolean(batchId) && store.batchId === batchId
+  const historical = useHistoricalBatch(batchId, !isLiveBatch)
 
   // Refresh / revisit: reattach to the in-flight batch (prd R3).
   //
@@ -304,8 +350,12 @@ export function BatchProgressPage() {
   // event INCLUDING full material payloads) refill it. The persisted cursor is
   // for mid-session reconnects, where the store still holds the materials and
   // re-sending them would be wasted bandwidth.
+  //
+  // Skipped for a historical batch: there is no stream to attach to (it finished, possibly days
+  // ago) and `getBatch` would 404 on a `sessions` Map that has never heard of it. Attempting it
+  // anyway is how a perfectly good historical batch would render a red "无法加载本批次" banner.
   useEffect(() => {
-    if (!batchId || stream.isActive(batchId)) return
+    if (!batchId || !isLiveBatch || stream.isActive(batchId)) return
     const persisted = stream.resumePersisted()
     void (async () => {
       try {
@@ -315,8 +365,8 @@ export function BatchProgressPage() {
         if (persisted?.batchId === batchId) store.setConnection('streaming')
       } catch (err) {
         // Surfaced, not just logged: against the real backend a reload genuinely
-        // loses the batch (the job is bound to the POST), and a page that sits
-        // at "已生成 0 / 0" with no explanation reads as a frontend bug.
+        // loses the LIVE stream (the job is bound to the POST), and a page that
+        // sits at "已生成 0 / 0" with no explanation reads as a frontend bug.
         console.warn('[batch] snapshot failed', err)
         setSnapshotError(err instanceof Error ? err.message : String(err))
         return
@@ -324,7 +374,14 @@ export function BatchProgressPage() {
       stream.connect(batchId)
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [batchId])
+  }, [batchId, isLiveBatch])
+
+  // 批次跑完 → 让历史面板重取，这一批才会带着最终套数出现在列表里。
+  useEffect(() => {
+    if (store.status === 'done' || store.status === 'partial') {
+      setHistoryToken((n) => n + 1)
+    }
+  }, [store.status])
 
   useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), 1000)
@@ -354,22 +411,65 @@ export function BatchProgressPage() {
   const pending = items.filter((i) => i!.status !== 'done')
 
   /**
+   * 只读。**后端给的**（`read_only`），不在这里按状态重算——见文件头。
+   *
+   * 活批次永远可写：它还在等这次选稿，这就是它存在的意义。
+   */
+  const readOnly = !isLiveBatch && (historical.batch?.readOnly ?? false)
+
+  /**
+   * 内容区的数据源：活批次用 store，历史批次用 `/api/batch-history/{id}`。
+   *
+   * 归一成 `buildResultGroups` 已经接受的两个字段（`requested` + `materials`），所以分组规则
+   * （domain/resultSlots.ts）一份代码同时服务两条路径——历史视图和活视图的版式因此不可能长歪。
+   * 历史批次没有 `items`：那是 SSE 事件填出来的，一个跑完的批次没有进行中的版位。
+   */
+  const source = useMemo(() => {
+    if (isLiveBatch || !historical.batch) {
+      return {
+        requested: store.requested,
+        items: store.itemOrder.map((id) => store.items[id]).filter((i) => i !== undefined),
+        materials: store.materials,
+        // 活批次跑完了才算完；历史批次按定义已经完了。
+        finished: store.status === 'done' || store.status === 'partial',
+        total: store.total,
+      }
+    }
+    return {
+      requested: historical.batch.requested,
+      items: [],
+      materials: historical.batch.materials,
+      finished: true,
+      total: historical.batch.requestedTotal,
+    }
+  }, [
+    isLiveBatch,
+    historical.batch,
+    store.requested,
+    store.itemOrder,
+    store.items,
+    store.materials,
+    store.status,
+    store.total,
+  ])
+
+  /**
    * 全部卡位（不只是已到达的），按场景分组、组内按第 N 套排序。
    *
    * 这是「没有等待页」的关键：卡位形状来自用户提交时选的每场景数量，所以在**任何
    * material 事件之前**就已经知道要铺几张骨架卡。规则本身在
    * domain/resultSlots.ts，纯函数、可单测。
    */
-  const batchFinished = store.status === 'done' || store.status === 'partial'
+  const batchFinished = source.finished
   const groups = useMemo(
     () =>
       buildResultGroups({
-        requested: store.requested,
-        items: store.itemOrder.map((id) => store.items[id]).filter((i) => i !== undefined),
-        materials: store.materials,
+        requested: source.requested,
+        items: source.items,
+        materials: source.materials,
         batchFinished,
       }),
-    [store.requested, store.itemOrder, store.items, store.materials, batchFinished],
+    [source, batchFinished],
   )
 
   /**
@@ -384,7 +484,7 @@ export function BatchProgressPage() {
       string,
       { preview: CardPreview; view: ViewMaterial; metrics: DistributionMetrics; groups: FormGroupAnalysis }
     >()
-    for (const record of Object.values(store.materials)) {
+    for (const record of Object.values(source.materials)) {
       const view = joinFromRecord(record)
       const metrics = computeDistribution(view, thresholds)
       out.set(record.material_id, {
@@ -395,7 +495,7 @@ export function BatchProgressPage() {
       })
     }
     return out
-  }, [store.materials, thresholds])
+  }, [source.materials, thresholds])
 
   const idsByScenario = useMemo(() => arrivedByScenario(groups), [groups])
 
@@ -409,7 +509,25 @@ export function BatchProgressPage() {
   const scenarioCount = groups.length
   const perScenario = groups[0]?.slots.length ?? 0
   /** 计划总套数。骨架期 store.total 已经有值，所以进度条一开始就说得出分母。 */
-  const plannedTotal = store.total > 0 ? store.total : groups.reduce((n, g) => n + g.slots.length, 0)
+  const plannedTotal =
+    source.total > 0 ? source.total : groups.reduce((n, g) => n + g.slots.length, 0)
+
+  /**
+   * 切换批次。
+   *
+   * 只改路由，不动 store：store 装的是**活批次**，把它清掉会让用户从历史看回当前批次时发现
+   * 进度和已到达的卡都没了。`isLiveBatch` 那一行判据据此在两条数据路径间切换。
+   *
+   * 切换时顺手退出对比模式并清空勾选——勾选是「这一批里我选了哪几套」，带到另一批去就是一句谎话。
+   */
+  const switchBatch = (nextBatchId: string) => {
+    if (nextBatchId === batchId) return
+    setSelected(new Set())
+    setCompareScenario(null)
+    setPick(EMPTY_PICK)
+    setSnapshotError(null)
+    navigate(`/batches/${nextBatchId}`)
+  }
 
   const doRetry = async () => {
     if (!batchId) return
@@ -442,10 +560,24 @@ export function BatchProgressPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pick, compareScenario])
 
+  /**
+   * 提交审核。
+   *
+   * 现在**同时**记到后端：`POST /api/batch-history/{id}/submit` 把这一批标成「已提交」，也就是历史
+   * 面板那个蓝色状态。在这之前审核队列只在 localStorage 里，所以「已提交」是浏览器的私人意见，换
+   * 台电脑就没了——那也是为什么这个状态过去不能出现在面板上（见 web/batch_history.py）。
+   *
+   * localStorage 的队列**保留**：队列页显示的是每条材料的摘要，那份数据后端没有。两者记的是同一件
+   * 事的两个层面（哪一批 / 哪几套），不是重复。
+   *
+   * 后端记不上不阻塞跳转：队列已经写好了，为了一个状态标签把用户卡在这一页是不值得的。失败只会让
+   * 面板上少一个「已提交」，下次提交会补上。
+   */
   const doSubmit = () => {
     const at = Date.now()
+    const materialIds = [...selected]
     submitToQueue(
-      [...selected].flatMap((materialId) => {
+      materialIds.flatMap((materialId) => {
         const preview = cards.get(materialId)?.preview
         if (!preview) return []
         return [
@@ -460,12 +592,26 @@ export function BatchProgressPage() {
         ]
       }),
     )
+    if (batchId) {
+      void api
+        .submitBatch(batchId, materialIds)
+        .then(() => setHistoryToken((n) => n + 1))
+        .catch((err) => console.warn('[batch] 记录已提交状态失败', err))
+    }
     setSelected(new Set())
     navigate('/review-queue')
   }
 
   return (
-    <div className="results">
+    <div className="results-shell">
+      {/* 左侧固定宽度面板 + 右侧内容区。面板在**外层**而不是 .results 内部，因为它要贴着页面
+          左边、和内容区一起滚动之外各自滚动。 */}
+      <BatchHistoryPanel
+        activeBatchId={batchId}
+        onSelect={switchBatch}
+        reloadToken={historyToken}
+      />
+      <div className="results">
       <div className="results-progress">
         <span className="batch-id">{batchId}</span>
         <div className="progress-track">
@@ -513,6 +659,44 @@ export function BatchProgressPage() {
         </div>
       )}
 
+      {historical.error && (
+        <div className="banner banner-bad">
+          <strong>无法加载这个历史批次</strong>
+          <div>{historical.error}</div>
+        </div>
+      )}
+
+      {/* 只读视图的说明。写成一句「为什么」而不只是「只读」：一个不说理由的禁用状态会被当成故障。
+          同时点明还能做什么——看、听、对比——因为客户要的正是这三样留着。 */}
+      {readOnly && historical.batch && (
+        <div className="banner banner-info">
+          <strong>
+            {historical.batch.status === 'submitted'
+              ? '这一批已经提交过审核'
+              : '这一批已归档'}
+            ，是只读的
+          </strong>
+          <div>
+            {historical.batch.status === 'submitted'
+              ? '选稿已经做过，所以不能再改。'
+              : '可选稿的时限已过（候选材料只保留 24 小时），所以不能再改选稿。'}
+            材料照常可以阅读、并排对比；到阅读页还可以生成音频试听。
+          </div>
+        </div>
+      )}
+
+      {/* 任务中断过的历史批次。缺的套**不会**再补，所以不给「补生成」入口——那是一句做不到的承诺；
+          要补就是重新提一批。 */}
+      {historical.batch?.interrupted && (
+        <div className="banner banner-warn">
+          <strong>这一批的生成任务中途中断了</strong>
+          <div>
+            已到达的 {historical.batch.materials ? Object.keys(historical.batch.materials).length : 0}{' '}
+            套是完整的、可以照常使用；缺的部分不会再补齐。需要补的话请重新提交一批。
+          </div>
+        </div>
+      )}
+
       {runningLong && store.status === 'running' && (
         <div className="banner banner-warn">
           <strong>比预估慢</strong>
@@ -523,11 +707,12 @@ export function BatchProgressPage() {
         </div>
       )}
 
-      <ConnectionBanner onRetry={stream.retryNow} />
+      {/* 连接状态只对活批次有意义：历史批次没有流可断。 */}
+      {isLiveBatch && <ConnectionBanner onRetry={stream.retryNow} />}
 
       {/* 「有几套没生成出来」是结果，不是环节：这里只说数量和补生成的入口，
           不再逐套播报它卡在哪个内部环节、试了几次。 */}
-      {store.status === 'partial' && pending.length > 0 && (
+      {isLiveBatch && store.status === 'partial' && pending.length > 0 && (
         <div className="banner banner-warn">
           <strong>有 {pending.length} 套未能生成</strong>
           <div>
@@ -546,13 +731,18 @@ export function BatchProgressPage() {
         </div>
       )}
 
+      {/* 历史批次取回来之前不铺骨架卡：那会先闪一屏「生成中…」再换成真卡，而这一批几天前就跑完了。 */}
+      {historical.loading && (
+        <div className="panel panel-pad muted">正在读取这个历史批次…</div>
+      )}
+
       {/* 唯一还剩的空态：整批跑完了却一套都没出来。「正在生成，第一套完成后会出现
           在这里」那句话没有了——现在页面从第一秒就是结果页的结构本身。 */}
-      {completed === 0 && finished && !snapshotError && (
+      {completed === 0 && finished && !snapshotError && !historical.loading && !historical.error && (
         <div className="panel panel-pad muted">本批次没有生成出材料。</div>
       )}
 
-      {groups.map((group) => {
+      {!historical.loading && groups.map((group) => {
         const meta = scenarioMeta(group.scenarioKey)
         const comparing = compareScenario === group.scenarioKey
         return (
@@ -629,11 +819,21 @@ export function BatchProgressPage() {
                     selected={selected.has(materialId)}
                     compareMode={comparing}
                     pickSide={pickSide}
-                    onToggle={() =>
-                      comparing
-                        ? setPick((prev) => pickForCompare(prev, materialId))
-                        : setSelected((prev) => toggleSelection(prev, materialId))
-                    }
+                    readOnly={readOnly}
+                    onToggle={() => {
+                      if (comparing) {
+                        setPick((prev) => pickForCompare(prev, materialId))
+                        return
+                      }
+                      // 第二道闸，**在正常路径上不可达**（按钮已经 disabled）——这一行防的是
+                      // 「以后有人把 disabled 那句改坏」。不变式属于持有状态的这一层，只靠一个
+                      // 渲染属性来保护它，等于把它托付给样式。
+                      //
+                      // 也因此它没有对应的测试：任何能触发它的输入都需要先绕过 disabled，而那种
+                      // 输入只能靠直接调 `onToggle` 造出来，测的就变成测试自己的调用而不是页面。
+                      if (readOnly) return
+                      setSelected((prev) => toggleSelection(prev, materialId))
+                    }}
                   />
                 )
               })}
@@ -644,7 +844,7 @@ export function BatchProgressPage() {
 
       {/* 底栏和卡位一起在位。「提交审核」在第一张真卡到达之前是禁用的——按钮跳着
           出现会让人以为功能刚刚才有。 */}
-      {groups.length > 0 && (
+      {groups.length > 0 && !readOnly && (
         <div className="results-bar">
           <div className="bar-left">
             <span>
@@ -680,6 +880,31 @@ export function BatchProgressPage() {
           </div>
         </div>
       )}
+
+      {/* 只读批次的底栏。整条**换掉**而不是把「提交审核」置灰：一个永远点不了的提交按钮会让人一直
+          找它为什么不能点。这里说的是这一批处在什么状态，以及已提交的那几套是哪几套。 */}
+      {groups.length > 0 && readOnly && historical.batch && (
+        <div className="results-bar readonly">
+          <div className="bar-left">
+            <span aria-hidden="true">🔒</span>
+            <span>
+              {historical.batch.status === 'submitted' ? '已提交审核' : '已归档'}
+              ，不能修改选稿
+            </span>
+            {historical.batch.submittedMaterialIds.length > 0 && (
+              <span className="muted">
+                当时提交了 {historical.batch.submittedMaterialIds.length} 套
+              </span>
+            )}
+          </div>
+          <div className="bar-right">
+            <Link className="btn" to="/review-queue">
+              查看审核队列
+            </Link>
+          </div>
+        </div>
+      )}
+      </div>
     </div>
   )
 }

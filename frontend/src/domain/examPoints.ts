@@ -158,35 +158,18 @@ export function summariseExamPoints(view: ViewMaterial): ExamPointSummary {
     )
   }
 
-  // 盲评结果，只要点号。试听的人没听出来的点，考生也听不出来——这是这一套里唯一必须改的一类点。
-  const known = new Set(items.map((i) => i.number))
-  const unheard = view.crossCheck.unrecoverable.filter((r) => known.has(r.number))
-  if (unheard.length > 0) {
-    blocks.push(
-      block(
-        'unheard',
-        '听不出来',
-        '只读脚本的人没能复原这个点的答案，考生同样抓不住，建议改这几句',
-        'bad',
-        unheard.map((r) => r.number),
-        { ...turnOf, ...Object.fromEntries(unheard.map((r) => [r.number, r.turn_index])) },
-      ),
-    )
-  }
-  const ambiguous = (view.crossCheck.ambiguous ?? []).filter((r) => known.has(r.number))
-  if (ambiguous.length > 0) {
-    blocks.push(
-      block(
-        'ambiguous',
-        '听着有歧义',
-        '同一句话能听出不止一个答案，出题时会判分困难',
-        'warn',
-        ambiguous.map((r) => r.number),
-        { ...turnOf, ...Object.fromEntries(ambiguous.map((r) => [r.number, r.turn_index])) },
-      ),
-    )
-  }
-
+  // 这里原来还有两块盲评结论：「听不出来」（unrecoverable）和「听着有歧义」（ambiguous）。
+  // 移走的理由，按交付物的定位：
+  //
+  //  * 交付的是听力材料，不是试卷。这两块判断的是「据此出题可不可行」，规范 §3 / §6 讲的是
+  //    材料本身该具备什么，不含这一层。
+  //  * 层级不对。旁边的拼读 / 先说后改 / 干扰 / 有复述确认都是「这套材料有什么」，是正面描述；
+  //    这两块是「某个点可能有毛病」，是负面警告。混在一排标签里，读者无法判断自己在看什么。
+  //  * 红色「听不出来」会被读成「这套材料不能用」，而它也可能只是盲评方的提取没覆盖某种信息
+  //    类型——HGR482 就是：证据文本完全一致，只因对照只比轮次和 type 而误判（见
+  //    shared/cross_check.py）。一个可能来自我们自己 bug 的信号，不该长在成品的能力清单里。
+  //
+  // 盲评本身没有削弱：`unrecoverable` 仍进修改指令、仍参与取分，只是不再摆到用户面前当结论。
   const byType = new Map<ItemType, number[]>()
   for (const item of items) byType.set(item.type, [...(byType.get(item.type) ?? []), item.number])
   const typeCoverage: TypeCoverageRow[] = TYPE_ORDER.filter((t) => byType.has(t)).map((type) => ({

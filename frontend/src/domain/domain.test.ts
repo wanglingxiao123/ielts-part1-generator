@@ -448,19 +448,20 @@ describe('examPoints', () => {
     expect(listed).toEqual(balanced.blueprint.items.map((i) => i.number).sort((a, b) => a - b))
   })
 
-  it('surfaces the blind audit as jumpable point numbers, never as a count', () => {
-    // 盲评没听出第 5 题（CROSS_CHECK_WITH_GAP）。要的是「哪个点、在哪句」，不是「计划 10 听出 10」。
-    const s = summariseExamPoints(clustered)
-    const unheard = s.blocks.find((b) => b.label === '听不出来')!
-    expect(unheard.numbers).toEqual([5])
-    expect(unheard.tone).toBe('bad')
-    expect(unheard.turnOf[5]).toBe(20)
-    // 计数口径不出现在任何一块的文案里。
-    for (const block of s.blocks) {
+  it('keeps blind-audit conclusions out of the summary entirely', () => {
+    // `clustered` 用的是 CROSS_CHECK_WITH_GAP：盲评没能复原第 5 题。这一块曾经渲染成红色
+    // 「听不出来」，现在一个都不该出现——考点小结只说「这套材料具备什么」，而「据此能不能出题」
+    // 是另一层判断，且它可能来自我们自己的对照 bug（HGR482）。
+    const labels = summariseExamPoints(clustered).blocks.map((b) => b.label)
+    expect(labels).not.toContain('听不出来')
+    expect(labels).not.toContain('听着有歧义')
+    // 连带的口径也不出现：没有计数，也没有把盲评说成结论的措辞。
+    for (const block of summariseExamPoints(clustered).blocks) {
       expect(block.label).not.toMatch(/计划|听出\s*\d|\d+\s*个/)
+      expect(block.tone).not.toBe('bad')
     }
-    // 一套盲评全中的材料就不该有这一块——「都听得出来」是常态，为常态挂一块只是噪音。
-    expect(summariseExamPoints(balanced).blocks.map((b) => b.label)).not.toContain('听不出来')
+    // 但盲评本身没有被削弱：`unrecoverable` 仍在 view 上，仍进后端的修改指令。
+    expect(clustered.crossCheck.unrecoverable.map((r) => r.number)).toEqual([5])
   })
 
   it('shares its headline with the result card, so the two cannot disagree', () => {

@@ -30,6 +30,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from web.auth import AuthService, MemoryUserStore, SessionSigner  # noqa: E402
+from web.batch_history import BatchHistory  # noqa: E402
+from web.batch_store import InMemoryBatchStore  # noqa: E402
 from web.runtime_client import SSE_CONTENT_TYPE  # noqa: E402
 from web.app import WebTier  # noqa: E402
 
@@ -281,8 +283,25 @@ def static_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def tier(auth: AuthService, runtime: StubRuntimeClient, static_dir: Path) -> WebTier:
-    return WebTier(auth, runtime, str(static_dir))
+def batch_store() -> InMemoryBatchStore:
+    """The batch-history store, handed to the tier so nothing here reaches S3.
+
+    Exposed as its own fixture rather than hidden inside `tier`, because the restart test needs to
+    keep the SAME store across two `WebTier` instances -- that substitution is the whole point: the
+    store stands in for the bucket, which outlives the task.
+    """
+    return InMemoryBatchStore()
+
+
+@pytest.fixture
+def history(batch_store: InMemoryBatchStore) -> BatchHistory:
+    return BatchHistory(batch_store)
+
+
+@pytest.fixture
+def tier(auth: AuthService, runtime: StubRuntimeClient, static_dir: Path,
+         history: BatchHistory) -> WebTier:
+    return WebTier(auth, runtime, str(static_dir), history=history)
 
 
 @pytest.fixture
@@ -298,9 +317,12 @@ def register(test_client, email: str = "a@amazon.com", password: str = "hunter2h
 
 
 __all__ = [
+    "BatchHistory",
     "FakeStreamingBody",
     "FanOutRuntimeClient",
+    "InMemoryBatchStore",
     "StubRuntimeClient",
+    "WebTier",
     "collect",
     "register",
     "threading",

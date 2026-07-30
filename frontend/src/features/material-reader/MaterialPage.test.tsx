@@ -116,10 +116,12 @@ describe('MaterialPage 考点小结', () => {
     for (const label of ['拼读', '先说后改', '同义替换', '有复述确认']) {
       expect(text).toContain(label)
     }
-    // clustered fixture 的盲评漏了第 5 题，说成命题人的话 + 可跳转的点号。
-    expect(text).toContain('听不出来')
+    // 只有能力项。盲评结论（听不出来 / 听着有歧义）不在这里——那是「能不能出题」，
+    // 不是「这套材料有什么」，而且红块会被读成「材料不能用」。
+    expect(text).not.toContain('听不出来')
+    expect(text).not.toContain('听着有歧义')
     expect(panel.querySelectorAll('.ep-num').length).toBeGreaterThan(0)
-    expect(panel.querySelector('.ep-block.bad')).not.toBeNull()
+    expect(panel.querySelector('.ep-block.bad')).toBeNull()
   })
 
   it('drops the panels a reviewer cannot act on', async () => {

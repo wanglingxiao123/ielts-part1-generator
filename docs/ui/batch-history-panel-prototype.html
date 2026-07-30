@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html><head><style id="qw-theme">:root {
+  --color-bg: #faf9fc;
+  --color-text: #131920;
+  --color-navbar-bg: #f9f9fb;
+  --color-bg-chat-view: #fcfcfd;
+  --color-bg-secondary: #ffffff;
+  --color-bg-tertiary: #f9fafb;
+  --color-bg-hover: #f3f4f6;
+  --color-surface: #f9fafb;
+  --color-surface-hover: #f3f4f6;
+  --color-surface-active: #e5e7eb;
+  --color-border: rgba(0, 0, 0, .12);
+  --color-border-light: rgba(0, 0, 0, .06);
+  --color-border-strong: #d1d5db;
+  --color-primary: #4200db;
+  --color-primary-dark: #35009e;
+  --color-primary-light: #8575ff;
+  --color-primary-bg: #e8e6ff;
+  --color-primary-hover-border: #35009e;
+  --color-nav-icon-active: #4200db;
+  --color-nav-hover-border: #4200db;
+  --color-primary-alpha-3: color-mix(in srgb, #4200db 3%, transparent);
+  --color-primary-alpha-5: color-mix(in srgb, #4200db 5%, transparent);
+  --color-primary-alpha-8: color-mix(in srgb, #4200db 8%, transparent);
+  --color-primary-alpha-12: color-mix(in srgb, #4200db 12%, transparent);
+  --color-primary-alpha-15: color-mix(in srgb, #4200db 15%, transparent);
+  --color-primary-alpha-20: color-mix(in srgb, #4200db 20%, transparent);
+  --color-primary-alpha-25: color-mix(in srgb, #4200db 25%, transparent);
+  --color-primary-alpha-30: color-mix(in srgb, #4200db 30%, transparent);
+  --color-primary-alpha-40: color-mix(in srgb, #4200db 40%, transparent);
+  --color-primary-alpha-50: color-mix(in srgb, #4200db 50%, transparent);
+  --color-primary-alpha-60: color-mix(in srgb, #4200db 60%, transparent);
+  --color-primary-subtle: color-mix(in srgb, #4200db 12%, transparent);
+  --color-primary-border: color-mix(in srgb, #4200db 30%, transparent);
+  --color-focus-ring: color-mix(in srgb, #4200db 50%, transparent);
+  --color-sidebar-hover: color-mix(in srgb, #4200db 12%, transparent);
+  --color-accent: #4200db;
+  --color-accent-foreground: #4200db;
+  --color-accent-dark: #35009e;
+  --color-accent-light: #e8e6ff;
+  --color-accent-inverse: #ffffff;
+  --color-link: #4200db;
+  --color-primary-gradient-end: #e8e6ff;
+  --color-primary-bg-solid: #e8e6ff;
+  --color-user-bubble: #F3F3F7;
+  --color-user-bubble-text: #131920;
+  --color-text-secondary: #5e5e5e;
+  --color-text-tertiary: #656871;
+  --color-text-muted: #9ca3af;
+  --color-text-on-primary: #ffffff;
+  --color-success: #00802f;
+  --color-success-dark: #00471e;
+  --color-success-light: #d9ffd6;
+  --color-success-hover: #005c26;
+  --color-success-bg: #e6f5eb;
+  --color-success-border: #b3d9bf;
+  --color-success-foreground: #00802f;
+  --color-success-dark-foreground: #00471e;
+  --color-success-text: #00471e;
+  --color-error: #db0000;
+  --color-error-dark: #700000;
+  --color-error-light: #ffe0e0;
+  --color-error-hover: #ffe0e0;
+  --color-error-bg: #fceaea;
+  --color-error-border: #f2cccc;
+  --color-error-active-border: #db0000;
+  --color-error-foreground: #db0000;
+  --color-error-dark-foreground: #700000;
+  --color-error-inverse: #ffffff;
+  --color-error-text: #700000;
+  --color-warning: #f2b100;
+  --color-warning-dark: #573a00;
+  --color-warning-light: #fffbbd;
+  --color-warning-hover: #db9200;
+  --color-warning-bg: #fef7e6;
+  --color-warning-border: #f9dfa3;
+  --color-warning-foreground: #f2b100;
+  --color-warning-dark-foreground: #573a00;
+  --color-warning-inverse: #573a00;
+  --color-surface-warning: #fffbbd;
+  --color-text-warning: #573a00;
+  --color-info: #006ce0;
+  --color-info-dark: #002a66;
+  --color-info-light: #d1f1ff;
+  --color-info-hover: #003b8f;
+  --color-info-bg: #ebf3fc;
+  --color-info-border: #b3d1f0;
+  --color-info-foreground: #006ce0;
+  --color-info-dark-foreground: #002a66;
+  --color-info-inverse: #ffffff;
+  --color-overlay: rgba(0, 0, 0, .5);
+  --color-shadow: rgba(0, 0, 0, .08);
+  --color-hover: rgba(0, 0, 0, .05);
+  --color-tooltip-bg: rgba(0, 0, 0, .85);
+  --color-tooltip-text: #ffffff;
+  --color-voice-purple: #8575ff;
+  --color-voice-purple-dark: #4200db;
+  --color-voice-purple-light: #8575ff;
+  --color-voice-red: #db0000;
+  --color-voice-red-dark: #700000;
+  --color-voice-amber: #f2b100;
+  --color-voice-purple-glow: rgba(66, 0, 219, .4);
+  --color-voice-red-glow: rgba(219, 0, 0, .4);
+  --font-sans: "Amazon Ember", "Helvetica Neue", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: "SF Mono", "Monaco", "Menlo", "Consolas", monospace;
+  --text-2xs: .5625rem;
+  --text-xs: .625rem;
+  --text-sm: .6875rem;
+  --text-base: .75rem;
+  --text-md: .8125rem;
+  --text-lg: .875rem;
+  --text-xl: 1rem;
+  --text-2xl: 1.125rem;
+  --text-3xl: 1.25rem;
+  --text-4xl: 1.5rem;
+  --text-5xl: 2rem;
+  --spacing-1: calc(.25rem * 1);
+  --spacing-1-5: calc(.25rem * 1.5);
+  --spacing-2: calc(.25rem * 2);
+  --spacing-3: calc(.25rem * 3);
+  --spacing-4: calc(.25rem * 4);
+  --spacing-5: calc(.25rem * 5);
+  --spacing-6: calc(.25rem * 6);
+  --spacing-7: calc(.25rem * 7);
+  --spacing-8: calc(.25rem * 8);
+  --spacing-9: calc(.25rem * 9);
+  --spacing-10: calc(.25rem * 10);
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-card: 12px;
+  --radius-lg: 16px;
+  --radius-pill: 8px;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .05);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, .08);
+  --color-success-bg-solid: #d9ffd6;
+  --color-error-bg-solid: #ffe0e0;
+  --color-error-border-solid: #ffe0e0;
+  --color-warning-bg-solid: #fffbbd;
+  --color-warning-text: #573a00;
+  --color-info-bg-solid: #d1f1ff;
+  --color-info-bg-solid-alt: #d1f1ff;
+  --color-info-text: #002a66;
+  --color-info-text-alt: #002a66;
+  --color-emerald: #10b981;
+  --color-teal: #4ecdc4;
+  --color-code-bg: #F3F3F7;
+  --color-code-header-bg: #f1f3f5;
+  --color-code-text: #24292e;
+  --color-code-border: #e1e4e8;
+  --color-code-muted: #6a737d;
+  --color-inline-code-bg: #F3F3F7;
+  --color-inline-code-text: #24292e;
+  --color-inline-code-border: #e1e4e8;
+  --color-scrollbar-thumb: #d1d5db;
+  --color-scrollbar-track: transparent;
+  --color-graph-node-text: #333333;
+  --color-graph-node-text-dim: #7F8C8D;
+  --color-graph-edge-default: #95A5A6;
+  --color-graph-edge-cross: #E67E22;
+  --color-graph-edge-text: #666666;
+  --color-graph-edge-stroke: #ffffff;
+  --color-graph-highlight-bg: #FF6B6B;
+  --color-graph-highlight-border: #E74C3C;
+  --color-graph-search-bg: #FFD700;
+  --color-graph-search-border: #FFA500;
+  --color-graph-focus-border: #C0392B;
+  --color-graph-external-border: #95A5A6;
+  --color-graph-cat-file: #3498DB;
+  --color-graph-cat-folder: #7F8C8D;
+  --color-graph-cat-file-aggregate: #2980B9;
+  --color-graph-cat-class: #9B59B6;
+  --color-graph-cat-function: #2ECC71;
+  --color-graph-cat-method: #1ABC9C;
+  --color-graph-cat-variable: #F39C12;
+  --color-graph-cat-import: #D35400;
+  --color-graph-cat-module: #5B6ABF;
+  --color-graph-cat-concept: #E74C3C;
+  --color-graph-cat-person: #FF6B6B;
+  --color-graph-cat-org: #4ECDC4;
+  --color-graph-cat-organization: #4ECDC4;
+  --color-graph-cat-product: #A29BFE;
+  --color-graph-cat-metric: #FD79A8;
+  --color-graph-cat-location: #34495E;
+  --color-graph-cat-date: #E056A0;
+  --color-graph-cat-code: #3498DB;
+  --color-graph-cat-doc: #7F8C8D;
+  --color-graph-cat-url: #00B894;
+  --color-graph-cat-email: #6C5CE7;
+  --color-graph-cat-unknown: #BDC3C7;
+  --color-graph-rel-contains: #BDC3C7;
+  --color-graph-rel-extends: #9B59B6;
+  --color-graph-rel-implements: #3498DB;
+  --color-graph-rel-imports: #E67E22;
+  --color-graph-rel-uses: #2ECC71;
+  --color-graph-rel-calls: #27AE60;
+  --color-graph-rel-references: #F39C12;
+  --color-graph-rel-related-to: #95A5A6;
+  --color-graph-rel-works-on: #E74C3C;
+  --color-graph-rel-owns: #1ABC9C;
+  --color-graph-rel-depends-on: #E67E22;
+  --color-graph-rel-parent-of: #BDC3C7;
+  --qs-content: #fff;
+  --qs-main: #fff;
+  --qs-primary-foreground: #131920;
+  --qs-secondary-foreground: #656871;
+  --qs-tertiary-foreground: #9ca3af;
+  --qs-placeholder-foreground: #8c8c94;
+  --qs-divider: #dedee3;
+  --qs-default-border: #8c8c94;
+  --qs-neutral-soft: #b4b4bb;
+  --qs-neutral-gray-50: #f9fafb;
+  --qs-tertiary-background: #f9fafb;
+  --qs-action-hover: #f3f3f7;
+  --qs-primary-default: #4200db;
+  --qs-primary-dark: #35009e;
+  --qs-primary-light: #e8e6ff;
+  --qs-success-default: #00802f;
+  --qs-error-default: #db0000;
+  --qs-font-sans: "Amazon Ember", "Helvetica Neue", "Segoe UI", Helvetica, Arial, sans-serif;
+  --qs-font-family: "Amazon Ember", "Helvetica Neue", "Segoe UI", Helvetica, Arial, sans-serif;
+  --qs-font-base-letter-spacing: .15px;
+  --qs-shadow-sm: 0 0 2px 0 #00000029, 0 0 4px 0 #00000029;
+  --qs-shadow-md: 0 0 2px 0 #00000029, 0 2px 8px 1px #00000029;
+  --qs-shadow-lg: 0 4px 16px 4px #00000029, 0 2px 6px 1px #00000029;
+  --qs-shadow-xl: 0 4px 8px 2px #00000029, 0 6px 20px 4px #00000029;
+  --qs-width-modal-sm: 384px;
+  --qs-width-modal-md: 600px;
+  --qs-width-modal-lg: 1136px;
+  --qs-grid-gap: 16px;
+  --qs-grid-gap-xl: 24px;
+  --qs-primary-medium: #8575ff;
+  --qs-primary-inverse: #fff;
+  --qs-neutral-lightest: #f9f9fb;
+  --qs-neutral-light: #f3f3f7;
+  --qs-neutral-default: #dedee3;
+  --qs-neutral-medium: #8c8c94;
+  --qs-neutral-deep: #656871;
+  --qs-neutral-dark: #333843;
+  --qs-neutral-strong: #131920;
+  --qs-neutral-white: #fff;
+  --qs-neutral-black: #000;
+  --qs-success-medium: #005c26;
+  --qs-success-dark: #00471e;
+  --qs-success-light: #d9ffd6;
+  --qs-success-inverse: #fff;
+  --qs-info-default: #006ce0;
+  --qs-info-medium: #003b8f;
+  --qs-info-dark: #002a66;
+  --qs-info-light: #d1f1ff;
+  --qs-info-inverse: #fff;
+  --qs-warning-default: #f2b100;
+  --qs-warning-medium: #db9200;
+  --qs-warning-dark: #573a00;
+  --qs-warning-light: #fffbbd;
+  --qs-warning-inverse: #573a00;
+  --qs-warning-experimental: #f2b100;
+  --qs-warning-experimental-light: #fffbbd;
+  --qs-warning-experimental-light-foreground: #fffbbd;
+  --qs-error-medium: #900;
+  --qs-error-dark: #700000;
+  --qs-error-light: #ffe0e0;
+  --qs-error-inverse: #fff;
+  --qs-connection-default: #db3300;
+  --qs-connection-soft: #ff997a;
+  --qs-connection-light: #ffe0d6;
+  --qs-connection-dark: #661800;
+  --qs-automation-default: #b3008f;
+  --qs-automation-medium: #d600ba;
+  --qs-automation-soft: #ff94f1;
+  --qs-automation-light: #ffe0fb;
+  --qs-automation-dark: #660052;
+  --qs-insight-default: #a000b8;
+  --qs-insight-soft: #f299ff;
+  --qs-insight-light: #fce6ff;
+  --qs-insight-dark: #590066;
+  --qs-visualization-default: #7300e5;
+  --qs-visualization-soft: #d4a8ff;
+  --qs-visualization-light: #f2e5ff;
+  --qs-visualization-dark: #45008a;
+  --qs-spice: #ff9800;
+  --qs-coachmark: #006ce0;
+  --qs-brand: #fff;
+  --qs-brand-foreground: #131920;
+  --qs-brand-navbar: #131920;
+  --qs-brand-navbar-foreground: #fff;
+  --qs-brand-navbar-light: #dedee3;
+  --qs-brand-navbar-dark: #000;
+  --qs-application-navbar: #4200db;
+  --qs-application-navbar-foreground: #fff;
+  --qs-application-navbar-light: #e8e6ff;
+  --qs-application-navbar-dark: #35009e;
+  --qs-dimension: #4200db;
+  --qs-dimension-foreground: #fff;
+  --qs-dimension-experimental: #4200db;
+  --qs-dimension-experimental-foreground: #4200db;
+  --qs-measure: #00802f;
+  --qs-measure-foreground: #fff;
+  --qs-measure-experimental: #f2b100;
+  --qs-measure-experimental-foreground: #f2b100;
+  --qs-content-inverse: #333843;
+  --qs-content-inverse-active: #131920;
+  --qs-secondary: #dedee3;
+  --qs-disabled: #8c8c94;
+  --qs-divider-light: #f3f3f7;
+  --qs-hover-border: #333843;
+  --qs-active-border: #4200db;
+  --qs-disabled-border: #dedee3;
+  --qs-error-border: #ffe0e0;
+  --qs-error-active-border: #db0000;
+  --qs-disabled-foreground: #b4b4bb;
+  --qs-primary-inverse-foreground: #fff;
+  --qs-error-foreground: #db0000;
+  --qs-contrast-foreground: #131920;
+  --qs-main-foreground: #131920;
+  --qs-main-secondary-foreground: #656871;
+  --qs-action-disabled: #f3f3f7;
+  --qs-action-active: #e8e6ff;
+  --qs-default-badge: #dedee3;
+  --qs-tag-default: #dedee3;
+  --qs-tag-soft-border: #b4b4bb;
+  --qs-focus-offset: 1px;
+  --qs-toggle-tile-sm: calc(.25rem * 8);
+  --qs-toggle-tile-md: calc(.25rem * 12);
+  --qs-toggle-tile-lg: calc(.25rem * 15);
+  --qs-shadow-pin-right: inset 4px 0 4px -4px #00000029;
+  --qs-shadow-pin-left: inset -4px 0 4px -4px #00000029;
+  --react-pdf-text-layer: 1;
+  --highlight-bg-color: rgba(180, 0, 170, 1);
+  --highlight-selected-bg-color: rgba(0, 100, 0, 1);
+  --react-pdf-annotation-layer: 1;
+  --annotation-unfocused-field-background: url("data:image/svg+xml;charset=UTF-8,<svg width='1px' height='1px' xmlns='http://www.w3.org/2000/svg'><rect width='100%' height='100%' style='fill:rgba(0, 54, 255, 0.13);'/></svg>");
+  --input-focus-border-color: Highlight;
+  --input-focus-outline: 1px solid Canvas;
+  --input-unfocused-border-color: transparent;
+  --input-disabled-border-color: transparent;
+  --input-hover-border-color: black;
+  --link-outline: none;
+  color-scheme: light;
+}
+body { background: var(--color-bg); color: var(--color-text); }
+a { color: var(--color-link, var(--color-primary)); }</style>
+<meta charset="UTF-8">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #f8f9fb; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #172b4d; height: 100vh; overflow: hidden; }
+
+/* Header */
+.header { background: #fff; border-bottom: 1px solid #ebecf0; padding: 12px 24px; display: flex; align-items: center; position: sticky; top: 0; z-index: 10; }
+.header h1 { font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.header h1 i { color: #0052CC; }
+.nav-tabs { display: flex; gap: 4px; margin-left: 24px; }
+.nav-tab { padding: 6px 12px; font-size: 13px; border-radius: 6px; cursor: pointer; color: #44546f; }
+.nav-tab.active { background: #deebff; color: #0052CC; font-weight: 500; }
+
+/* Layout */
+.layout { display: flex; height: calc(100vh - 49px); }
+
+/* Sidebar */
+.sidebar {
+  width: 260px;
+  background: #fff;
+  border-right: 1px solid #ebecf0;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+.sidebar-header {
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid #ebecf0;
+}
+.sidebar-title { font-size: 13px; font-weight: 600; color: #44546f; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; }
+.sidebar-title .count { font-size: 11px; font-weight: 400; color: #8993a4; }
+.search-box {
+  width: 100%; padding: 7px 10px 7px 30px;
+  border: 1px solid #dfe1e6; border-radius: 6px;
+  font-size: 12px; color: #172b4d;
+  background: #f8f9fb url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' fill='%238993a4' viewBox='0 0 16 16'%3E%3Cpath d='M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85zm-5.442.156a5 5 0 1 1 0-10 5 5 0 0 1 0 10z'/%3E%3C/svg%3E") no-repeat 10px center;
+}
+.search-box::placeholder { color: #b3bac5; }
+.filter-row { display: flex; gap: 4px; margin-top: 8px; }
+.filter-chip {
+  padding: 3px 8px; font-size: 10px; border-radius: 100px;
+  border: 1px solid #dfe1e6; color: #44546f; cursor: pointer;
+}
+.filter-chip.active { background: #deebff; border-color: #b3d4ff; color: #0052CC; }
+
+/* Batch List */
+.batch-list { flex: 1; overflow-y: auto; padding: 8px 0; }
+.date-group { padding: 0 16px; }
+.date-label { font-size: 10px; color: #8993a4; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; padding: 8px 0 4px; }
+
+.batch-item {
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  margin-bottom: 4px;
+  transition: all 0.1s;
+  position: relative;
+}
+.batch-item:hover { background: #f4f5f7; }
+.batch-item.active { background: #deebff; }
+.batch-item.active::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 8px; bottom: 8px;
+  width: 3px;
+  background: #0052CC;
+  border-radius: 0 2px 2px 0;
+}
+
+.batch-item-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.batch-id-text { font-size: 11px; font-family: monospace; color: #172b4d; font-weight: 500; }
+.batch-time { font-size: 10px; color: #8993a4; }
+
+.batch-tags { display: flex; gap: 3px; flex-wrap: wrap; margin-bottom: 4px; }
+.scene-tag {
+  font-size: 9px; padding: 1px 5px;
+  background: #f4f5f7; border-radius: 3px;
+  color: #44546f; display: flex; align-items: center; gap: 2px;
+}
+
+.batch-footer { display: flex; align-items: center; justify-content: space-between; }
+.batch-count { font-size: 10px; color: #8993a4; }
+.batch-status {
+  font-size: 9px; padding: 2px 6px; border-radius: 100px; font-weight: 500;
+}
+.status-active { background: #e3fcef; color: #006644; }
+.status-submitted { background: #deebff; color: #0052CC; }
+.status-archived { background: #f4f5f7; color: #8993a4; }
+
+/* Main Content */
+.main-content { flex: 1; overflow-y: auto; padding: 24px; }
+
+/* Progress Mini */
+.progress-mini { display: flex; align-items: center; gap: 10px; padding: 10px 16px; background: #e3fcef; border-radius: 8px; margin-bottom: 20px; }
+.progress-mini i { color: #36b37e; }
+.progress-mini span { font-size: 12px; color: #006644; }
+
+/* Placeholder Cards */
+.scenario-group { margin-bottom: 24px; }
+.scenario-header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.scenario-icon { width: 28px; height: 28px; background: #deebff; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 13px; }
+.scenario-title { font-size: 14px; font-weight: 600; }
+.scenario-tag { font-size: 10px; padding: 2px 6px; border-radius: 100px; background: #f4f5f7; color: #44546f; }
+
+.cards-row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.card-placeholder { background: #fff; border: 1px solid #ebecf0; border-radius: 8px; padding: 14px; height: 140px; display: flex; flex-direction: column; justify-content: space-between; }
+.card-placeholder .card-label { font-size: 12px; font-weight: 600; }
+.card-placeholder .card-preview { font-size: 10px; color: #8993a4; border-left: 2px solid #ebecf0; padding-left: 6px; }
+.card-placeholder .card-actions { display: flex; gap: 4px; }
+.mini-btn { padding: 4px 8px; font-size: 10px; border-radius: 4px; border: 1px solid #dfe1e6; background: #fff; color: #44546f; }
+
+/* Collapse Button */
+.collapse-btn {
+  position: absolute; right: -12px; top: 50%;
+  transform: translateY(-50%);
+  width: 24px; height: 24px;
+  background: #fff; border: 1px solid #dfe1e6;
+  border-radius: 50%; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 10px; color: #8993a4;
+  z-index: 5;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+
+/* Design Notes */
+.notes { background: #fffae6; border: 1px solid #ffe380; border-radius: 8px; padding: 16px; font-size: 11px; color: #44546f; line-height: 2; margin-top: 24px; }
+.notes strong { color: #172b4d; }
+.notes ul { padding-left: 16px; }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+  <h1><i class="fa-solid fa-headphones"></i> IELTS Part 1 材料生成</h1>
+  <div class="nav-tabs">
+    <div class="nav-tab">场景选择</div>
+    <div class="nav-tab active">生成结果</div>
+    <div class="nav-tab">审核队列</div>
+  </div>
+</div>
+
+<!-- Layout -->
+<div class="layout">
+
+  <!-- Sidebar -->
+  <div class="sidebar" style="position:relative;">
+    <div class="sidebar-header">
+      <div class="sidebar-title">
+        <span>历史批次</span>
+        <span class="count">12 批</span>
+      </div>
+      <input class="search-box" placeholder="搜索场景名..." type="text">
+      <div class="filter-row">
+        <div class="filter-chip active">全部</div>
+        <div class="filter-chip">待选稿</div>
+        <div class="filter-chip">已提交</div>
+        <div class="filter-chip">已归档</div>
+      </div>
+    </div>
+
+    <div class="batch-list">
+      <!-- Today -->
+      <div class="date-group">
+        <div class="date-label">今天</div>
+        <div class="batch-item active">
+          <div class="batch-item-header">
+            <span class="batch-id-text">batch-ms5ym1q5</span>
+            <span class="batch-time">14:30</span>
+          </div>
+          <div class="batch-tags">
+            <span class="scene-tag">🏨 酒店预订</span>
+            <span class="scene-tag">💳 退款投诉</span>
+            <span class="scene-tag">📣 活动组织</span>
+          </div>
+          <div class="batch-footer">
+            <span class="batch-count">6 套</span>
+            <span class="batch-status status-active">待选稿</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Yesterday -->
+      <div class="date-group">
+        <div class="date-label">昨天</div>
+        <div class="batch-item">
+          <div class="batch-item-header">
+            <span class="batch-id-text">batch-ms5lw9oz</span>
+            <span class="batch-time">09:15</span>
+          </div>
+          <div class="batch-tags">
+            <span class="scene-tag">🏨 酒店预订</span>
+            <span class="scene-tag">🏠 租房咨询</span>
+            <span class="scene-tag">💼 职位咨询</span>
+          </div>
+          <div class="batch-footer">
+            <span class="batch-count">9 套</span>
+            <span class="batch-status status-submitted">已提交</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 7/26 -->
+      <div class="date-group">
+        <div class="date-label">7月26日</div>
+        <div class="batch-item">
+          <div class="batch-item-header">
+            <span class="batch-id-text">batch-ms4trzq4</span>
+            <span class="batch-time">16:00</span>
+          </div>
+          <div class="batch-tags">
+            <span class="scene-tag">🏠 学生宿舍</span>
+            <span class="scene-tag">💼 暑期工</span>
+          </div>
+          <div class="batch-footer">
+            <span class="batch-count">4 套</span>
+            <span class="batch-status status-submitted">已提交</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 7/24 -->
+      <div class="date-group">
+        <div class="date-label">7月24日</div>
+        <div class="batch-item">
+          <div class="batch-item-header">
+            <span class="batch-id-text">batch-ms3abc12</span>
+            <span class="batch-time">10:30</span>
+          </div>
+          <div class="batch-tags">
+            <span class="scene-tag">📞 家政保洁</span>
+            <span class="scene-tag">🌱 环保报名</span>
+            <span class="scene-tag">🏥 健康中心</span>
+            <span class="scene-tag">🚗 驾驶课</span>
+          </div>
+          <div class="batch-footer">
+            <span class="batch-count">12 套</span>
+            <span class="batch-status status-archived">已归档</span>
+          </div>
+        </div>
+        <div class="batch-item">
+          <div class="batch-item-header">
+            <span class="batch-id-text">batch-ms2xyz89</span>
+            <span class="batch-time">08:00</span>
+          </div>
+          <div class="batch-tags">
+            <span class="scene-tag">🏨 酒店预订</span>
+            <span class="scene-tag">📣 活动组织</span>
+          </div>
+          <div class="batch-footer">
+            <span class="batch-count">4 套</span>
+            <span class="batch-status status-archived">已归档</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 7/22 -->
+      <div class="date-group">
+        <div class="date-label">7月22日</div>
+        <div class="batch-item">
+          <div class="batch-item-header">
+            <span class="batch-id-text">batch-ms1qwe56</span>
+            <span class="batch-time">15:20</span>
+          </div>
+          <div class="batch-tags">
+            <span class="scene-tag">💳 退款投诉</span>
+            <span class="scene-tag">📞 宣传册</span>
+          </div>
+          <div class="batch-footer">
+            <span class="batch-count">6 套</span>
+            <span class="batch-status status-archived">已归档</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Collapse button -->
+    <div class="collapse-btn" title="收起面板"><i class="fa-solid fa-chevron-left"></i></div>
+  </div>
+
+  <!-- Main Content -->
+  <div class="main-content">
+    <!-- Progress -->
+    <div class="progress-mini">
+      <i class="fa-solid fa-circle-check"></i>
+      <span>batch-ms5ym1q5 · 6/6 套已完成 · 用时 4:20</span>
+    </div>
+
+    <!-- Scenario Cards -->
+    <div class="scenario-group">
+      <div class="scenario-header">
+        <div class="scenario-icon">🏨</div>
+        <span class="scenario-title">booking-hotel</span>
+        <span class="scenario-tag">预订/咨询服务</span>
+      </div>
+      <div class="cards-row">
+        <div class="card-placeholder">
+          <div class="card-label">第 1 套</div>
+          <div class="card-preview"><em>"Good morning, Seaside Hotel..."</em><br>海滨酒店 · 含拼读+价格修正</div>
+          <div class="card-actions"><span class="mini-btn">📖 阅读</span><span class="mini-btn">🎧 试听</span></div>
+        </div>
+        <div class="card-placeholder">
+          <div class="card-label">第 2 套</div>
+          <div class="card-preview"><em>"Welcome to Royal Park Hotel..."</em><br>商务酒店 · 含电话+同义替换</div>
+          <div class="card-actions"><span class="mini-btn">📖 阅读</span><span class="mini-btn">🎧 试听</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="scenario-group">
+      <div class="scenario-header">
+        <div class="scenario-icon">💳</div>
+        <span class="scenario-title">service-refund</span>
+        <span class="scenario-tag">客服/事务</span>
+      </div>
+      <div class="cards-row">
+        <div class="card-placeholder">
+          <div class="card-label">第 1 套</div>
+          <div class="card-preview"><em>"Good morning, HomeDirect..."</em><br>退款投诉 · 含拼读+先说后改</div>
+          <div class="card-actions"><span class="mini-btn">📖 阅读</span><span class="mini-btn">🎧 试听</span></div>
+        </div>
+        <div class="card-placeholder">
+          <div class="card-label">第 2 套</div>
+          <div class="card-preview"><em>"BrightHome Customer Services..."</em><br>退款 · 含日期+条件限定</div>
+          <div class="card-actions"><span class="mini-btn">📖 阅读</span><span class="mini-btn">🎧 试听</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Design Notes -->
+    <div class="notes">
+      <strong>🎨 设计说明：</strong>
+      <ul>
+        <li><strong>左侧面板 260px</strong> — 固定宽度，可滚动。右侧有折叠按钮可收起</li>
+        <li><strong>搜索框</strong> — 按场景名过滤（输入"酒店"只显示含酒店场景的批次）</li>
+        <li><strong>状态筛选</strong> — 全部/待选稿/已提交/已归档 四个 chip，点击切换</li>
+        <li><strong>按日期分组</strong> — 今天/昨天/具体日期，自然阅读顺序</li>
+        <li><strong>每条显示场景标签</strong> — emoji + 场景中文名，一眼看出这批生成了什么</li>
+        <li><strong>蓝色左竖条</strong> — 标记当前选中的批次</li>
+        <li><strong>点击切换</strong> — 右侧内容区切换为对应批次的卡片（历史批次为只读）</li>
+        <li><strong>可折叠</strong> — 点击右侧圆形按钮收起面板，给右侧更多空间</li>
+        <li><strong>记录量大时</strong> — 面板本身可滚动 + 搜索过滤 + 状态筛选三重手段解决</li>
+      </ul>
+    </div>
+  </div>
+
+</div>
+
+
+
+</body></html>

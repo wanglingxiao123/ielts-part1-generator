@@ -1098,6 +1098,322 @@ h3 {
   transition: width 0.25s ease;
 }
 
+/* ── 历史批次面板（左侧栏） ───────────────────────────────────────────────── */
+
+/*
+ * 「生成结果」Tab 的两栏骨架：固定宽度面板 + 自适应内容区。
+ *
+ * `align-items: flex-start` 而不是默认的 stretch：面板自己是 sticky 的，被拉成和内容区一样高
+ * 会让它跟着长长的卡片列表一起变高，sticky 就失效了。
+ */
+.results-shell {
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+  flex: 1;
+  min-width: 0;
+}
+
+.hist-panel {
+  /* 客户给的约 260px。固定宽度：一个会随内容变宽的历史栏会让右边的卡片列宽跳来跳去。 */
+  width: 260px;
+  flex: 0 0 260px;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  /* 48px 是 topbar 的高度。面板随页面滚动到顶就停住，列表在自己内部滚。 */
+  position: sticky;
+  top: 48px;
+  height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+  padding: 12px 10px 10px;
+  gap: 8px;
+}
+
+.hist-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px;
+}
+
+.hist-title {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.hist-total {
+  font-size: 11px;
+  color: var(--ink-3);
+  background: var(--line-2);
+  border-radius: 100px;
+  padding: 1px 7px;
+  font-variant-numeric: tabular-nums;
+}
+
+.hist-head .spacer {
+  flex: 1;
+}
+
+.hist-collapse,
+.hist-rail-btn {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: var(--radius);
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1;
+  padding: 4px 7px;
+}
+
+.hist-collapse:hover,
+.hist-rail-btn:hover {
+  background: var(--line-2);
+  color: var(--ink);
+}
+
+/* 收起后的窄图标条。宽度够放一个图标和一个计数，不够放任何文字——这就是「收起」的意思。 */
+.hist-rail {
+  width: 40px;
+  flex: 0 0 40px;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  position: sticky;
+  top: 48px;
+  height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 0;
+}
+
+.hist-rail-count {
+  font-size: 10px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.hist-search {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--bg);
+}
+
+.hist-search:focus {
+  outline: 2px solid var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.hist-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.hist-chip {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 100px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--ink-2);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.hist-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.hist-chip.on {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.hist-chip-n {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+
+/* 列表自己滚，面板的头部（标题/搜索/chip）因此始终在位。 */
+.hist-list {
+  flex: 1;
+  overflow-y: auto;
+  margin: 0 -4px;
+  padding: 0 4px;
+}
+
+.hist-group-label {
+  font-size: 11px;
+  color: var(--ink-3);
+  padding: 8px 4px 4px;
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  z-index: 1;
+}
+
+/*
+ * 一条历史记录。`button` 而不是 `div`，所以键盘 Tab 和回车都是免费的。
+ *
+ * 左边 3px 的透明竖条一直在，选中时才上蓝色：用 border 宽度的有无来表示选中会让整行文字左右
+ * 位移 3px，读起来像页面在抖。
+ */
+.hist-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--panel);
+  border: 0;
+  border-left: 3px solid transparent;
+  border-radius: 0 var(--radius) var(--radius) 0;
+  padding: 7px 8px;
+  margin-bottom: 2px;
+  color: var(--ink);
+}
+
+.hist-row:hover {
+  background: var(--line-2);
+}
+
+.hist-row.active {
+  background: var(--accent-soft);
+  border-left-color: var(--accent);
+}
+
+.hist-row-top {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.hist-row-id {
+  font-size: 10px;
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.hist-row-time {
+  font-size: 11px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.hist-row-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 3px 0;
+}
+
+.hist-tag {
+  font-size: 11px;
+  color: var(--ink-2);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.hist-tag-n {
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.hist-row-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hist-sets {
+  font-size: 11px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 状态徽章的三个色，客户指定：待选稿=绿 / 已提交=蓝 / 已归档=灰。 */
+.hist-badge {
+  font-size: 10px;
+  border-radius: 100px;
+  padding: 1px 7px;
+  line-height: 1.5;
+}
+
+.hist-badge.good {
+  background: var(--good-bg);
+  color: var(--good);
+}
+
+.hist-badge.info {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.hist-badge.muted {
+  background: var(--line-2);
+  color: var(--ink-3);
+}
+
+.hist-badge.warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.hist-empty {
+  font-size: 12px;
+  padding: 14px 6px;
+  line-height: 1.6;
+}
+
+/* 只读批次的底栏。灰底，和可操作的白底底栏一眼可分。 */
+.results-bar.readonly {
+  background: var(--bg);
+}
+
+.results-bar.readonly .bar-left {
+  align-items: center;
+}
+
+@media (max-width: 900px) {
+  /* 窄屏上两栏并排会把卡片挤到读不了。面板退回普通块，不再 sticky、不再限高。 */
+  .results-shell {
+    flex-direction: column;
+  }
+
+  .hist-panel,
+  .hist-rail {
+    width: 100%;
+    flex: none;
+    position: static;
+    height: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .hist-rail {
+    flex-direction: row;
+    justify-content: flex-start;
+    padding: 8px 12px;
+  }
+
+  .hist-list {
+    max-height: 40vh;
+  }
+}
+
 /* ── material reader ─────────────────────────────────────────────────────── */
 
 .reader {

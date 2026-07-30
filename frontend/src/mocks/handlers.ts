@@ -6,6 +6,9 @@
  */
 import type {
   AudioStatusResponse,
+  BatchHistoryDetail,
+  BatchHistoryEntry,
+  BatchHistoryResponse,
   BatchListResponse,
   BatchSnapshot,
   CreateBatchRequest,
@@ -159,6 +162,238 @@ function savePlan(plan: ConstructorParameters<typeof MockBatch>[0]) {
   }
 }
 
+/* ── batch history (web/batch_history.py) ─────────────────────────────────── */
+
+/**
+ * 历史批次记录。**localStorage**，不是 sessionStorage——这一点是刻意的。
+ *
+ * 别的 mock 状态（batch plan、audio job）用 sessionStorage 就够了，因为它们对应的真后端状态只需
+ * 要撑过一次刷新。批次记录不是：它在真后端是 S3 里的对象，会活过整个部署、活到「已归档」。用
+ * sessionStorage 会让面板在关掉标签页之后空掉，那是假后端的失忆看起来像功能没实现——而这个功能
+ * 存在的全部理由就是「刷新之后还在」。
+ *
+ * 记录的形状与后端一字不差（`web/batch_history.py` 的 `derive`），包括 `created_at` 是 unix
+ * **秒**而不是毫秒。形状对不上的 mock 会把一个真 bug 认证成通过。
+ */
+const HISTORY_KEY = 'bcielts.v1.mock.batchHistory'
+
+function loadHistory(): BatchHistoryEntry[] {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as BatchHistoryEntry[]
+    return Array.isArray(parsed) ? parsed.filter((b) => typeof b?.batch_id === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+function saveHistory(items: BatchHistoryEntry[]) {
+  try {
+    // 时间倒序，和后端的 `_newest_first` 一致。排序放在写入侧，读取侧就不必再排一遍。
+    localStorage.setItem(
+      HISTORY_KEY,
+      JSON.stringify([...items].sort((a, b) => b.created_at - a.created_at)),
+    )
+  } catch {
+    /* private mode */
+  }
+}
+
+/** 后端 `derive` 的状态推导，逐条照搬。 */
+const MOCK_CANDIDATE_TTL_SECONDS = 24 * 3600
+const MOCK_STALE_RUNNING_SECONDS = 2 * 3600
+
+function deriveHistory(entry: BatchHistoryEntry, nowSeconds: number): BatchHistoryEntry {
+  const age = nowSeconds - entry.created_at
+  const status: BatchHistoryEntry['status'] = entry.submitted_at
+    ? 'submitted'
+    : age >= MOCK_CANDIDATE_TTL_SECONDS
+      ? 'archived'
+      : 'pending_selection'
+  return {
+    ...entry,
+    status,
+    read_only: status !== 'pending_selection',
+    interrupted: entry.state === 'running' && age >= MOCK_STALE_RUNNING_SECONDS,
+  }
+}
+
+function upsertHistory(entry: BatchHistoryEntry) {
+  const items = loadHistory().filter((b) => b.batch_id !== entry.batch_id)
+  items.push(entry)
+  saveHistory(items)
+}
+
+/**
+ * 请求的场景形状，从**已持久化的 plan** 反推，而不是记在一个模块级 Map 里。
+ *
+ * 因为刷新之后 Map 就空了，而这个功能要验证的恰恰是刷新之后面板还在。plan 存在 sessionStorage 里，
+ * 所以它是刷新后唯一还说得出「这批要了几套」的东西。顺序即 plan 里材料的顺序，也就是用户勾选的顺序。
+ */
+function requestedShape(batchId: string): Array<{ scenario_key: string; count: number }> {
+  const plan = loadPlans().find((p) => p.batchId === batchId)
+  if (!plan) return []
+  const order: string[] = []
+  const counts = new Map<string, number>()
+  for (const m of plan.materials) {
+    if (!counts.has(m.scenarioKey)) order.push(m.scenarioKey)
+    counts.set(m.scenarioKey, (counts.get(m.scenarioKey) ?? 0) + 1)
+  }
+  return order.map((scenario_key) => ({ scenario_key, count: counts.get(scenario_key)! }))
+}
+
+/**
+ * 把一个 mock 批次的当前状态写进历史。
+ *
+ * 在创建时调一次（记下「这批被要求过」，对应后端在 batch start 的那次写），随后每次读历史时对在跑
+ * 的批次再调一次。**不是**只在批次结束时写一次：后端刻意是增量写的，因为 web 任务可能中途被换掉，
+ * 而只在结束时写会让一个跑了五套的批次什么都不留下。mock 照着同样的时序走，`dev:mock` 里刷新一个
+ * 正在生成的批次才会看到它已经在面板里——那是真后端的行为。
+ */
+function recordHistory(batch: MockBatch) {
+  const snap = snapshotOf(batch)
+  const existing = loadHistory().find((b) => b.batch_id === batch.batchId)
+  const fromPlan = requestedShape(batch.batchId)
+  const requested = fromPlan.length > 0 ? fromPlan : (existing?.scenarios ?? [])
+  const materials = snap.items
+    .filter((i) => i.status === 'done')
+    .map((i) => ({
+      material_id: i.material_id,
+      scenario_key: i.scenario_key,
+      index: i.index,
+      verdict: i.verdict,
+      degraded: false,
+    }))
+  const finished = snap.status === 'done' || snap.status === 'partial'
+  upsertHistory({
+    batch_id: batch.batchId,
+    created_at: existing?.created_at ?? Date.now() / 1000,
+    completed_at: finished ? (existing?.completed_at ?? Date.now() / 1000) : null,
+    // 两个都由 `deriveHistory` 在读取时覆盖；这里写的是占位值，不是第二个判据。
+    status: 'pending_selection',
+    read_only: false,
+    interrupted: false,
+    state: finished ? 'complete' : 'running',
+    requested_total: batch.total,
+    arrived: materials.length,
+    scenarios: requested,
+    counts: { succeeded: materials.length, failed: 0, skipped: 0, degraded: 0 },
+    submitted_at: existing?.submitted_at ?? null,
+    submitted_by: existing?.submitted_by ?? null,
+    submitted_material_ids: existing?.submitted_material_ids ?? [],
+    materials,
+  })
+}
+
+/** 把所有还在跑的 mock 批次的记录刷新一遍。读历史前调，等价于后端的增量写已经发生过。 */
+function refreshRunningHistory() {
+  for (const plan of loadPlans()) {
+    const batch = getBatch(plan.batchId)
+    if (batch) recordHistory(batch)
+  }
+}
+
+/**
+ * 预置两条历史，一条已提交、一条已归档。
+ *
+ * 没有它们，`npm run dev:mock` 里三个状态 chip 有两个永远是空的——而只读视图（客户明确要求的
+ * 「已提交/已归档为只读」）就完全没有办法在浏览器里看到。归档那条的 `created_at` 放在候选过期
+ * 之外，也就是让 mock 真的走一遍那个边界，而不是直接写死一个 `status: 'archived'`。
+ */
+const SEEDED_KEY = 'bcielts.v1.mock.batchHistory.seeded'
+
+function seedHistory() {
+  // 用一个独立的标记，**不是**「历史为空就种」。后者看着等价，实际不成立：用户先生成一批再打开面板
+  // 时历史已经非空，种子就永远种不进去——于是三个 chip 有两个是空的，只读视图在浏览器里根本看不到。
+  // 实际就是这么坏的。
+  try {
+    if (localStorage.getItem(SEEDED_KEY) === '1') return
+    localStorage.setItem(SEEDED_KEY, '1')
+  } catch {
+    // private mode：种一次总比一次都不种好，重复 upsert 是幂等的（按 batch_id 覆盖）。
+  }
+  const nowSeconds = Date.now() / 1000
+  const seeds: Array<{
+    batchId: string
+    ageSeconds: number
+    scenarios: Array<{ scenario_key: string; count: number }>
+    submitted: boolean
+  }> = [
+    {
+      batchId: 'web-seed-submitted',
+      ageSeconds: 3 * 3600,
+      scenarios: [{ scenario_key: 'booking-hotel', count: 2 }],
+      submitted: true,
+    },
+    {
+      batchId: 'web-seed-archived',
+      // 过了候选窗口，所以状态是**推导**出来的 archived，不是写死的。
+      ageSeconds: MOCK_CANDIDATE_TTL_SECONDS + 5 * 3600,
+      scenarios: [
+        { scenario_key: 'employment-vacancy', count: 1 },
+        { scenario_key: 'accommodation-rental', count: 1 },
+      ],
+      submitted: false,
+    },
+  ]
+  for (const seed of seeds) {
+    const createdAt = nowSeconds - seed.ageSeconds
+    const materials = seed.scenarios.flatMap((s) =>
+      Array.from({ length: s.count }, (_, i) => ({
+        material_id: `20260101-${s.scenario_key}-hist000${i + 1}`,
+        scenario_key: s.scenario_key,
+        index: i,
+        verdict: 'PASS' as const,
+        degraded: false,
+      })),
+    )
+    upsertHistory({
+      batch_id: seed.batchId,
+      created_at: createdAt,
+      completed_at: createdAt + 300,
+      status: 'pending_selection',
+      read_only: false,
+      interrupted: false,
+      state: 'complete',
+      requested_total: materials.length,
+      arrived: materials.length,
+      scenarios: seed.scenarios,
+      counts: { succeeded: materials.length, failed: 0, skipped: 0, degraded: 0 },
+      submitted_at: seed.submitted ? createdAt + 600 : null,
+      submitted_by: seed.submitted ? 'a@amazon.com' : null,
+      submitted_material_ids: seed.submitted ? [materials[0]!.material_id] : [],
+      materials,
+    })
+  }
+}
+
+/**
+ * 一个历史批次里的材料，按 id 找。
+ *
+ * 阅读页的 URL 是 `/materials/{id}`，不带 batch id，所以这条路径必须能只靠 id 找到材料——否则历史
+ * 面板上的「阅读全文」会直接跳到「材料不存在」，而客户对只读批次的要求正是「可看材料、可试听」。
+ * 真后端对应的是 `GET /api/batch-history-material/{id}`（web 层在 `_batches/` 前缀上做一次后缀
+ * 匹配）。
+ */
+function historyMaterial(materialId: string): MaterialRecord | undefined {
+  for (const batch of loadHistory()) {
+    const summary = batch.materials.find((m) => m.material_id === materialId)
+    if (!summary) continue
+    const existing = standaloneMaterials.get(materialId)
+    if (existing) return existing
+    const record = buildRecord('balanced', {
+      materialId,
+      batchId: batch.batch_id,
+      scenarioKey: summary.scenario_key,
+      index: summary.index ?? 0,
+    })
+    standaloneMaterials.set(materialId, record)
+    return record
+  }
+  return undefined
+}
+
 /** Rehydrates a batch created before a reload, already finished. */
 function rehydrate(batchId: string): MockBatch | undefined {
   const plan = loadPlans().find((p) => p.batchId === batchId)
@@ -301,6 +536,57 @@ const mockTransport = async (spec: RequestSpec): Promise<unknown> => {
   await new Promise((r) => setTimeout(r, 120))
   const [, resource, id, sub] = spec.path.split('?')[0]!.split('/')
 
+  /* ── batch history ─────────────────────────────────────────────────────── */
+
+  if (spec.method === 'GET' && resource === 'batch-history' && !id) {
+    seedHistory()
+    refreshRunningHistory()
+    // 每次读都重新推导状态，因为状态是时间的函数：一条 23 小时前的批次在一小时后必须自己变成
+    // 已归档，而不需要任何人来写它。后端的 `derive` 也是在读取时算的，理由相同。
+    const nowSeconds = Date.now() / 1000
+    const response: BatchHistoryResponse = {
+      batches: loadHistory().map((b) => deriveHistory(b, nowSeconds)),
+      next_cursor: null,
+    }
+    return response
+  }
+
+  if (spec.method === 'GET' && resource === 'batch-history' && id && !sub) {
+    seedHistory()
+    refreshRunningHistory()
+    const entry = loadHistory().find((b) => b.batch_id === id)
+    if (!entry) throw new ApiError(404, 'BATCH_NOT_FOUND', `没有找到批次 ${id} 的历史记录`)
+    const view = deriveHistory(entry, Date.now() / 1000)
+    // 详情带完整构件，列表不带——和后端的分法一致（见 web/batch_store.py）。
+    const detail: BatchHistoryDetail = {
+      ...view,
+      // 真后端读的是 S3 里的 sidecar；mock 从跑过的批次里找，找不到（种子批次）就按场景造一份。
+      // 与 `/materials/{id}` 走同一个 `historyMaterial`，所以两条入口不可能给出不同的材料。
+      materials: view.materials.map((summary) => {
+        const full = findMaterial(summary.material_id) ?? historyMaterial(summary.material_id)
+        return full ? { ...summary, ...full } : summary
+      }),
+    }
+    return detail
+  }
+
+  if (spec.method === 'POST' && resource === 'batch-history' && sub === 'submit') {
+    const entry = loadHistory().find((b) => b.batch_id === id)
+    if (!entry) throw new ApiError(404, 'BATCH_NOT_FOUND', `没有找到批次 ${id} 的历史记录`)
+    const body = spec.body as { material_ids?: string[] }
+    upsertHistory({
+      ...entry,
+      // 保留**第一次**提交的时间，和后端一致：那是批次不再等待决定的时刻，改一次选择不会把它推后。
+      submitted_at: entry.submitted_at ?? Date.now() / 1000,
+      submitted_by: 'a@amazon.com',
+      submitted_material_ids: [...new Set(body.material_ids ?? [])],
+    })
+    return deriveHistory(
+      loadHistory().find((b) => b.batch_id === id)!,
+      Date.now() / 1000,
+    )
+  }
+
   if (spec.method === 'POST' && resource === 'batches' && !id) {
     const body = spec.body as CreateBatchRequest
     const total = body.requests.reduce((n, r) => n + r.count, 0)
@@ -332,6 +618,9 @@ const mockTransport = async (spec: RequestSpec): Promise<unknown> => {
     const batch = new MockBatch(plan)
     batches.set(batchId, batch)
     batch.start()
+    // Recorded at batch START, exactly as the web tier does it: a batch that produces nothing still
+    // leaves evidence that it was asked for.
+    recordHistory(batch)
     const response: CreateBatchResponse = {
       batch_id: batchId,
       total,
@@ -389,6 +678,7 @@ const mockTransport = async (spec: RequestSpec): Promise<unknown> => {
     const batch = new MockBatch(plan)
     batches.set(batchId, batch)
     batch.start()
+    recordHistory(batch)
     return { batch_id: batchId }
   }
 
@@ -414,7 +704,7 @@ const mockTransport = async (spec: RequestSpec): Promise<unknown> => {
   }
 
   if (spec.method === 'GET' && resource === 'materials' && id && !sub) {
-    const m = findMaterial(id)
+    const m = findMaterial(id) ?? historyMaterial(id)
     if (!m) throw new ApiError(404, 'MATERIAL_NOT_FOUND', '材料不存在')
     return m
   }

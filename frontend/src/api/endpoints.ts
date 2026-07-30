@@ -1,6 +1,8 @@
 /** design.md §8.1 endpoints, one function each. */
 import type {
   AudioStatusResponse,
+  BatchHistoryDetail,
+  BatchHistoryResponse,
   BatchListResponse,
   BatchSnapshot,
   CreateBatchRequest,
@@ -30,6 +32,32 @@ export const api = {
 
   retryBatch: (batchId: string, body: { material_ids?: string[]; scenario_keys?: string[] }) =>
     request<{ batch_id: string }>({ method: 'POST', path: `/batches/${batchId}/retry`, body }),
+
+  /**
+   * 历史批次列表。served by the WEB TIER, not the Runtime.
+   *
+   * 与 `listBatches` 的区别不是分页参数：那一个读的是本页会话里的批次（`sessions` Map，刷新即失），
+   * 这一个读的是 S3 里的批次记录（`web/batch_history.py`），是历史面板唯一可信的来源。两个都留着，
+   * 因为 `listBatches` 是 §8 契约的一部分，而 §8 从来没有历史这个概念。
+   */
+  batchHistory: () => request<BatchHistoryResponse>({ method: 'GET', path: '/batch-history' }),
+
+  /** 一个历史批次的完整材料。点开某条历史记录时调。 */
+  batchHistoryDetail: (batchId: string) =>
+    request<BatchHistoryDetail>({ method: 'GET', path: `/batch-history/${batchId}` }),
+
+  /**
+   * 记录「已提交」。这是后端原来没有的那个状态转移。
+   *
+   * 刻意不是 `selectMaterial`：那个会认领候选组、丢弃同场景的另一套、并且付 Polly 的钱。提交审核
+   * 是审阅者说「这几套是我的选择」，不该销毁任何东西也不该花钱。见 web/batch_history.py。
+   */
+  submitBatch: (batchId: string, materialIds: string[]) =>
+    request<BatchHistoryDetail>({
+      method: 'POST',
+      path: `/batch-history/${batchId}/submit`,
+      body: { material_ids: materialIds },
+    }),
 
   getMaterial: (materialId: string) =>
     request<MaterialRecord>({ method: 'GET', path: `/materials/${materialId}` }),
