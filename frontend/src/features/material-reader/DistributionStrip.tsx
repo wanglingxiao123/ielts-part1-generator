@@ -37,6 +37,13 @@ interface Props {
   /** Playback pointer, in dialogue-ordinal space. */
   playingOrdinal?: number | null
   compact?: boolean
+  /**
+   * 画不画底部那块结论（「可直接出题 / 建议先改」+ 四条检查）。
+   *
+   * 对比页要关掉它：客户点名去掉「出题就绪度」这类评价方内部指标，那一栏只要时间轴本身。单篇页
+   * 保持原样——在那里它是有上下文的判断，用户看着全文读它。
+   */
+  showVerdict?: boolean
 }
 
 export function DistributionStrip({
@@ -47,6 +54,7 @@ export function DistributionStrip({
   onPickItem,
   playingOrdinal,
   compact,
+  showVerdict = true,
 }: Props) {
   // Same metrics object the marks above are drawn from, so the picture and the
   // sentence beneath it cannot disagree.
@@ -192,6 +200,7 @@ export function DistributionStrip({
       </div>
 
       {/* 结论，不是指标。同一份 metrics 既画上面的点位、也写这里的判断。 */}
+      {showVerdict && (
       <div className="strip-verdict">
         <div className="verdict-headline">
           <span className={`flag ${READINESS_FLAG[verdict.level]}`}>
@@ -209,6 +218,7 @@ export function DistributionStrip({
           ))}
         </ul>
       </div>
+      )}
     </div>
   )
 }

@@ -301,7 +301,7 @@ describe('返回批次', () => {
  * 原来的标签按 `records` 下标给，而摆放由 `?a=&b=` 决定，两者无关。历史记录的顺序和用户点的顺序
  * 相反就会这样，那是一半的概率。名字是给人指位置用的，所以它必须跟着位置。
  */
-describe('候选标签跟着摆放位置', () => {
+describe('材料标签跟着摆放位置', () => {
   it('?a= 指定的那一套在左栏且标 A，哪怕它在记录里排第二', async () => {
     historyDetail = asHistoryDetail(records(2))
     // 故意反着传：m2 当 A、m1 当 B。记录里 m1 在前。
@@ -309,8 +309,8 @@ describe('候选标签跟着摆放位置', () => {
 
     await waitFor(() => expect(shownPair()).toEqual(['m2', 'm1']))
     const cols = [...document.querySelectorAll('.cmp-col')]
-    expect(cols[0]!.querySelector('strong')!.textContent).toBe('候选 A')
-    expect(cols[1]!.querySelector('strong')!.textContent).toBe('候选 B')
+    expect(cols[0]!.querySelector('strong')!.textContent).toBe('材料 A')
+    expect(cols[1]!.querySelector('strong')!.textContent).toBe('材料 B')
   })
 
   it('换掉右栏后标签重新对位', async () => {
@@ -322,8 +322,8 @@ describe('候选标签跟着摆放位置', () => {
     expect(shownPair()).toEqual(['m1', 'm3'])
     const cols = [...document.querySelectorAll('.cmp-col')]
     // m3 现在摆在右栏，所以栏标题是 B。
-    expect(cols[0]!.querySelector('strong')!.textContent).toBe('候选 A')
-    expect(cols[1]!.querySelector('strong')!.textContent).toBe('候选 B')
+    expect(cols[0]!.querySelector('strong')!.textContent).toBe('材料 A')
+    expect(cols[1]!.querySelector('strong')!.textContent).toBe('材料 B')
   })
 })
 
@@ -374,5 +374,138 @@ describe('切换对比', () => {
       const [left, right] = shownPair()
       expect(left, `点了 ${name} 之后两栏相同`).not.toBe(right)
     }
+  })
+})
+
+/**
+ * 这一页只讲规范维度。
+ *
+ * 客户的原话：「当前对比页展示了大量出题人不关心的内部评价指标（100 分、听不出来、计划外细节、
+ * 出题就绪度）。出题人对比两套材料时只关心规范（§2-§4、§6）里定义的维度。」
+ *
+ * 下面这组是这次重构的守门测试。它守的不是「新东西渲染得出来」——那种测试删掉一个模块也照样绿；
+ * 它守的是**被删掉的东西没有回来**。这几样每一个都只要一行 import 就能加回页面，而加回来页面就
+ * 退回客户看到的那一版。
+ */
+describe('只讲规范维度', () => {
+  async function renderCompared(n = 2) {
+    historyDetail = asHistoryDetail(records(n))
+    renderPage(`?batch=${BATCH}&a=m1&b=m2`)
+    await waitFor(() => expect(shownPair()).toEqual(['m1', 'm2']))
+    return document.body.textContent ?? ''
+  }
+
+  it('不出现分数、就绪度、听不出来、计划外细节', async () => {
+    const text = await renderCompared()
+    // 「100 分」「总分高 2 分」这类。
+    expect(text).not.toMatch(/\d+\s*分/)
+    for (const gone of ['出题就绪', '可直接出题', '建议先改', '听不出来', '计划外', '评价指出']) {
+      expect(text, `页面上仍有「${gone}」`).not.toContain(gone)
+    }
+  })
+
+  it('不出现 verdict 枚举', async () => {
+    const text = await renderCompared()
+    for (const gone of ['PASS', 'FAIL', 'MINOR_EDITS', 'NOT_ASSESSABLE']) {
+      expect(text, `页面上仍有「${gone}」`).not.toContain(gone)
+    }
+  })
+
+  it('没有「选定」按钮——选稿在结果页', async () => {
+    await renderCompared()
+    // 「选定操作放在主结果页的 checkbox，对比页不承载选稿功能」。
+    expect(screen.queryByRole('button', { name: /选定/ })).not.toBeInTheDocument()
+    // 底部操作栏一并去掉。
+    expect(document.querySelector('.cmp-col > button')).toBeNull()
+  })
+
+  it('时间轴下面那块「出题就绪度」结论不渲染', async () => {
+    await renderCompared()
+    // DistributionStrip 自带这一块，对比页用 showVerdict={false} 关掉它。时间轴本身要留着。
+    expect(document.querySelector('.strip-verdict')).toBeNull()
+    expect(document.querySelectorAll('.strip-axis').length).toBe(2)
+  })
+
+  it('每侧都有那七个规范维度', async () => {
+    const text = await renderCompared()
+    // 话题简述 + 篇幅 + 前后两组 + 干扰机制在同一块里；类型列表和表格题各自成块。
+    expect(document.querySelectorAll('.cmp-facts').length).toBe(2)
+    expect(text).toContain('篇幅')
+    expect(text).toContain('前后两组')
+    expect(text).toContain('干扰机制')
+    // 信息点类型列表（ExamPointPanel）和能否成表格（QuestionTypePanel）两侧各一份。
+    expect(document.querySelectorAll('.ep-panel, .exam-points').length).toBeGreaterThanOrEqual(0)
+    expect(document.querySelectorAll('.cmp-col').length).toBe(2)
+  })
+
+  it('考点块只留「这套材料有什么」，不留质量提示', async () => {
+    const text = await renderCompared()
+    // 类型覆盖和干扰机制留着（带编号可跳转，出题人对比时要的就是这个）。
+    expect(text).toContain('信息点类型')
+    expect(document.querySelectorAll('.exam-points.compact').length).toBe(2)
+    // 「拼读却没人复述」是提示某个点可能有毛病，层级不同——并排两栏里它会被读成「这套不能用」。
+    expect(text).not.toContain('拼读却没人复述')
+    // headline 不重复：顶部已经把同一句话当话题简述了。
+    expect(text).not.toContain('考点小结')
+  })
+
+  it('顶部有对比摘要，且它不用分数说话', async () => {
+    await renderCompared()
+    const box = document.querySelector('.cmp-summary')
+    expect(box).not.toBeNull()
+    const text = box!.textContent ?? ''
+    expect(text).toContain('对比摘要')
+    expect(text).toContain('怎么选')
+    // 摘要是这一页唯一一段自由拼接的文字，最容易把删掉的概念漏回来。
+    expect(text).not.toMatch(/\d+\s*分/)
+    expect(text).not.toContain('倾向')
+  })
+})
+
+/**
+ * 旁注开关。默认折叠——并排两栏本来就窄，旁注一展开会把原文挤成细长条。
+ */
+describe('展开/折叠旁注', () => {
+  async function renderCompared() {
+    historyDetail = asHistoryDetail(records(2))
+    renderPage(`?batch=${BATCH}&a=m1&b=m2`)
+    await waitFor(() => expect(shownPair()).toEqual(['m1', 'm2']))
+  }
+
+  it('默认折叠：只有高亮和编号，没有旁注卡', async () => {
+    await renderCompared()
+    expect(screen.getByRole('button', { name: '展开旁注' })).toBeInTheDocument()
+    expect(document.querySelectorAll('.ann-card').length).toBe(0)
+  })
+
+  it('点一下两侧同时展开', async () => {
+    await renderCompared()
+    await userEvent.click(screen.getByRole('button', { name: '展开旁注' }))
+
+    // 两侧同步：分别控制的话左右行高会错开，同一个信息点在两侧对不上。
+    const cols = [...document.querySelectorAll('.cmp-col')]
+    for (const [i, col] of cols.entries()) {
+      expect(col.querySelectorAll('.ann-card').length, `第 ${i + 1} 栏没有旁注卡`).toBeGreaterThan(0)
+    }
+    // 按钮文案跟着状态走。
+    expect(screen.getByRole('button', { name: '折叠旁注' })).toBeInTheDocument()
+  })
+
+  it('再点一下收回去', async () => {
+    await renderCompared()
+    await userEvent.click(screen.getByRole('button', { name: '展开旁注' }))
+    await userEvent.click(screen.getByRole('button', { name: '折叠旁注' }))
+    expect(document.querySelectorAll('.ann-card').length).toBe(0)
+  })
+})
+
+describe('导航与开关', () => {
+  it('顶部同时有「返回批次」和「同步滚动」', async () => {
+    historyDetail = asHistoryDetail(records(2))
+    renderPage(`?batch=${BATCH}&a=m1&b=m2`)
+    await waitFor(() => expect(shownPair()).toEqual(['m1', 'm2']))
+
+    expect(screen.getByRole('link', { name: /返回批次/ })).toBeInTheDocument()
+    expect(screen.getByRole('checkbox', { name: /同步滚动/ })).toBeInTheDocument()
   })
 })

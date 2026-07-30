@@ -1,25 +1,56 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+/**
+ * 并排对比两套材料。
+ *
+ * ## 这一页只讲规范维度
+ *
+ * 客户的原话决定了这个文件的形状：
+ *
+ *   「当前对比页展示了大量出题人不关心的内部评价指标（100 分、听不出来、计划外细节、出题就绪度）。
+ *     出题人对比两套材料时只关心规范（§2-§4、§6）里定义的维度。单篇阅读详情页已有这些模块的数据
+ *     和组件，对比视图直接复用并排展示即可。」
+ *
+ * 所以每侧是**单篇页那几个现成模块**的并排：话题简述、信息点时间轴（含前后切分线）、信息点类型
+ * 列表、干扰机制标签、篇幅、前后两组分配、能否成表格题。顶部一张全宽的对比摘要。
+ *
+ * 删掉的东西（都是评价方的内部指标，客户点名不要）：
+ *
+ *   - `DecisionBar`（总分 100 分、分差、「听不出来的点」、「计划外的可考细节」、「出题就绪度」）
+ *   - 「评分差别明显的方面」那组横条
+ *   - 「需要看一眼的地方」——评价方 finding 的跳转按钮
+ *   - `UsabilityCompare`（就绪度四行对照）
+ *   - 「选定 A / 选定 B」按钮和底部操作栏
+ *
+ * ## 这一页不承载选稿
+ *
+ * 「选定操作放在主结果页的 checkbox，对比页不承载选稿功能」。所以 `SelectDialog`、`selectMaterial`、
+ * 「已选定，语音合成已触发」那条横幅全部移除——一并移除了那次 `getAudio` 查询（它只为确认框的
+ * 文案服务）。这一页现在是纯读的：不发任何写请求，不花钱。
+ *
+ * ## 摘要为什么不用 `domain/compare.ts`
+ *
+ * `compareCandidates` 算的是分数差和倾向，正是要去掉的那类指标。摘要另起一份
+ * （`domain/compareFacts.ts` 的 `compareSummary`），判据只用规范维度，措辞里不出现分数、不出现
+ * 「倾向 A」这种判决口气——客户要的是「说清差在哪，我自己选」。
+ */
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
-import { api } from '@/api/endpoints'
-import { ApiError } from '@/api/http'
 import { scenarioMeta } from '@/config/scenarioMeta'
 import { getThresholds } from '@/config/runtimeConfig'
 import type { MaterialRecord } from '@/contracts/api'
-import { buildFacts, compareCandidates } from '@/domain/compare'
-import type { DistributionMetrics } from '@/domain/distribution'
+import { previewSummary } from '@/domain/cardPreview'
+import { compareSummary, distractionCounts, lengthFacts } from '@/domain/compareFacts'
 import { computeDistribution } from '@/domain/distribution'
+import { summariseExamPoints } from '@/domain/examPoints'
 import { analyseFormGroups } from '@/domain/formGroups'
 import { joinFromRecord } from '@/domain/joinArtifacts'
 import { groupKeyOf } from '@/domain/resultSlots'
-import { SEVERITY_LABEL } from '@/domain/types'
 import { useBatchStore } from '@/stores/batchStore'
 import { useHistoricalBatch } from '../batch-progress/useHistoricalBatch'
+import { ExamPointPanel } from '../material-reader/ExamPointPanel'
 import { MaterialReader } from '../material-reader/MaterialReader'
-import { DecisionBar } from './DecisionBar'
-import { SelectDialog } from './SelectDialog'
-import { UsabilityCompare } from './UsabilityCompare'
+import { QuestionTypePanel } from '../material-reader/QuestionTypePanel'
 
-const LABELS = ['候选 A', '候选 B', '候选 C', '候选 D']
+const LABELS = ['材料 A', '材料 B', '材料 C', '材料 D']
 
 export function ComparePage() {
   const { scenarioKey } = useParams<{ scenarioKey: string }>()
@@ -55,11 +86,8 @@ export function ComparePage() {
   )
   const [records, setRecords] = useState<MaterialRecord[]>(fromStore)
   const [syncScroll, setSyncScroll] = useState(true)
-  const [dialogFor, setDialogFor] = useState<MaterialRecord | null>(null)
-  /** 打开确认框时这一套是否已经有音频——决定确认框说不说「产生费用」。null = 还在查。 */
-  const [dialogHasAudio, setDialogHasAudio] = useState<boolean | null>(null)
-  const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [selectError, setSelectError] = useState<string | null>(null)
+  /** 旁注默认折叠：并排两栏本来就窄，旁注一展开会把原文挤成细长条。 */
+  const [showAnnotations, setShowAnnotations] = useState(false)
   const [jump, setJump] = useState<Record<string, { turnIndex: number; nonce: number }>>({})
 
   /**
@@ -113,80 +141,47 @@ export function ComparePage() {
   }, [records, search])
 
   /**
-   * 「候选 A / B」这个名字按**当前摆放位置**给，不按 `records` 里的下标。
+   * 「材料 A / B」这个名字按**当前摆放位置**给，不按 `records` 里的下标。
    *
-   * 原来是按下标（`views.map((v, i) => buildFacts(LABELS[i], ...))`）。那样一来名字取决于材料
-   * 到达/被记录的顺序，而摆放取决于 `pair`，两者无关：用户在结果页点第一张卡（界面标 A）进来，
-   * 左栏摆的确实是那一套，标题却写着「候选 B」——只要历史记录的顺序和他点的顺序相反就会这样，
-   * 而那是一半的概率。名字是给人指位置用的，所以它必须跟着位置。
+   * 原来是按下标。那样一来名字取决于材料到达/被记录的顺序，而摆放取决于 `pair`，两者无关：用户在
+   * 结果页点第一张卡（界面标 A）进来，左栏摆的确实是那一套，标题却写着「候选 B」——只要历史记录的
+   * 顺序和他点的顺序相反就会这样，而那是一半的概率。名字是给人指位置用的，所以它必须跟着位置。
    */
   const labelOf = useMemo(() => {
     const map = new Map<number, string>()
-    pair.forEach((idx, side) => map.set(idx, LABELS[side] ?? `候选 ${side + 1}`))
-    // 不在当前两栏里的候选（顶部「切换对比」那一排）按下标续号，只用于按钮文字。
+    pair.forEach((idx, side) => map.set(idx, LABELS[side] ?? `材料 ${side + 1}`))
     let next = pair.length
     candidates.forEach((_, idx) => {
-      if (!map.has(idx)) map.set(idx, LABELS[next++] ?? `候选 ${next}`)
+      if (!map.has(idx)) map.set(idx, LABELS[next++] ?? `材料 ${next}`)
     })
     return map
   }, [candidates, pair])
 
-  const facts = useMemo(
+  /** 每侧要画的东西，一次算好：时间轴、题组、考点、干扰、篇幅。 */
+  const sides = useMemo(
     () =>
-      views.map((v, i) =>
-        buildFacts(
-          labelOf.get(i) ?? `候选 ${i + 1}`,
-          v,
-          computeDistribution(v, thresholds),
-          analyseFormGroups(v, thresholds),
-        ),
-      ),
+      views.map((view, i) => ({
+        view,
+        label: labelOf.get(i) ?? `材料 ${i + 1}`,
+        metrics: computeDistribution(view, thresholds),
+        groups: analyseFormGroups(view, thresholds),
+        examPoints: summariseExamPoints(view),
+        distractions: distractionCounts(view),
+        length: lengthFacts(view),
+        topic: previewSummary(view),
+      })),
     [views, labelOf, thresholds],
   )
 
-  const comparison = useMemo(() => {
-    const a = facts[pair[0]]
-    const b = facts[pair[1]]
-    if (!a || !b) return null
-    return compareCandidates(a, b, thresholds)
-  }, [facts, pair, thresholds])
+  const showPair = sides.length >= 2 && pair.every((i) => sides[i] !== undefined)
 
-  /**
-   * 打开确认框，并先问一下这一套有没有音频。
-   *
-   * 只影响文案：已试听过的材料在选定时一次 Polly 都不调，把它说成「产生费用」是劝人别做一件其实
-   * 免费的事。查询失败就按「还没有音频」处理——多说一句费用比漏说一句安全。
-   */
-  const openSelectDialog = useCallback(async (record: MaterialRecord) => {
-    setDialogFor(record)
-    setDialogHasAudio(null)
-    try {
-      const status = await api.getAudio(record.material_id)
-      setDialogHasAudio(status.status === 'ready')
-    } catch {
-      setDialogHasAudio(false)
-    }
-  }, [])
-
-  const doSelect = useCallback(async (record: MaterialRecord) => {
-    try {
-      await api.selectMaterial(record.material_id)
-      setSelectedId(record.material_id)
-      setSelectError(null)
-    } catch (err) {
-      if (err instanceof ApiError && err.code === 'ALREADY_SELECTED') {
-        setSelectedId(record.material_id)
-        setSelectError(err.message)
-      } else {
-        // Notably SELECT_NOT_IMPLEMENTED: selectedId stays null so the "已选定,
-        // 语音合成已触发" banner does NOT appear. Claiming a selection the
-        // backend never recorded is the one failure mode worth guarding here.
-        setSelectError(err instanceof Error ? err.message : String(err))
-      }
-    } finally {
-      setDialogFor(null)
-    }
-  }, [])
+  /** 顶部那张摘要。只有两套并排时才有意义。 */
+  const summary = useMemo(() => {
+    if (!showPair) return null
+    const left = sides[pair[0]]!
+    const right = sides[pair[1]]!
+    return compareSummary(left, right)
+  }, [showPair, sides, pair])
 
   // 优先用材料自己带的 batch_id：从历史批次点进来时 store 装的是当前活批次，用它会把用户送回
   // 另一批。一套材料都没有时（下面那个分支）只剩 store 可用，而那一屏最需要一个出路。
@@ -223,11 +218,9 @@ export function ComparePage() {
     )
   }
 
-  const showPair = candidates.length >= 2 && comparison !== null
-
   return (
     <div className="page-wide">
-      <div className="row" style={{ marginBottom: 8 }}>
+      <div className="row cmp-head">
         {/* 返回批次。这一页过去是**单向**的：用户从结果页点进来，页面上没有任何回去的入口，
             只剩浏览器的后退键——而这一页是全宽布局、跟结果页长得不像，读起来像是离开了那个批次。
             batchId 取自材料自己（`MaterialRecord.batch_id`），不靠 store：从历史批次点进来时
@@ -243,14 +236,7 @@ export function ComparePage() {
           {scenarioMeta(scenarioKey ?? '', historical.batch?.customLabel).titleZh} —{' '}
           {candidates.length} 套候选
         </h2>
-        <label style={{ fontSize: 12 }}>
-          <input
-            type="checkbox"
-            checked={syncScroll}
-            onChange={() => setSyncScroll((v) => !v)}
-          />{' '}
-          同步滚动
-        </label>
+        <span className="spacer" style={{ flex: 1 }} />
         {candidates.length > 2 && (
           <span className="row" style={{ gap: 4 }}>
             <span className="muted" style={{ fontSize: 12 }}>
@@ -261,207 +247,190 @@ export function ComparePage() {
                 key={i}
                 type="button"
                 className={`btn btn-sm${pair.includes(i) ? ' btn-primary' : ''}`}
-                /* 按钮上写「第 N 套」而不是「候选 A/B/C」。
+                /* 按钮上写「第 N 套」而不是「材料 A/B/C」。
                  *
                  * A/B 现在跟着摆放位置（见 `labelOf`），而摆放会被这些按钮改变——用它们当按钮名，
-                 * 按钮就会在用户手底下改名：点了「候选 C」，它当场变成「候选 B」，下一次想点回来
-                 * 已经找不到刚才那个名字了。「第 N 套」是这套材料的固有身份，不随摆放变。 */
-                /* 点一个候选：换掉**右**边那一栏，左边留着。
+                 * 按钮就会在用户手底下改名：点了「材料 C」，它当场变成「材料 B」，下一次想点回来
+                 * 已经找不到刚才那个名字了。「第 N 套」是这套材料的固有身份，不随摆放变。
                  *
-                 * 原来写的是 `([a]) => (a === i ? [a, i] : [a, i])`——两个分支返回同一个值，
-                 * 所以那个三元判断根本没在判断任何东西。它的实际行为是「永远换右栏」，于是
-                 * 点左栏自己那个按钮会把右栏也变成它，两栏同一套材料自己跟自己比。
-                 * 现在点左栏那个按钮是原地不动（它已经在对比里了），点右栏那个换右栏。 */
+                 * 点一个候选换掉**右**栏，左边留着。原来写的是
+                 * `([a]) => (a === i ? [a, i] : [a, i])`——两个分支返回同一个值，所以那个三元
+                 * 判断根本没在判断任何东西，点左栏自己那个按钮会让两栏变成同一套材料。 */
                 onClick={() =>
                   setPair(([a, b]) => (a === i ? [a, b] : b === i ? [a, b] : [a, i]))
                 }
               >
                 第 {(candidate.index ?? i) + 1} 套
-                {pair.includes(i) ? `（${labelOf.get(i)?.replace('候选 ', '')}）` : ''}
+                {pair.includes(i) ? `（${labelOf.get(i)?.replace('材料 ', '')}）` : ''}
               </button>
             ))}
           </span>
         )}
       </div>
 
-      {selectError && (
-        <div className="banner banner-warn">
-          <strong>选定结果</strong>
-          <div>{selectError}</div>
-        </div>
-      )}
-
-      {selectedId && (
-        <div className="banner banner-good">
-          {/* 「语音合成已触发」对已试听过的材料不成立——那一套的音频早就在了，选定沿用它。 */}
-          <strong>{dialogHasAudio ? '已选定，沿用已生成的语音' : '已选定，语音合成已触发'}</strong>
-          <div>
-            未选中的候选已标注为弃用，不再占据主视图。
-            <Link className="btn btn-sm" to={`/materials/${selectedId}`} style={{ marginLeft: 8 }}>
-              打开选定材料（含音频）
-            </Link>
-          </div>
-        </div>
-      )}
-
       {candidates.length === 1 && (
         <div className="banner banner-warn">
-          <strong>本场景 1/2 套就绪，等待中</strong>
-          <div>凑不齐候选时不提供误导性的对比；如确认就用这一套，请显式选定。</div>
+          <strong>本场景只有 1 套材料，无法对比</strong>
+          <div>这一批里这个场景只生成了一套。回到批次页可以「补生成」再来对比。</div>
         </div>
       )}
 
-      {showPair && (
-        <div className="panel panel-pad" style={{ marginBottom: 10 }}>
-          <h3>哪一套更好出题</h3>
-          <div>{comparison.summary}</div>
-          <ul style={{ margin: '6px 0 0 18px', padding: 0, fontSize: 12 }} className="muted">
-            {comparison.reasons.map((r, i) => (
-              <li key={i}>{r}</li>
-            ))}
-          </ul>
-          {/* Rows are the four questions a question-writer asks; each cell is
-              that candidate's answer, in their vocabulary. Same source as each
-              candidate's own distribution strip, so the two cannot disagree. */}
-          <UsabilityCompare
-            columns={pair
-              .map((idx) => {
-                const f = facts[idx]
-                return f ? { label: f.label, metrics: f.distribution } : null
-              })
-              .filter((c): c is { label: string; metrics: DistributionMetrics } => c !== null)}
-          />
-          <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
-            结论由规则推出，不经模型；同一份数据同时驱动上方结论与每套自己的分布预览。
+      {/* ── 对比摘要（全宽，两列上方）────────────────────────────────────────
+          规则模板拼接，不调模型。同一份结构化数据同时驱动这段话和下面两栏的每个模块，所以两者
+          不可能互相矛盾。 */}
+      {summary && (
+        <div className="cmp-summary">
+          <div className="cmp-summary-head">对比摘要</div>
+          {summary.shared.length > 0 && (
+            <div className="cmp-summary-row">
+              <span className="cmp-summary-tag shared">共同点</span>
+              <span>{summary.shared.join('；')}。</span>
+            </div>
+          )}
+          {summary.differences.length > 0 && (
+            <div className="cmp-summary-row">
+              <span className="cmp-summary-tag diff">主要差异</span>
+              <ul className="cmp-summary-list">
+                {summary.differences.map((d, i) => (
+                  <li key={i}>{d}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <div className="cmp-summary-row">
+            <span className="cmp-summary-tag advice">怎么选</span>
+            <span>{summary.advice}</span>
           </div>
         </div>
       )}
+
+      {/* ── 全文区的两个开关 ────────────────────────────────────────────────
+          放在一排：它们管的是同一件事——下面那两栏原文怎么看。 */}
+      <div className="row cmp-toolbar">
+        <label style={{ fontSize: 12 }}>
+          <input
+            type="checkbox"
+            checked={syncScroll}
+            onChange={() => setSyncScroll((v) => !v)}
+          />{' '}
+          同步滚动
+        </label>
+        {/* 两侧同步展开/折叠：分别控制的话，左右两栏的行高会错开，同一个信息点在两侧对不上。 */}
+        <button
+          type="button"
+          className={`btn btn-sm${showAnnotations ? ' btn-primary' : ''}`}
+          aria-pressed={showAnnotations}
+          onClick={() => setShowAnnotations((v) => !v)}
+        >
+          {showAnnotations ? '折叠旁注' : '展开旁注'}
+        </button>
+        <span className="muted" style={{ fontSize: 11 }}>
+          {showAnnotations
+            ? '每个信息点的类型、答案、标签、引用原文都在右侧'
+            : '折叠时只显示高亮和编号；展开看每个点的答案与标签'}
+        </span>
+      </div>
 
       <div
         className="cmp-cols"
-        style={{
-          gridTemplateColumns: showPair ? '1fr 1fr' : '1fr',
-        }}
+        style={{ gridTemplateColumns: showPair ? '1fr 1fr' : '1fr' }}
       >
-        {(showPair ? pair : [0]).map((idx, side) => {
-          const f = facts[idx]
+        {(showPair ? pair : [0]).map((idx) => {
+          const side = sides[idx]
           const record = candidates[idx]
-          const view = views[idx]
-          if (!f || !record || !view) return null
-          const discarded = selectedId !== null && selectedId !== record.material_id
+          if (!side || !record) return null
           return (
             <div
               key={record.material_id}
               className="cmp-col"
               /* 这一栏当前是哪套材料。给测试用：「两栏永远不是同一套」这条不变式没法靠文字断言——
-                 每栏内部到处都出现「候选 A」这几个字（结论句、选定按钮、切换按钮）。 */
+                 每栏内部到处都出现「材料 A」这几个字。 */
               data-material={record.material_id}
-              style={{ opacity: discarded ? 0.45 : 1 }}
             >
-              {/* subgrid rows keep the two candidates' decision bar / reader /
-                  action button on the same baseline even when one side has more
-                  findings than the other */}
-              <div className="panel panel-pad">
-                <DecisionBar
-                  facts={f}
-                  scoreDiff={
-                    comparison ? (side === 0 ? comparison.scoreDiff : -comparison.scoreDiff) : 0
-                  }
-                  scoreDiffSignificant={comparison?.scoreDiffSignificant ?? false}
-                />
-                {comparison && comparison.dimensionDeltas.length > 0 && (
-                  <div className="dim-diff" style={{ marginTop: 8 }}>
-                    <h3>
-                      评分差别明显的方面
-                      <span className="muted" style={{ fontWeight: 400 }}>
-                        （另有 {comparison.hiddenDimensionCount} 项两套差不多，未列出）
-                      </span>
-                    </h3>
-                    {comparison.dimensionDeltas.map((d) => {
-                      const mine = side === 0 ? d.a : d.b
-                      const other = side === 0 ? d.b : d.a
-                      const max = Math.max(d.a, d.b, 1)
-                      return (
-                        <div key={d.key} style={{ fontSize: 12 }}>
-                          <div className="row" style={{ justifyContent: 'space-between' }}>
-                            <span>{d.label}</span>
-                            <span className="mono">
-                              {mine} {mine > other ? '◀' : mine < other ? '▶' : ''}
-                            </span>
-                          </div>
-                          <div className="bar">
-                            <i style={{ width: `${(mine / max) * 100}%` }} />
-                          </div>
-                        </div>
-                      )
-                    })}
-                  </div>
-                )}
-                {view.audit.findings.filter((x) => x.turn_index != null).length > 0 && (
-                  <div style={{ marginTop: 8 }}>
-                    <h3>需要看一眼的地方</h3>
-                    {view.audit.findings
-                      .filter((x) => x.turn_index != null)
-                      .map((x, i) => (
-                        <button
-                          key={i}
-                          type="button"
-                          className="btn btn-sm"
-                          style={{ marginRight: 4, marginBottom: 4 }}
-                          title={x.rule}
-                          onClick={() =>
-                            setJump((prev) => ({
-                              ...prev,
-                              [record.material_id]: {
-                                turnIndex: x.turn_index!,
-                                nonce: Date.now(),
-                              },
-                            }))
-                          }
-                        >
-                          {SEVERITY_LABEL[x.severity]} · turn {x.turn_index}
-                        </button>
-                      ))}
-                  </div>
-                )}
+              <div className="panel panel-pad cmp-facts">
+                <div className="cmp-col-head">
+                  <strong>{side.label}</strong>
+                  <span className="muted" style={{ fontSize: 12 }}>
+                    第 {record.index + 1} 套
+                  </span>
+                </div>
+
+                {/* 话题简述。一句话说清这一套具体讲什么——两套同场景的材料靠它区分。 */}
+                <div className="cmp-topic">{side.topic}</div>
+
+                {/* 篇幅。只标硬线（450-750 词 / 20-48 轮）；规范里的 600-650 是真题观测典型值，
+                    不是命制门槛，标出来会让人以为 660 词的材料有问题。 */}
+                <div className="cmp-row">
+                  <span className="cmp-row-label">篇幅</span>
+                  <span className={side.length.ok ? '' : 'cmp-row-warn'}>
+                    {side.length.text}
+                    {side.length.ok ? '' : ' ← 超出规范区间'}
+                  </span>
+                </div>
+
+                {/* 前后两组分配。切分位置影响两组题量是否均衡（规范 §6）。 */}
+                <div className="cmp-row">
+                  <span className="cmp-row-label">前后两组</span>
+                  <span>
+                    第 1 组 {side.metrics.firstHalfCount} 题 / 第 2 组{' '}
+                    {side.metrics.secondHalfCount} 题（按第 {side.metrics.splitAfter} 题分组）
+                  </span>
+                </div>
+
+                {/* 干扰机制的**计数**。带编号的那份在下面的考点块里（可跳转），这里只给数量——
+                    「先说后改 ×3」和「×1」是两种难度，而让人去数两排圆圈来得出这件事没必要。 */}
+                <div className="cmp-row">
+                  <span className="cmp-row-label">干扰机制</span>
+                  <span className="cmp-tags">
+                    {side.distractions.length === 0 ? (
+                      <span className="muted">未使用</span>
+                    ) : (
+                      side.distractions.map((d) => (
+                        <span key={d.kind} className="cmp-tag" title={`第 ${d.numbers.join('、')} 题`}>
+                          {d.label} ×{d.count}
+                        </span>
+                      ))
+                    )}
+                  </span>
+                </div>
               </div>
 
-              {/* Narrow annotation mode: numbered badges inline, full column in
-                  the single-material view (design.md §11, ruled 2026-07-28). */}
+              {/* 信息点类型列表 + 干扰机制（都带编号，点一下跳到原文）。
+                  `compact` 去掉重复的 headline（顶部已作话题简述）和质量提示块。 */}
+              <ExamPointPanel
+                compact
+                summary={side.examPoints}
+                onJump={(turnIndex) =>
+                  setJump((prev) => ({
+                    ...prev,
+                    [record.material_id]: { turnIndex, nonce: Date.now() },
+                  }))
+                }
+              />
+
+              {/* 原文 + 时间轴（含前后切分线）。`showVerdict={false}` 关掉时间轴下面那块
+                  「出题就绪度」——客户点名去掉这类内部指标。 */}
               <MaterialReader
-                view={view}
+                view={side.view}
                 height={520}
                 narrow
+                showAnnotations={showAnnotations}
+                showVerdict={false}
                 jumpToTurn={jump[record.material_id] ?? null}
               />
 
-              <button
-                type="button"
-                className="btn btn-primary"
-                disabled={selectedId !== null}
-                onClick={() => void openSelectDialog(record)}
-              >
-                {discarded ? '已弃用' : `选定 ${f.label}`}
-              </button>
+              {/* 能否成表格/表单题。补充信息，所以放在最底部。自带 panel 外壳。 */}
+              <QuestionTypePanel analysis={side.groups} />
             </div>
           )
         })}
       </div>
 
-      {/* 对比页本身仍然不放播放器（两条音轨并排听不出什么），但「语音在选定之后才合成」已经不对了
-          ——阅读页现在可以先生成音频再决定，而那份音频在选定时会被沿用。 */}
-      <div className="muted" style={{ marginTop: 8, fontSize: 12 }}>
-        想先听一遍再决定的，在单套材料的阅读页点「生成音频」；那份音频会跟着这一套，选定时不重新合成。
+      {/* 这一页不承载选稿（客户：选定操作放在主结果页的 checkbox），所以底部没有操作栏。
+          留一句话说清音频在哪弄，免得用户在这一页找试听。 */}
+      <div className="muted cmp-foot">
+        选稿在批次页勾选。想先听一遍的，在单套材料的阅读页点「生成音频」。
       </div>
-
-      {dialogFor && (
-        <SelectDialog
-          record={dialogFor}
-          alreadySynthesised={dialogHasAudio}
-          onCancel={() => setDialogFor(null)}
-          onConfirm={() => void doSelect(dialogFor)}
-        />
-      )}
     </div>
   )
 }

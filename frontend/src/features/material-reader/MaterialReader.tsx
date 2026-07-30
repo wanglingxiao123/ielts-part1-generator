@@ -60,6 +60,16 @@ interface Props {
   height?: number
   /** Narrow mode for the side-by-side compare view (design.md §4.2). */
   narrow?: boolean
+  /**
+   * 显不显示右侧那一列旁注卡。
+   *
+   * 以前这件事由 `narrow` 隐式决定：并排视图传 `narrow`，旁注列就整块不渲染。两件事因此绑死，
+   * 而对比页现在要一个「展开旁注 / 折叠旁注」开关——并排布局不变，旁注按需出现。所以拆成显式
+   * 的一个 prop，默认跟随 `narrow`（`narrow` 时默认不显示），保持既有调用方行为不变。
+   */
+  showAnnotations?: boolean
+  /** 时间轴下面那块「出题就绪度」结论。对比页关掉它（客户点名去掉这类内部指标）。 */
+  showVerdict?: boolean
   playingTurn?: number | null
   onPlayTurn?: (turnIndex: number) => void
   unplayableTurns?: number[]
@@ -69,17 +79,24 @@ interface Props {
 }
 
 const ANN_COL_WIDTH = 336
+/** 并排一栏里的旁注列。比单篇窄：一栏本身只有半个页宽，336px 会让原文没地方待。 */
+const NARROW_ANN_COL_WIDTH = 220
 const COL_GAP = 56
+const NARROW_COL_GAP = 24
 
 export function MaterialReader({
   view,
   height = 620,
   narrow = false,
+  showAnnotations,
+  showVerdict = true,
   playingTurn = null,
   onPlayTurn,
   unplayableTurns,
   jumpToTurn,
 }: Props) {
+  // 没传就跟随 `narrow`——单篇页（narrow=false）照旧显示旁注，并排视图（narrow=true）照旧不显示。
+  const annotationsVisible = showAnnotations ?? !narrow
   const thresholds = getThresholds()
   const metrics = useMemo(() => computeDistribution(view, thresholds), [view, thresholds])
   const groups = useMemo(() => analyseFormGroups(view, thresholds), [view, thresholds])
@@ -138,6 +155,7 @@ export function MaterialReader({
         onPickItem={selectItem}
         playingOrdinal={playingOrdinal}
         compact={narrow}
+        showVerdict={showVerdict}
       />
 
       {/* 这里原来有 AnchorMismatchBanner：「有 N 个信息点标错了位置，旁注可能贴在了不相干的
@@ -147,7 +165,13 @@ export function MaterialReader({
           剔除只在显示层，view.blueprint 仍是完整十个点；开发者从控制台
           与 /dev/fixtures 的「定位」块看得到发生了什么。 */}
       <div className="reader-scroll" style={{ height }} ref={layout.containerRef}>
-        <div className={`reader-body${narrow ? ' narrow' : ''}`}>
+        {/* `narrow` 只管「这是并排的一栏」，`with-ann` 才决定要不要留出旁注那一列——两者过去
+            绑在一起（narrow 即无旁注），而对比页现在要在并排布局里按需展开旁注。 */}
+        <div
+          className={`reader-body${narrow ? ' narrow' : ''}${
+            narrow && annotationsVisible ? ' with-ann' : ''
+          }`}
+        >
           <div ref={scriptColRef}>
             <TurnList
               view={view}
@@ -164,16 +188,20 @@ export function MaterialReader({
             />
           </div>
 
-          {!narrow && (
+          {annotationsVisible && (
             <>
               <LeaderLines
                 cards={layout.cards}
                 fromX={scriptWidth}
-                toX={scriptWidth + COL_GAP}
+                toX={scriptWidth + (narrow ? NARROW_COL_GAP : COL_GAP)}
                 height={layout.contentHeight}
                 selectedItem={state.selectedItem}
               />
-              <div className="ann-col" style={{ width: ANN_COL_WIDTH }}>
+              {/* 并排时旁注列窄一些：两栏各留 336px 会把原文挤成细长条。 */}
+              <div
+                className="ann-col"
+                style={{ width: narrow ? NARROW_ANN_COL_WIDTH : ANN_COL_WIDTH }}
+              >
                 {layout.cards.map((card) => (
                   <AnnotationCard
                     key={card.id}

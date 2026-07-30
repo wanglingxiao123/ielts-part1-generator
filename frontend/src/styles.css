@@ -1578,6 +1578,18 @@ h3 {
   column-gap: 0;
 }
 
+/* 并排一栏里展开了旁注：留出一列，但比单篇窄——一栏只有半个页宽，336px 会把原文挤没。 */
+.reader-body.narrow.with-ann {
+  grid-template-columns: minmax(0, 1fr) 220px;
+  column-gap: 24px;
+}
+
+/* 并排的旁注卡要能在 220px 里读得下去：字号收一档，内边距收紧。 */
+.reader-body.narrow.with-ann .ann-card {
+  font-size: 11px;
+  padding: 7px 9px;
+}
+
 .turn {
   display: grid;
   grid-template-columns: 30px 84px minmax(0, 1fr);
@@ -2123,19 +2135,153 @@ h3 {
   display: grid;
   gap: 12px;
   align-items: start;
-  /* decision panel · reader · action button */
-  grid-template-rows: auto auto auto;
+  /* 规范维度 · 信息点类型 · 原文+时间轴 · 能否成表格 */
+  grid-template-rows: auto auto auto auto;
 }
 
-/* Subgrid so both candidates' decision bar, reader and button share a baseline
-   regardless of how many findings each side has. Misaligned rows make a
-   side-by-side comparison much harder to read. */
+/* subgrid：两侧的四块各自对齐同一条基线。一侧的考点比另一侧多两行时，不对齐会让并排读起来
+   要来回找——而「对着同一行比」正是这一页存在的理由。 */
 .cmp-col {
   display: grid;
   grid-template-rows: subgrid;
-  grid-row: 1 / span 3;
+  grid-row: 1 / span 4;
   gap: 10px;
   min-width: 0;
+}
+
+/* ── 对比页：顶部摘要 ────────────────────────────────────────────────────────
+   规则模板拼出来的两三行。它是这一页第一眼要看的东西，所以给足对比度，但不用警示色——
+   它说的是「差在哪」，不是「哪里有问题」。 */
+.cmp-head {
+  gap: 12px;
+  margin-bottom: 10px;
+  align-items: center;
+}
+
+.cmp-summary {
+  background: var(--accent-soft);
+  border: 1px solid #b8d4fb;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  font-size: 13px;
+}
+
+.cmp-summary-head {
+  font-weight: 650;
+  color: #14448f;
+  margin-bottom: 8px;
+}
+
+.cmp-summary-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-bottom: 6px;
+}
+
+.cmp-summary-row:last-child {
+  margin-bottom: 0;
+}
+
+.cmp-summary-tag {
+  flex-shrink: 0;
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-weight: 500;
+  background: var(--panel);
+  color: var(--ink-2);
+  border: 1px solid var(--line);
+}
+
+.cmp-summary-tag.advice {
+  background: #14448f;
+  color: #fff;
+  border-color: #14448f;
+}
+
+.cmp-summary-list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.cmp-summary-list li {
+  margin-bottom: 2px;
+}
+
+/* ── 对比页：全文区开关 ──────────────────────────────────────────────────── */
+
+.cmp-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+/* ── 对比页：每侧的规范维度块 ───────────────────────────────────────────── */
+
+.cmp-col-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.cmp-col-head strong {
+  font-size: 14px;
+}
+
+/* 话题简述：一句话说清这一套具体讲什么。两套同场景的材料靠它区分。 */
+.cmp-topic {
+  font-size: 13px;
+  color: var(--ink-2);
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--line-2);
+}
+
+.cmp-facts .cmp-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+  padding: 3px 0;
+}
+
+.cmp-row-label {
+  flex-shrink: 0;
+  width: 56px;
+  color: var(--ink-3);
+}
+
+.cmp-row-warn {
+  color: var(--warn);
+  font-weight: 500;
+}
+
+.cmp-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* 「先说后改 ×3」。title 上挂着点号，鼠标停下来能看到是哪几个点。 */
+.cmp-tag {
+  background: var(--line-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 17px;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.cmp-foot {
+  margin-top: 10px;
+  font-size: 12px;
 }
 
 .decision-bar {

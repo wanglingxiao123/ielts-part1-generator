@@ -16,6 +16,8 @@ import { CONTENT_RULES } from '@/domain/pointFacts'
 interface Props {
   summary: ExamPointSummary
   onJump: (turnIndex: number) => void
+  /** 对比页用：去掉重复的 headline 和质量提示块，只留「这套材料有什么」。 */
+  compact?: boolean
 }
 
 const TONE_CLASS: Record<ExamPointSummary['blocks'][number]['tone'], string> = {
@@ -24,14 +26,30 @@ const TONE_CLASS: Record<ExamPointSummary['blocks'][number]['tone'], string> = {
   bad: 'ep-block bad',
 }
 
-export function ExamPointPanel({ summary, onJump }: Props) {
+export function ExamPointPanel({ summary, onJump, compact = false }: Props) {
+  /**
+   * `compact`（对比页）只留「这套材料有什么」，去掉质量提示。
+   *
+   * 拼读 / 先说后改 / 同义替换 / 干扰是正面描述——出题人对比两套时要的就是这个。而
+   * 「拼读却没人复述」是提示某个点可能有毛病，层级不同：并排两栏里它会被读成「这套不能用」，
+   * 而它旁边就是另一套的同类标签，对比一个警告没有意义。单篇页保持原样——那里有全文作上下文。
+   */
+  const blocks = compact
+    ? summary.blocks.filter((b) => b.key === 'spelling' || b.key.startsWith('distraction-'))
+    : summary.blocks
   return (
-    <div className="panel panel-pad exam-points">
-      <h3>考点小结</h3>
-      <div className="ep-headline">{summary.headline}</div>
+    <div className={`panel panel-pad exam-points${compact ? ' compact' : ''}`}>
+      {/* 对比页不重复 headline：那句话已经在这一栏顶部当「话题简述」了，同一个函数算的。 */}
+      {!compact && (
+        <>
+          <h3>考点小结</h3>
+          <div className="ep-headline">{summary.headline}</div>
+        </>
+      )}
+      {compact && <h3>信息点类型与干扰机制</h3>}
 
       <div className="ep-blocks">
-        {summary.blocks.map((b) => (
+        {blocks.map((b) => (
           <div key={b.key} className={TONE_CLASS[b.tone]} title={b.hint}>
             <span className="ep-label">{b.label}</span>
             <span className="ep-nums">
