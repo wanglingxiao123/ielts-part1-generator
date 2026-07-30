@@ -22,6 +22,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '@/api/endpoints'
+import { userMessage } from '@/api/http'
 import type { BatchHistoryEntry } from '@/contracts/api'
 import {
   countByStatus,
@@ -91,7 +92,11 @@ export function BatchHistoryPanel({
         }
       })
       .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err))
+        // Never `err.message`: on a dropped connection that is `Failed to fetch`, and on an older
+        // web tier it was a Python exception class name. See `userMessage`.
+        if (!cancelled) {
+          setError(userMessage(err, '历史记录暂时读取不到，请稍后重试。'))
+        }
       })
     return () => {
       cancelled = true
@@ -180,6 +185,11 @@ export function BatchHistoryPanel({
       </div>
 
       <div className="hist-list">
+        {/* 三个互斥的空态，而且「一批都还没有」**不是**其中的错误那个。
+            客户第一次用这个页面时看到的是「历史记录读取失败 ModuleNotFoundError: ...」，其中两件事
+            都错了：那条字符串是我们自己的 Python 异常（现在由 web/app.py 与 `userMessage` 一起挡在
+            外面），而且**当时根本没有失败**——只是还没有任何批次。空列表是一个成功的答案，说的是
+            「还没生成过」，所以它走 muted 的说明文案，不走失败态。 */}
         {error && (
           <div className="hist-empty">
             <strong>历史记录读取失败</strong>
@@ -190,7 +200,7 @@ export function BatchHistoryPanel({
         {!error && batches !== null && visible.length === 0 && (
           <div className="hist-empty muted">
             {batches.length === 0
-              ? '还没有历史批次。生成一批之后会出现在这里。'
+              ? '暂无历史批次。生成一批之后会出现在这里。'
               : '没有匹配的批次。'}
           </div>
         )}

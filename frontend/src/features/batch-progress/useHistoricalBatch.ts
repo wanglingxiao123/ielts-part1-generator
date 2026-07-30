@@ -18,6 +18,7 @@
  */
 import { useEffect, useState } from 'react'
 import { api } from '@/api/endpoints'
+import { userMessage } from '@/api/http'
 import type { BatchHistoryDetail, MaterialRecord } from '@/contracts/api'
 import type { RequestedScenario } from '@/domain/resultSlots'
 
@@ -74,7 +75,9 @@ export function useHistoricalBatch(
           setState({
             batch: null,
             loading: false,
-            error: err instanceof Error ? err.message : String(err),
+            // `userMessage`, not `err.message`: the raw value here has been a Python exception
+            // class name and a `Failed to fetch`, neither of which belongs on the page.
+            error: userMessage(err, '这个历史批次暂时读取不到，请稍后重试。'),
           })
         }
       })

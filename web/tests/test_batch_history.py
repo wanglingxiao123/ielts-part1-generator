@@ -229,6 +229,50 @@ class TestRecording:
             "20260730-booking-hotel-aaaaaaaa", "20260730-booking-hotel-bbbbbbbb",
         }
 
+    async def test_the_final_state_lands_even_when_a_write_is_slow(
+        self, auth, static_dir, fanout_runtime: FanOutRuntimeClient,
+    ):
+        """`state: "complete"` must survive a store slower than the gap between the last two events.
+
+        This is the defect every batch in the deployed bucket had (2026-07-30): all three records read
+        `state: "running"`, `completed_at: null`, `counts: {}` for batches that finished cleanly. The
+        consequence is not cosmetic -- `derive` turns `interrupted` true after `STALE_RUNNING_SECONDS`,
+        so a complete batch grows a 已中断 badge and a 「缺的部分不会再补齐」 banner two hours later.
+
+        The race: `material_completed` and `batch_completed` arrive milliseconds apart, the worker is
+        inside the PUT for the former when the latter sets `_dirty`, and then `close()` sets `_stop`
+        and `_dirty` together. The old loop flushed once more, saw `_stop`, and returned -- dropping
+        the write that carried `state: "complete"`.
+
+        A latency the in-memory store does not have is what makes it deterministic here: with a fast
+        store the two writes coalesce and the bug is invisible, which is exactly why every existing
+        test passed while production was wrong.
+        """
+        class SlowStore(InMemoryBatchStore):
+            def save_index(self, batch_id, record):
+                time.sleep(0.15)
+                super().save_index(batch_id, record)
+
+        store = SlowStore()
+        tier = WebTier(auth, fanout_runtime, str(static_dir), history=BatchHistory(store))
+        cookie = auth.issue_token(auth.register("a@amazon.com", "hunter2hunter2")["email"])
+        body = fanout_runtime.body_for("slot-1")
+        body.push_event(material_event("slot-1", "booking-hotel", "m-1"))
+        body.push_event({"type": "batch_completed", "succeeded": 1, "failed": 0,
+                         "skipped": 0, "degraded": 0, "at": time.time()})
+        body.finish()
+
+        await collect(tier, cookie,
+                      {"action": "generate", "scenarios": ["booking-hotel"], "count": 1})
+
+        # The web tier minted the id; this store holds exactly this one batch.
+        stored = store.load_all_indexes()[0]
+        assert stored["state"] == "complete", (
+            "the batch_completed write was dropped; this record would grow a 已中断 badge"
+        )
+        assert stored["completed_at"], "a complete batch must carry completed_at"
+        assert stored["counts"]["succeeded"] == 1
+
     async def test_the_list_does_not_carry_the_scripts(
         self, auth, static_dir, fanout_runtime: FanOutRuntimeClient, history: BatchHistory,
     ):

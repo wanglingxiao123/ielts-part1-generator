@@ -30,6 +30,26 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * An unknown thrown value → a sentence a 命题人员 can read.
+ *
+ * The client saw 「历史记录读取失败 ModuleNotFoundError: No module named 'audio_storage'」. The
+ * server's half of that is fixed in `web/app.py` (`_infra_error_body` now logs the exception and
+ * sends a plain sentence), but the browser can produce the same class of string entirely on its
+ * own: a dropped connection throws `TypeError: Failed to fetch`, and `err.message` on any
+ * non-`ApiError` is whatever the runtime happened to say — in English, naming a JS internal.
+ *
+ * So the rule is: only an `ApiError` carries prose written FOR the user, and only its `message` is
+ * rendered. Everything else becomes the caller's fallback, and the original goes to the console
+ * where a developer can still find it. Callers pass a fallback that names what failed, because
+ * "出错了" alone tells the user nothing about whether to retry or to give up.
+ */
+export function userMessage(err: unknown, fallback: string): string {
+  if (err instanceof ApiError) return err.message
+  console.warn('[api] non-ApiError surfaced to the UI', err)
+  return fallback
+}
+
 export interface RequestSpec {
   method: 'GET' | 'POST'
   /** Path relative to apiBaseUrl, e.g. `/batches/abc`. */

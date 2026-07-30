@@ -22,6 +22,7 @@ import { setTransport } from './http'
 import { api } from './endpoints'
 import { openBatchStream } from './sseClient'
 import type { SseEvent } from '@/contracts/api'
+import { useBatchStore } from '@/stores/batchStore'
 import RAW from './__fixtures__/real-batch.sse.txt?raw'
 
 /* ── a real material, borrowed from the captured batch ────────────────────── */
@@ -84,12 +85,25 @@ function interleave<T>(streams: T[][]): T[] {
 }
 
 /**
+ * The batch id the web tier mints — `web-<unix ms>-<counter>` (`web/batch_history.py`).
+ *
+ * A literal, and it has to look exactly like the real thing. This fixture used to omit `batch_id`
+ * from `batch_started` entirely, matching the web tier of the time, and that omission is why these
+ * eight tests all passed while production was broken: with no id on the wire the adapter minted its
+ * own `batch-<ms36>-<n>`, the tests only ever compared it against itself, and the mismatch with the
+ * `web-…` id S3 was keyed on was invisible until a client reloaded the page and got
+ * 「没有找到批次 batch-ms713fnc-1 的历史记录」.
+ */
+const WEB_BATCH_ID = 'web-1785228044000-1'
+
+/**
  * The whole merged stream for a batch of `plan.length` materials, in web-tier shape.
  */
 function mergedFrames(plan: Array<{ scenario: string; ok: boolean }>): string[] {
   const total = plan.length
   const started = {
     type: 'batch_started',
+    batch_id: WEB_BATCH_ID,
     total,
     deadline_at: 1785228854,
     config: { fanout: 'per_material_invoke', children: total, web_concurrency: 6 },
@@ -189,6 +203,7 @@ describe('the merged fan-out stream', () => {
 
   beforeEach(() => {
     resetAgentCore()
+    useBatchStore.getState().reset()
   })
 
   afterEach(() => {
@@ -233,6 +248,49 @@ describe('the merged fan-out stream', () => {
     expect(new Set(created.items.map((i) => i.material_id)).size).toBe(8)
   })
 
+  /**
+   * The batch id is the BACKEND's, verbatim.
+   *
+   * This is the property whose absence produced 「没有找到批次 batch-ms713fnc-1 的历史记录」. The web
+   * tier mints the id, plans the children with it and keys the S3 record on it, so any id the
+   * frontend invents is one nothing can be looked up by. Asserted against the literal rather than
+   * against "some id": a locally minted id would satisfy every other test in this file, because they
+   * all compare the adapter's id against itself.
+   */
+  it('adopts the batch id from batch_started instead of minting one', async () => {
+    const created = await runBatch()
+    expect(created.batch_id).toBe(WEB_BATCH_ID)
+    // The `hello` the store keys on, and the snapshot the reconnect path fetches, agree with it.
+    const events = await collect(created.batch_id)
+    expect(events.find((e) => e.event === 'hello')).toMatchObject({ batch_id: WEB_BATCH_ID })
+    expect((await api.getBatch(created.batch_id)).batch_id).toBe(WEB_BATCH_ID)
+    // And nothing carries the shape this module used to mint.
+    expect(created.batch_id).not.toMatch(/^batch-/)
+    for (const item of created.items) expect(item.material_id).toContain(`${WEB_BATCH_ID}::`)
+  })
+
+  /**
+   * A `batch_started` with no `batch_id` is REFUSED, not worked around.
+   *
+   * The tempting fallback — mint one locally when the backend does not send one — is the bug itself.
+   * A batch that runs under an id nothing recorded spends real money and then cannot be found, which
+   * is strictly worse than one that never starts and says so.
+   */
+  it('refuses to start a batch whose id the backend did not send', async () => {
+    const frames = mergedFrames([{ scenario: 'a', ok: true }]).map((frame) =>
+      frame.replace(`"batch_id": "${WEB_BATCH_ID}", `, '').replace(`"batch_id":"${WEB_BATCH_ID}",`, ''),
+    )
+    restore = installFanoutBackend(frames, ['a'])
+    const { transport } = installAgentCoreAdapter()
+    setTransport(transport)
+    await expect(
+      api.createBatch({
+        requests: [{ scenario_key: 'a', count: 1 }],
+        options: { narration_mode: 'full' },
+      }),
+    ).rejects.toThrow(/批次编号/)
+  })
+
   it('produces one card per material, not N cards fighting over slot-1', async () => {
     const created = await runBatch()
     const events = await collect(created.batch_id)
@@ -268,6 +326,51 @@ describe('the merged fan-out stream', () => {
         .map((e) => (e as { material_id: string }).material_id),
     )
     expect(progressed.size).toBe(8)
+  })
+
+  /**
+   * No slot reports as ungenerated when its material in fact arrived.
+   *
+   * This is 「怎么又开始报有未生成的了」, as a property. A batch's cards are planned as rows keyed on
+   * `<batchId>::slot-N`; a material then arrives under the backend's `material_id`, which is a
+   * DIFFERENT key. So the store has to be told which skeleton each arrival supersedes, or it keeps
+   * both — and every planned row stays `pending` forever, which the results page counts as 未生成.
+   *
+   * Driven through the store rather than asserted on the events, because the events were never
+   * wrong: 8 materials arrived, and the page still said 8 未生成. The defect lived entirely in the
+   * reconciliation between the plan and the arrivals.
+   */
+  it('leaves no slot reporting as ungenerated once its material has arrived', async () => {
+    const plan = PLAN.map((p) => ({ ...p, ok: true }))
+    const created = await runBatch(plan)
+    const store = useBatchStore.getState()
+    store.initBatch({
+      batchId: created.batch_id,
+      total: created.total,
+      requested: [...new Set(plan.map((p) => p.scenario))].map((scenarioKey) => ({
+        scenarioKey,
+        count: plan.filter((p) => p.scenario === scenarioKey).length,
+      })),
+      items: created.items.map((i) => ({
+        ...i,
+        status: 'pending' as const,
+        stage: 'queued' as const,
+        attempt: 0,
+      })),
+    })
+    for (const event of await collect(created.batch_id)) {
+      useBatchStore.getState().applyEvent(event)
+    }
+
+    const after = useBatchStore.getState()
+    // One row per material — not one per material PLUS one per planned slot.
+    expect(after.itemOrder).toHaveLength(8)
+    expect(Object.keys(after.materials)).toHaveLength(8)
+    // This is the count the page renders as 「有 N 套未能生成」. It must be zero.
+    const ungenerated = after.itemOrder.filter((id) => after.items[id]?.status !== 'done')
+    expect(ungenerated).toEqual([])
+    // No placeholder survived. A leftover one is the exact shape of the defect.
+    expect(after.itemOrder.filter((id) => id.includes('::'))).toEqual([])
   })
 
   it('groups the per-scenario index correctly across children', async () => {

@@ -112,6 +112,28 @@ const nextId = (prefix: string) => {
 }
 
 /**
+ * A batch id in the SHAPE the web tier actually mints: `web-<unix ms>-<counter>`.
+ * See `web/batch_history.py`'s `new_batch_id`.
+ *
+ * The mock used to hand out `batch-001` and the AgentCore adapter used to hand out
+ * `batch-<ms36>-<n>`; the real one has always been `web-…`, because the web tier mints it and keys
+ * the S3 record on it. Neither invented shape matched production, and that is precisely why the
+ * mock could not reproduce 「没有找到批次 batch-ms713fnc-1 的历史记录」: the mock resolved its own
+ * id against its own history, so the two id spaces agreed in `dev:mock` and disagreed only in
+ * production. Same lesson as `nextMaterialId` above — a mock that mints a shape production never
+ * issues certifies a broken path as working.
+ */
+const nextBatchId = () => {
+  counter += 1
+  try {
+    sessionStorage.setItem(COUNTER_KEY, String(counter))
+  } catch {
+    /* private mode */
+  }
+  return `web-${Date.now()}-${counter}`
+}
+
+/**
  * A material id in the SHAPE the backend actually mints: `YYYYMMDD-<scenario_key>-<8 hex>`.
  * See `audio_storage/state_store.py`'s `new_material_id`.
  *
@@ -505,6 +527,12 @@ function snapshotOf(batch: MockBatch): BatchSnapshot {
         attempt: e.attempt,
       })
     } else if (e.event === 'material') {
+      // The material SUPERSEDES its skeleton row rather than joining it, exactly as
+      // `batchStore.supersede` does. Keeping both would make the snapshot list 2N rows for an
+      // N-material batch, N of them never `done` — and `domain/resultSlots.ts` reconstructs the
+      // batch shape from this list after a reload, so the extra rows would come back as phantom
+      // 未生成 slots on a page whose materials all arrived.
+      if (e.replaces) items.delete(e.replaces)
       items.set(e.material_id, {
         material_id: e.material_id,
         scenario_key: e.scenario_key,
@@ -598,10 +626,14 @@ const mockTransport = async (spec: RequestSpec): Promise<unknown> => {
       }
     }
 
-    const batchId = nextId('batch')
+    const batchId = nextBatchId()
+    // `slotId` is allotted batch-wide in plan order — the same `slot-1..slot-N` `web/fanout.py`
+    // hands out, and the same order `agentcore.ts` pre-plans its skeleton cards in.
+    let slotN = 0
     const materials = body.requests.flatMap((r) =>
       Array.from({ length: r.count }, (_, i) => ({
         materialId: nextMaterialId(r.scenario_key),
+        slotId: `slot-${(slotN += 1)}`,
         scenarioKey: r.scenario_key,
         index: i,
         kind: options.kinds[(i + body.requests.indexOf(r) * 2) % options.kinds.length]!,
@@ -627,7 +659,10 @@ const mockTransport = async (spec: RequestSpec): Promise<unknown> => {
       // Concurrency-aware, same model as the pre-submit estimate the user saw.
       estimated_seconds: estimateBatchSeconds(total),
       items: materials.map((m) => ({
-        material_id: m.materialId,
+        // The PLACEHOLDER, as `agentcore.ts` returns. A planned slot has no material yet, and
+        // handing back the eventual `material_id` here let the mock's skeleton rows resolve
+        // themselves — which is why the mock never showed the stale-skeleton bug.
+        material_id: `${batchId}::${m.slotId}`,
         scenario_key: m.scenarioKey,
         index: m.index,
       })),
@@ -663,11 +698,12 @@ const mockTransport = async (spec: RequestSpec): Promise<unknown> => {
     if (!source) throw new ApiError(404, 'BATCH_NOT_FOUND', '批次不存在')
     const body = spec.body as { scenario_keys?: string[]; material_ids?: string[] }
     const count = Math.max(1, body.scenario_keys?.length ?? body.material_ids?.length ?? 1)
-    const batchId = nextId('batch')
+    const batchId = nextBatchId()
     const plan = {
       batchId,
       materials: Array.from({ length: count }, (_, i) => ({
         materialId: nextMaterialId(body.scenario_keys?.[i] ?? 'booking-hotel'),
+        slotId: `slot-${i + 1}`,
         scenarioKey: body.scenario_keys?.[i] ?? 'booking-hotel',
         index: i,
         kind: 'balanced' as FixtureKind,

@@ -8,6 +8,8 @@ import pytest
 
 from web.app import PUBLIC_API_PATHS, SESSION_REUSE_SECONDS, WebTier, build_tier
 from web.auth import SESSION_COOKIE, MemoryUserStore, SessionSigner, SigningKeyUnavailable
+from web.batch_history import BatchHistory
+from web.batch_store import InMemoryBatchStore
 
 from .conftest import FakeStreamingBody, StubRuntimeClient, register
 
@@ -286,12 +288,27 @@ def test_an_unconfigured_runtime_refuses_a_batch_up_front(auth, static_dir):
 
 
 def test_a_failing_invoke_is_502_with_the_error_shape(client, runtime):
+    """A 502 names the failure in `code` and says something a USER can read in `message`.
+
+    `message` used to be `"%s: %s" % (type(exc).__name__, exc)`, and the frontend renders `message`
+    verbatim -- so the client's history panel showed
+    「历史记录读取失败 ModuleNotFoundError: No module named 'audio_storage'」. An AWS exception class
+    is a diagnosis for an operator, and an operator reads the task log; putting it in `message`
+    guarantees it reaches a 命题人员's screen instead. So the exception moves to `detail.cause`
+    (and to the log, with a traceback) and `message` is prose.
+    """
     register(client)
     runtime.raise_on_invoke = RuntimeError("AccessDeniedException: not authorized")
     response = client.post("/api/invocations", json={"action": "list_scenarios"})
     assert response.status_code == 502
-    assert response.json()["error"]["code"] == "RUNTIME_INVOKE_FAILED"
-    assert "AccessDenied" in response.json()["error"]["message"]
+    error = response.json()["error"]
+    assert error["code"] == "RUNTIME_INVOKE_FAILED"
+    # The rendered field carries no exception class and no English.
+    assert "AccessDenied" not in error["message"]
+    assert "RuntimeError" not in error["message"]
+    assert error["message"] == "后端服务暂时没有响应，请稍后重试。"
+    # The diagnosis is still reachable, just not where it gets rendered.
+    assert "AccessDeniedException" in error["detail"]["cause"]
 
 
 def test_a_failing_child_invoke_is_a_failed_slot_not_a_502(client, runtime):
@@ -360,6 +377,98 @@ def test_sse_response_content_type_and_events(client, fanout_runtime, auth, stat
     # Distinct slot ids, despite both children calling themselves slot-1.
     assert sorted(e["slot_id"] for e in events if e["type"] == "material_completed") == \
         ["slot-1", "slot-2"]
+
+
+def test_batch_started_carries_the_id_the_history_is_keyed_on(
+    client, fanout_runtime, auth, static_dir,
+):
+    """The single frame that made the history panel work.
+
+    The web tier mints the batch id, plans the children with it and writes the S3 record under it --
+    but it used to tell nobody, so the frontend minted its own `batch-<ms36>-<n>`, put THAT in
+    `/batches/:batchId`, and the panel then asked `/api/batch-history/batch-ms713fnc-1` about a batch
+    recorded as `web-1785386619156-1`. The client's report was
+    「没有找到批次 batch-ms713fnc-1 的历史记录」 for a batch sitting in S3.
+
+    So the assertion is not "there is a batch_id" but "it is the SAME id the record is keyed on".
+    Checked against the store rather than against a regex, because the two only had to *look* alike
+    for the bug to survive -- they had to *be* the same string.
+    """
+    for slot in ("slot-1", "slot-2"):
+        body = fanout_runtime.body_for(slot)
+        body.push_event({"type": "batch_started", "total": 1})
+        body.push_event({
+            "type": "material_completed", "slot_id": "slot-1", "scenario": "a", "ok": True,
+            "material_id": "20260730-a-%s" % slot.replace("slot-", "0000000"),
+            "scenario_key": "a",
+        })
+        body.push_event({"type": "batch_completed", "succeeded": 1})
+        body.finish()
+
+    store = InMemoryBatchStore()
+    tier = WebTier(auth, fanout_runtime, str(static_dir), history=BatchHistory(store))
+    from fastapi.testclient import TestClient
+
+    with TestClient(tier.app) as test_client:
+        register(test_client)
+        response = test_client.post(
+            "/api/invocations", json={"action": "generate", "scenarios": ["a"], "count": 2},
+        )
+        events = _sse_events(response.text)
+        announced = events[0]["batch_id"]
+        assert announced, "batch_started must carry the batch id"
+        # The record exists under exactly that id, so `/api/batch-history/{announced}` resolves.
+        assert store.load_index(announced) is not None
+        found = test_client.get("/api/batch-history/%s" % announced)
+    assert found.status_code == 200
+    assert found.json()["batch_id"] == announced
+    # And it is the web tier's shape, not something a frontend could have guessed.
+    assert announced.startswith("web-")
+
+
+def test_an_empty_history_is_a_success_not_a_failure(client):
+    """First use. `[]` with a 200, never an error -- see BatchHistoryPanel's empty state.
+
+    The client's first run showed 「历史记录读取失败 ModuleNotFoundError ...」 on a page whose real
+    state was "nothing generated yet". Half of that was a stale image; the other half is that the
+    route has to make "no records" distinguishable from "could not read", and the only shape that
+    does is a 200 with an empty list.
+    """
+    register(client)
+    response = client.get("/api/batch-history")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["batches"] == []
+    assert "error" not in body
+
+
+def test_a_broken_history_store_says_so_in_chinese_without_the_exception(
+    auth, runtime, static_dir,
+):
+    """A read failure is reported as prose; the exception goes to the log and `detail.cause`.
+
+    Exactly the failure the client saw, reproduced: the store raises `ModuleNotFoundError`. The
+    rendered field must not contain it -- the frontend renders `message` verbatim, so anything put
+    there reaches a 命题人员's screen.
+    """
+    class Broken(InMemoryBatchStore):
+        def load_all_indexes(self):
+            raise ModuleNotFoundError("No module named 'audio_storage'")
+
+    tier = WebTier(auth, runtime, str(static_dir), history=BatchHistory(Broken()))
+    from fastapi.testclient import TestClient
+
+    with TestClient(tier.app) as test_client:
+        register(test_client)
+        response = test_client.get("/api/batch-history")
+    assert response.status_code == 502
+    error = response.json()["error"]
+    assert error["code"] == "BATCH_HISTORY_UNAVAILABLE"
+    assert error["message"] == "历史记录暂时读取不到，请稍后重试。"
+    assert "ModuleNotFoundError" not in error["message"]
+    assert "audio_storage" not in error["message"]
+    # Still diagnosable, just not where it is rendered.
+    assert "ModuleNotFoundError" in error["detail"]["cause"]
 
 
 # ── static files and SPA fallback ────────────────────────────────────────────

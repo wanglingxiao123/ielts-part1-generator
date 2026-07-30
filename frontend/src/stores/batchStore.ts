@@ -169,6 +169,37 @@ function materialFromEvent(
   }
 }
 
+/**
+ * Drop the skeleton row a real row supersedes, in place.
+ *
+ * A batch's cards exist as placeholder-keyed rows before it runs; a material or a failure then
+ * arrives under a DIFFERENT key (the backend's `material_id`). Without this the placeholder row
+ * survived alongside the real one, permanently `pending` — so an N-material batch ended with 2N
+ * rows, N of them never `done`, and the page rendered 「有 N 套未能生成」 over a full grid of
+ * arrived materials. That was the client's 「怎么又开始报有未生成的了」.
+ *
+ * Position is preserved rather than appending: the placeholder holds this card's place in
+ * `itemOrder`, and moving the card to the end would make results re-order as they arrive.
+ */
+function supersede(
+  items: Record<string, BatchItemState>,
+  itemOrder: string[],
+  replaces: string | null | undefined,
+  materialId: string,
+): string[] {
+  if (!replaces || replaces === materialId) {
+    return itemOrder.includes(materialId) ? itemOrder : [...itemOrder, materialId]
+  }
+  delete items[replaces]
+  const at = itemOrder.indexOf(replaces)
+  if (at < 0) return itemOrder.includes(materialId) ? itemOrder : [...itemOrder, materialId]
+  const next = [...itemOrder]
+  next.splice(at, 1, materialId)
+  // A duplicate can only appear if the same material also arrived under its own key earlier; keep
+  // the position the placeholder held and drop the later copy.
+  return next.filter((id, i) => next.indexOf(id) === i)
+}
+
 export const useBatchStore = create<BatchState & Actions>((set, get) => ({
   ...EMPTY,
 
@@ -252,23 +283,22 @@ export const useBatchStore = create<BatchState & Actions>((set, get) => ({
         case 'material': {
           const record = materialFromEvent(event, s.batchId ?? event.material_id)
           materials[event.material_id] = record
+          const skeleton = items[event.replaces ?? ''] ?? items[event.material_id]
           items[event.material_id] = {
             material_id: event.material_id,
             scenario_key: event.scenario_key,
             index: event.index,
             status: 'done',
             stage: 're_auditing',
-            attempt: items[event.material_id]?.attempt ?? 1,
+            attempt: skeleton?.attempt ?? 1,
             verdict: event.verdict,
             phase: 'reviewing',
           }
-          if (!itemOrder.includes(event.material_id)) {
-            itemOrder = [...itemOrder, event.material_id]
-          }
+          itemOrder = supersede(items, itemOrder, event.replaces, event.material_id)
           break
         }
         case 'material_failed': {
-          const prev = items[event.material_id]
+          const prev = items[event.material_id] ?? items[event.replaces ?? '']
           items[event.material_id] = {
             material_id: event.material_id,
             scenario_key: prev?.scenario_key ?? '',
@@ -279,6 +309,7 @@ export const useBatchStore = create<BatchState & Actions>((set, get) => ({
             error: event.message,
             failure: { code: event.code, message: event.message, attempts: event.attempts },
           }
+          itemOrder = supersede(items, itemOrder, event.replaces, event.material_id)
           break
         }
         case 'batch_done':

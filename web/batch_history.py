@@ -431,15 +431,12 @@ class BatchRecorder:
     def close(self) -> None:
         """Stop the worker once it has drained. Runs from the stream's `finally`, disconnect included.
 
-        `_stop` then `_dirty`, in that order: the worker checks `_stop` only *after* a flush, so
-        waking it once here guarantees one more pass over whatever `batch_completed` just set. Waking
-        it before setting `_stop` could let that pass finish first and leave the thread parked on
-        `wait()` forever.
+        `_stop` then `_dirty`, in that order, so a worker parked on `wait()` gets one more pass. That
+        ordering alone is NOT sufficient, and `_drain` carries the other half -- see its docstring.
 
-        Joined so the final snapshot has a chance to land -- without it a batch that completes and
-        immediately closes could lose the write that flips `state` to `complete`, and the record
-        would read as interrupted for no reason. Bounded, because a hung S3 call must not hold the
-        response open.
+        Joined so the final snapshot has a chance to land: without it a batch that completes and
+        immediately closes loses the write that flips `state` to `complete`, and the record reads as
+        interrupted for no reason. Bounded, because a hung S3 call must not hold the response open.
         """
         self._stop.set()
         self._dirty.set()
@@ -459,13 +456,34 @@ class BatchRecorder:
         `clear()` before `_flush()`, not after: the snapshot is taken inside the flush, so a change
         arriving during it re-sets the flag and is picked up by the next pass rather than being
         cleared away unwritten.
+
+        **The `_stop` check reads `_dirty` too, and that is a bug fix, not a nicety.** The loop used
+        to return as soon as `_stop` was set, and it lost the final write every single time: the last
+        `material_completed` and `batch_completed` land within milliseconds of each other, this thread
+        is inside a multi-hundred-millisecond S3 PUT for the former when the latter arrives, and then
+        `close()` sets `_stop` and `_dirty` together. The loop would come round, flush the material
+        write it was already told about, see `_stop`, and return -- leaving `state: "running"` and
+        `counts: {}` on disk for a batch that had finished cleanly.
+
+        Observed on all three batches in the deployed bucket (2026-07-30): every record said
+        `state: "running"`, `completed_at: null`, `counts: {}`. The user-visible consequence is
+        `derive`'s `interrupted` flag turning true after `STALE_RUNNING_SECONDS`, so a perfectly
+        complete batch grows a 已中断 badge two hours later and its 「缺的部分不会再补齐」 banner
+        appears over a full grid of materials.
+
+        Keeping the flush-then-check order (rather than checking first) is still right -- it is what
+        guarantees the snapshot `close()` asked for has landed. What was missing is that ONE more
+        pass is not always enough, so this drains until there is genuinely nothing pending.
         """
         while True:
             self._dirty.wait()
             self._dirty.clear()
             self._flush()
-            # Checked after the flush, so the snapshot `close()` asked for has already landed.
-            if self._stop.is_set():
+            # Checked after the flush, so the snapshot `close()` asked for has already landed --
+            # and only once nothing further is pending, so a change that arrived DURING that flush
+            # is not left unwritten. `_flush` clears `_artifacts` under the lock, so this terminates:
+            # each pass either writes something new or finds the flag clear.
+            if self._stop.is_set() and not self._dirty.is_set():
                 return
 
     def _flush(self) -> None:

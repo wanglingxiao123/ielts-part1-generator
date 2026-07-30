@@ -7,6 +7,8 @@ import json
 import pytest
 
 from web.runtime_client import (
+    CONNECT_TIMEOUT_SECONDS,
+    READ_TIMEOUT_SECONDS,
     SSE_CONTENT_TYPE,
     AgentCoreRuntimeClient,
     RuntimeNotConfigured,
@@ -41,6 +43,48 @@ class RecordingBotoClient:
             "response": self._body,
             "runtimeSessionId": kwargs.get("runtimeSessionId"),
         }
+
+
+# ── the read timeout, which is the whole reason this client is configured ────
+
+
+def test_the_read_timeout_bounds_a_whole_material_not_botocore_default():
+    """The 60s default is what reported working materials as 未生成.
+
+    Measured on the deployed tier: a child whose response headers took longer than 60s raised
+    `ReadTimeoutError: Read timeout on endpoint URL: "None"`, `FanOut._pump` turned it into
+    `material_failed` for that slot, and the page said 「有 1 套未能生成」 about a material nothing
+    had refused. The same 60s also applied to every mid-stream read, and observed stage gaps reached
+    50.8s -- so a slightly slower model call would kill a healthy child at any point in the batch.
+
+    So the read timeout must bound the same thing the platform bounds: ONE material's invocation.
+    Asserted against `fanout.PER_MATERIAL_WALL_SECONDS` rather than against 900 so the two cannot
+    drift apart -- a read timeout below the wall means the web tier gives up before the platform
+    does, which is the bug.
+    """
+    from web.fanout import PER_MATERIAL_WALL_SECONDS
+
+    assert READ_TIMEOUT_SECONDS >= PER_MATERIAL_WALL_SECONDS
+    assert READ_TIMEOUT_SECONDS > 60, "botocore's default is shorter than one material"
+    # Connecting is a different question: a slow TCP connect is a network fault, not a slow model.
+    assert CONNECT_TIMEOUT_SECONDS < READ_TIMEOUT_SECONDS
+
+
+def test_the_boto_client_is_built_with_that_timeout_and_no_retries():
+    """The constant is only worth anything if it reaches the client.
+
+    Retries are pinned to 1 attempt in the same breath: botocore's default would re-POST `generate`
+    after a timeout, and a retried invocation generates and BILLS a second material while the first
+    is still running, with only one of them reaching the browser.
+    """
+    client = AgentCoreRuntimeClient(ARN, region="us-east-1").client()
+    config = client.meta.config
+    assert config.read_timeout == READ_TIMEOUT_SECONDS
+    assert config.connect_timeout == CONNECT_TIMEOUT_SECONDS
+    # `total_max_attempts`, because `max_attempts` counts RETRIES: botocore normalises
+    # `max_attempts: 1` to `total_max_attempts: 2`, i.e. one retry -- a second billed material for
+    # the same slot. This assertion is what catches that confusion.
+    assert config.retries["total_max_attempts"] == 1
 
 
 # ── the 33-character session id floor ────────────────────────────────────────

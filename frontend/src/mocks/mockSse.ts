@@ -16,6 +16,17 @@ export interface MockBatchPlan {
     scenarioKey: string
     index: number
     kind: FixtureKind
+    /**
+     * `slot-N`, so the mock can address a card BEFORE its material exists — exactly as production
+     * does. Optional only so a plan persisted before this field was added still rehydrates.
+     *
+     * This is the second half of the production id shape the mock was missing. `progress` events
+     * carry `<batchId>::<slot_id>` on the real wire because the backend has not minted a
+     * `material_id` yet, and `material` then arrives under a different key. The mock used to send
+     * the final `material_id` from the very first frame, so the skeleton→material handover — where
+     * 「有 N 套未能生成」 came from — simply did not exist in `dev:mock`.
+     */
+    slotId?: string
   }>
   /** Drop the stream after this many `material` events have been sent. */
   dropAfterMaterials?: number
@@ -77,6 +88,18 @@ export class MockBatch {
     return this.plan.batchId
   }
 
+  /**
+   * The placeholder key a card carries before its material arrives: `<batchId>::<slot_id>`.
+   *
+   * Mirrors `agentcore.ts`'s `Slot.placeholderId` exactly. It has to be the same string, not merely
+   * the same shape: `progress` addresses it, `material.replaces` names it, and the store drops that
+   * row when the real one lands.
+   */
+  private placeholderFor(index: number): string {
+    const slotId = this.plan.materials[index]?.slotId ?? `slot-${index + 1}`
+    return `${this.plan.batchId}::${slotId}`
+  }
+
   get total(): number {
     return this.plan.materials.length
   }
@@ -121,6 +144,7 @@ export class MockBatch {
       this.emit({
         event: 'material',
         material_id: rec.material_id,
+        replaces: this.placeholderFor(i),
         scenario_key: rec.scenario_key,
         index: rec.index,
         verdict: rec.verdict,
@@ -161,7 +185,10 @@ export class MockBatch {
         this.at(base + si * tickMs * 0.55, () => {
           this.emit({
             event: 'progress',
-            material_id: m.materialId,
+            // The PLACEHOLDER, not the final material id: mid-generation the backend has not minted
+            // one, so this is the only handle a progress event has. Sending the final id here is
+            // what made the mock unable to reproduce the stale-skeleton bug.
+            material_id: this.placeholderFor(i),
             stage: STAGE_TO_CONTRACT[stage],
             attempt: stage === 'regenerating' ? 2 : 1,
             raw_stage: stage,
@@ -179,6 +206,7 @@ export class MockBatch {
           this.emit({
             event: 'material',
             material_id: rec.material_id,
+            replaces: this.placeholderFor(i),
             scenario_key: rec.scenario_key,
             index: rec.index,
             verdict: rec.verdict,

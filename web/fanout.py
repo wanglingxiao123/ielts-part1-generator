@@ -319,10 +319,15 @@ class FanOut(object):
     """
 
     def __init__(self, runtime: Any, children: List[ChildPlan], slot_ids: List[str], *,
-                 executor: ThreadPoolExecutor, concurrency: int = FANOUT_CONCURRENCY) -> None:
+                 executor: ThreadPoolExecutor, concurrency: int = FANOUT_CONCURRENCY,
+                 batch_id: str = "") -> None:
         self.runtime = runtime
         self.children = children
         self.slot_ids = slot_ids
+        # The id `web/app.py` minted for this batch, and the id `web/batch_history.py` keys the
+        # record on. Carried here for one reason: it has to reach the browser in `batch_started`.
+        # See the `events()` docstring.
+        self.batch_id = batch_id
         self.executor = executor
         self.concurrency = max(1, min(concurrency, len(children) or 1))
         self._bodies: Dict[int, Any] = {}
@@ -430,11 +435,24 @@ class FanOut(object):
     # ── the merged stream ────────────────────────────────────────────────────
 
     async def events(self) -> AsyncIterator[Dict[str, Any]]:
-        """Yield one coherent batch's worth of events: one start, the middles, one completion."""
+        """Yield one coherent batch's worth of events: one start, the middles, one completion.
+
+        ``batch_started`` carries ``batch_id``, and that field is not decoration. The web tier mints
+        the id (`new_batch_id`), keys the S3 record on it (`web/batch_history.py`) and plans the
+        children with it -- but until this field existed it never told the browser, so
+        `frontend/src/api/agentcore.ts` minted its own `batch-<ms36>-<n>` and put THAT in the URL.
+        The two id spaces never intersected, so after a reload the history panel asked
+        `/api/batch-history/batch-ms713fnc-1` about a batch recorded as `web-1785386619156-1` and got
+        「没有找到批次 ... 的历史记录」 for a batch sitting in S3. Same class of bug as the
+        `placeholderId` one: the frontend inventing an identifier the backend never issued.
+        """
         total = len(self.slot_ids)
         waves = (total + self.concurrency - 1) // self.concurrency if total else 0
         yield {
             "type": "batch_started",
+            # The authoritative id. Emitted first among the fields because everything downstream --
+            # the URL, the history lookup, the candidate group keys -- has to agree with it.
+            "batch_id": self.batch_id,
             "total": total,
             # An upper bound the web tier can actually stand behind: each child gets its own 900s
             # wall, and at most `waves` of them run in series. The old value was one shared wall

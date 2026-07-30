@@ -123,9 +123,10 @@ def executor():
     pool.shutdown(wait=False)
 
 
-def build(runtime, payload, executor, *, concurrency: int = 6) -> FanOut:
-    children, slots = plan_children(payload, batch_id="b1")
-    return FanOut(runtime, children, slots, executor=executor, concurrency=concurrency)
+def build(runtime, payload, executor, *, concurrency: int = 6, batch_id: str = "b1") -> FanOut:
+    children, slots = plan_children(payload, batch_id=batch_id)
+    return FanOut(runtime, children, slots, executor=executor, concurrency=concurrency,
+                  batch_id=batch_id)
 
 
 async def drain(fan: FanOut, timeout: float = 10.0):
@@ -174,6 +175,26 @@ class TestEventIdentity:
         # out from this number.
         assert starts[0]["total"] == 3
         assert starts[0] is events[0], "the total must precede every child event"
+
+    async def test_batch_started_names_the_batch_id_the_web_tier_minted(self, executor):
+        """The one frame that ties the browser's URL to the S3 record.
+
+        Without it `frontend/src/api/agentcore.ts` minted its own id, so `/batches/:batchId` and
+        `_batches/<id>/index.json` were two different id spaces and the history panel reported
+        「没有找到批次 … 的历史记录」 for a batch it had just generated. A child's own `batch_started`
+        is still swallowed, so this is the only place the id can come from.
+        """
+        runtime = FanOutRuntimeClient()
+        for slot in ("slot-1", "slot-2"):
+            arm(runtime, slot, child_batch(slot))
+        events = await drain(build(
+            runtime, {"scenarios": ["a"], "count": 2}, executor, batch_id="web-1785228044000-7",
+        ))
+        assert events[0]["type"] == "batch_started"
+        assert events[0]["batch_id"] == "web-1785228044000-7"
+        # And the children's ids never leak: each child was invoked with the same batch id, so a
+        # child echoing its own would be indistinguishable -- there is exactly one on the wire.
+        assert [e for e in events if "batch_id" in e] == [events[0]]
 
     async def test_exactly_one_batch_completed_after_every_child(self, executor):
         runtime = FanOutRuntimeClient()

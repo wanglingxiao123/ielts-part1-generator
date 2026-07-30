@@ -47,6 +47,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api } from '@/api/endpoints'
+import { userMessage } from '@/api/http'
 import { scenarioMeta } from '@/config/scenarioMeta'
 import { getThresholds } from '@/config/runtimeConfig'
 import { describeBatchEstimate, estimateBatchSeconds } from '@/domain/batchEstimate'
@@ -368,7 +369,7 @@ export function BatchProgressPage() {
         // loses the LIVE stream (the job is bound to the POST), and a page that
         // sits at "已生成 0 / 0" with no explanation reads as a frontend bug.
         console.warn('[batch] snapshot failed', err)
-        setSnapshotError(err instanceof Error ? err.message : String(err))
+        setSnapshotError(userMessage(err, '这一批的进度暂时读取不到，请稍后重试。'))
         return
       }
       stream.connect(batchId)

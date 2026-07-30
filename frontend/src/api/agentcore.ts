@@ -94,6 +94,19 @@ import { setSseFetch } from './sseClient'
 
 interface WireBatchStarted {
   type: 'batch_started'
+  /**
+   * The batch id the WEB TIER minted (`web-<ms>-<counter>`), and the only one that exists.
+   *
+   * Adopted, never re-derived. This module used to mint `batch-<ms36>-<n>` here because the frame
+   * carried no id — so the URL, the store and every local key spoke an id space the backend had
+   * never issued, and `/api/batch-history/<that id>` answered 「没有找到批次 … 的历史记录」 for a
+   * batch sitting in S3 under `web-…`. Same class of bug as the old `placeholderId`: the frontend
+   * inventing an identifier only it knows.
+   *
+   * Optional in the type only so a truncated frame is a caught error rather than a type lie; a
+   * missing id is refused in `startBatch` instead of being papered over with a local one.
+   */
+  batch_id?: string
   total: number
   deadline_at: number
   config?: Record<string, unknown>
@@ -411,7 +424,14 @@ const sessions = new Map<string, Session>()
 /** Selection + audio state. Frontend-side until the backend endpoint exists. */
 const selections = new Map<string, { at: number; audioJobId: string }>()
 
-let batchCounter = 0
+/*
+ * There is deliberately no batch-id counter here any more.
+ *
+ * It used to mint `batch-<ms36>-<n>` in `createBatch`, and that id existed nowhere but this module:
+ * the web tier records the batch under `web-<ms>-<n>` (`web/batch_history.py`), so the URL, the
+ * store and S3 disagreed and the history panel could never find a batch it had just generated. The
+ * id now arrives in `batch_started` and is adopted verbatim.
+ */
 
 type SlotHit = { session: Session; slot: Slot }
 
@@ -558,6 +578,11 @@ function applyWire(session: Session, wire: WireEvent): void {
         event: 'material',
         seq,
         material_id: record.material_id,
+        // The skeleton row this card takes over from. Only this module knows both keys: the store
+        // planned its rows on `placeholderId` and the backend delivers under `material_id`, so
+        // without saying which is which the store keeps BOTH — leaving an N-material batch with N
+        // rows stuck at `pending` and the page reporting them as 未生成. See SseMaterialEvent.
+        replaces: slot.placeholderId,
         scenario_key: record.scenario_key,
         index: record.index,
         verdict: record.verdict,
@@ -581,6 +606,9 @@ function applyWire(session: Session, wire: WireEvent): void {
         // A failed slot has no material and therefore no backend id; the placeholder is the only
         // handle the store can key the failed card on.
         material_id: slot.materialId ?? slot.placeholderId,
+        // Named even when it equals `material_id` (the usual case for a failure), so the store
+        // resolves the skeleton row rather than leaving one behind next to the failed one.
+        replaces: slot.placeholderId,
         code: wire.reason,
         message,
         attempts: slot.attempt,
@@ -698,40 +726,105 @@ async function invoke<T>(payload: unknown, signal?: AbortSignal): Promise<T> {
 }
 
 /**
- * Starts the batch and drives the whole SSE response into the session.
+ * Read one SSE response body as a sequence of decoded wire events.
  *
- * The POST is issued here rather than when the UI opens the stream: the batch
- * cannot exist without an in-flight request, so if generation only started when
- * the SSE view mounted, a user who navigated away mid-batch would kill it. This
- * way the request lives in module scope, exactly as batchStreamManager keeps the
- * stream out of component scope.
+ * Factored out of `startBatch` because `createBatch` now has to consume the FIRST frame before a
+ * session exists at all — `batch_started` carries the batch id, and the id has to be known before
+ * anything can be keyed on it. One frame splitter rather than two, so the two consumers cannot
+ * disagree about where a frame ends.
  */
-function startBatch(session: Session, payload: unknown): Promise<void> {
+async function* readWireFrames(body: NonNullable<Response['body']>): AsyncGenerator<WireEvent> {
+  const reader = body.pipeThrough(new TextDecoderStream()).getReader()
+  let buffer = ''
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += value
+    for (;;) {
+      const idx = buffer.search(/\r?\n\r?\n/)
+      if (idx < 0) break
+      const match = /\r?\n\r?\n/.exec(buffer.slice(idx))!
+      const frame = buffer.slice(0, idx)
+      buffer = buffer.slice(idx + match[0].length)
+      const wire = decodeWireFrame(frame)
+      if (wire) yield wire
+    }
+  }
+}
+
+/**
+ * POST `generate` and wait for `batch_started` — no further.
+ *
+ * That frame is the handshake: `web/fanout.py` yields it before invoking any child, so it costs one
+ * round trip and no model time, and it carries the `batch_id` the web tier minted. Waiting for it is
+ * what makes the backend's id authoritative: `createBatch` cannot return an id, put it in the URL, or
+ * key a session on it before knowing which id the batch will be RECORDED under
+ * (`web/batch_history.py`). The alternative — mint locally, adopt later — is what the client hit:
+ * 历史记录 keyed on `web-…`, URL keyed on `batch-…`, and 「没有找到批次 … 的历史记录」 after a reload.
+ *
+ * An error here is thrown rather than folded into a session, because there is no session yet. The
+ * scenario page already renders a thrown error as 「无法提交」, which is the honest place for
+ * "the batch never started" — better than navigating to a results page whose only content is a
+ * broken-connection banner.
+ */
+async function openGenerateStream(
+  payload: unknown,
+): Promise<{ batchId: string; started: WireBatchStarted; frames: AsyncGenerator<WireEvent> }> {
+  const res = await fetch(invocationsUrl(), {
+    method: 'POST',
+    credentials: CREDENTIALS,
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    body: JSON.stringify(payload),
+  })
+  if (res.status === 401) {
+    notifyUnauthorized()
+    throw new ApiError(401, 'UNAUTHENTICATED', '登录状态已失效，请重新登录')
+  }
+  if (!res.ok) {
+    // The web tier's own refusals arrive here as JSON in the frontend's error shape
+    // (RUNTIME_NOT_CONFIGURED is the one that actually happens). Reading it gives the user the
+    // reason instead of a bare status code.
+    const body = (await res.json().catch(() => null)) as { error?: { code: string; message: string } } | null
+    if (body?.error) throw new ApiError(res.status, body.error.code, body.error.message)
+    throw new ApiError(res.status, 'BACKEND_ERROR', `后端返回 ${res.status}，批次没有开始`)
+  }
+  if (!res.body) throw new ApiError(502, 'BACKEND_ERROR', '后端没有返回事件流，批次没有开始')
+
+  const frames = readWireFrames(res.body)
+  for (;;) {
+    const next = await frames.next()
+    if (next.done) {
+      throw new ApiError(502, 'BATCH_NOT_STARTED', '后端的事件流在批次开始前就结束了，请重试')
+    }
+    if (next.value.type !== 'batch_started') continue
+    const started = next.value
+    const batchId = typeof started.batch_id === 'string' ? started.batch_id.trim() : ''
+    if (!batchId) {
+      // A `batch_started` with no id means the web tier is older than this frontend. Refused rather
+      // than falling back to a locally minted id: that fallback IS the bug, and a batch whose
+      // results silently cannot be found later is worse than one that never started.
+      throw new ApiError(
+        502,
+        'BATCH_ID_MISSING',
+        '后端没有下发批次编号（web 层版本过旧），这一批的结果将无法在历史里找回，已中止',
+      )
+    }
+    return { batchId, started, frames }
+  }
+}
+
+/**
+ * Drives the rest of the SSE response into the session.
+ *
+ * The POST is issued in `createBatch` rather than when the UI opens the stream: the batch cannot
+ * exist without an in-flight request, so if generation only started when the SSE view mounted, a
+ * user who navigated away mid-batch would kill it. This way the request lives in module scope,
+ * exactly as batchStreamManager keeps the stream out of component scope.
+ */
+function startBatch(session: Session, frames: AsyncGenerator<WireEvent>): Promise<void> {
   return (async () => {
     try {
-      const res = await fetch(invocationsUrl(), {
-        method: 'POST',
-        credentials: CREDENTIALS,
-        headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-        body: JSON.stringify(payload),
-      })
-      if (!res.ok || !res.body) throw new Error(`invocations ${res.status}`)
-      const reader = res.body.pipeThrough(new TextDecoderStream()).getReader()
-      let buffer = ''
-      for (;;) {
-        const { value, done } = await reader.read()
-        if (done) break
-        buffer += value
-        for (;;) {
-          const idx = buffer.search(/\r?\n\r?\n/)
-          if (idx < 0) break
-          const match = /\r?\n\r?\n/.exec(buffer.slice(idx))!
-          const frame = buffer.slice(0, idx)
-          buffer = buffer.slice(idx + match[0].length)
-          const wire = decodeWireFrame(frame)
-          if (wire) applyWire(session, wire)
-        }
-      }
+      for await (const wire of frames) applyWire(session, wire)
       if (!session.done) {
         // Stream ended without batch_completed: the connection died mid-batch and
         // there is no job to reconnect to. Say so instead of spinning forever.
@@ -820,8 +913,14 @@ async function createBatch(body: CreateBatchRequest): Promise<CreateBatchRespons
     counts[r.scenario_key] = r.count
   }
 
-  batchCounter += 1
-  const batchId = `batch-${Date.now().toString(36)}-${batchCounter}`
+  const payload: Record<string, unknown> = { action: 'generate', scenarios, counts }
+  if (custom) payload.custom_scenario = custom
+
+  // The batch id comes from the BACKEND, and getting it is why this awaits before building
+  // anything. `batch_started` is emitted before the first child is invoked, so this costs one round
+  // trip and no model time — and it means the id in the URL, in the store, in `placeholderId` and
+  // in S3 are all one id. Nothing is minted client-side any more; see `openGenerateStream`.
+  const { batchId, started, frames } = await openGenerateStream(payload)
 
   // Planned slots, so the progress grid has cards before the first stage event.
   const slots = new Map<string, Slot>()
@@ -864,9 +963,11 @@ async function createBatch(body: CreateBatchRequest): Promise<CreateBatchRespons
   }
   sessions.set(batchId, session)
 
-  const payload: Record<string, unknown> = { action: 'generate', scenarios, counts }
-  if (custom) payload.custom_scenario = custom
-  session.finished = startBatch(session, payload)
+  // The handshake frame is applied like any other, so `hello` is emitted and `total` is taken from
+  // the backend rather than from the local sum. Then the remainder of the stream is drained in
+  // module scope, exactly as before.
+  applyWire(session, started)
+  session.finished = startBatch(session, frames)
 
   return {
     batch_id: batchId,

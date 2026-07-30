@@ -52,6 +52,7 @@ recorder from the fanned-out stream.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
@@ -90,6 +91,8 @@ from .runtime_client import (
     new_session_id,
     read_json,
 )
+
+LOG = logging.getLogger(__name__)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -132,6 +135,24 @@ def _error_body(code: str, message: str, **detail: Any) -> Dict[str, Any]:
     if detail:
         body["detail"] = detail
     return {"error": body}
+
+
+def _infra_error_body(code: str, message: str, exc: BaseException) -> Dict[str, Any]:
+    """An operator's diagnosis in the LOG, a plain sentence in `message`.
+
+    The client saw 「历史记录读取失败 ModuleNotFoundError: No module named 'audio_storage'」 on a
+    fresh page. Two things were wrong with that and only one of them was the missing module: a
+    Python exception class name is not a sentence anybody outside this repository can act on, and
+    putting it in `message` guarantees it reaches the DOM, because `message` is what the frontend
+    renders. So the exception goes to the task log (where it is actually useful, with a traceback)
+    and `detail.cause` carries the short form for a support conversation -- the frontend renders
+    `message` and nothing else.
+
+    Not merely a wording change: `message` is the only field with a rendering contract, so this is
+    the one place that can enforce it for every route at once.
+    """
+    LOG.exception("%s: %s", code, message)
+    return _error_body(code, message, cause="%s: %s" % (type(exc).__name__, str(exc)[:300]))
 
 
 class ApiAuthMiddleware:
@@ -304,10 +325,15 @@ class WebTier:
                 )
             except Exception as exc:  # noqa: BLE001 - surfaced in the frontend's error shape
                 return JSONResponse(
-                    _error_body("BATCH_HISTORY_UNAVAILABLE",
-                                "%s: %s" % (type(exc).__name__, str(exc)[:300])),
+                    _infra_error_body(
+                        "BATCH_HISTORY_UNAVAILABLE",
+                        "历史记录暂时读取不到，请稍后重试。", exc),
                     status_code=502,
                 )
+            # An EMPTY history is a successful answer, not a failure: `[]` on first use means
+            # "nothing generated yet", which the panel renders as 暂无历史批次. Stated here because
+            # the route has no other way to distinguish the two -- and a 200 with `[]` is the only
+            # shape that lets the frontend distinguish them either.
             return JSONResponse({"batches": batches, "next_cursor": None})
 
         @app.get("/api/batch-history/{batch_id}")
@@ -318,8 +344,9 @@ class WebTier:
                 found = await run_in_threadpool(self.history.get_batch, batch_id)
             except Exception as exc:  # noqa: BLE001
                 return JSONResponse(
-                    _error_body("BATCH_HISTORY_UNAVAILABLE",
-                                "%s: %s" % (type(exc).__name__, str(exc)[:300])),
+                    _infra_error_body(
+                        "BATCH_HISTORY_UNAVAILABLE",
+                        "这个批次暂时读取不到，请稍后重试。", exc),
                     status_code=502,
                 )
             if found is None:
@@ -344,8 +371,9 @@ class WebTier:
                 found = await run_in_threadpool(self.history.get_material, material_id)
             except Exception as exc:  # noqa: BLE001
                 return JSONResponse(
-                    _error_body("BATCH_HISTORY_UNAVAILABLE",
-                                "%s: %s" % (type(exc).__name__, str(exc)[:300])),
+                    _infra_error_body(
+                        "BATCH_HISTORY_UNAVAILABLE",
+                        "这份材料暂时读取不到，请稍后重试。", exc),
                     status_code=502,
                 )
             if found is None:
@@ -386,8 +414,9 @@ class WebTier:
                 )
             except Exception as exc:  # noqa: BLE001
                 return JSONResponse(
-                    _error_body("BATCH_SUBMIT_FAILED",
-                                "%s: %s" % (type(exc).__name__, str(exc)[:300])),
+                    _infra_error_body(
+                        "BATCH_SUBMIT_FAILED",
+                        "提交状态没有记录成功，请稍后重试。", exc),
                     status_code=502,
                 )
             return JSONResponse(view)
@@ -457,8 +486,9 @@ class WebTier:
             return JSONResponse(_error_body("RUNTIME_NOT_CONFIGURED", str(exc)), status_code=503)
         except Exception as exc:  # noqa: BLE001 - surfaced to the browser in its own error shape
             return JSONResponse(
-                _error_body("RUNTIME_INVOKE_FAILED",
-                            "%s: %s" % (type(exc).__name__, str(exc)[:300])),
+                _infra_error_body(
+                    "RUNTIME_INVOKE_FAILED",
+                    "后端服务暂时没有响应，请稍后重试。", exc),
                 status_code=502,
             )
 
@@ -488,8 +518,11 @@ class WebTier:
         self._batch_counter += 1
         batch_id = new_batch_id(self._batch_counter)
         children, slot_ids = plan_children(payload, batch_id=batch_id)
+        # `batch_id` reaches the browser through `batch_started`. Without it the frontend minted its
+        # own id, put that in `/batches/:batchId`, and the history panel then asked about a batch id
+        # nothing had ever recorded -- see FanOut.events().
         fan = FanOut(self.runtime, children, slot_ids, executor=self.executor(),
-                     concurrency=self.fanout_concurrency)
+                     concurrency=self.fanout_concurrency, batch_id=batch_id)
         recorder = self.history.recorder(
             batch_id, owner=owner, requested_total=len(slot_ids),
             # The plan's own view of the batch shape, so the history panel can render a scenario tag

@@ -321,6 +321,21 @@ export interface SseMaterialEvent {
   event: 'material'
   seq: number
   material_id: string
+  /**
+   * The SKELETON row this material takes over from — `<batchId>::<slot_id>`.
+   *
+   * A batch is planned before it runs, so every card exists as a row keyed on a placeholder
+   * (`agentcore.ts`'s `Slot.placeholderId`) before any material arrives. A material then arrives
+   * under the BACKEND's `material_id`, which is a different key — so without this field the store
+   * gained a second row and the placeholder row stayed `pending` forever. `store.items` then held
+   * 2N rows for an N-material batch, and 「有 N 套未能生成」 was rendered over a page where every
+   * material had in fact arrived. That was the client's 「怎么又开始报有未生成的了」.
+   *
+   * Sent by the adapter, which is the only layer that knows both ids. Optional because a material
+   * the plan never had a slot for (a scenario the backend expanded differently) legitimately
+   * replaces nothing.
+   */
+  replaces?: string | null
   scenario_key: string
   index: number
   verdict: Verdict
@@ -336,6 +351,8 @@ export interface SseMaterialFailedEvent {
   event: 'material_failed'
   seq: number
   material_id: string
+  /** Same role as `SseMaterialEvent.replaces`: the skeleton row this failure resolves. */
+  replaces?: string | null
   code: string
   message: string
   attempts: number

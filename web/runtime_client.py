@@ -25,6 +25,31 @@ from typing import Any, Dict, Iterator, Optional, Tuple
 
 SSE_CONTENT_TYPE = "text/event-stream"
 
+# How long a single socket read on the Runtime response may block before botocore gives up.
+#
+# **botocore's default is 60 seconds, and that default is what produced 「有 N 套未能生成」.**
+# Measured on the deployed tier (2026-07-30, a 2x2 batch): one child never got its response headers
+# within 60s -- a cold microVM -- and `invoke_agent_runtime` raised
+# `ReadTimeoutError: Read timeout on endpoint URL: "None"`. `FanOut._pump` correctly turns any
+# child exception into `material_failed` for that slot, so the batch reported a slot as ungenerated
+# while nothing about the material had failed: the web tier simply stopped listening.
+#
+# The same 60s applies to every `iter_lines` read AFTER the headers, which is the worse half. A
+# material's stage gaps in that run reached 50.8s (`re_auditing` -> `material_completed`) and 48.9s
+# (`auditing` -> `audited`) -- both under the wall only by luck. A single model call slower than 60s
+# would kill a child that was working perfectly, mid-stream, and that is exactly the intermittency
+# the client saw: nothing in the log, no throttling, no `material_failed` from the backend.
+#
+# So the read timeout has to bound the same thing the PLATFORM bounds -- one material's whole
+# invocation -- and that is 900s (`fanout.PER_MATERIAL_WALL_SECONDS`). Duplicated as a number rather
+# than imported to keep this module free of a dependency on the fan-out; `test_runtime_client.py`
+# asserts the two agree.
+READ_TIMEOUT_SECONDS = float(os.environ.get("WEB_RUNTIME_READ_TIMEOUT", "900"))
+
+# Connecting is not the same as waiting for a material: a TCP connect that takes more than 10s is a
+# network fault, not a slow model, and failing fast there is right.
+CONNECT_TIMEOUT_SECONDS = float(os.environ.get("WEB_RUNTIME_CONNECT_TIMEOUT", "10"))
+
 # Payload keys that must never leave this tier. The Runtime authenticates as its own execution
 # role, so forwarded credentials would be ignored at best; at worst a caller uses the proxy to
 # smuggle its own keys into a place they get logged. Neither is acceptable, so they are dropped.
@@ -102,8 +127,30 @@ class AgentCoreRuntimeClient:
         """
         if self._client is None:
             import boto3  # noqa: PLC0415 - lazy on purpose
+            from botocore.config import Config  # noqa: PLC0415
 
-            self._client = boto3.client("bedrock-agentcore", region_name=self.region)
+            self._client = boto3.client(
+                "bedrock-agentcore",
+                region_name=self.region,
+                # Not the default config. See READ_TIMEOUT_SECONDS: botocore's 60s read timeout is
+                # shorter than a single stage of one material, so it killed working children and the
+                # frontend reported their slots as 未生成.
+                config=Config(
+                    read_timeout=READ_TIMEOUT_SECONDS,
+                    connect_timeout=CONNECT_TIMEOUT_SECONDS,
+                    # No retries on this call, deliberately. botocore's default would re-POST
+                    # `generate` after a timeout, and a retried invocation is a SECOND material
+                    # being generated and paid for while the first is still running -- with only
+                    # one of them reaching the browser. A child that genuinely fails is already a
+                    # `material_failed` frame the user can act on (补生成), which is the honest
+                    # behaviour; silently double-billing is not.
+                    #
+                    # `total_max_attempts`, not `max_attempts`: the latter counts RETRIES, so
+                    # `max_attempts: 1` normalises to `total_max_attempts: 2` -- one retry, i.e. the
+                    # double-billing this is here to prevent. Verified against botocore 1.43.57.
+                    retries={"total_max_attempts": 1, "mode": "standard"},
+                ),
+            )
         return self._client
 
     def invoke(self, payload: Dict[str, Any], *, session_id: Optional[str] = None

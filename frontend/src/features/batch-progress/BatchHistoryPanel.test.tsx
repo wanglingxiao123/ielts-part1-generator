@@ -19,6 +19,7 @@ import type { BatchHistoryDetail, BatchHistoryEntry } from '@/contracts/api'
 import { buildRecord } from '@/mocks/fixtures'
 import { useBatchStore } from '@/stores/batchStore'
 import { useReviewQueue } from '@/stores/reviewQueueStore'
+import { api } from '@/api/endpoints'
 import { BatchProgressPage } from './BatchProgressPage'
 
 /* ── harness ─────────────────────────────────────────────────────────────── */
@@ -297,12 +298,20 @@ describe('历史批次面板', () => {
     await waitFor(() => expect(document.querySelector('.hist-rail')).toBeTruthy())
   })
 
-  it('没有历史时说清楚，而不是空白', async () => {
+  /**
+   * 空历史是一个**成功**的答案，不是失败态。
+   *
+   * 客户第一次打开这一页看到的是「历史记录读取失败 ModuleNotFoundError: No module named
+   * 'audio_storage'」——而当时并没有任何失败，只是一批都还没生成过。所以这里断言的不只是「说了句话」，
+   * 还有「没有把它说成失败」：一个把 `[]` 当错误的实现会同时满足前半句。
+   */
+  it('没有历史时说「暂无」，并且不呈现为失败', async () => {
     historyBatches = []
     renderAt('web-a')
-    await waitFor(() =>
-      expect(screen.getByText(/还没有历史批次/)).toBeInTheDocument(),
-    )
+    await waitFor(() => expect(screen.getByText(/暂无历史批次/)).toBeInTheDocument())
+    expect(screen.queryByText('历史记录读取失败')).toBeNull()
+    // chip 上的「全部 0」照样在：空列表要看得出是空的，不是加载中。
+    expect(screen.getByText('0 批')).toBeInTheDocument()
   })
 
   it('搜不到时说「没有匹配」，而不是说「还没有历史批次」', async () => {
@@ -445,16 +454,46 @@ describe('历史批次与活批次是两条路径', () => {
     expect(calls.detail).toEqual([])
   })
 
-  it('取历史详情失败时说出来，而不是留一屏空骨架', async () => {
+  /**
+   * 失败要说出来，但**用中文说我们的话**，不是把异常摆出来。
+   *
+   * 客户看到过的那一行就是这么来的：一个 `ModuleNotFoundError: No module named 'audio_storage'` 从
+   * S3 一路原样漏到 DOM。这里刻意抛一个英文技术串，断言它没有出现在页面上——一个直接渲染
+   * `err.message` 的实现会通过上半句而挂在下半句。
+   */
+  it('取历史详情失败时用中文说出来，不把异常摆给用户', async () => {
     historyBatches = [historyEntry({ batch_id: 'broken' })]
     detailFor = () => {
-      throw new Error('bucket unreachable')
+      throw new Error("ModuleNotFoundError: No module named 'audio_storage'")
     }
     renderAt('broken')
     await waitFor(() =>
       expect(screen.getByText('无法加载这个历史批次')).toBeInTheDocument(),
     )
-    expect(screen.getByText('bucket unreachable')).toBeInTheDocument()
+    expect(screen.getByText('这个历史批次暂时读取不到，请稍后重试。')).toBeInTheDocument()
+    const body = document.body.textContent ?? ''
+    expect(body).not.toContain('ModuleNotFoundError')
+    expect(body).not.toContain('audio_storage')
+  })
+
+  /**
+   * 面板列表读取失败同理。这是客户实际看到那一行的**源头**：面板顶上的 `/api/batch-history`。
+   */
+  it('历史列表读取失败时也只说中文', async () => {
+    historyBatches = []
+    const original = api.batchHistory
+    ;(api as { batchHistory: () => Promise<unknown> }).batchHistory = () =>
+      Promise.reject(new Error("ModuleNotFoundError: No module named 'audio_storage'"))
+    try {
+      renderAt('web-a')
+      await waitFor(() =>
+        expect(screen.getByText('历史记录读取失败')).toBeInTheDocument(),
+      )
+      expect(screen.getByText('历史记录暂时读取不到，请稍后重试。')).toBeInTheDocument()
+      expect(document.body.textContent ?? '').not.toContain('ModuleNotFoundError')
+    } finally {
+      ;(api as { batchHistory: unknown }).batchHistory = original
+    }
   })
 })
 
