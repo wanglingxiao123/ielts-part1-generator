@@ -96,8 +96,10 @@ bash deploy/stop.sh                       # 停止，常驻成本归零
 - **Web 层任务的公网 IP 每次拉起都会变**，`deploy/start.sh` 会打印当前地址。
 - **`SESSION_SECRET`** 由 `deploy/service.sh` 随机生成并存入 SSM SecureString。代码中没有
   兜底默认值——共享用户存储下缺此变量会拒绝启动，以防多实例签名不一致导致静默掉登录。
-- 单次批量上限默认 6 套（`config/scenarios.yaml` 的 `max_batch`）。若实测超时，应下调此值而
-  非削减修改/复评环节。
+- **没有单次批量上限**。web 层为每套材料发一次独立的 AgentCore invoke（`web/fanout.py`），
+  15 分钟同步硬限约束的是单套（实测 146–230s），不再约束整批。并发由
+  `WEB_FANOUT_CONCURRENCY`（默认 6）控制；模型侧出 429 时下调它，不要靠重试，也不要恢复
+  批量上限。耗时如实告知用户（提交前的预估），不拒绝请求。
 
 ## 已知限制
 

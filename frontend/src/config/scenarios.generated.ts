@@ -10,7 +10,6 @@ import type { ScenarioCatalog } from './scenarioTypes'
 export const SCENARIO_CATALOG: ScenarioCatalog = {
   "version": 1,
   "defaultCount": 2,
-  "maxBatch": 6,
   "customScenario": {
     "enabled": true,
     "maxLength": 200

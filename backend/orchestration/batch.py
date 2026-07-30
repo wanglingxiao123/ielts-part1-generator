@@ -1,14 +1,38 @@
-"""Batch scheduling, concurrency gate, time budget and NOT_ASSESSABLE refill (design.md §8, §9).
+"""Slot scheduling, concurrency gate, time budget and NOT_ASSESSABLE refill (design.md §8, §9).
 
-The 15-minute synchronous limit on AgentCore Runtime is not adjustable, so it is a real product
-constraint. The budget here converts it from "the platform severs the connection and the whole
-batch is lost" into "in-flight materials finish, un-started ones are reported as skipped".
+The 15-minute synchronous limit on AgentCore Runtime is not adjustable, so it is a real constraint.
+What changed is what it constrains. **The web tier now issues one invocation per material**
+(`web/fanout.py`), so an invocation carries one slot and the 900s wall bounds one ~150-230s material
+instead of a whole batch. This module still schedules a list of slots -- the CLI (`scripts/run_batch.py`)
+and the tests use it that way, and it is what makes the code testable at all -- but in production
+``len(slots)`` is 1 and ``concurrency`` is 1.
+
+The consequence for the budget is not "the same rationing with more headroom", it is a different
+job. Reading, with the measured numbers (docs/timing.md: ~150s typical, ~250s with two
+regenerations):
+
+* **It was a rationer.** Six materials shared 810 usable seconds, so a refill for slot 4 competed
+  with a first attempt for slot 6, ``may_revise`` routinely said no, and ``skipped_time_budget`` was
+  an ordinary outcome the batch summary had to report honestly.
+* **It is now a backstop.** One material has all 810 seconds. Three attempts at the 240s p95 cost
+  720s, so the clock and ``MAX_REFILL_ROUNDS`` now bind at roughly the same point -- neither is
+  vestigial, and neither fires on a healthy material. ``skipped_time_budget`` stops meaning "a
+  sibling was slow" and starts meaning "this material's own attempts ran the wall down", which is a
+  fault worth seeing rather than routine degradation.
+
+Nothing about ``may_start`` / ``may_revise`` needed rewriting to get there: they were always
+expressed in seconds remaining against the cost of the next step, which is exactly right for one
+material. What needed correcting is the *claims* around them -- see `Budget`.
 
 **Refill.** A slot that ends NOT_ASSESSABLE produced nothing a user can act on: the audit could
 not find a usable script, so there is no full text to read and no defect list to weigh. Returning
 it would hand the user a blank card, so the slot is re-run instead and the user simply receives
 the count they asked for. FAIL is *not* refilled -- a FAIL material is usable-but-flawed, and the
 product owner's rule is that it comes back with its shortcomings stated.
+
+This all still lives INSIDE one invocation, which is why the fan-out did not disturb it: a child
+generates one material and refills it up to ``MAX_REFILL_ROUNDS`` times before answering, so the
+web tier never sees a discarded attempt and the user still gets one card per set requested.
 
 The refill is bounded twice over, because an unbounded one would hang the request until the
 platform kills it:
@@ -32,22 +56,34 @@ from .scenarios import Scenario
 
 __all__ = ["BatchRequest", "Budget", "run_batch", "MAX_REFILL_ROUNDS"]
 
-# Concurrency follows the batch size up to this ceiling, rather than being pinned at 3. The
-# comment here used to claim it defaulted to the scenario count while the code said 3, so a batch
-# of 4 ran three materials and then one alone -- the last slot paying full latency by itself and
-# roughly doubling perceived wall time.
+# Concurrency follows the slot count up to this ceiling, rather than being pinned at 3. The comment
+# here used to claim it defaulted to the scenario count while the code said 3, so a batch of 4 ran
+# three materials and then one alone -- the last slot paying full latency by itself and roughly
+# doubling perceived wall time.
+#
+# In production this is now effectively dead: the web tier sends one slot per invocation, so
+# `BatchRequest` clamps concurrency to 1 and the parallelism that used to live here lives in
+# `web/fanout.py`'s `FANOUT_CONCURRENCY`. Kept because the CLI still runs multi-slot batches, and
+# because the clamp is what makes it harmless rather than misleading.
 #
 # Per-material latency is dominated by waiting on the model, not by local CPU, so slots cost
 # little to hold open. The ceiling exists only because GPT-5.6's TPM/RPM on the mantle channel is
-# undocumented: on 429s, lower IELTS_CONCURRENCY rather than adding retries, since retries push
-# total elapsed time toward the 15-minute request wall.
+# undocumented: on 429s, lower the web tier's WEB_FANOUT_CONCURRENCY rather than adding retries,
+# since retries push a single material's elapsed time toward its 15-minute wall.
 MAX_CONCURRENCY = int(os.environ.get("IELTS_CONCURRENCY", "6"))
+# The platform's synchronous wall on one invocation, which now carries ONE material.
 HARD_LIMIT_SECONDS = float(os.environ.get("IELTS_HARD_LIMIT", "900"))
 SAFETY_MARGIN_SECONDS = float(os.environ.get("IELTS_SAFETY_MARGIN", "90"))
 # Conservative starting estimate, replaced by measured p95 (see docs/timing.md). Too low a value
 # starts work that cannot finish; too high skips work that could have.
 P95_PER_MATERIAL = float(os.environ.get("IELTS_P95_PER_MATERIAL", "240"))
 # A revision plus re-audit is roughly half the calls for a material.
+#
+# Deliberately NOT lowered now that one material owns the whole 810s. `may_revise` compares against
+# what a revision costs, not against what is spare, so a smaller number would not buy more revisions
+# -- it would only make the check answer yes when there is no longer time to finish. The measured
+# cost is ~44s (docs/timing.md); 120 stays cautious, and with one material per invocation it is
+# essentially never the binding constraint anyway.
 REVISION_COST_SECONDS = float(os.environ.get("IELTS_REVISION_COST", "120"))
 
 # How many times the batch will re-run NOT_ASSESSABLE slots before giving up.
@@ -80,7 +116,23 @@ _SENTINEL = object()
 
 
 class Budget(object):
-    """Wall-clock budget for one batch."""
+    """Wall-clock budget for ONE INVOCATION, which now carries one material.
+
+    The arithmetic did not change with the fan-out; the meaning did. Both predicates ask "is there
+    time left for the next step", which was a rationing question when six materials shared the
+    clock and is a safety question when one owns it:
+
+    * ``may_start`` refused the sixth material because five siblings had spent the budget. It now
+      refuses a THIRD attempt at the same material because that material's own two attempts ran
+      810s down -- so ``skipped_time_budget`` stopped being routine degradation and became a signal.
+    * ``may_revise`` was the routine casualty: a late slot skipped its revision pass to let the
+      batch finish. With 810s for one ~150s material it should now essentially always say yes, and
+      a run where it says no is worth investigating rather than expected.
+
+    What this class must NOT become is a per-batch budget again. It is constructed per
+    ``BatchRequest``, and a request is one invocation; a caller that shared one Budget across
+    several invocations would re-import the constraint the fan-out removed.
+    """
 
     __slots__ = ("started", "deadline", "p95", "revision_cost")
 
@@ -101,7 +153,12 @@ class Budget(object):
         return self.deadline - time.monotonic()
 
     def may_start(self) -> bool:
-        """Only begin a material we expect to be able to finish."""
+        """Only begin an attempt we expect to be able to finish.
+
+        With one material per invocation this gates the refill rounds rather than the sibling
+        slots: three attempts at the 240s p95 cost 720s of the 810s available, so this and
+        ``MAX_REFILL_ROUNDS`` bind at about the same place instead of the clock always winning.
+        """
         return self.remaining() > self.p95
 
     def may_revise(self) -> bool:
@@ -120,8 +177,12 @@ class BatchRequest(object):
     ) -> None:
         self.slots = slots
         # No point holding more slots open than there is work: a batch of 2 with concurrency 6
-        # would report a misleading 6 in its config event.
+        # would report a misleading 6 in its config event. In production `slots` is length 1, so
+        # this clamp is also what keeps MAX_CONCURRENCY from advertising parallelism that has moved
+        # to the web tier.
         self.concurrency = max(1, min(concurrency or MAX_CONCURRENCY, len(slots) or 1))
+        # One Budget per request, and a request is one invocation. See Budget's docstring for why
+        # sharing one across invocations would undo the fan-out.
         self.budget = budget or Budget()
 
 

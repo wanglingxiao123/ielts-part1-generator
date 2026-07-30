@@ -34,7 +34,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api } from '@/api/endpoints'
 import { scenarioMeta } from '@/config/scenarioMeta'
-import { getConfig, getThresholds } from '@/config/runtimeConfig'
+import { getThresholds } from '@/config/runtimeConfig'
+import { describeBatchEstimate, estimateBatchSeconds } from '@/domain/batchEstimate'
 import { buildCardPreview, type CardPreview } from '@/domain/cardPreview'
 import { computeDistribution, type DistributionMetrics } from '@/domain/distribution'
 import { analyseFormGroups, type FormGroupAnalysis } from '@/domain/formGroups'
@@ -287,7 +288,6 @@ export function BatchProgressPage() {
   const store = useBatchStore()
   const activePhase = useBatchStore(selectActivePhase)
   const submitToQueue = useReviewQueue((s) => s.submit)
-  const cfg = getConfig()
   const thresholds = getThresholds()
   const [now, setNow] = useState(Date.now())
   const [retryBusy, setRetryBusy] = useState(false)
@@ -335,7 +335,21 @@ export function BatchProgressPage() {
   const elapsed = `${Math.floor(elapsedMs / 60_000)}:${String(
     Math.floor((elapsedMs % 60_000) / 1000),
   ).padStart(2, '0')}`
-  const nearLimit = elapsedMs / 1000 >= cfg.limits.warnAtSeconds
+  /**
+   * 「跑得比预估久」，而不是原来的「接近 15 分钟上限」。
+   *
+   * 那条横幅说的是一个已经不存在的约束：15 分钟同步硬限过去管的是整批，现在 web 层每套材料
+   * 一次独立 invoke（`web/fanout.py`），它管的是单套。一个 20 套的批次跑 25 分钟完全正常，
+   * 而旧文案会在第 12 分钟告诉用户「剩余材料可能来不及生成」——一句纯粹的假警报。
+   *
+   * 判据换成提交时那个预估区间的上界（`estimateBatchSeconds`，按并发算波数）加一成余量：
+   * 超过它才说明这批确实比该跑的时间久，这句话才有信息量。
+   */
+  const estimateCeilingMs = useMemo(
+    () => estimateBatchSeconds(store.total || 0)[1] * 1100,
+    [store.total],
+  )
+  const runningLong = estimateCeilingMs > 0 && elapsedMs >= estimateCeilingMs
   const items = store.itemOrder.map((id) => store.items[id]).filter((i) => i !== undefined)
   const pending = items.filter((i) => i!.status !== 'done')
 
@@ -499,10 +513,13 @@ export function BatchProgressPage() {
         </div>
       )}
 
-      {nearLimit && store.status === 'running' && (
+      {runningLong && store.status === 'running' && (
         <div className="banner banner-warn">
-          <strong>接近 15 分钟上限</strong>
-          <div>已用 {elapsed}，剩余材料可能来不及生成；未完成的部分可以在结束后单独补齐。</div>
+          <strong>比预估慢</strong>
+          <div>
+            已用 {elapsed}，超过本批 {describeBatchEstimate(store.total || 0)}的预估。
+            仍在生成中——每套材料是一次独立请求，慢的那几套不会影响已经完成的。
+          </div>
         </div>
       )}
 

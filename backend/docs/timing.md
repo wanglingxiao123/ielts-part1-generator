@@ -39,25 +39,40 @@ See `docs/timing-batch3.md` for the recorded run. Summary of what it establishes
 - three concurrent materials finish in roughly the time of the slowest single material, since the
   bottleneck is per-call latency rather than local CPU.
 
-## Batch ceiling
+## Batch ceiling — removed, and what these numbers now bound
 
-With ~150s for a typical single material and concurrency 3, six materials run as two waves of
-three: roughly 300–400s, comfortably inside the 900s hard limit. `max_batch: 6` in
-`config/scenarios.yaml` is therefore supported by measurement rather than assumed.
+**There is no batch ceiling any more.** `max_batch: 6` is gone from `config/scenarios.yaml`, from
+`ScenarioCatalogue` and from `backend/request.py`. The web tier issues one `invoke_agent_runtime` per
+material (`web/fanout.py`), so what the 900s wall bounds is a single material, not a batch.
 
-The margin is not as large as those numbers suggest, for one reason: a material that needs two
-regenerations makes six model calls instead of four, taking ~250s. A wave where all three slots
-do that costs ~500s, and two such waves would exceed the limit. The time budget in
-`orchestration/batch.py` handles this by degrading rather than failing — later slots skip the
-revision pass, and any that cannot start are reported as skipped.
+Read against a single material, the measurements below are not merely comfortable but decisive: the
+observed range is 146s (one regeneration) to 225s (two), i.e. **a quarter of one invocation's
+budget at the slowest observed value**. The old calculation that made 6 a defensible ceiling is now
+the calculation that shows a ceiling has no basis:
+
+| single material | share of 810s usable budget |
+|---:|---|
+| 146s | 18% |
+| 225s | 28% |
+| 3 attempts × 240s p95 | 89% — the refill bound, the only thing left that the clock constrains |
+
+The last row is the surviving purpose of the time budget. Six materials used to share those 810s, so
+`may_start` refused *siblings* and `may_revise` was routinely declined; now one material owns them,
+and the budget only refuses a third refill attempt of the same material. See `Budget`'s docstring.
+
+What replaced the ceiling as the thing to calibrate is **throughput, not duration**: N concurrent
+invocations mean N concurrent model conversations, so the number to watch is 429s, and the knob is
+the web tier's `WEB_FANOUT_CONCURRENCY` (default 6). Unmeasured, and honestly so — the runs below
+were all made with a single invocation running several materials internally.
 
 ## Configuration derived from these measurements
 
 | Variable | Value | Basis |
 |---|---|---|
-| `IELTS_CONCURRENCY` | 3 | no throttling observed at 3 concurrent slots |
+| `WEB_FANOUT_CONCURRENCY` | 6 | web tier; how many independent invocations run at once. **Unmeasured** — inherited from the value `IELTS_CONCURRENCY` ran at without 429s, which is suggestive rather than evidence, since those slots shared one conversation. Lower it on throttling. |
+| `IELTS_CONCURRENCY` | 3 | no throttling observed at 3 concurrent slots. Effectively dead in production: one slot per invocation means `BatchRequest` clamps it to 1. Still governs the CLI. |
 | `IELTS_P95_PER_MATERIAL` | 240 | measured 146s typical; 240 covers the two-regeneration case |
-| `IELTS_REVISION_COST` | 120 | measured revise + re-audit ≈ 44s; 120 is deliberately cautious |
+| `IELTS_REVISION_COST` | 120 | measured revise + re-audit ≈ 44s; 120 is deliberately cautious. NOT lowered now that one material owns the whole budget — `may_revise` compares against what a revision costs, so a smaller value would only make it answer yes with no time left to finish. |
 | `IELTS_SAFETY_MARGIN` | 90 | leaves room to emit the summary event and close cleanly |
 
 ## Time budget, verified live
@@ -125,18 +140,22 @@ HTTP 契约实测：
 结果：`PASS 100/100`，0 findings，498 词 / 31 轮 / 16-15 均衡，
 `selected_version: revised`，cross_check **10/10 匹配、0 unrecoverable、0 unintended**。
 
-### 批量上限复核
+### 批量上限复核 —— 上限已删除
 
-实测区间：146s（1 次重生成）→ 225s（2 次重生成）。并发 3 时 6 套分两波：
+实测区间：146s（1 次重生成）→ 225s（2 次重生成）。这两个数现在对着的是**单次 invoke**，
+因为 web 层每套材料发一次独立请求：
 
-| 单套耗时 | 6 套两波 | 对 900s 硬限 |
-|---:|---:|---|
-| 146s | 292s | 充裕 |
-| 225s | 450s | 充裕 |
+| 单套耗时 | 对该次 invoke 的 810s 可用预算 |
+|---:|---|
+| 146s | 18% |
+| 225s | 28% |
 
-**`max_batch: 6` 有实测支撑**，即使按最慢观测值也只用掉一半预算。
-重生成是耗时的主要方差来源（一次重生成约 +33～85s），因此降低重生成率
-比调并发更能压缩 P95。
+原先「6 套两波 292–450s，仍在 900s 内」的算法曾是 `max_batch: 6` 的实测依据；
+同一批数据在每套一次 invoke 的架构下说的是另一件事——**上限没有平台依据了**，所以它被删掉。
+
+重生成仍是耗时的主要方差来源（一次约 +33～85s），因此降低重生成率仍然是压缩 P95 最有效的
+手段。变化的是并发的意义：它不再决定「一批能否跑完」，只决定「一批要跑几波」，以及会不会
+把模型配额打爆。
 
 ### 重生成原因（本次样本）
 

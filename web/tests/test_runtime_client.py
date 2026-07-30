@@ -22,6 +22,13 @@ ARN = "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/ielts_part1_runt
 
 
 class RecordingBotoClient:
+    """A boto3 stand-in that records every request and replays one body.
+
+    Deliberately hands the SAME body to every call. That is wrong for a fan-out test -- see
+    `conftest.FanOutRuntimeClient`, which exists for that -- and right here, where the subject is
+    the request shape one call produces.
+    """
+
     def __init__(self, content_type: str = "application/json", body=None) -> None:
         self.requests = []
         self._content_type = content_type

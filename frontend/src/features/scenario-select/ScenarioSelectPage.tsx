@@ -10,18 +10,27 @@
  *
  * 1. **每场景数量只有一个全局输入**，稿子里也是一个（`每场景生成数量 [3] 套`），
  *    但旧版是每张卡各自一个步进器。全局一个更简单，也够用——客户的稿子就这么画的。
- *    单批总数仍受 `maxBatch`（后端 AgentCore Runtime 15 分钟同步硬限）约束，
- *    超了在**提交前**就拦下来，因为提交后失败等于白等一个 15 分钟窗口。
  *
  * 2. **耗时不用稿子里的「约 5 分钟」**，走 domain/batchEstimate.ts 的实测公式。
  *    稿子那个数字是画图时随手填的；那里的常量是在 AWS 上量出来的。
  *
  * chip 上不显示 `prompt_hint`：那是给生成器的约束，不是给用户读的文案（放 title）。
+ *
+ * ## 这里曾有一个「单批上限」拦截，它被删掉了
+ *
+ * 旧版算 `total > CATALOG.maxBatch` 并在提交前拒绝，理由写的是「后端 AgentCore Runtime 的
+ * 15 分钟同步硬限，前端不得放宽」。那个理由在「一整批共用一次 invoke」时是真的；现在 web 层
+ * 每套材料发一次独立 invoke（`web/fanout.py`），15 分钟约束的是单套（实测 146-230s），
+ * 上限就没有平台依据了。客户的原话：「用户想生成多少套就生成多少套，系统自己控制并发，
+ * 对用户透明」。
+ *
+ * 取而代之的不是「什么都不说」，而是**如实说清代价**：底栏一直显示预计套数与预计耗时
+ * （`describeBatchEstimate`，按 web 层并发算波数），套数大时那个数字自己就会变得刺眼。
+ * 提交是用户的决定，不是需要前端代替他做的判断——而且大批量恰好是这个改动想支持的用法。
  */
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '@/api/endpoints'
-import { ApiError } from '@/api/http'
 import { categoryIcon } from '@/config/scenarioMeta'
 import { SCENARIO_CATALOG } from '@/config/scenarios.generated'
 import { CUSTOM_SCENARIO_KEY } from '@/config/scenarioTypes'
@@ -32,6 +41,26 @@ import { useBatchStore } from '@/stores/batchStore'
 import { useBatchStream } from '../batch-progress/useBatchStream'
 
 const CATALOG = SCENARIO_CATALOG
+
+/**
+ * 每场景数量输入框的手滑上限，**不是**产品上限。
+ *
+ * 区别是实质的：产品上限（原 `maxBatch`）会拒绝一个用户想提交的请求；这个数字只夹住输入框，
+ * 防止粘贴或长按方向键把 5 变成 500。它对总套数没有意见——勾 20 个场景 × 50 套照样提交，
+ * 底栏会如实告诉用户那要跑多久。
+ *
+ * 50 的依据是「一个真人不会手打 50 套」而不是任何平台约束；真需要更多的人可以多勾场景。
+ */
+const PER_SCENARIO_SANITY_CAP = 50
+
+/**
+ * 超过这个套数时，底栏加一句「本批较大」的中性提示。
+ *
+ * 12 = web 层并发（6）的两波。低于它整批一波或两波跑完，预估落在几分钟量级，不值得多说一句话；
+ * 高于它波数开始线性增长，用户应该在点提交之前看清那个数字。提示不禁止任何操作——这是刻意的，
+ * 「拦下来」正是这次改动删掉的东西。
+ */
+const LONG_RUN_SETS = 12
 
 /** 中文名索引，用于底栏标签，不另抄一份 key 列表。 */
 const TITLE_BY_KEY = new Map(
@@ -55,7 +84,6 @@ export function ScenarioSelectPage() {
   const selectedKeys = [...picked]
   const scenarioCount = selectedKeys.length + (customOn ? 1 : 0)
   const total = scenarioCount * perScenario
-  const overLimit = total > CATALOG.maxBatch
   const estimate = useMemo(() => describeBatchEstimate(total), [total])
 
   const toggle = (key: string) => {
@@ -69,14 +97,6 @@ export function ScenarioSelectPage() {
 
   const submit = async () => {
     setError(null)
-    // 提交前拦下（prd R2）：提交后再失败等于浪费一个 15 分钟窗口。
-    if (overLimit) {
-      setError(
-        `本批共 ${total} 套，超过单批上限 ${CATALOG.maxBatch} 套。` +
-          '上限来自后端 AgentCore Runtime 的 15 分钟同步硬限，前端不得放宽。请减少场景或每场景数量。',
-      )
-      return
-    }
     if (total === 0) {
       setError('请至少勾选一个场景，或填写自定义场景。')
       return
@@ -119,11 +139,9 @@ export function ScenarioSelectPage() {
       stream.connect(created.batch_id)
       navigate(`/batches/${created.batch_id}`)
     } catch (err) {
-      if (err instanceof ApiError && err.code === 'BATCH_LIMIT_EXCEEDED') {
-        setError(`${err.message}（上限 ${err.detail?.limit}，请求 ${err.detail?.requested}）`)
-      } else {
-        setError(err instanceof Error ? err.message : String(err))
-      }
+      // 没有 BATCH_LIMIT_EXCEEDED 分支了：后端与适配层都不再产生这个 code（见本文件顶部）。
+      // 留一个只会命中死代码的分支，等于把已删除的上限当成还可能出现的失败态展示。
+      setError(err instanceof Error ? err.message : String(err))
       store.setConnection('idle')
     } finally {
       setBusy(false)
@@ -180,15 +198,19 @@ export function ScenarioSelectPage() {
           <div className="scn-panel-title">生成设置</div>
           <label className="scn-setting">
             <span>每场景生成数量</span>
+            {/*
+              没有 max。上限已删除，这里也不再夹住输入——`min={1}` 留着，因为 0 套或负数套是
+              无意义的请求而不是一个昂贵的请求。`PER_SCENARIO_SANITY_CAP` 只防手滑：粘贴或
+              长按方向键很容易打出 500，那是打错字，不是意图。
+            */}
             <input
               type="number"
               min={1}
-              max={CATALOG.maxBatch}
               value={perScenario}
               onChange={(e) => {
                 const n = Number(e.target.value)
                 if (!Number.isFinite(n)) return
-                setPerScenario(Math.max(1, Math.min(CATALOG.maxBatch, Math.round(n))))
+                setPerScenario(Math.max(1, Math.min(PER_SCENARIO_SANITY_CAP, Math.round(n))))
               }}
             />
             <span className="muted">套</span>
@@ -219,9 +241,7 @@ export function ScenarioSelectPage() {
             已选 <strong className="count">{scenarioCount}</strong> 个场景
           </span>
           <span className="muted">
-            · 预计生成{' '}
-            <strong style={{ color: overLimit ? 'var(--bad)' : undefined }}>{total}</strong> 套 ·{' '}
-            {estimate}
+            · 预计生成 <strong>{total}</strong> 套 · {estimate}
           </span>
           <div className="scn-tags">
             {selectedKeys.map((key) => (
@@ -247,16 +267,16 @@ export function ScenarioSelectPage() {
             )}
           </div>
         </div>
-        {overLimit && (
-          <span className="flag flag-bad">
-            超过单批上限 {CATALOG.maxBatch}（后端 15 分钟同步硬限）
-          </span>
+        {total > LONG_RUN_SETS && (
+          // 不是拦截，是提示。套数大到耗时以「小时」计时才出现，措辞刻意是中性的
+          // （`flag` 而不是 `flag-bad`）：这不是错误，就是一个用户应该看清楚再点的代价。
+          <span className="flag">本批较大，预计 {estimate}，提交后请保持页面打开</span>
         )}
         <div className="spacer" style={{ flex: 1 }} />
         <button
           type="button"
           className="btn btn-primary"
-          disabled={overLimit || total === 0 || busy}
+          disabled={total === 0 || busy}
           onClick={() => void submit()}
         >
           {busy ? '提交中…' : `提交生成 ${scenarioCount} × ${perScenario} 套`}

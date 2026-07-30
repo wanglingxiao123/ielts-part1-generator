@@ -304,12 +304,8 @@ const mockTransport = async (spec: RequestSpec): Promise<unknown> => {
   if (spec.method === 'POST' && resource === 'batches' && !id) {
     const body = spec.body as CreateBatchRequest
     const total = body.requests.reduce((n, r) => n + r.count, 0)
-    if (total > SCENARIO_CATALOG.maxBatch) {
-      throw new ApiError(400, 'BATCH_LIMIT_EXCEEDED', '单批总数超过上限', {
-        limit: SCENARIO_CATALOG.maxBatch,
-        requested: total,
-      })
-    }
+    // 没有 BATCH_LIMIT_EXCEEDED。真后端不再有单批上限（web 层每套一次 invoke），mock 保留一个
+    // 只有它才会抛的错误，会让 `dev:mock` 拒绝一个部署后能通的请求——那比没有 mock 更糟。
     for (const r of body.requests) {
       if (r.scenario_key !== CUSTOM_SCENARIO_KEY && !knownKeys.has(r.scenario_key)) {
         throw new ApiError(400, 'UNKNOWN_SCENARIO', `未知场景 ${r.scenario_key}`)

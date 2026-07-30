@@ -21,10 +21,37 @@ POST /invocations  {"action": "generate", ...}    -> text/event-stream
 GET  /ping                                        -> {"status":"Healthy"}
 ```
 
-`list_scenarios` is the only scenario catalogue. The frontend must not keep a local copy: a
-drifted id means a user selects a scenario the backend cannot resolve.
+`list_scenarios` is the only scenario catalogue. Note there is **no `max_batch`** in it: the field
+and the concept were removed, because the reason for a ceiling was that a whole batch shared one
+invocation. It no longer does — see below.
 
-Generate request fields:
+### One invocation carries ONE material
+
+The web tier (`web/fanout.py`) expands a browser's `generate` request into **N independent
+invocations, one per material**, each with its own `runtimeSessionId` (so each lands on its own
+microVM), and merges their event streams into the single stream the browser reads. Consequences for
+anyone reading this contract:
+
+* **This document describes ONE CHILD's stream**, which is what this Runtime emits. It is not what
+  the browser sees. A child is a complete batch of one: it emits its own `batch_started`, calls its
+  material `slot-1`, and ends with its own `batch_completed`.
+* **The merged stream the browser reads** has exactly one `batch_started` (with the batch total), the
+  children's middle events with `slot_id` rewritten to batch-wide `slot-1..slot-N`, and one
+  `batch_completed` aggregating every child's counts. The web tier owns that reconciliation and the
+  sequence numbering; see `web/fanout.py`'s module docstring for why namespacing the ids instead
+  would break the frontend.
+* **The 15-minute synchronous wall now bounds one material** (~146–230s measured, `docs/timing.md`),
+  not a batch. `Budget` is therefore a backstop against one material's own refills rather than a
+  rationer between siblings.
+* **Concurrency moved to the web tier** (`WEB_FANOUT_CONCURRENCY`, default 6). `concurrency` in the
+  request below still works and is still honoured, but in production every request carries one slot,
+  so it is clamped to 1.
+
+The frontend must not keep a local copy of the catalogue: a drifted id means a user selects a
+scenario the backend cannot resolve.
+
+Generate request fields (as one child receives them; the web tier rewrites `scenarios`/`counts`/
+`count` to name a single material and forwards everything else verbatim):
 
 ```jsonc
 {
@@ -42,12 +69,18 @@ Generate request fields:
 
 | `type` | When | Key fields |
 |---|---|---|
-| `batch_started` | once, first | `total`, `deadline_at`, `config` |
-| `stage` | each stage transition | `slot_id`, `scenario`, `stage`, `attempt` |
-| `material_completed` | per material, first-finished-first | `material`, `blueprint`, `audit`, `cross_check`, `selected_version`, `route`, `degraded`, `refill_rounds`, `note`, `timings` |
-| `material_failed` | per failed or skipped material | `reason`, `detail`, `skipped` |
-| `batch_completed` | once, last | `succeeded`, `failed`, `skipped`, `degraded`, `refilled`, `stage_timings`, `slots` |
-| `batch_failed` | malformed request only | `reason`, `detail` |
+| `type` | When (per child) | Merged-stream fate | Key fields |
+|---|---|---|---|
+| `batch_started` | once, first | **swallowed** — the web tier emits its own, with the batch total | `total`, `deadline_at`, `config` |
+| `stage` | each stage transition | relayed, `slot_id` rewritten | `slot_id`, `scenario`, `stage`, `attempt` |
+| `material_completed` | per material | relayed, `slot_id` rewritten | `material`, `blueprint`, `audit`, `cross_check`, `selected_version`, `route`, `degraded`, `refill_rounds`, `note`, `timings` |
+| `material_failed` | per failed or skipped material | relayed, `slot_id` rewritten | `reason`, `detail`, `skipped` |
+| `batch_completed` | once, last | **folded** into the single merged summary | `succeeded`, `failed`, `skipped`, `degraded`, `refilled`, `stage_timings`, `slots` |
+| `batch_failed` | malformed request only | **becomes `material_failed`** for that child's slot, so the other children continue | `reason`, `detail` |
+
+A child that cannot be invoked at all, or whose stream dies mid-material, likewise appears in the
+merged stream as `material_failed` for its own slot only. That isolation is the point of paying for N
+invocations: one bad material no longer costs the batch.
 
 `stage` values in order: `generating`, `validating`, `regenerating`, `auditing`, `audited`,
 `revising`, `anchors_repaired`, `re_auditing`, `infra_retry`, `refilling`, `refill_abandoned`.

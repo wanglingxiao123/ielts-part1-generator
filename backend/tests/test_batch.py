@@ -84,6 +84,28 @@ class TestBudget:
         assert budget.remaining() <= 0
         assert not budget.may_start()
 
+    def test_the_default_budget_funds_a_whole_material_plus_both_refills(self):
+        """What the per-invocation budget now has to be true of.
+
+        A `generate` invocation carries ONE material (web/fanout.py), so the 810 usable seconds fund
+        that material and its bounded refills rather than being rationed between siblings. Three
+        attempts at the p95 is 720s -- inside the budget, which is what makes MAX_REFILL_ROUNDS the
+        thing that actually stops the loop on a healthy run rather than the clock.
+
+        If this ever fails it means the two bounds have drifted apart: either the refill count grew
+        past what the wall can fund, or the p95 rose. Both are real signals, and both used to be
+        invisible because six materials made the clock bind first every time.
+        """
+        budget = Budget()
+        attempts = batch_module.MAX_REFILL_ROUNDS + 1
+        assert budget.remaining() > budget.p95 * attempts, (
+            "%d attempts at p95 %.0fs need %.0fs; the budget has %.0fs"
+            % (attempts, budget.p95, budget.p95 * attempts, budget.remaining())
+        )
+        # And a revision is affordable from the start, which it frequently was not when a late slot
+        # inherited a nearly-spent clock.
+        assert budget.may_revise()
+
 
 class TestTimeBudgetBehaviour:
     async def test_in_flight_survives_while_unstarted_are_skipped(self, monkeypatch):
@@ -138,10 +160,16 @@ class TestTimeBudgetBehaviour:
 class TestNotAssessableRefill:
     """A NOT_ASSESSABLE slot is re-run so the user still receives the count they asked for.
 
-    The user must not perceive it: one terminal event per slot however many attempts it took.
-    And it must be bounded twice -- on the attempt count and on `Budget.may_start()` -- because
-    the whole batch runs inside one synchronous 15-minute AgentCore request and an unbounded loop
-    would hang it until the platform kills it.
+    The user must not perceive it: one terminal event per slot however many attempts it took. That
+    property became more important, not less, with the fan-out: the refill lives entirely inside one
+    invocation, so the web tier merging N children cannot see a discarded attempt and could not
+    suppress one if it wanted to.
+
+    And it must be bounded twice -- on the attempt count and on `Budget.may_start()` -- because a
+    slot runs inside one synchronous 15-minute AgentCore request and an unbounded loop would hang it
+    until the platform kills it. What changed is which bound usually fires: six materials used to
+    share the clock, so `may_start` refused first; one material owns it now, so the attempt count
+    does. Both are still needed -- see `test_the_default_budget_funds_a_whole_material...`.
     """
 
     async def test_a_not_assessable_slot_is_rerun_until_it_yields_a_usable_material(
@@ -255,8 +283,11 @@ class TestNotAssessableRefill:
         assert failure["detail"]["attempts"] == batch_module.MAX_REFILL_ROUNDS + 1
 
     async def test_the_refill_stops_when_the_budget_is_exhausted(self, monkeypatch):
-        """The hard constraint: the batch runs inside one 15-minute synchronous request. When the
-        budget cannot fund another attempt the batch returns what exists rather than failing."""
+        """The hard constraint: a slot runs inside one 15-minute synchronous request. When the budget
+        cannot fund another attempt it returns what exists rather than failing.
+
+        Still reachable with one material per invocation -- a material whose own attempts ran the
+        wall down -- and now a signal rather than routine, since no sibling can spend the clock."""
         attempts = {"n": 0}
         budget = Budget(hard_limit=900, margin=0, p95=100)
 
@@ -434,7 +465,8 @@ class TestNotAssessableRefill:
         """The counterweight: not every failure is refillable.
 
         The validator is a local script. If it is missing it will be missing on every retry too, so
-        refilling would spend the whole 15-minute budget on a broken deployment and hide the cause.
+        refilling would spend the whole 15-minute budget on a broken deployment and hide the cause --
+        and with one invocation per material, it would do that for every material in the batch.
         """
         attempts = {"n": 0}
 
@@ -450,6 +482,41 @@ class TestNotAssessableRefill:
 
         assert attempts["n"] == 1
         assert not [e for e in events if e.get("stage") == "refilling"]
+
+    async def test_the_refill_still_works_in_the_one_slot_shape_the_fanout_sends(
+        self, monkeypatch
+    ):
+        """The shape production now actually runs: one slot, concurrency 1, one invocation.
+
+        Every other test here builds a multi-slot batch, which is the CLI's shape and no longer the
+        Runtime's -- `web/fanout.py` sends `scenarios:[id], count:1` per invocation. The refill was
+        designed as a within-batch mechanism, so "does it still fire when the batch is a single
+        slot" is the one question the fan-out raises about it, and nothing else asserted it.
+
+        The answer is yes, and structurally so: the refill is entirely inside `_run_slot`, which the
+        web tier cannot see into. Two consequences the user depends on, both checked below: the
+        discarded attempt produces no `material_failed` (so the merged stream shows one card, not a
+        broken one then a good one), and the delivered material is the assessable one.
+        """
+        attempts = {"n": 0}
+
+        async def flaky(scenario, slot_id, emit, allow_revision):
+            attempts["n"] += 1
+            return succeeded(slot_id, scenario.id,
+                             "NOT_ASSESSABLE" if attempts["n"] == 1 else "PASS")
+
+        monkeypatch.setattr(batch_module, "run_one", flaky)
+        request = BatchRequest([FakeScenario("a")], concurrency=1)
+        assert request.concurrency == 1, "one slot must not advertise more parallelism than it has"
+        events = [event async for event in run_batch(request)]
+
+        assert attempts["n"] == 2
+        terminal = [e for e in events if e["type"].startswith("material_")]
+        assert [e["type"] for e in terminal] == ["material_completed"]
+        assert terminal[0]["audit"]["verdict"] == "PASS"
+        assert terminal[0]["slot_id"] == "slot-1"
+        # The child reports its own one-slot summary; the web tier folds it into the batch total.
+        assert events[-1]["succeeded"] == 1 and events[-1]["refilled"] == 1
 
     async def test_a_discarded_attempt_is_never_registered_as_a_candidate(self, monkeypatch):
         """It would appear in list_candidates and compete for the group's single selection against
@@ -640,10 +707,27 @@ class TestRequestParsing:
             parse_generate_request(catalogue, {"scenarios": ["made-up"]})
         assert "list_scenarios" in str(exc.value)
 
-    def test_batch_ceiling_is_enforced(self, catalogue):
-        with pytest.raises(BadRequest) as exc:
-            parse_generate_request(catalogue, {"scenarios": ["booking-hotel"], "count": 99})
-        assert "15-minute" in str(exc.value)
+    def test_there_is_no_batch_ceiling(self, catalogue):
+        """The ceiling is gone, and its absence is the requirement.
+
+        `max_batch: 6` existed because every material of a batch shared one invocation and therefore
+        one 15-minute wall. The web tier now sends one invocation per material, so the wall bounds
+        one material and the client's rule applies: 用户想生成多少套就生成多少套. Re-adding a cap
+        would re-impose a platform limit that no longer exists.
+
+        The field is gone from the catalogue too (`ScenarioCatalogue.as_dict`), deliberately: a limit
+        the frontend can still read is a limit the frontend will still enforce.
+        """
+        request = parse_generate_request(catalogue, {"scenarios": ["booking-hotel"], "count": 99})
+        assert len(request.slots) == 99
+
+    def test_a_multi_scenario_request_well_past_the_old_ceiling_is_accepted(self, catalogue):
+        """The exact submission the client was refused: 3 scenarios x 5 sets = 15."""
+        request = parse_generate_request(catalogue, {
+            "scenarios": ["booking-hotel", "accommodation-rental", "employment-vacancy"],
+            "count": 5,
+        })
+        assert len(request.slots) == 15
 
     def test_empty_request_is_rejected(self, catalogue):
         with pytest.raises(BadRequest):

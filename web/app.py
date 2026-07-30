@@ -7,31 +7,46 @@ Route map:
     POST /api/auth/login          sets the session cookie
     POST /api/auth/logout         clears it
     GET  /api/auth/me             current user
-    POST /api/invocations         -> invoke_agent_runtime (JSON or relayed SSE)
+    POST /api/invocations         -> invoke_agent_runtime (JSON, relayed SSE, or a fanned-out batch)
     GET  /login                   a server-rendered form, because the SPA has no local login UI
     GET  /*                       the frontend build, with SPA fallback to index.html
 
-Two implementation choices are load-bearing:
+Three implementation choices are load-bearing:
 
 **The `/api/*` gate is a raw ASGI middleware, not `BaseHTTPMiddleware`.** BaseHTTPMiddleware
 re-wraps the response, which is exactly the layer where a streaming body accidentally becomes a
 buffered one. This middleware only reads the request scope and either short-circuits with a 401 or
 calls through untouched, so the SSE path has nothing between it and the server.
 
-**The SSE relay yields from a sync generator.** `StreamingResponse` runs a sync iterator through
-`iterate_in_threadpool`, so each blocking `iter_lines` read happens off the event loop and each
-line reaches the browser as it arrives. Collecting the lines into a list first would pass every
-functional test and still break the only thing the frontend actually needs from this endpoint --
-progress that shows up during an eight-minute batch rather than after it.
+**Neither SSE path lets a blocking read touch the event loop, and each does it differently.**
+
+* `action: generate` is fanned out: one `invoke_agent_runtime` per material, merged into one event
+  stream (`web/fanout.py`). Each child's blocking `iter_lines` sits on a dedicated executor thread
+  and hands events to the loop through `call_soon_threadsafe`, so the merged generator is `async`
+  and never blocks. This is what removed the batch ceiling -- the platform's 15-minute wall now
+  bounds one ~200s material instead of a whole batch.
+* Every other action still goes through `_relay`, a *sync* generator. `StreamingResponse` runs a
+  sync iterator through `iterate_in_threadpool`, so each blocking read happens off the loop and each
+  line reaches the browser as it arrives. Collecting the lines into a list first would pass every
+  functional test and still break the only thing the frontend needs from this endpoint -- progress
+  that shows up during a batch rather than after it.
+
+**The fan-out's threads are its own, not anyio's.** anyio's default threadpool has 40 tokens and is
+shared with every sync route handler here. A material held for four minutes must not be able to
+consume a token `/healthz` needs, because AgentCore kills a task whose health check times out --
+which would take every in-flight batch with it. Hence a `ThreadPoolExecutor` sized to the
+concurrency cap, and hence `/healthz` being `async def`: it now answers on the loop itself and
+cannot queue behind anything.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from http.cookies import SimpleCookie
-from typing import Any, Dict, Iterator, Optional, Tuple
+from typing import Any, AsyncIterator, Dict, Iterator, Optional, Tuple
 
 from fastapi import FastAPI, Request
 from fastapi.responses import (
@@ -49,6 +64,12 @@ from .auth import (
     AuthService,
     InvalidSession,
     build_auth,
+)
+from .fanout import (
+    FANOUT_CONCURRENCY,
+    FanOut,
+    build_executor,
+    plan_children,
 )
 from .runtime_client import (
     SSE_CONTENT_TYPE,
@@ -136,15 +157,35 @@ class WebTier:
     """
 
     def __init__(self, auth: AuthService, runtime: AgentCoreRuntimeClient,
-                 static_dir: str, *, cookie_secure: bool = False) -> None:
+                 static_dir: str, *, cookie_secure: bool = False,
+                 fanout_concurrency: int = FANOUT_CONCURRENCY) -> None:
         self.auth = auth
         self.runtime = runtime
         self.static_dir = static_dir
         self.cookie_secure = cookie_secure
         # email -> (runtimeSessionId, minted_at). Per-user so two reviewers do not share a
         # microVM, and so one user's long batch does not reset another's idle timer.
+        #
+        # Used by the UNARY actions only. A fanned-out `generate` mints a fresh id per child
+        # (fanout.py), which is the point: a shared id would route every child to the one warm
+        # microVM and serialise the batch it exists to parallelise.
         self._sessions: Dict[str, Tuple[str, float]] = {}
+        self.fanout_concurrency = max(1, fanout_concurrency)
+        # One executor for the whole process, built lazily so a tier that never sees a `generate`
+        # (the unary tests, a bare `/healthz` probe) spawns no threads at all. It is also the
+        # concurrency cap's second line of defence: `max_workers` cannot be exceeded even if a
+        # future caller forgets the semaphore.
+        self._executor: Optional[Any] = None
+        self._executor_lock = threading.Lock()
+        self._batch_counter = 0
         self.app = self._build()
+
+    def executor(self) -> Any:
+        if self._executor is None:
+            with self._executor_lock:
+                if self._executor is None:
+                    self._executor = build_executor(self.fanout_concurrency)
+        return self._executor
 
     # ── runtime session ids ──────────────────────────────────────────────────
 
@@ -164,14 +205,20 @@ class WebTier:
         app.add_middleware(ApiAuthMiddleware, auth=self.auth)
 
         @app.get("/healthz")
-        def healthz() -> Dict[str, Any]:
+        async def healthz() -> Dict[str, Any]:
             # Deliberately does not call AWS: a health check that depends on a downstream service
             # turns a Runtime hiccup into a killed web task.
+            #
+            # `async def` and not `def`: a sync handler is dispatched into anyio's 40-token
+            # threadpool, and the whole reason the fan-out has its own executor is that a health
+            # check must never queue behind long-lived work. Answering on the loop closes the
+            # remaining path by which it could.
             return {
                 "status": "ok",
                 "runtime_configured": self.runtime.configured,
                 "static": os.path.isfile(os.path.join(self.static_dir, "index.html")),
                 "user_store": type(self.auth.store).__name__,
+                "fanout_concurrency": self.fanout_concurrency,
             }
 
         @app.post("/api/auth/register")
@@ -243,12 +290,30 @@ class WebTier:
         return response
 
     async def _invocations(self, request: Request) -> Any:
-        """Proxy one payload to the Runtime. JSON in, JSON or relayed SSE out."""
+        """Proxy one payload to the Runtime. JSON in, JSON or SSE out.
+
+        `generate` is the fanned-out case: N invocations, one per material, merged into one stream.
+        Everything else is a single call relayed as-is.
+        """
         user = request.scope.get(USER_SCOPE_KEY) or {}
         payload = await _json_body(request)
         if not isinstance(payload, dict):
             return JSONResponse(_error_body("bad_request", "payload must be a JSON object"),
                                 status_code=400)
+
+        if str(payload.get("action") or "generate") == "generate":
+            if not self.runtime.configured:
+                # A per-batch precondition, not a per-child failure: with no Runtime ARN every
+                # child would fail identically, and N cards reading "RuntimeNotConfigured" tells
+                # the operator far less than one 503 naming the missing variable.
+                return JSONResponse(
+                    _error_body("RUNTIME_NOT_CONFIGURED",
+                                "AGENT_RUNTIME_ARN is not set; the web tier has no Runtime to "
+                                "call"),
+                    status_code=503,
+                )
+            return self._fanned_out_generate(payload)
+
         session_id = self.session_for(str(user.get("email") or "anonymous"))
 
         from starlette.concurrency import run_in_threadpool
@@ -269,16 +334,30 @@ class WebTier:
             )
 
         if SSE_CONTENT_TYPE in content_type:
-            return StreamingResponse(
-                _relay(body),
-                media_type=SSE_CONTENT_TYPE,
-                headers={
-                    "Cache-Control": "no-cache, no-transform",
-                    "X-Accel-Buffering": "no",  # harmless here, and correct if a proxy appears
-                    "Connection": "keep-alive",
-                },
-            )
+            return StreamingResponse(_relay(body), media_type=SSE_CONTENT_TYPE,
+                                     headers=_SSE_HEADERS)
         return JSONResponse(read_json(body))
+
+    def _fanned_out_generate(self, payload: Dict[str, Any]) -> StreamingResponse:
+        """One invocation per material, merged into the single stream the frontend already reads.
+
+        Returns immediately with headers: the children are started by the generator, so the browser
+        can render its skeleton grid and the `batch_started` frame lands before the first invoke's
+        response headers do. Nothing is awaited here, which is also why there is no error branch --
+        a child that cannot be invoked at all becomes a `material_failed` frame inside the stream
+        rather than a 502 that would lose the N-1 children that were fine.
+
+        The batch id is per-request and only namespaces the backend's candidate groups: two
+        materials for the same scenario in one submission must compete for one user choice, and two
+        submissions must not.
+        """
+        self._batch_counter += 1
+        batch_id = "web-%d-%d" % (int(time.time() * 1000), self._batch_counter)
+        children, slot_ids = plan_children(payload, batch_id=batch_id)
+        fan = FanOut(self.runtime, children, slot_ids, executor=self.executor(),
+                     concurrency=self.fanout_concurrency)
+        return StreamingResponse(_frames(fan), media_type=SSE_CONTENT_TYPE,
+                                 headers=_SSE_HEADERS)
 
     def _serve_static(self, full_path: str, request: Request) -> Any:
         """The frontend build, with SPA fallback.
@@ -309,6 +388,37 @@ class WebTier:
                 status_code=404,
             )
         return FileResponse(index)
+
+
+# Shared by both SSE paths. `no-transform` and `X-Accel-Buffering: no` are what stop an
+# intermediary re-buffering the stream; no Content-Length, because the length is not knowable.
+_SSE_HEADERS = {
+    "Cache-Control": "no-cache, no-transform",
+    "X-Accel-Buffering": "no",  # harmless here, and correct if a proxy appears
+    "Connection": "keep-alive",
+}
+
+
+async def _frames(fan: FanOut) -> AsyncIterator[bytes]:
+    """Frame the merged event stream for the browser, one event per ASGI body message.
+
+    An `async` generator, unlike `_relay`: the blocking reads already live on the fan-out's own
+    threads, so there is nothing here for `iterate_in_threadpool` to protect the loop from. Each
+    `yield` is still one `http.response.body` with `more_body=True`, which is the observable
+    property the tests assert and the only thing progressive delivery means at this layer.
+    """
+    try:
+        async for event in fan.events():
+            yield ("data: %s\n\n" % json.dumps(event, ensure_ascii=False)).encode("utf-8")
+    except Exception as exc:  # noqa: BLE001 - mid-stream failure must still reach the client
+        # Same contract as `_relay`: the frontend treats a stream that ends without a terminal
+        # event as a lost connection, so name the cause instead of going silent. Reachable only if
+        # the merge itself breaks -- a child's failure is already a `material_failed` frame.
+        broken = {"type": "batch_failed", "reason": "stream_error",
+                  "detail": "%s: %s" % (type(exc).__name__, str(exc)[:300])}
+        yield ("data: %s\n\n" % json.dumps(broken)).encode("utf-8")
+    finally:
+        fan.close()
 
 
 def _relay(body: Any) -> Iterator[bytes]:
@@ -410,7 +520,21 @@ def build_tier(env: Optional[Dict[str, str]] = None) -> WebTier:
         AgentCoreRuntimeClient(),
         (env.get("WEB_STATIC_DIR") or os.path.join(HERE, "static")).strip(),
         cookie_secure=(env.get("SESSION_COOKIE_SECURE") or "").lower() in {"1", "true", "yes"},
+        fanout_concurrency=_int_env(env, "WEB_FANOUT_CONCURRENCY", FANOUT_CONCURRENCY),
     )
+
+
+def _int_env(env: Dict[str, str], name: str, default: int) -> int:
+    """A positive integer from the environment, or the default.
+
+    Lenient rather than fatal: a typo'd concurrency must not stop the container from booting, since
+    the consequence of the default is a slower batch and the consequence of a crash-loop is no
+    service at all.
+    """
+    try:
+        return max(1, int(str(env.get(name) or default)))
+    except (TypeError, ValueError):
+        return default
 
 
 def create_app() -> FastAPI:

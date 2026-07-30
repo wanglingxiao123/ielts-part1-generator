@@ -10,14 +10,16 @@
 version: 1
 default_count: 2
 
-# 单次批量上限。AgentCore Runtime 同步请求 15 分钟硬限。
+# 这里曾有一个 `max_batch: 6`。它已被删除，删除本身就是需求。
 #
-# 已实测（backend/docs/timing.md，本机 → us-east-1，非 Runtime 内）：
-#   单套 146s（含 1 次重生成）；3 套并发 244s，无 429。
-#   并发 3 时瓶颈是模型延迟而非 CPU，故 6 套按两波估算约 400-500s，在 900s 内。
-# 6 是有实测支撑的上限，不是猜测；Runtime 内实测后若不达标，下调此值，
-# 不要削减 revise / re-audit 环节（那会让质量循环形同虚设）。
-max_batch: 6
+# 那个上限的理由是「一整批材料共用一次 AgentCore invoke，因此共用一个 15 分钟同步硬限」。
+# 现在 web 层改成**每套材料一次独立 invoke**（`web/fanout.py`），15 分钟约束的对象从
+# 「整批」变成「单套」——实测单套 146-230s，离 900s 很远——于是这个上限没有了平台依据。
+#
+# 客户的原话：「去掉『单批上限』的概念——用户想生成多少套就生成多少套，系统自己控制并发，
+# 对用户透明」。所以不要以「省钱」或「保护后端」为由把它加回来：并发由 web 层的
+# `WEB_FANOUT_CONCURRENCY` 控制，成本由提交前的耗时预估（frontend/src/domain/batchEstimate.ts）
+# 如实告知，这两件事都不需要拒绝用户的请求。
 
 categories:
   - id: booking

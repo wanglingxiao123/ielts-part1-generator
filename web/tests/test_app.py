@@ -32,7 +32,7 @@ def test_401_body_uses_the_frontend_error_shape(client):
 
 
 def test_unauthenticated_request_never_reaches_the_runtime(client, runtime):
-    client.post("/api/invocations", json={"action": "generate"})
+    client.post("/api/invocations", json={"action": "generate", "scenarios": ["a"]})
     assert runtime.calls == [], "the gate must short-circuit before the proxy"
 
 
@@ -201,13 +201,18 @@ def test_credentials_in_the_request_body_are_stripped_before_the_call(auth, stat
     Deliberately not the stub: stripping lives in `AgentCoreRuntimeClient.invoke`, so a stub
     standing in for it would assert nothing about the actual wire payload. Only the boto3 client
     underneath is faked.
+
+    Driven through the fanned-out `generate` path on purpose. That path builds a NEW payload per
+    child rather than forwarding the browser's, so a credential could re-enter the wire here even
+    with `strip_credentials` intact -- `plan_children` copies every unrecognised key onto each
+    child. The single `invoke` in `test_runtime_client.py` cannot see that; this can.
     """
     from web.runtime_client import AgentCoreRuntimeClient
 
     from .test_runtime_client import ARN, RecordingBotoClient
 
-    boto = RecordingBotoClient()
-    boto._body.push_raw(b"{}")
+    boto = RecordingBotoClient(content_type="text/event-stream")
+    boto._body.push_event({"type": "batch_completed", "succeeded": 1})
     boto._body.finish()
     tier = WebTier(auth, AgentCoreRuntimeClient(ARN, client=boto), str(static_dir))
     from fastapi.testclient import TestClient
@@ -220,14 +225,16 @@ def test_credentials_in_the_request_body_are_stripped_before_the_call(auth, stat
             "aws_secret_access_key": "should-not-travel",
             "aws_session_token": "also-not-this",
             "scenarios": ["accommodation-rental"],
+            "count": 1,
         })
 
     wire = boto.requests[0]["payload"]
-    assert json.loads(wire.decode()) == {
-        "action": "generate", "scenarios": ["accommodation-rental"],
-    }
+    sent = json.loads(wire.decode())
+    assert sent["action"] == "generate"
+    assert sent["scenarios"] == ["accommodation-rental"]
     assert b"should-not-travel" not in wire
     assert b"AKIAIOSFODNN7EXAMPLE" not in wire
+    assert b"also-not-this" not in wire
 
 
 def test_the_same_user_reuses_one_runtime_session(client, runtime):
@@ -254,18 +261,62 @@ def test_an_unconfigured_runtime_is_503_not_500(client, runtime):
 
     register(client)
     runtime.raise_on_invoke = RuntimeNotConfigured("AGENT_RUNTIME_ARN is not set")
-    response = client.post("/api/invocations", json={"action": "generate"})
+    response = client.post("/api/invocations", json={"action": "list_scenarios"})
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "RUNTIME_NOT_CONFIGURED"
+
+
+def test_an_unconfigured_runtime_refuses_a_batch_up_front(auth, static_dir):
+    """A missing ARN is a batch-level precondition, not N identical per-card failures.
+
+    Checked before the fan-out starts, because every child would fail the same way and ten cards
+    reading "RuntimeNotConfigured" tells an operator far less than one 503 naming the variable.
+    """
+    from web.runtime_client import AgentCoreRuntimeClient
+
+    tier = WebTier(auth, AgentCoreRuntimeClient(""), str(static_dir))
+    from fastapi.testclient import TestClient
+
+    with TestClient(tier.app) as client:
+        register(client)
+        response = client.post("/api/invocations",
+                               json={"action": "generate", "scenarios": ["a"], "count": 3})
+        assert response.status_code == 503
+        assert response.json()["error"]["code"] == "RUNTIME_NOT_CONFIGURED"
 
 
 def test_a_failing_invoke_is_502_with_the_error_shape(client, runtime):
     register(client)
     runtime.raise_on_invoke = RuntimeError("AccessDeniedException: not authorized")
-    response = client.post("/api/invocations", json={"action": "generate"})
+    response = client.post("/api/invocations", json={"action": "list_scenarios"})
     assert response.status_code == 502
     assert response.json()["error"]["code"] == "RUNTIME_INVOKE_FAILED"
     assert "AccessDenied" in response.json()["error"]["message"]
+
+
+def test_a_failing_child_invoke_is_a_failed_slot_not_a_502(client, runtime):
+    """A `generate` whose invoke is refused must still be a 200 stream.
+
+    Status and headers are sent before any invoke is attempted -- deliberately, so the browser gets
+    its skeleton grid immediately -- so there is no 502 left to send. The failure rides in the body
+    as `material_failed`, which is also what keeps one refused child from losing the others.
+    """
+    register(client)
+    runtime.raise_on_invoke = RuntimeError("ThrottlingException: slow down")
+    response = client.post("/api/invocations",
+                           json={"action": "generate", "scenarios": ["a"], "count": 2})
+    assert response.status_code == 200
+    events = _sse_events(response.text)
+    assert [e["type"] for e in events] == [
+        "batch_started", "material_failed", "material_failed", "batch_completed",
+    ]
+    # Sorted, not positional: which child reaches `invoke` first is a race between executor
+    # threads, and asserting an arrival order would be asserting a property the merge does not
+    # have. The frontend keys on slot_id and does not care either.
+    assert sorted(e["slot_id"] for e in events if e["type"] == "material_failed") == \
+        ["slot-1", "slot-2"]
+    assert "ThrottlingException" in str(events[1]["detail"])
+    assert events[-1]["failed"] == 2 and events[-1]["succeeded"] == 0
 
 
 def test_a_non_object_payload_is_400(client):
@@ -273,20 +324,42 @@ def test_a_non_object_payload_is_400(client):
     assert client.post("/api/invocations", json=[1, 2, 3]).status_code == 400
 
 
-def test_sse_response_content_type_and_events(client, runtime):
+def _sse_events(text: str):
+    return [json.loads(f[6:]) for f in text.split("\n\n") if f.startswith("data: ")]
+
+
+def test_sse_response_content_type_and_events(client, fanout_runtime, auth, static_dir):
     """Whole-stream correctness. Incremental delivery is asserted in test_sse_relay.py, which
     TestClient cannot show because it drains the body before returning a response."""
-    register(client)
-    stream = FakeStreamingBody()
-    stream.push_event({"type": "batch_started", "total": 1})
-    stream.push_event({"type": "batch_completed", "succeeded": 1})
-    stream.finish()
-    runtime.stream = stream
-    response = client.post("/api/invocations", json={"action": "generate"})
+    for slot in ("slot-1", "slot-2"):
+        body = fanout_runtime.body_for(slot)
+        # Each child announces itself as a one-slot batch and calls its material `slot-1`.
+        body.push_event({"type": "batch_started", "total": 1})
+        body.push_event(
+            {"type": "material_completed", "slot_id": "slot-1", "scenario": "a", "ok": True}
+        )
+        body.push_event({"type": "batch_completed", "succeeded": 1})
+        body.finish()
+
+    tier = WebTier(auth, fanout_runtime, str(static_dir))
+    from fastapi.testclient import TestClient
+
+    with TestClient(tier.app) as test_client:
+        register(test_client)
+        response = test_client.post(
+            "/api/invocations", json={"action": "generate", "scenarios": ["a"], "count": 2},
+        )
     assert response.status_code == 200
     assert "text/event-stream" in response.headers["content-type"]
-    frames = [f for f in response.text.split("\n\n") if f.startswith("data: ")]
-    assert [json.loads(f[6:])["type"] for f in frames] == ["batch_started", "batch_completed"]
+    events = _sse_events(response.text)
+    # Exactly one batch_started and one batch_completed, whatever the children emitted.
+    assert [e["type"] for e in events].count("batch_started") == 1
+    assert [e["type"] for e in events].count("batch_completed") == 1
+    assert events[0]["type"] == "batch_started" and events[0]["total"] == 2
+    assert events[-1]["type"] == "batch_completed" and events[-1]["succeeded"] == 2
+    # Distinct slot ids, despite both children calling themselves slot-1.
+    assert sorted(e["slot_id"] for e in events if e["type"] == "material_completed") == \
+        ["slot-1", "slot-2"]
 
 
 # ── static files and SPA fallback ────────────────────────────────────────────

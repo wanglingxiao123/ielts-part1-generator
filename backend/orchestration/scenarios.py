@@ -69,13 +69,21 @@ class Scenario(object):
 
 
 class ScenarioCatalogue(object):
-    __slots__ = ("version", "default_count", "max_batch", "categories", "_by_id",
+    """The scenario list, plus the two numbers a client needs before it can build a request.
+
+    There is deliberately no ``max_batch``. It used to live here and be enforced in
+    `backend/request.py`, on the reasoning that a whole batch shared one 15-minute invocation. The
+    web tier now sends one invocation per material, so that reasoning is gone and so is the field --
+    including from ``as_dict``, because a limit the frontend still reads is a limit the frontend will
+    still enforce.
+    """
+
+    __slots__ = ("version", "default_count", "categories", "_by_id",
                  "custom_enabled", "custom_max_length")
 
     def __init__(self, raw: Dict[str, Any]) -> None:
         self.version = raw.get("version", 1)
         self.default_count = int(raw.get("default_count", 2))
-        self.max_batch = int(raw.get("max_batch", 6))
         custom = raw.get("custom_scenario") or {}
         self.custom_enabled = bool(custom.get("enabled", False))
         self.custom_max_length = int(custom.get("max_length", 200))
@@ -115,7 +123,6 @@ class ScenarioCatalogue(object):
         return {
             "version": self.version,
             "default_count": self.default_count,
-            "max_batch": self.max_batch,
             "categories": self.categories,
             "custom_scenario": {
                 "enabled": self.custom_enabled,

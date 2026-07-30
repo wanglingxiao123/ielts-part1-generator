@@ -41,9 +41,15 @@ Remaining steps, and what to watch:
      Rollback is a tag switch: keep the previous tag in place.
   2. Runtime needs bedrock:InvokeModel plus permission to mint bearer tokens, since
      IELTS_MODEL_AUTH defaults to mantle and Strands signs with the task role.
-  3. Calibrate against real timings (backend/docs/timing.md): run 1, then 3, then 6
-     materials. If 6 does not finish inside 15 minutes, lower max_batch in
-     config/scenarios.yaml -- do not remove the revise or re-audit stages, which would make
-     the quality loop decorative.
-  4. While a batch runs, poll /ping; it must answer Healthy within 1s throughout.
+  3. Calibrate against real timings (backend/docs/timing.md). ONE invocation now carries ONE
+     material -- the web tier fans a batch out into N of them (web/fanout.py) -- so what has to
+     fit inside 15 minutes is a single material, not a batch. Time one material end to end; if
+     it does not finish, the fix is the model call count, not the batch size, and never the
+     revise or re-audit stages, which would make the quality loop decorative.
+  4. Then check throughput rather than batch size: submit ~12 sets and watch for 429s. On
+     throttling, lower WEB_FANOUT_CONCURRENCY on the web tier (default 6). There is no
+     max_batch to lower any more, deliberately.
+  5. While a batch runs, poll /ping; it must answer Healthy within 1s throughout. This matters
+     more than it used to: N concurrent invocations mean N warm microVMs, each with its own
+     health check.
 EOF

@@ -192,7 +192,7 @@ interface WireCatalogue {
   scenarios: {
     version: number
     default_count: number
-    max_batch: number
+    /** No `max_batch`: the field was removed from the backend catalogue along with the concept. */
     categories: Array<{ id: string; title_zh: string; scenarios: WireScenario[] }>
   }
 }
@@ -337,7 +337,10 @@ const FAILURE_TEXT: Record<string, string> = {
   model_error: '模型调用失败，已用尽基础设施重试',
   validator_unavailable: '校验脚本不可用',
   audit_failed: '评价环节失败',
-  skipped_time_budget: '时间预算不足，本套未开始（15 分钟同步硬限）',
+  // 措辞跟着语义改了：这条现在只可能出现在「本套自己的重试把 15 分钟用完了」的情况下。
+  // 旧文案「时间预算不足，本套未开始（15 分钟同步硬限）」暗示的是「别人占用了时间」——那在
+  // 一整批共用一次 invoke 时是对的，现在每套一次独立 invoke，把责任推给同批的其他套是错的。
+  skipped_time_budget: '本套在允许的时间内没能完成，已放弃（不影响同批其他材料）',
   unhandled_error: '后端出现未预期的异常，本套未能生成',
   bad_request: '请求不被后端接受',
 }
@@ -778,14 +781,14 @@ async function createBatch(body: CreateBatchRequest): Promise<CreateBatchRespons
     catalogue.categories.flatMap((c) => c.scenarios.map((s) => s.id)),
   )
   const total = body.requests.reduce((n, r) => n + r.count, 0)
-  if (total > catalogue.max_batch) {
-    throw new ApiError(400, 'BATCH_LIMIT_EXCEEDED', '单批总数超过上限', {
-      limit: catalogue.max_batch,
-      requested: total,
-    })
-  }
-  // Checked here so a drifted scenarios.generated.ts fails loudly rather than
-  // burning a 15-minute window on a key the backend will reject (design §8.4).
+  // No total check. `max_batch` is gone from the catalogue, from `backend/request.py` and from
+  // `config/scenarios.yaml`: the web tier sends one invocation per material, so the 15-minute wall
+  // bounds one material and there is nothing left for a ceiling to protect.
+  //
+  // Checked here so a drifted scenarios.generated.ts fails loudly rather than spending a whole
+  // batch's worth of invocations on a key the backend will reject (design §8.4). Cheaper to catch
+  // than it used to be — one bad key now fails one child, not the batch — and still worth catching
+  // before the user waits at all.
   for (const r of body.requests) {
     if (r.scenario_key !== CUSTOM_SCENARIO_KEY && !known.has(r.scenario_key)) {
       throw new ApiError(400, 'UNKNOWN_SCENARIO', `后端不认识场景 ${r.scenario_key}`, {

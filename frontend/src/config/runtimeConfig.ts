@@ -51,7 +51,21 @@ export interface RuntimeConfig {
   contractVersion: string
   apiBaseUrl: string
   thresholds: Thresholds
-  limits: { maxBatch: number; hardLimitSeconds: number; warnAtSeconds: number }
+  /**
+   * `perMaterialWallSeconds` is what is left of the old
+   * `{ maxBatch, hardLimitSeconds, warnAtSeconds }`.
+   *
+   * All three described a per-BATCH wall, which the fan-out abolished: `web/fanout.py` sends one
+   * AgentCore invocation per material, so the platform's 15-minute limit bounds one ~150-230s
+   * material. `maxBatch` therefore has nothing to cap, and `warnAtSeconds: 720` would have fired
+   * a "接近 15 分钟上限" warning on a 20-set batch that was running perfectly normally — the
+   * progress page now compares against the measured estimate instead
+   * (`domain/batchEstimate.ts`).
+   *
+   * The per-material figure survives because it is still real, and it is still the number that
+   * decides whether a single material's refills can finish.
+   */
+  limits: { perMaterialWallSeconds: number }
   /**
    * `syntheticAudio` is gone. It stood in for a synthesis endpoint that did not exist, with
    * locally generated tone clips, back when /invocations accepted only `generate` and
@@ -79,7 +93,7 @@ export const FALLBACK_CONFIG: RuntimeConfig = {
     DIMENSION_DIFF_SHOWN: 3,
     CALIBRATED: false,
   },
-  limits: { maxBatch: 6, hardLimitSeconds: 900, warnAtSeconds: 720 },
+  limits: { perMaterialWallSeconds: 900 },
   flags: { audioWebaudio: false },
 }
 

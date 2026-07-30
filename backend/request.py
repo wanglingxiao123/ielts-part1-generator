@@ -67,11 +67,12 @@ def _expand(catalogue: ScenarioCatalogue, payload: Dict[str, Any]) -> List[Scena
 
     if not slots:
         raise BadRequest("no scenarios requested")
-    if len(slots) > catalogue.max_batch:
-        raise BadRequest(
-            "batch of %d exceeds the maximum of %d; the 15-minute synchronous limit is a hard "
-            "platform constraint" % (len(slots), catalogue.max_batch)
-        )
+    # No ceiling. There used to be one -- `catalogue.max_batch`, justified by the 15-minute
+    # synchronous limit on a Runtime invocation -- and it was an artefact of putting every material
+    # of a batch inside ONE invocation. The web tier now issues one invocation per material
+    # (web/fanout.py), so the 900s wall applies to a single ~150-230s material and a "batch" here
+    # is normally one slot. Re-adding a cap would only re-impose a limit the platform no longer
+    # asks for; the honest signal to the user is the time estimate, not a refusal.
     return slots
 
 

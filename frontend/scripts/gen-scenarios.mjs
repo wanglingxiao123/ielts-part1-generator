@@ -31,10 +31,12 @@ const categories = raw.categories.map((c) => ({
   })),
 }))
 
+// No `maxBatch`. It was removed from config/scenarios.yaml along with the concept: the web tier
+// sends one AgentCore invocation per material, so the 15-minute wall no longer bounds a batch. A
+// field kept "just for the number input" would be a limit waiting to be re-enforced.
 const payload = {
   version: raw.version,
   defaultCount: raw.default_count,
-  maxBatch: raw.max_batch,
   customScenario: {
     enabled: Boolean(raw.custom_scenario?.enabled),
     maxLength: raw.custom_scenario?.max_length ?? 200,
