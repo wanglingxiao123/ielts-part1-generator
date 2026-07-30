@@ -31,6 +31,7 @@ export function ComparePage() {
   // loops forever ("The result of getSnapshot should be cached").
   const itemOrder = useBatchStore((s) => s.itemOrder)
   const materials = useBatchStore((s) => s.materials)
+  const storeBatchId = useBatchStore((s) => s.batchId)
   const fromStore = useMemo(
     () =>
       itemOrder
@@ -134,10 +135,21 @@ export function ComparePage() {
     }
   }, [])
 
+  // 优先用材料自己带的 batch_id：从历史批次点进来时 store 装的是当前活批次，用它会把用户送回
+  // 另一批。一套材料都没有时（下面那个分支）只剩 store 可用，而那一屏最需要一个出路。
+  const backBatchId = records.find((r) => r.batch_id)?.batch_id ?? storeBatchId
+
   if (records.length === 0) {
     return (
       <div className="page">
-        <div className="panel panel-pad">本场景暂无材料。</div>
+        <div className="panel panel-pad">
+          <div>本场景暂无材料。</div>
+          {backBatchId && (
+            <Link className="btn btn-sm" to={`/batches/${backBatchId}`} style={{ marginTop: 10 }}>
+              ← 返回批次
+            </Link>
+          )}
+        </div>
       </div>
     )
   }
@@ -147,6 +159,15 @@ export function ComparePage() {
   return (
     <div className="page-wide">
       <div className="row" style={{ marginBottom: 8 }}>
+        {/* 返回批次。这一页过去是**单向**的：用户从结果页点进来，页面上没有任何回去的入口，
+            只剩浏览器的后退键——而这一页是全宽布局、跟结果页长得不像，读起来像是离开了那个批次。
+            batchId 取自材料自己（`MaterialRecord.batch_id`），不靠 store：从历史批次点进来时
+            store 里装的是当前活批次，用它会把用户送回**另一批**。 */}
+        {backBatchId && (
+          <Link className="btn btn-sm" to={`/batches/${backBatchId}`}>
+            ← 返回批次
+          </Link>
+        )}
         <h2 style={{ margin: 0 }}>
           {scenarioMeta(scenarioKey ?? '').titleZh} — {candidates.length} 套候选
         </h2>
@@ -168,7 +189,15 @@ export function ComparePage() {
                 key={i}
                 type="button"
                 className={`btn btn-sm${pair.includes(i) ? ' btn-primary' : ''}`}
-                onClick={() => setPair(([a]) => (a === i ? [a, i] : [a, i]))}
+                /* 点一个候选：换掉**右**边那一栏，左边留着。
+                 *
+                 * 原来写的是 `([a]) => (a === i ? [a, i] : [a, i])`——两个分支返回同一个值，
+                 * 所以那个三元判断根本没在判断任何东西。它的实际行为是「永远换右栏」，于是
+                 * 点左栏自己那个按钮会把右栏也变成它，两栏同一套材料自己跟自己比。
+                 * 现在点左栏那个按钮是原地不动（它已经在对比里了），点右栏那个换右栏。 */
+                onClick={() =>
+                  setPair(([a, b]) => (a === i ? [a, b] : b === i ? [a, b] : [a, i]))
+                }
               >
                 {LABELS[i]}
               </button>
@@ -246,6 +275,9 @@ export function ComparePage() {
             <div
               key={record.material_id}
               className="cmp-col"
+              /* 这一栏当前是哪套材料。给测试用：「两栏永远不是同一套」这条不变式没法靠文字断言——
+                 每栏内部到处都出现「候选 A」这几个字（结论句、选定按钮、切换按钮）。 */
+              data-material={record.material_id}
               style={{ opacity: discarded ? 0.45 : 1 }}
             >
               {/* subgrid rows keep the two candidates' decision bar / reader /

@@ -737,6 +737,140 @@ h3 {
   background: var(--r-compare);
 }
 
+/* ── 对比模式：其他场景置灰 ──────────────────────────────────────────────────
+   对比是「在一个场景内部挑两套」，此时点别的场景没有合法含义。`pointer-events: none`
+   是这条规则的样式一半，另一半在 BatchProgressPage 的 `if (dimmed) return`——键盘和
+   辅助技术不受 pointer-events 约束，光靠样式挡不住。 */
+.scn-group.dimmed {
+  opacity: 0.35;
+  pointer-events: none;
+  filter: saturate(0.4);
+  transition:
+    opacity 0.15s,
+    filter 0.15s;
+}
+
+/* 对比模式下整张卡是点选区（不再是右上角那个 20px 的圆点），所以光标和悬停要说出这件事。 */
+.mat-card.compare-pickable {
+  cursor: pointer;
+}
+
+.mat-card.compare-pickable:hover {
+  border-color: var(--r-compare-line);
+  box-shadow: 0 2px 10px rgb(101 84 192 / 14%);
+}
+
+.mat-card.compare-pickable:focus-visible {
+  outline: 2px solid var(--r-compare);
+  outline-offset: 2px;
+}
+
+/* A / B 角标。取代了对比模式下那个被复用的勾选框——一个控件只表达一件事。 */
+.pick-badge {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--r-primary);
+}
+
+.pick-badge.b {
+  background: var(--r-compare);
+}
+
+/* ── 内联对比预览 ────────────────────────────────────────────────────────────
+   选满两套后在卡片下方原地展开，取代原来「点第二张就跳走整页」的行为。 */
+.inline-compare {
+  margin-top: 12px;
+  background: var(--r-compare-soft);
+  border: 1px solid var(--r-compare-line);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+
+.inline-compare-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  color: var(--r-compare);
+}
+
+.inline-compare-summary {
+  font-size: 13px;
+  color: var(--r-ink-2);
+  margin-bottom: 12px;
+}
+
+.inline-compare-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.inline-compare-col {
+  background: var(--panel);
+  border: 1px solid var(--r-line);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.inline-compare-col.pick-a {
+  border-color: var(--r-primary);
+}
+
+.inline-compare-col.pick-b {
+  border-color: var(--r-compare);
+}
+
+.inline-compare-col-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.inline-compare .usability-cmp {
+  background: var(--panel);
+}
+
+@media (max-width: 700px) {
+  /* 窄屏上两列并排会把时间轴挤成一条线，读不出信息点落在哪。 */
+  .inline-compare-cols {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 对比模式的底栏。紫色系与「对比」这件事在整页保持同一个颜色语言。 */
+.results-bar.comparing {
+  background: var(--r-compare-soft);
+  border-top-color: var(--r-compare-line);
+}
+
+.results-bar.comparing .bar-left {
+  align-items: center;
+  color: var(--r-compare);
+}
+
+.results-bar.comparing .btn-primary {
+  background: var(--r-compare);
+  border-color: var(--r-compare);
+}
+
+.results-bar.comparing .btn-primary:hover:not(:disabled) {
+  background: #5243aa;
+}
+
 /* 卡片网格：2 或 3 列自适应，将来一场景 3 套直接兼容 */
 .mat-row {
   display: grid;

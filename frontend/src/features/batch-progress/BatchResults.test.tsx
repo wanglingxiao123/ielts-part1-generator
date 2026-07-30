@@ -733,7 +733,14 @@ describe('compare mode', () => {
     expect(screen.getByText('材料 B')).toBeInTheDocument()
   })
 
-  it('marks the two picked cards A and B, then navigates to the compare view', async () => {
+  /**
+   * 选满两张后**不跳转**，在原地展开预览。
+   *
+   * 客户点名去掉自动跳转：点第二张卡的那一刻整页被换掉，用户既没确认要走，也丢了刚才那一屏的
+   * 上下文。这个测试因此同时钉住两件事——预览出现了，以及 `navigations` 是空的。后者是这次
+   * 修复的全部内容，少了它这个测试就退化成「预览渲染得出来」。
+   */
+  it('opens an inline preview when two cards are picked, and does NOT navigate', async () => {
     startBatch(TWO_SCENARIOS)
     deliverAll(TWO_SCENARIOS)
     renderPage()
@@ -743,8 +750,78 @@ describe('compare mode', () => {
     expect(document.querySelector('[data-material="m1"]')!.className).toContain('pick-a')
 
     await userEvent.click(screen.getByRole('button', { name: /第 2 套：点选进入对比/ }))
-    // A/B borders applied, and the existing side-by-side view is wired up.
+    expect(document.querySelector('[data-material="m2"]')!.className).toContain('pick-b')
+
+    const inline = document.querySelector('.inline-compare')
+    expect(inline).not.toBeNull()
+    expect(within(inline as HTMLElement).getByText('哪一套更好出题')).toBeInTheDocument()
+    // 这一行是修复本身：跳转必须由用户点「打开完整对比」触发，不能是页面自己走的。
+    expect(navigations).toEqual([])
+  })
+
+  it('navigates to the full compare view only when asked to', async () => {
+    startBatch(TWO_SCENARIOS)
+    deliverAll(TWO_SCENARIOS)
+    renderPage()
+
+    await userEvent.click(screen.getAllByRole('button', { name: '对比本场景' })[0]!)
+    await userEvent.click(screen.getByRole('button', { name: /第 1 套：点选进入对比/ }))
+    await userEvent.click(screen.getByRole('button', { name: /第 2 套：点选进入对比/ }))
+    await userEvent.click(screen.getByRole('button', { name: /打开完整对比/ }))
+
     expect(navigations).toContain('/compare/accommodation-rental?a=m1&b=m2')
+  })
+
+  /**
+   * 两种模式互斥，这是用户报的冲突本身。
+   *
+   * 过去卡片右上角那一个控件同时承担勾选和 A/B 点选：在对比模式里点它改的却是选稿。现在勾选框
+   * 只在选稿模式出现，对比模式下整张卡是点选区。
+   */
+  it('hides the selection checkbox inside compare mode', async () => {
+    startBatch(TWO_SCENARIOS)
+    deliverAll(TWO_SCENARIOS)
+    renderPage()
+
+    expect(screen.getAllByRole('button', { name: /第 1 套：选择/ }).length).toBeGreaterThan(0)
+    await userEvent.click(screen.getAllByRole('button', { name: '对比本场景' })[0]!)
+
+    // 该场景的勾选框消失了；点选的入口是整张卡。
+    const group = document.querySelector('.scn-group.comparing') as HTMLElement
+    expect(group.querySelector('.select-check')).toBeNull()
+    expect(within(group).getByRole('button', { name: /第 1 套：点选进入对比/ })).toBeInTheDocument()
+  })
+
+  it('greys out the other scenarios and refuses their clicks', async () => {
+    startBatch(TWO_SCENARIOS)
+    deliverAll(TWO_SCENARIOS)
+    renderPage()
+
+    await userEvent.click(screen.getAllByRole('button', { name: '对比本场景' })[0]!)
+
+    const dimmed = document.querySelectorAll('.scn-group.dimmed')
+    expect(dimmed.length).toBe(1)
+    // 置灰的场景不给对比按钮：同时进两个场景的对比模式没有意义。
+    expect(within(dimmed[0] as HTMLElement).queryByRole('button', { name: '对比本场景' })).toBeNull()
+    // 点它的卡不改任何状态。pointer-events 拦不住程序化点击，所以这里验的是那道 `if (dimmed)`。
+    ;(dimmed[0]!.querySelector('[data-material="m3"]') as HTMLElement).click()
+    expect(document.querySelector('[data-material="m3"]')!.className).not.toContain('selected')
+    expect(document.querySelector('[data-material="m3"]')!.className).not.toContain('pick-')
+  })
+
+  it('swaps the bottom bar for 退出对比', async () => {
+    startBatch(TWO_SCENARIOS)
+    deliverAll(TWO_SCENARIOS)
+    renderPage()
+
+    expect(screen.getByRole('button', { name: '提交审核' })).toBeInTheDocument()
+    await userEvent.click(screen.getAllByRole('button', { name: '对比本场景' })[0]!)
+
+    // 选稿底栏整条换掉，而不是把提交置灰：留着它会让人以为对比模式里还能提交。
+    expect(screen.queryByRole('button', { name: '提交审核' })).not.toBeInTheDocument()
+    expect(document.querySelector('.results-bar.comparing')).not.toBeNull()
+    // 底栏上的「退出对比」和组头上的那个都算，两处都能退出。
+    expect(screen.getAllByRole('button', { name: '退出对比' }).length).toBeGreaterThanOrEqual(1)
   })
 
   it('offers no compare button for a scenario with a single material', () => {
@@ -758,16 +835,29 @@ describe('compare mode', () => {
     expect(screen.queryByRole('button', { name: '对比本场景' })).not.toBeInTheDocument()
   })
 
-  it('keeps an existing selection visible inside compare mode', async () => {
+  /**
+   * 勾选状态在对比模式下**保留但不可见**，退出后恢复——客户的原话。
+   *
+   * 这条以前断言的是「进对比后勾选仍然看得见」。改了：勾选框在对比模式下不存在，勾选态也不显示，
+   * 否则紫色的 A/B 边框和蓝色的已选边框会叠在同一张卡上，说不清这张卡到底处在什么状态。
+   * 但 state 一个字节都不能动——退出对比必须原样回来，这才是「保留」的意思。
+   */
+  it('keeps the selection through compare mode and restores it on exit', async () => {
     startBatch(TWO_SCENARIOS)
     deliverAll(TWO_SCENARIOS)
     renderPage()
 
     await userEvent.click(screen.getAllByRole('button', { name: /第 1 套：选择/ })[0]!)
-    await userEvent.click(screen.getAllByRole('button', { name: '对比本场景' })[0]!)
+    expect(selectedCount()).toBe('1')
 
-    // Entering compare mode must not read as "my selection was thrown away" —
-    // the bottom bar still counts it, so the card has to agree.
+    await userEvent.click(screen.getAllByRole('button', { name: '对比本场景' })[0]!)
+    // 不可见：卡上不再有 selected 这个样式。
+    expect(document.querySelector('[data-material="m1"]')!.className).not.toContain('selected')
+    // 但没丢：底栏明说保留着，用户才不会以为自己的选择被清了。
+    expect(document.querySelector('.results-bar.comparing')!.textContent).toContain('保留')
+
+    await userEvent.click(screen.getAllByRole('button', { name: '退出对比' })[0]!)
+    // 原样回来。
     expect(document.querySelector('[data-material="m1"]')!.className).toContain('selected')
     expect(selectedCount()).toBe('1')
   })
@@ -779,11 +869,12 @@ describe('compare mode', () => {
 
     await userEvent.click(screen.getAllByRole('button', { name: '对比本场景' })[0]!)
     await userEvent.click(screen.getByRole('button', { name: /第 1 套：点选进入对比/ }))
-    await userEvent.click(screen.getByRole('button', { name: '退出对比' }))
+    await userEvent.click(screen.getAllByRole('button', { name: '退出对比' })[0]!)
 
-    expect(screen.queryByText(/对比模式/)).not.toBeInTheDocument()
-    // Compare picking is not selection: the count is untouched.
+    expect(screen.queryByText(/对比模式：点选两套材料/)).not.toBeInTheDocument()
+    // 点选不是选稿：计数没被动过，置灰也撤了。
     expect(selectedCount()).toBe('0')
+    expect(document.querySelectorAll('.scn-group.dimmed').length).toBe(0)
     expect(navigations).toEqual([])
   })
 })

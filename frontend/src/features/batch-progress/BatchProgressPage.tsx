@@ -71,6 +71,9 @@ import {
   PHASE_SEQUENCE,
   type ProgressPhase,
 } from '@/domain/progressStages'
+import { buildFacts, compareCandidates } from '@/domain/compare'
+import type { Thresholds } from '@/config/runtimeConfig'
+import { UsabilityCompare } from '../compare/UsabilityCompare'
 import { selectActivePhase, useBatchStore } from '@/stores/batchStore'
 import { useReviewQueue } from '@/stores/reviewQueueStore'
 import { BatchHistoryPanel } from './BatchHistoryPanel'
@@ -232,14 +235,16 @@ function MaterialCard({
   onToggle,
 }: CardProps) {
   const label = `第 ${preview.index + 1} 套`
-  // A selected card keeps looking selected inside compare mode. Hiding it there
-  // reads as "entering compare mode threw my选择 away" — it does not, and the
-  // bottom bar's count would then contradict the cards.
+  // 勾选状态在对比模式下**保留但不显示**：客户的原话是「之前的勾选状态保留但不可见，退出对比后
+  // 恢复」。所以这里只是不加 `selected` 这个 class，state 一个字节都没动——退出对比后同一个
+  // `selected` prop 原样回来。反过来（进对比就清空勾选）会让底栏的计数在用户没做任何选稿动作时
+  // 归零，那是把「换个视角看」误当成「重新开始」。
   const className = [
     'mat-card',
     // 骨架被替换成真卡时淡入。CSS 动画，不是 JS 定时器：卡的到达时机由 SSE 决定。
     'fade-in',
-    selected ? 'selected' : '',
+    !compareMode && selected ? 'selected' : '',
+    compareMode ? 'compare-pickable' : '',
     pickSide === 'a' ? 'pick-a' : '',
     pickSide === 'b' ? 'pick-b' : '',
   ]
@@ -247,32 +252,60 @@ function MaterialCard({
     .join(' ')
 
   return (
-    <div className={className} data-material={preview.materialId}>
+    <div
+      className={className}
+      data-material={preview.materialId}
+      /* 对比模式下**整张卡**是点选区，不是右上角那个 20px 的圆点。
+       *
+       * 这是这次修复的核心：两种模式过去共用右上角同一个控件，用户在对比模式里点它，改的却是
+       * 选稿——两件事抢同一个点击行为。现在勾选框只在选稿模式出现，对比模式下整张卡可点，
+       * 「点第一张是 A、第二张是 B」这句话才在界面上成立。 */
+      role={compareMode ? 'button' : undefined}
+      tabIndex={compareMode ? 0 : undefined}
+      aria-pressed={compareMode ? pickSide !== null : undefined}
+      aria-label={
+        compareMode
+          ? `${label}：${pickSide ? `已选为材料 ${pickSide.toUpperCase()}` : '点选进入对比'}`
+          : undefined
+      }
+      onClick={compareMode ? onToggle : undefined}
+      onKeyDown={
+        compareMode
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                onToggle()
+              }
+            }
+          : undefined
+      }
+    >
       <div className="mat-card-top">
         <span className="mat-card-label">{label}</span>
         <span className="row" style={{ gap: 8 }}>
           {/* 统一「待审核」。评价方的内部评级不出现在这里。 */}
           <span className="status-badge">待审核</span>
-          {/* 只读批次里对比照旧可用（点选 A/B 不改选稿），所以只在**非对比**模式下禁用。 */}
-          <button
-            type="button"
-            className={`select-check${pickSide || selected ? ' checked' : ''}${
-              pickSide === 'b' ? ' pick-b' : ''
-            }`}
-            disabled={readOnly && !compareMode}
-            title={readOnly && !compareMode ? '历史批次是只读的，不能修改选稿' : undefined}
-            aria-pressed={compareMode ? pickSide !== null : selected}
-            aria-label={
-              compareMode
-                ? `${label}：${pickSide ? `已选为材料 ${pickSide.toUpperCase()}` : '点选进入对比'}`
-                : readOnly
+          {/* 勾选框只属于选稿模式。对比模式下它整个消失——留在那儿（哪怕换成 A/B 字样）就是把
+              两个含义压在同一个控件上，而这正是用户报的冲突。对比时的 A/B 由卡片边框和角标说明。 */}
+          {compareMode ? (
+            pickSide && <span className={`pick-badge ${pickSide}`}>{pickSide.toUpperCase()}</span>
+          ) : (
+            <button
+              type="button"
+              className={`select-check${selected ? ' checked' : ''}`}
+              disabled={readOnly}
+              title={readOnly ? '历史批次是只读的，不能修改选稿' : undefined}
+              aria-pressed={selected}
+              aria-label={
+                readOnly
                   ? `${label}：历史批次，不能修改选稿`
                   : `${label}：${selected ? '已选择' : '选择'}`
-            }
-            onClick={onToggle}
-          >
-            {pickSide ? pickSide.toUpperCase() : '✓'}
-          </button>
+              }
+              onClick={onToggle}
+            >
+              ✓
+            </button>
+          )}
         </span>
       </div>
 
@@ -302,10 +335,101 @@ function MaterialCard({
           的 .card-actions .btn），不是一段带边框的文字链。文案仍是「阅读全文」——原型写「阅读」，
           但页面上另有「对比本场景」这类动作，说清读的是全文才不会被当成展开摘要。 */}
       <div className="mat-actions">
-        <Link className="btn btn-card" to={`/materials/${preview.materialId}`}>
+        {/* 对比模式下整张卡是点选区，所以这个链接必须拦住冒泡：否则点「阅读全文」会在离开页面的
+            同时顺手把这张卡选成 A 或 B，回来时发现点选状态自己变了。 */}
+        <Link
+          className="btn btn-card"
+          to={`/materials/${preview.materialId}`}
+          onClick={(e) => e.stopPropagation()}
+        >
           <span aria-hidden="true">📖</span> 阅读全文
         </Link>
       </div>
+    </div>
+  )
+}
+
+/* ── 内联对比预览 ───────────────────────────────────────────────────────────── */
+
+type CardBundle = {
+  preview: CardPreview
+  view: ViewMaterial
+  metrics: DistributionMetrics
+  groups: FormGroupAnalysis
+}
+
+/**
+ * 选满两套后在**原地**展开的对比预览。
+ *
+ * 存在的理由是客户否掉了自动跳转：点第二张卡就把整页换掉，用户既没确认要走，也丢了刚才那一屏的
+ * 上下文。这里先回答「这两套差在哪」——两列时间轴 + 那张可用性对照表，都是现成的确定性计算，
+ * 不调模型也不发请求。要读全文再点「打开完整对比」，跳转从此是用户的动作。
+ *
+ * 表格用的是对比详情页那一个 `UsabilityCompare`，不是另写一份：同一个问题在两处给出不同答案，
+ * 是这类「预览 + 详情」结构最容易出的错。
+ */
+function InlineCompare({
+  scenarioKey,
+  a,
+  b,
+  thresholds,
+  onOpenFull,
+}: {
+  scenarioKey: string
+  a: CardBundle | undefined
+  b: CardBundle | undefined
+  thresholds: Thresholds
+  onOpenFull: () => void
+}) {
+  const comparison = useMemo(() => {
+    if (!a || !b) return null
+    return compareCandidates(
+      buildFacts('材料 A', a.view, a.metrics, a.groups),
+      buildFacts('材料 B', b.view, b.metrics, b.groups),
+      thresholds,
+    )
+  }, [a, b, thresholds])
+
+  if (!a || !b || !comparison) return null
+
+  return (
+    <div className="inline-compare" data-scenario={scenarioKey}>
+      <div className="inline-compare-head">
+        <strong>哪一套更好出题</strong>
+        <span className="spacer" />
+        <button type="button" className="btn btn-sm btn-compare" onClick={onOpenFull}>
+          打开完整对比 →
+        </button>
+      </div>
+
+      <div className="inline-compare-summary">{comparison.summary}</div>
+
+      <div className="inline-compare-cols">
+        {[
+          { side: 'A', bundle: a },
+          { side: 'B', bundle: b },
+        ].map(({ side, bundle }) => (
+          <div className={`inline-compare-col pick-${side.toLowerCase()}`} key={side}>
+            <div className="inline-compare-col-head">
+              <span className={`pick-badge ${side.toLowerCase()}`}>{side}</span>
+              <span>第 {bundle.preview.index + 1} 套</span>
+            </div>
+            <DistributionThumb
+              view={bundle.view}
+              metrics={bundle.metrics}
+              groups={bundle.groups}
+              flagged={bundle.preview.flaggedPoints}
+            />
+          </div>
+        ))}
+      </div>
+
+      <UsabilityCompare
+        columns={[
+          { label: '材料 A', metrics: a.metrics },
+          { label: '材料 B', metrics: b.metrics },
+        ]}
+      />
     </div>
   )
 }
@@ -560,13 +684,15 @@ export function BatchProgressPage() {
     setPick(EMPTY_PICK)
   }
 
-  // 并排对比是现成功能，这里只负责把它接上。
-  useEffect(() => {
-    if (compareScenario && comparePairReady(pick)) {
-      navigate(`/compare/${compareScenario}?a=${pick[0]}&b=${pick[1]}`)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pick, compareScenario])
+  /**
+   * 选满两张后**不跳转**，在原地展开内联预览。
+   *
+   * 这里原来是一个 `useEffect`，一凑满两张就 `navigate` 到 `/compare/...`。客户点名要去掉：
+   * 点第二张卡的那一刻整页被换掉，用户既没确认过要走，也失去了刚才那一屏的上下文（其他场景、
+   * 底栏计数、组头的 N/M）。改成先给一个内联预览（两列时间轴 + 关键指标），想看全文再点
+   * 「打开完整对比」——跳转从此是用户的动作，不是页面的自作主张。
+   */
+  const comparePair = compareScenario && comparePairReady(pick) ? pick : null
 
   /**
    * 提交审核。
@@ -769,8 +895,16 @@ export function BatchProgressPage() {
           undefined
         const meta = scenarioMeta(group.scenarioKey, customLabel)
         const comparing = compareScenario === group.scenarioKey
+        // 对比模式下**别的场景整块置灰不可操作**：对比是「在一个场景内部挑两套」，此时点另一个
+        // 场景的卡没有任何合法含义。不置灰的话它们看着照旧可点，点下去却什么都不发生（或者更糟，
+        // 改了选稿）——那就是用户报的那种「操作冲突」。
+        const dimmed = compareScenario !== null && !comparing
         return (
-          <section className="scn-group" key={group.scenarioKey}>
+          <section
+            className={`scn-group${comparing ? ' comparing' : ''}${dimmed ? ' dimmed' : ''}`}
+            key={group.scenarioKey}
+            aria-hidden={dimmed || undefined}
+          >
             <div className="scn-group-head">
               <span className="scn-group-icon" aria-hidden="true">
                 {meta.icon}
@@ -783,8 +917,9 @@ export function BatchProgressPage() {
                 {group.arrived}/{group.slots.length}
               </span>
               <span className="spacer" />
-              {/* 对比要两张**真卡**：拿一张骨架去比没有意义。 */}
-              {group.arrived >= 2 && (
+              {/* 对比要两张**真卡**：拿一张骨架去比没有意义。
+                  置灰的场景不给按钮：同时进两个场景的对比模式没有意义。 */}
+              {group.arrived >= 2 && !dimmed && (
                 <button
                   type="button"
                   className={`btn btn-sm${comparing ? '' : ' btn-compare'}`}
@@ -845,6 +980,10 @@ export function BatchProgressPage() {
                     pickSide={pickSide}
                     readOnly={readOnly}
                     onToggle={() => {
+                      // 置灰的场景不接受任何操作。CSS 的 `pointer-events: none` 已经拦了一层，
+                      // 这里再拦一次：键盘和辅助技术不受 pointer-events 约束，而「其他场景不可
+                      // 操作」是一条行为规则，不该只由样式来保证。
+                      if (dimmed) return
                       if (comparing) {
                         setPick((prev) => pickForCompare(prev, materialId))
                         return
@@ -862,13 +1001,53 @@ export function BatchProgressPage() {
                 )
               })}
             </div>
+
+            {/* 选满两张后的内联预览。在卡片**下方**原地展开，而不是跳走整页——见 `comparePair`
+                那段注释。想看全文再点里面的「打开完整对比」。 */}
+            {comparing && comparePair && (
+              <InlineCompare
+                scenarioKey={group.scenarioKey}
+                a={cards.get(comparePair[0])}
+                b={cards.get(comparePair[1])}
+                thresholds={thresholds}
+                onOpenFull={() =>
+                  navigate(
+                    `/compare/${group.scenarioKey}?a=${comparePair[0]}&b=${comparePair[1]}`,
+                  )
+                }
+              />
+            )}
           </section>
         )
       })}
 
+      {/* 对比模式的底栏。整条**换掉**选稿底栏，而不是把「提交审核」置灰：这两个模式互斥，而底栏
+          是这件事最显眼的地方。留着「已选 N 套 · 提交审核」会让人以为在对比模式里还能提交，
+          而此时卡片上连勾选框都没有——界面自己跟自己矛盾。
+          勾选数一个字节都没动，退出对比后原样回来，所以这里说清「保留着」。 */}
+      {groups.length > 0 && !readOnly && compareScenario !== null && (
+        <div className="results-bar comparing">
+          <div className="bar-left">
+            <span className="legend-dot a" aria-hidden="true" />
+            <span>
+              对比模式：点第一张是材料 A，第二张是材料 B
+              {comparePairReady(pick) ? '。下方已展开对比' : ''}
+            </span>
+            {rule.selectedCount > 0 && (
+              <span className="muted">已勾选的 {rule.selectedCount} 套保留着，退出后恢复</span>
+            )}
+          </div>
+          <div className="bar-right">
+            <button type="button" className="btn btn-primary" onClick={leaveCompare}>
+              退出对比
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* 底栏和卡位一起在位。「提交审核」在第一张真卡到达之前是禁用的——按钮跳着
           出现会让人以为功能刚刚才有。 */}
-      {groups.length > 0 && !readOnly && (
+      {groups.length > 0 && !readOnly && compareScenario === null && (
         <div className="results-bar">
           <div className="bar-left">
             <span>
