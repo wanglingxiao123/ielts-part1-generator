@@ -67,7 +67,11 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
+import logging
+
 from .runtime_client import SSE_CONTENT_TYPE, iter_sse_payloads, new_session_id, read_json
+
+LOG = logging.getLogger(__name__)
 
 __all__ = [
     "FANOUT_CONCURRENCY",
@@ -581,6 +585,13 @@ class FanOut(object):
             # failure card. `record` is setdefault-based, but the frame would still be relayed.
             reason = str(event.get("reason") or "runtime_invoke_failed")
             detail = event.get("detail")
+            # Logged, not only relayed. This module used to have no logging at all, so a child that
+            # died left the user looking at 「其余未能生成」 while the task log held nothing to
+            # explain it -- the failure reached the browser and nowhere else. Two investigations
+            # stalled on exactly that. WARNING because a lost material is the user's problem too.
+            LOG.warning("fanout child %d (%s, slots %s) failed: reason=%s detail=%s",
+                        child.index, child.scenario, ",".join(child.slot_ids), reason,
+                        str(detail)[:400])
             out: List[Dict[str, Any]] = []
             for slot_id in child.slot_ids:
                 if slot_id in merge.outcomes:

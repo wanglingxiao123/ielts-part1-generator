@@ -534,8 +534,15 @@ export function BatchProgressPage() {
     if (!batchId) return
     setRetryBusy(true)
     try {
+      // Scenario keys, not material ids. Sending ids made the adapter resolve each one back to a
+      // scenario through the in-memory `sessions` map, which is empty after a reload and for any
+      // historical batch — so 补生成 threw 「没有可补生成的场景」 in exactly the situations where a
+      // user most wants it. The page already knows each pending slot's scenario; there is nothing
+      // to look up.
       const res = await api.retryBatch(batchId, {
-        material_ids: pending.map((i) => i!.material_id),
+        scenario_keys: pending
+          .map((i) => i!.scenario_key)
+          .filter((k): k is string => Boolean(k)),
       })
       navigate(`/batches/${res.batch_id}`)
     } finally {
