@@ -1584,10 +1584,15 @@ h3 {
   column-gap: 24px;
 }
 
-/* 并排的旁注卡要能在 220px 里读得下去：字号收一档，内边距收紧。 */
+/* 并排的旁注卡要能在窄列里读得下去。
+   `width` 必须一起改：`.ann-card` 是 `position: absolute` 且写死 336px，只把列改窄的话卡片会
+   溢出列宽、压到左边的原文上——那正是这里出过的 bug（旁注浮在正文之上盖住字）。用 100% 跟着列走，
+   列宽由 `.reader-body.narrow.with-ann` 的 grid 决定，两处不会再各说一套。 */
 .reader-body.narrow.with-ann .ann-card {
+  width: 100%;
   font-size: 11px;
-  padding: 7px 9px;
+  padding: 6px 8px;
+  line-height: 1.45;
 }
 
 .turn {
