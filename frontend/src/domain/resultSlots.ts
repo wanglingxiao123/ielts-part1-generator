@@ -95,7 +95,7 @@ function shapeFromItems(items: readonly BatchItemSnapshot[]): RequestedScenario[
  * 文本落在同一个 S3 前缀）。两个键当成两个场景，界面上就出现了两行——「✍️自定义场景 0/3」下面
  * 一个空的，再来一个「📝custom-6cf6e9b3 未分类 3/3」装着真材料。归一化到 `custom` 即可合并。
  */
-function groupKeyOf(scenarioKey: string): string {
+export function groupKeyOf(scenarioKey: string): string {
   return scenarioKey.startsWith('custom-') ? 'custom' : scenarioKey
 }
 

@@ -209,3 +209,26 @@ describe('MaterialPage 结构校验意见', () => {
     expect(previewCalls).toEqual([MATERIAL_ID])
   })
 })
+
+/**
+ * 出路。这一页过去是**单向**的：从结果页的「阅读全文」进来，页面上没有任何回去的入口，只剩浏览器
+ * 后退键——而它是全宽布局、跟结果页长得不像，读起来像是离开了那个批次。
+ */
+describe('返回批次', () => {
+  it('顶部有回到这一批的入口', async () => {
+    record = baseRecord
+    renderPage()
+    const back = await screen.findByRole('link', { name: /返回批次/ })
+    // batchId 取自材料自己，不靠 store：看历史批次的材料时 store 装的是当前活批次，
+    // 用它会把用户送回另一批。
+    expect(back.getAttribute('href')).toBe('/batches/b1')
+  })
+
+  it('「对比本场景」带上 batch，否则对比页取不到材料', async () => {
+    record = baseRecord
+    renderPage()
+    const compare = await screen.findByRole('link', { name: /对比本场景/ })
+    // 对比页对历史批次只能靠 `?batch=` 取材料（真实后端没有按场景列材料的路由）。
+    expect(compare.getAttribute('href')).toBe('/compare/accommodation-rental?batch=b1')
+  })
+})

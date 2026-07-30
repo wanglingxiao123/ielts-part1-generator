@@ -10,6 +10,7 @@ import type { DistributionMetrics } from '@/domain/distribution'
 import { computeDistribution } from '@/domain/distribution'
 import { analyseFormGroups } from '@/domain/formGroups'
 import { joinFromRecord } from '@/domain/joinArtifacts'
+import { groupKeyOf } from '@/domain/resultSlots'
 import { SEVERITY_LABEL } from '@/domain/types'
 import { useBatchStore } from '@/stores/batchStore'
 import { useHistoricalBatch } from '../batch-progress/useHistoricalBatch'
@@ -22,6 +23,15 @@ const LABELS = ['候选 A', '候选 B', '候选 C', '候选 D']
 
 export function ComparePage() {
   const { scenarioKey } = useParams<{ scenarioKey: string }>()
+  /**
+   * 匹配材料时要归一场景 key。
+   *
+   * 结果页按**归一后**的 key 分组（自定义场景是 `custom`），跳过来的 URL 里就是 `/compare/custom`；
+   * 而材料自己带的是后端给的 `custom-<sha1(文本)[:8]>`。直接字面比较就永远匹配不上——自定义场景点
+   * 「打开完整对比」进来是整屏「本场景暂无材料」，而目录场景全都正常，所以看起来像「有时候不显示」。
+   * 复用 `groupKeyOf`，不在这里抄第二份规则：抄了就会和结果页的分组漂移。
+   */
+  const groupKey = groupKeyOf(scenarioKey ?? '')
   // ?a=&b= is how the results page hands over the two cards the user point-
   // selected. Absent (a direct link, a bookmark) it falls back to the first two.
   const [search] = useSearchParams()
@@ -37,8 +47,11 @@ export function ComparePage() {
     () =>
       itemOrder
         .map((id) => materials[id])
-        .filter((m): m is MaterialRecord => m !== undefined && m.scenario_key === scenarioKey),
-    [itemOrder, materials, scenarioKey],
+        .filter(
+          (m): m is MaterialRecord =>
+            m !== undefined && groupKeyOf(m.scenario_key) === groupKey,
+        ),
+    [itemOrder, materials, groupKey],
   )
   const [records, setRecords] = useState<MaterialRecord[]>(fromStore)
   const [syncScroll, setSyncScroll] = useState(true)
@@ -75,10 +88,10 @@ export function ComparePage() {
     setRecords(
       historical.batch.materialOrder
         .map((id) => historical.batch!.materials[id]!)
-        .filter((m) => m.scenario_key === scenarioKey),
+        .filter((m) => groupKeyOf(m.scenario_key) === groupKey),
     )
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scenarioKey, historical.batch, fromStore.length])
+  }, [groupKey, historical.batch, fromStore.length])
 
   // Every material is comparable now, audit-rejected ones included: the client's
   // rule is that a flawed material is shown with its shortcomings stated, and
@@ -179,11 +192,27 @@ export function ComparePage() {
   // 另一批。一套材料都没有时（下面那个分支）只剩 store 可用，而那一屏最需要一个出路。
   const backBatchId = records.find((r) => r.batch_id)?.batch_id ?? historyBatchId ?? storeBatchId
 
+  /**
+   * 还在取历史记录 ≠ 没有材料。
+   *
+   * 这两个状态过去共用「本场景暂无材料。」那一屏：取记录要一两秒（一次 S3 GET 加 N 个 sidecar），
+   * 那段时间页面在说一句**当时还不知道真假**的话，然后内容才冒出来。用户看到的是先被告知没有、
+   * 再被推翻。加载中就说加载中。
+   */
+  if (records.length === 0 && historical.loading) {
+    return (
+      <div className="page">
+        <div className="panel panel-pad">正在读取这一批的材料…</div>
+      </div>
+    )
+  }
+
   if (records.length === 0) {
     return (
       <div className="page">
         <div className="panel panel-pad">
-          <div>本场景暂无材料。</div>
+          {/* 读取失败和「这一批确实没有这个场景」要说成两句话：前者可以重试，后者重试没用。 */}
+          <div>{historical.error ?? '本场景暂无材料。'}</div>
           {backBatchId && (
             <Link className="btn btn-sm" to={`/batches/${backBatchId}`} style={{ marginTop: 10 }}>
               ← 返回批次
@@ -209,7 +238,10 @@ export function ComparePage() {
           </Link>
         )}
         <h2 style={{ margin: 0 }}>
-          {scenarioMeta(scenarioKey ?? '').titleZh} — {candidates.length} 套候选
+          {/* 自定义场景用用户输入的原文，和结果页的分组标题同一个来源。没有它的话这里只会写
+              「自定义场景」——用户刚从「餐厅点餐」那一组点进来，标题却换了个说法。 */}
+          {scenarioMeta(scenarioKey ?? '', historical.batch?.customLabel).titleZh} —{' '}
+          {candidates.length} 套候选
         </h2>
         <label style={{ fontSize: 12 }}>
           <input

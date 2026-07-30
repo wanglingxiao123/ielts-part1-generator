@@ -173,6 +173,14 @@ export function MaterialPage() {
   return (
     <div className="page-wide">
       <div className="row" style={{ marginBottom: 8 }}>
+        {/* 返回批次。这一页过去也是单向的：从结果页的「阅读全文」进来，页面上没有任何回去的入口，
+            只剩浏览器后退键——而它是全宽布局、跟结果页长得不像，读起来像是离开了那个批次。
+            batchId 取自材料自己，不靠 store：看历史批次的材料时 store 装的是当前活批次。 */}
+        {record.batch_id && (
+          <Link className="btn btn-sm" to={`/batches/${record.batch_id}`}>
+            ← 返回批次
+          </Link>
+        )}
         <h2 style={{ margin: 0 }}>{view.scenario.slice(0, 70)}</h2>
         <span className="mono muted">{record.material_id}</span>
         {/* 「N 个点听不出来」原来在这里只是个数字。它已经并入考点小结的「听不出来」块——那里带

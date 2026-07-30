@@ -180,15 +180,94 @@ describe('历史批次（store 是空的）', () => {
     expect(screen.getByRole('link', { name: /返回批次/ })).toBeInTheDocument()
   })
 
-  it('历史记录读不到时不崩，仍给得出返回入口', async () => {
+  it('历史记录读不到时说的是读取失败，不是「暂无材料」', async () => {
+    // 两件事要说成两句话：读取失败可以重试，「这一批确实没有这个场景」重试没用。
     historyDetail = null // batchHistoryDetail 会 reject
     renderPage('?batch=' + BATCH)
 
-    await waitFor(() => expect(screen.getByText('本场景暂无材料。')).toBeInTheDocument())
+    await waitFor(() =>
+      expect(screen.getByText(/这个历史批次暂时读取不到|读取不到/)).toBeInTheDocument(),
+    )
+    expect(screen.queryByText('本场景暂无材料。')).not.toBeInTheDocument()
     // batchId 从 URL 里就拿得到，所以这一屏仍然有出路。
     expect(screen.getByRole('link', { name: /返回批次/ }).getAttribute('href')).toBe(
       `/batches/${BATCH}`,
     )
+  })
+})
+
+/**
+ * 自定义场景。用户报的「有时候直接不显示对比视图」就是这一条，而且它 100% 复现——只是只发生在
+ * 自定义场景上，目录场景全都正常，所以看起来像偶发。
+ *
+ * 结果页按**归一后**的 key 分组（自定义是 `custom`，见 `groupKeyOf`），跳过来的 URL 就是
+ * `/compare/custom`；而材料自己带的是后端给的 `custom-<sha1(文本)[:8]>`。字面比较永远不相等。
+ */
+describe('自定义场景', () => {
+  /** 后端给自定义场景的材料打的是带哈希的 key。 */
+  function customRecords(n: number): MaterialRecord[] {
+    return records(n).map((r) => ({ ...r, scenario_key: 'custom-6cf6e9b3' }))
+  }
+
+  it('/compare/custom 匹配得上带哈希的 custom-xxxxxxxx', async () => {
+    const list = customRecords(2)
+    historyDetail = {
+      ...asHistoryDetail(list),
+      custom_label: '餐厅点餐',
+      scenarios: [{ scenario_key: 'custom', count: 2 }],
+    }
+    render(
+      <MemoryRouter initialEntries={[`/compare/custom?batch=${BATCH}`]}>
+        <Routes>
+          <Route path="/compare/:scenarioKey" element={<ComparePage />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => expect(shownPair()).toEqual(['m1', 'm2']))
+    expect(screen.queryByText('本场景暂无材料。')).not.toBeInTheDocument()
+  })
+
+  it('标题用用户输入的原文，不是「自定义场景」', async () => {
+    const list = customRecords(2)
+    historyDetail = {
+      ...asHistoryDetail(list),
+      custom_label: '餐厅点餐',
+      scenarios: [{ scenario_key: 'custom', count: 2 }],
+    }
+    render(
+      <MemoryRouter initialEntries={[`/compare/custom?batch=${BATCH}`]}>
+        <Routes>
+          <Route path="/compare/:scenarioKey" element={<ComparePage />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    // 用户刚从「餐厅点餐」那一组点进来，标题不该换个说法。h2 是页面标题，页内还有若干 h3。
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { level: 2 }).textContent).toContain('餐厅点餐'),
+    )
+  })
+})
+
+/**
+ * 「还在加载」和「没有材料」是两句不同的话。
+ *
+ * 取历史记录要一两秒（一次 S3 GET 加 N 个 sidecar）。这两个状态过去共用「本场景暂无材料。」那一屏，
+ * 于是用户先被告知没有、一秒后又被推翻——他报的原话是「会显示『本场景暂无材料』，然后等一会才会
+ * 出现对比视图」。
+ */
+describe('加载中', () => {
+  it('取记录期间说的是加载中，不是「暂无材料」', async () => {
+    historyDetail = asHistoryDetail(records(2))
+    renderPage('?batch=' + BATCH)
+
+    // 第一帧：请求还没回来。
+    expect(screen.getByText(/正在读取/)).toBeInTheDocument()
+    expect(screen.queryByText('本场景暂无材料。')).not.toBeInTheDocument()
+    // 回来之后才是内容。
+    await waitFor(() => expect(shownPair()).toEqual(['m1', 'm2']))
+    expect(screen.queryByText(/正在读取/)).not.toBeInTheDocument()
   })
 })
 
