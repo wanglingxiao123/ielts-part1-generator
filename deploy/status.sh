@@ -48,7 +48,51 @@ running=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SE
           --query 'services[0].runningCount' --output text 2>/dev/null || echo -)
 echo "desired=$desired running=$running"
 
-if [ "${running:-0}" != "0" ] && [ "${running:--}" != "-" ]; then
+# ── the edge ──────────────────────────────────────────────────────────────────
+#
+# The delivered address is CloudFront's, and it is stable across deploys. The task's own public IP is
+# still printed when there is no ALB, because the direct-IP shape still works — it just hands out a
+# new address every rolling update, which is why the edge exists.
+ALB_DNS=$(aws elbv2 describe-load-balancers --names "$ALB_NAME" \
+          --query 'LoadBalancers[0].DNSName' --output text 2>/dev/null || true)
+CF_DOMAIN=""
+CF_STATUS=""
+if [ -n "$ALB_DNS" ] && [ "$ALB_DNS" != "None" ]; then
+    printf '%-22s ' "ALB:"
+    tg_health=$(aws elbv2 describe-target-health \
+                --target-group-arn "$(aws elbv2 describe-target-groups --names "$TG_NAME" \
+                    --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null)" \
+                --query 'TargetHealthDescriptions[*].TargetHealth.State' --output text 2>/dev/null || true)
+    echo "$ALB_DNS  targets=[${tg_health:-none}]"
+
+    CF_ID=$(aws cloudfront list-distributions \
+            --query "DistributionList.Items[?Origins.Items[0].DomainName=='${ALB_DNS}'].Id | [0]" \
+            --output text 2>/dev/null || true)
+    if [ -n "$CF_ID" ] && [ "$CF_ID" != "None" ]; then
+        CF_DOMAIN=$(aws cloudfront get-distribution --id "$CF_ID" \
+                    --query 'Distribution.DomainName' --output text 2>/dev/null)
+        CF_STATUS=$(aws cloudfront get-distribution --id "$CF_ID" \
+                    --query 'Distribution.Status' --output text 2>/dev/null)
+        printf '%-22s ' "CloudFront:"
+        echo "$CF_DOMAIN  ($CF_STATUS)"
+    fi
+fi
+
+echo
+if [ -n "$CF_DOMAIN" ]; then
+    echo "  CLIENT URL:  https://${CF_DOMAIN}"
+    if [ "$CF_STATUS" != "Deployed" ]; then
+        echo "  (distribution is ${CF_STATUS} — a fresh one takes ~5-10 min to propagate)"
+    fi
+    echo "  (HTTPS end to end for the viewer; CloudFront -> ALB is plain HTTP inside AWS)"
+    if [ "${running:-0}" = "0" ] || [ "${running:--}" = "-" ]; then
+        echo "  (the task is stopped, so the URL will 502 — run 'bash deploy/start.sh')"
+    fi
+    # The ALB is reachable directly over plain HTTP by anyone who learns its hostname. Stated rather
+    # than implied: it is the one hole this shape leaves, and it is a deliberate trade (locking the
+    # origin to CloudFront needs a managed prefix list plus a secret header).
+    echo "  (the ALB hostname above also answers directly, over plain HTTP)"
+elif [ "${running:-0}" != "0" ] && [ "${running:--}" != "-" ]; then
     task=$(aws ecs list-tasks --cluster "$ECS_CLUSTER" --service-name "$ECS_SERVICE" \
            --query 'taskArns[0]' --output text 2>/dev/null)
     eni=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$task" \
@@ -56,15 +100,9 @@ if [ "${running:-0}" != "0" ] && [ "${running:--}" != "-" ]; then
           --output text 2>/dev/null)
     ip=$(aws ec2 describe-network-interfaces --network-interface-ids "$eni" \
          --query 'NetworkInterfaces[0].Association.PublicIp' --output text 2>/dev/null)
-    echo
     echo "  DEMO URL:  http://${ip}"
-    # Was "no login", which was simply untrue and dangerously so: it invited leaving the service
-    # up on the assumption that nothing was protected anyway. /api/* answers 401 without a
-    # session cookie and / redirects to /login. Credentials do cross the wire in clear text
-    # though, which is the real caveat for a plain-HTTP demo.
+    echo "  (no ALB yet, so this address changes on every deploy — run deploy/edge.sh)"
     echo "  (login required; plain HTTP, so credentials are unencrypted in transit)"
-    echo "  (stop the service when the demo ends — 0.0.0.0/0 ingress)"
 else
-    echo
-    echo "  service is stopped; run 'bash deploy/start.sh' before a demo"
+    echo "  service is stopped; run 'bash deploy/start.sh'"
 fi

@@ -102,22 +102,74 @@ echo "  registered ${TASK_FAMILY}:${REVISION}"
 SG_ID=$(aws ec2 describe-security-groups \
         --filters "Name=group-name,Values=$SG_NAME" "Name=vpc-id,Values=$VPC_ID" \
         --query 'SecurityGroups[0].GroupId' --output text)
+# `assignPublicIp=ENABLED` stays even though the task is now private behind an ALB: a Fargate task in
+# a public subnet needs a public IP to reach ECR (pull the image) and Bedrock. What makes it private
+# is the security group — it admits only the ALB's group (`deploy/edge.sh`), so the address exists but
+# nothing on the internet can open a connection to it.
 NET="awsvpcConfiguration={subnets=[${SUBNET_ID}],securityGroups=[${SG_ID}],assignPublicIp=ENABLED}"
 
+# The target group the ALB forwards to. Absent when `deploy/edge.sh` has not been run, and in that
+# case the service is created without a load balancer — the old direct-IP shape still works, it just
+# hands out a new address on every deploy.
+TG_ARN=$(aws elbv2 describe-target-groups --names "$TG_NAME" \
+         --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || true)
+if [ -z "$TG_ARN" ] || [ "$TG_ARN" = "None" ]; then
+    TG_ARN=""
+    echo "  NOTE: no target group — run deploy/edge.sh for a stable HTTPS URL"
+fi
+
 echo "== ECS service =="
-if aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
-   --query 'services[0].status' --output text 2>/dev/null | grep -q ACTIVE; then
+CURRENT_LB=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+             --query 'services[0].loadBalancers[0].targetGroupArn' --output text 2>/dev/null || true)
+SERVICE_STATUS=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+                 --query 'services[0].status' --output text 2>/dev/null || true)
+
+if [ "$SERVICE_STATUS" = "ACTIVE" ] && [ -n "$TG_ARN" ] && \
+   { [ "$CURRENT_LB" = "None" ] || [ -z "$CURRENT_LB" ]; }; then
+    # ECS cannot attach a load balancer to a service that was created without one. Recreating it is
+    # the only route, and it is stated rather than done quietly: the service is deleted and rebuilt,
+    # so the task is briefly gone. desiredCount is restored below.
+    echo "  the service predates the ALB and ECS cannot attach one in place."
+    echo "  deleting and recreating it (the task will be down for a minute)."
+    WANT=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+           --query 'services[0].desiredCount' --output text)
+    aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" \
+        --desired-count 0 >/dev/null
+    aws ecs delete-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" --force >/dev/null
+    aws ecs wait services-inactive --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+    SERVICE_STATUS="GONE"
+    RESTORE_COUNT="$WANT"
+fi
+
+if [ "$SERVICE_STATUS" = "ACTIVE" ]; then
     aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" \
         --task-definition "${TASK_FAMILY}:${REVISION}" --network-configuration "$NET" \
         --query 'service.serviceName' --output text
     echo "  updated (desiredCount unchanged)"
 else
+    LB_ARG=()
+    if [ -n "$TG_ARN" ]; then
+        LB_ARG=(--load-balancers "targetGroupArn=${TG_ARN},containerName=web,containerPort=${WEB_PORT}")
+        # The ALB needs a moment to call /healthz before ECS decides the task is unhealthy. Fargate
+        # tasks take ~40s to start serving; 90s of grace avoids a restart loop on a healthy task.
+        LB_ARG+=(--health-check-grace-period-seconds 90)
+    fi
     aws ecs create-service --cluster "$ECS_CLUSTER" --service-name "$ECS_SERVICE" \
-        --task-definition "${TASK_FAMILY}:${REVISION}" --desired-count 0 \
+        --task-definition "${TASK_FAMILY}:${REVISION}" \
+        --desired-count "${RESTORE_COUNT:-0}" \
         --launch-type FARGATE --network-configuration "$NET" \
+        "${LB_ARG[@]}" \
         --query 'service.serviceName' --output text
-    echo "  created at desiredCount=0 (costs nothing until started)"
+    if [ -n "${RESTORE_COUNT:-}" ]; then
+        echo "  recreated behind the ALB at desiredCount=${RESTORE_COUNT}"
+    else
+        echo "  created at desiredCount=0 (costs nothing until started)"
+    fi
 fi
 
 echo
-echo "next: bash deploy/start.sh"
+if [ -n "$TG_ARN" ]; then
+    echo "next: bash deploy/start.sh   then  bash deploy/status.sh  for the CloudFront URL"
+else
+    echo "next: bash deploy/start.sh"
+fi

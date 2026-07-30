@@ -42,14 +42,13 @@ SG_ID=$(aws ec2 describe-security-groups \
         --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null)
 if [ "$SG_ID" = "None" ] || [ -z "$SG_ID" ]; then
     SG_ID=$(aws ec2 create-security-group --group-name "$SG_NAME" \
-            --description "IELTS Part 1 demo web task" --vpc-id "$VPC_ID" \
-            --query 'GroupId' --output text)
-    aws ec2 authorize-security-group-ingress --group-id "$SG_ID" \
-        --protocol tcp --port "$WEB_PORT" --cidr "$INGRESS_CIDR" >/dev/null
-    echo "  created $SG_ID allowing tcp/$WEB_PORT from $INGRESS_CIDR"
-    if [ "$INGRESS_CIDR" = "0.0.0.0/0" ]; then
-        echo "  NOTE: open to the internet by design for the demo. Run deploy/stop.sh afterwards."
-    fi
+            --description "IELTS Part 1 web task (ingress granted by deploy/edge.sh)" \
+            --vpc-id "$VPC_ID" --query 'GroupId' --output text)
+    # No ingress rule here, on purpose. This group used to be opened to `INGRESS_CIDR`
+    # (0.0.0.0/0), which made the task directly reachable — and `deploy/edge.sh` then had to revoke
+    # it. Granting and revoking the same rule in two scripts is how one of them ends up forgotten.
+    # `edge.sh` grants the only rule the task needs: tcp/80 from the ALB's security group.
+    echo "  created $SG_ID with NO ingress (deploy/edge.sh grants ALB-only access)"
 else
     echo "  $SG_NAME already exists ($SG_ID)"
 fi

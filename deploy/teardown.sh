@@ -9,14 +9,52 @@
 
 source "$(dirname "$0")/config.sh"
 
+# Flipping `Enabled` in a distribution config. Held in a variable rather than a heredoc so the
+# surrounding `if` blocks stay readable; the CLI has no --enabled flag for this.
+DISABLE_CF_PY='
+import json, sys
+path = sys.argv[1]
+with open(path) as fh:
+    cfg = json.load(fh)
+cfg["Enabled"] = False
+with open(path, "w") as fh:
+    json.dump(cfg, fh)
+'
+
 if [ "${1:-}" != "--yes" ]; then
-    echo "This deletes the ECS service, cluster, AgentCore Runtime, ECR repos, IAM roles," >&2
-    echo "security group and log group for '$PROJECT'." >&2
+    echo "This deletes the CloudFront distribution, ALB, target group, ECS service, cluster," >&2
+    echo "AgentCore Runtime, ECR repos, IAM roles, security groups and log group for" >&2
+    echo "'$PROJECT'. The delivered HTTPS URL stops working and CANNOT be recreated -- a new" >&2
+    echo "distribution gets a different *.cloudfront.net hostname." >&2
     echo >&2
     echo "Re-run with --yes to proceed, or use deploy/stop.sh to just pause the demo." >&2
     exit 1
 fi
 require_creds
+
+# CloudFront first: a distribution must be disabled AND fully propagated before it can be deleted,
+# and that wait runs into minutes. Starting the disable here lets the rest of the teardown proceed
+# while it propagates; the delete itself is at the very end of this script.
+echo "== CloudFront (disable) =="
+ALB_DNS=$(aws elbv2 describe-load-balancers --names "$ALB_NAME" \
+          --query 'LoadBalancers[0].DNSName' --output text 2>/dev/null || true)
+CF_ID=""
+if [ -n "$ALB_DNS" ] && [ "$ALB_DNS" != "None" ]; then
+    CF_ID=$(aws cloudfront list-distributions \
+            --query "DistributionList.Items[?Origins.Items[0].DomainName=='${ALB_DNS}'].Id | [0]" \
+            --output text 2>/dev/null || true)
+fi
+if [ -n "$CF_ID" ] && [ "$CF_ID" != "None" ]; then
+    etag=$(aws cloudfront get-distribution-config --id "$CF_ID" --query 'ETag' --output text)
+    aws cloudfront get-distribution-config --id "$CF_ID" \
+        --query 'DistributionConfig' --output json >"/tmp/${PROJECT}-cf-disable.json"
+    python3 -c "$DISABLE_CF_PY" "/tmp/${PROJECT}-cf-disable.json"
+    aws cloudfront update-distribution --id "$CF_ID" --if-match "$etag" \
+        --distribution-config "file:///tmp/${PROJECT}-cf-disable.json" >/dev/null
+    echo "  disabled $CF_ID; it is deleted at the end of this script"
+else
+    echo "  not present"
+fi
 
 echo "== ECS service =="
 if aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
@@ -26,6 +64,31 @@ if aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" 
     aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" || true
     aws ecs delete-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" --force >/dev/null
     echo "  deleted $ECS_SERVICE"
+else
+    echo "  not present"
+fi
+
+# After the service is gone, so no target is still registered with the group.
+echo "== load balancer =="
+ALB_ARN=$(aws elbv2 describe-load-balancers --names "$ALB_NAME" \
+          --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || true)
+if [ -n "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ]; then
+    aws elbv2 delete-load-balancer --load-balancer-arn "$ALB_ARN" >/dev/null
+    echo "  deleted $ALB_NAME"
+    # The listener goes with the ALB. The target group does not, and it cannot be deleted while the
+    # ALB still references it — hence the wait.
+    aws elbv2 wait load-balancers-deleted --load-balancer-arns "$ALB_ARN" 2>/dev/null || true
+else
+    echo "  not present"
+fi
+
+echo "== target group =="
+TG_ARN=$(aws elbv2 describe-target-groups --names "$TG_NAME" \
+         --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || true)
+if [ -n "$TG_ARN" ] && [ "$TG_ARN" != "None" ]; then
+    aws elbv2 delete-target-group --target-group-arn "$TG_ARN" >/dev/null 2>&1 \
+        && echo "  deleted $TG_NAME" \
+        || echo "  $TG_NAME still referenced; retry in a minute"
 else
     echo "  not present"
 fi
@@ -69,18 +132,21 @@ for role in "${PROJECT}-ecs-exec" "${PROJECT}-runtime"; do
     fi
 done
 
-echo "== security group =="
-# Left until after the service is gone: a SG still attached to an ENI cannot be deleted.
-sg=$(aws ec2 describe-security-groups \
-     --filters "Name=group-name,Values=$SG_NAME" "Name=vpc-id,Values=$VPC_ID" \
-     --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null)
-if [ -n "$sg" ] && [ "$sg" != "None" ]; then
-    aws ec2 delete-security-group --group-id "$sg" 2>/dev/null \
-        && echo "  deleted $sg" \
-        || echo "  $sg still in use; retry in a minute once the ENI is released"
-else
-    echo "  not present"
-fi
+echo "== security groups =="
+# Left until after the service and the ALB are gone: a SG still attached to an ENI cannot be deleted.
+# Task SG first — it names the ALB SG as an ingress source, so the ALB SG cannot go while it exists.
+for sg_name in "$SG_NAME" "$ALB_SG_NAME"; do
+    sg=$(aws ec2 describe-security-groups \
+         --filters "Name=group-name,Values=$sg_name" "Name=vpc-id,Values=$VPC_ID" \
+         --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null)
+    if [ -n "$sg" ] && [ "$sg" != "None" ]; then
+        aws ec2 delete-security-group --group-id "$sg" 2>/dev/null \
+            && echo "  deleted $sg_name ($sg)" \
+            || echo "  $sg_name still in use; retry in a minute once the ENI is released"
+    else
+        echo "  $sg_name not present"
+    fi
+done
 
 echo "== log group =="
 aws logs delete-log-group --log-group-name "$LOG_GROUP" 2>/dev/null \
@@ -114,6 +180,22 @@ PY
 else
     n=$(aws s3 ls "s3://$S3_BUCKET/" --recursive 2>/dev/null | wc -l | tr -d ' ')
     echo "  KEPT $S3_BUCKET ($n objects). Pass --purge-s3 to delete generated materials too."
+fi
+
+# Last, because the disable had to propagate. A distribution still `InProgress` cannot be deleted,
+# so waiting here is the only correct order.
+if [ -n "$CF_ID" ] && [ "$CF_ID" != "None" ]; then
+    echo
+    echo "== CloudFront (delete) =="
+    echo "  waiting for the disable to propagate (several minutes)..."
+    aws cloudfront wait distribution-deployed --id "$CF_ID" 2>/dev/null || true
+    etag=$(aws cloudfront get-distribution-config --id "$CF_ID" \
+           --query 'ETag' --output text 2>/dev/null || true)
+    if [ -n "$etag" ]; then
+        aws cloudfront delete-distribution --id "$CF_ID" --if-match "$etag" >/dev/null 2>&1 \
+            && echo "  deleted $CF_ID" \
+            || echo "  not deletable yet; re-run this script, or delete $CF_ID in the console"
+    fi
 fi
 
 echo
