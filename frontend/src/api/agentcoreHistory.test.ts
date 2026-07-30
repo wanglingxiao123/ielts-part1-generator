@@ -132,3 +132,60 @@ describe('补生成 after a reload', () => {
     ).rejects.toMatchObject({ code: 'RETRY_EMPTY' })
   })
 })
+
+/**
+ * 试听历史批次的材料。
+ *
+ * 用户报的：历史记录里的材料点「生成音频」，报「材料不存在（本页会话内未见此材料）」。
+ *
+ * 根因和上面那条 `GET /materials/{id}` 是同一个：适配层的 `slots` 只装**本页会话生成的**批次，
+ * 历史批次按定义不在里面。`previewAudio` 先查它、查不到就本地抛 404——请求根本没发出去。而后端
+ * `preview_audio` 的第一步是 `registry.get(material_id)`，按 id 直接查候选注册表，跟前端会话无关，
+ * `store.load` 也不套 TTL（只有 `list_candidates` 套）。这个请求后端本来处理得了。
+ *
+ * 客户对只读批次的要求是「可看材料、可试听」，所以这不是可选项。
+ */
+describe('试听不依赖本页会话', () => {
+  const HISTORICAL = '20260730-booking-hotel-f7155004'
+
+  it('历史材料的 preview_audio 真的发到后端，而不是本地拒掉', async () => {
+    responses['/api/invocations'] = [
+      200,
+      { material_id: HISTORICAL, audio_job_id: 'job-1', status: 'queued', repeat: false },
+    ]
+    const body = await transport({
+      method: 'POST',
+      path: `/materials/${HISTORICAL}/audio`,
+      body: {},
+    })
+    // 这一行是缺陷本身：以前 fetched 是空的——本地 404，一个字节都没发出去。
+    expect(fetched).toEqual(['/api/invocations'])
+    expect(body).toMatchObject({ material_id: HISTORICAL })
+  })
+
+  it('材料真的不存在时，用的是后端的说法', async () => {
+    // 后端 `UnknownMaterial` 分得清三种情况（从未提供 / 已丢弃 / 提供已过期），比前端那句
+    // 「本页会话内未见此材料」准——那句话描述的是前端自己的记忆，不是材料的状态。
+    responses['/api/invocations'] = [
+      404,
+      { error: { code: 'MATERIAL_NOT_FOUND', message: "no candidate 'x'; it was never offered" } },
+    ]
+    const failure = await transport({
+      method: 'POST',
+      path: '/materials/does-not-exist/audio',
+      body: {},
+    }).catch((e: { message?: string }) => e)
+    expect(fetched).toEqual(['/api/invocations'])
+    expect((failure as { message?: string }).message).not.toContain('本页会话')
+  })
+
+  it('轮询音频状态也不依赖本页会话', async () => {
+    responses['/api/invocations'] = [
+      200,
+      { material_id: HISTORICAL, status: 'not_requested', progress: { done: 0, total: 0 } },
+    ]
+    const body = await transport({ method: 'GET', path: `/materials/${HISTORICAL}/audio` })
+    expect(fetched).toEqual(['/api/invocations'])
+    expect(body).toMatchObject({ status: 'not_requested' })
+  })
+})

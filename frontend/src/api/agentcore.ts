@@ -1037,8 +1037,12 @@ function snapshot(session: Session): BatchSnapshot {
  * could approve a material on the strength of a tone.
  */
 async function selectMaterial(materialId: string): Promise<SelectMaterialResponse> {
+  /* 和 `previewAudio` 同一个问题：这里原来查不到 slot 就本地抛 404，而 `slots` 只装本页会话生成的
+   * 批次。后端 `select` 也是按 id 查注册表的，所以那道门只会拦住历史材料。
+   *
+   * `hit` 现在只用于兜底算 siblings，查不到就不兜——后端自己会回 `siblings_discarded`，那份才是
+   * 权威的（它知道哪些真被丢弃了）。 */
   const hit = findSlotByMaterial(materialId)
-  if (!hit) throw new ApiError(404, 'MATERIAL_NOT_FOUND', '材料不存在（本页会话内未见此材料）')
 
   const body = await invoke<{
     material_id?: string
@@ -1052,7 +1056,8 @@ async function selectMaterial(materialId: string): Promise<SelectMaterialRespons
   return {
     material_id: body.material_id ?? materialId,
     audio_job_id: body.audio_job_id ?? materialId,
-    siblings_discarded: body.siblings_discarded ?? siblingsOf(hit, materialId),
+    siblings_discarded:
+      body.siblings_discarded ?? (hit ? siblingsOf(hit, materialId) : []),
   }
 }
 
@@ -1064,9 +1069,15 @@ async function selectMaterial(materialId: string): Promise<SelectMaterialRespons
  * 了」，对比视图据此把同组的另一套置灰。试听记成选定会让页面谎报一个还没发生的决定。
  */
 async function previewAudio(materialId: string): Promise<PreviewAudioResponse> {
-  if (!findSlotByMaterial(materialId)) {
-    throw new ApiError(404, 'MATERIAL_NOT_FOUND', '材料不存在（本页会话内未见此材料）')
-  }
+  /* 这里原来先查 `findSlotByMaterial`，查不到就本地抛 404「材料不存在（本页会话内未见此材料）」。
+   *
+   * 那道门是多余的，而且它挡掉的正是它该放过的请求：`slots` 只装**本页会话生成的**批次，历史批次
+   * 按定义不在里面，所以在历史材料的阅读页点「生成音频」，请求根本没发出去就被自己拒了。而后端
+   * `preview_audio` 的第一步是 `registry.get(material_id)`——按 id 直接查候选注册表，跟前端会话
+   * 无关，`store.load` 也不套 TTL（只有 `list_candidates` 套）。也就是说这个请求后端本来处理得了。
+   *
+   * 客户对只读批次的要求是「可看材料、可试听」，而试听的入口就在阅读页。材料不存在的情形交给后端
+   * 回答：它的 `UnknownMaterial` 说得比这里准（「从未被提供、已被丢弃、或提供已过期」三种情况）。 */
   const body = await invoke<WireAudioStatus>({
     action: 'preview_audio',
     material_id: materialId,
