@@ -185,6 +185,15 @@ def _as_float(value: Any) -> float:
         return 0.0
 
 
+def _as_int(value: Any) -> int:
+    """0 for anything unusable. A material's within-scenario position is never negative, and a
+    missing one seating the card at 0 is the failure this field exists to prevent -- so an absent
+    value is normalised here rather than left as None for a consumer to default."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return max(0, int(value))
+
+
 class BatchHistory:
     """Read and mutate batch records. One instance per web tier; safe to share across requests."""
 
@@ -388,6 +397,11 @@ class BatchRecorder:
             "material_id": str(material_id),
             "scenario_key": str(event.get("scenario_key") or event.get("scenario") or ""),
             "slot_id": str(event.get("slot_id") or ""),
+            # Read back by `get_batch` and used to seat the card at `(scenario_key, index)`. It was
+            # absent here while being read there, so every historical material came back with
+            # `index: None`, the frontend defaulted it to 0, and the second material of a scenario
+            # landed on the first one's slot -- half a batch vanishing from its own history.
+            "index": _as_int(event.get("index")),
             "verdict": str((event.get("audit") or {}).get("verdict") or ""),
             "degraded": bool(event.get("degraded")),
             "created_at": _as_float(event.get("at")) or time.time(),

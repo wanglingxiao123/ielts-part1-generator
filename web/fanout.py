@@ -65,7 +65,7 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, AsyncIterator, Dict, List, Tuple
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from .runtime_client import SSE_CONTENT_TYPE, iter_sse_payloads, new_session_id, read_json
 
@@ -103,14 +103,17 @@ class ChildPlan(object):
     than one material -- see `plan_children`. In the normal case it has exactly one entry.
     """
 
-    __slots__ = ("index", "payload", "slot_ids", "scenario")
+    __slots__ = ("index", "payload", "slot_ids", "scenario", "seats")
 
     def __init__(self, index: int, payload: Dict[str, Any], slot_ids: List[str],
-                 scenario: str) -> None:
+                 scenario: str, seats: Optional[Dict[str, int]] = None) -> None:
         self.index = index
         self.payload = payload
         self.slot_ids = slot_ids
         self.scenario = scenario
+        # slot_id -> the material's position within its scenario. Empty only for a hand-built plan
+        # in a test; `plan_children` always supplies it.
+        self.seats = dict(seats or {})
 
 
 def plan_children(
@@ -159,14 +162,25 @@ def plan_children(
 
     children: List[ChildPlan] = []
     slot_ids: List[str] = []
+    # slot_id -> the material's position WITHIN its scenario. Counted here because each child is
+    # planned for ONE material, so a child cannot derive it from its own allotment: every child
+    # would answer 0. Both the live grid and batch history seat a card at `(scenario_key, index)`,
+    # and with every index 0 the second material of a scenario overwrote the first -- a 3x2 batch
+    # rendered three cards and reported 「已完成 3/6，其余未能生成」 while all six sat in S3.
+    seat_of: Dict[str, int] = {}
+    seen_per_scenario: Dict[str, int] = {}
 
     def add(child_payload: Dict[str, Any], scenario: str, materials: int) -> None:
         allotted = [
             "slot-%d" % (len(slot_ids) + offset + 1) for offset in range(materials)
         ]
+        for slot in allotted:
+            seat_of[slot] = seen_per_scenario.get(scenario, 0)
+            seen_per_scenario[scenario] = seat_of[slot] + 1
         slot_ids.extend(allotted)
         child_payload["batch_id"] = batch_id
-        children.append(ChildPlan(len(children), child_payload, allotted, scenario))
+        children.append(ChildPlan(len(children), child_payload, allotted, scenario,
+                                  {slot: seat_of[slot] for slot in allotted}))
 
     for entry in requested:
         if not isinstance(entry, str):
@@ -583,6 +597,20 @@ class FanOut(object):
             event = dict(event)
             slot_id = rename(str(event["slot_id"]))
             event["slot_id"] = slot_id
+            # `index` is the material's position WITHIN its scenario, and it has to travel with the
+            # event because two separate consumers key on it:
+            #
+            #   * the live grid seats a material at `(scenario_key, index)` (resultSlots.ts), and
+            #   * batch history replays that seating after a reload.
+            #
+            # Without it both fell back to 0, so the second material of a scenario overwrote the
+            # first: a 3x2 batch rendered as three cards and read as "已完成 3/6，其余未能生成"
+            # even though all six were generated and all six sidecars were in S3.
+            #
+            # The child knows this for free -- `slot_ids` is exactly its own allotment, in order --
+            # so it is a lookup rather than a guess.
+            if slot_id in child.seats:
+                event["index"] = child.seats[slot_id]
             # The summary counts come from here, not from the children's own summaries -- see
             # `_Merge`. `material_failed` with `skipped: true` is the time-budget case, which the
             # frontend distinguishes and the summary must not report as an outright failure.

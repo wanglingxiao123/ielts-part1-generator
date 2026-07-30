@@ -228,6 +228,20 @@ class TestRecording:
         assert {m["material_id"] for m in batch["materials"]} == {
             "20260730-booking-hotel-aaaaaaaa", "20260730-booking-hotel-bbbbbbbb",
         }
+        # Two materials of ONE scenario must carry distinct `index` values. This assertion is the
+        # one this test was missing, and its absence let a real defect through: `_on_material` never
+        # recorded `index` while `get_batch` read it, so every historical material came back with
+        # `index: None`. The frontend seats a card at `(scenario_key, index)` and defaults a missing
+        # index to 0, so both materials claimed slot 0 and the second overwrote the first. A 3x2
+        # batch rendered three cards and reported 「已完成 3/6，其余未能生成」 while all six
+        # materials, and all six sidecars, were present in S3.
+        by_id = {m["material_id"]: m for m in batch["materials"]}
+        assert sorted(m["index"] for m in batch["materials"]) == [0, 1]
+        assert by_id["20260730-booking-hotel-aaaaaaaa"]["index"] == 0
+        assert by_id["20260730-booking-hotel-bbbbbbbb"]["index"] == 1
+        # And the seating key itself must be unique, which is what the grid actually collides on.
+        seats = {(m["scenario_key"], m["index"]) for m in batch["materials"]}
+        assert len(seats) == len(batch["materials"])
 
     async def test_the_final_state_lands_even_when_a_write_is_slow(
         self, auth, static_dir, fanout_runtime: FanOutRuntimeClient,
