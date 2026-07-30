@@ -103,6 +103,58 @@ def record(**overrides):
     return base
 
 
+class TestSeatsAreRecoveredForOldRecords:
+    """Records written before `index` was stored must still render every material.
+
+    Shape taken verbatim from the deployed bucket (2026-07-30): six materials of a 3x2 batch, each
+    carrying material_id / scenario_key / slot_id / verdict and NO index. Read back as-is the
+    frontend defaulted every index to 0, so the two materials of each scenario collided on seat 0
+    and the batch showed three cards while reporting 「已完成 3/6，其余未能生成」.
+    """
+
+    def _legacy(self):
+        pairs = [("slot-1", "booking-hotel"), ("slot-2", "booking-hotel"),
+                 ("slot-3", "accommodation-student-hall"),
+                 ("slot-4", "accommodation-student-hall"),
+                 ("slot-5", "daily-driving-lessons"), ("slot-6", "daily-driving-lessons")]
+        return {
+            "batch_id": "web-1785389140266-4",
+            "created_at": time.time(),
+            "state": "complete",
+            "requested_total": 6,
+            "materials": [
+                {"material_id": "20260730-%s-%02d" % (scenario, i), "scenario_key": scenario,
+                 "slot_id": slot, "verdict": "PASS", "degraded": False}
+                for i, (slot, scenario) in enumerate(pairs)
+            ],
+        }
+
+    def test_every_material_gets_its_own_seat(self):
+        view = derive(self._legacy())
+        materials = view["materials"]
+        assert len(materials) == 6
+        seats = {(m["scenario_key"], m["index"]) for m in materials}
+        assert len(seats) == 6, "two materials sharing a seat is how half the batch disappeared"
+        by_slot = {m["slot_id"]: m["index"] for m in materials}
+        assert by_slot == {"slot-1": 0, "slot-2": 1, "slot-3": 0,
+                           "slot-4": 1, "slot-5": 0, "slot-6": 1}
+
+    def test_a_stored_index_is_never_overwritten(self):
+        """Reconstruction is a fallback. If the allotment order ever changes, the recorded value has
+        to win -- otherwise this function would silently rewrite correct data."""
+        record = self._legacy()
+        for material in record["materials"]:
+            material["index"] = 7
+        assert {m["index"] for m in derive(record)["materials"]} == {7}
+
+    def test_a_record_with_no_slot_ids_still_returns_every_material(self):
+        """Older still, or malformed. Seats may then collide, but nothing may be dropped."""
+        record = self._legacy()
+        for material in record["materials"]:
+            material.pop("slot_id")
+        assert len(derive(record)["materials"]) == 6
+
+
 # ── the status derivation ────────────────────────────────────────────────────
 
 

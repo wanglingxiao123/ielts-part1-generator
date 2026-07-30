@@ -131,6 +131,42 @@ def new_batch_id(counter: int, *, now: Optional[float] = None) -> str:
     return "web-%d-%d" % (int(moment * 1000), counter)
 
 
+def _slot_number(material: Dict[str, Any]) -> int:
+    digits = "".join(ch for ch in str(material.get("slot_id") or "") if ch.isdigit())
+    return int(digits) if digits else 0
+
+
+def _with_seats(materials: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Fill in `index` for records written before it was stored.
+
+    Batches recorded before that fix hold every field EXCEPT `index`, so a reader defaulted it to 0
+    and both materials of a scenario landed on seat 0 -- half the batch vanishing from its own
+    history. The data is intact; only the seat number is missing, and `slot_id` is enough to
+    recover it: `plan_children` allots slots in scenario order, so numbering each scenario's
+    materials by ascending slot reproduces exactly what the fan-out now sends. Verified against the
+    deployed records -- a 3x2 batch derives (0,1) per scenario, matching its declared counts.
+
+    Done on read rather than by rewriting S3: the stored records stay untouched (nothing to roll
+    back if this is wrong), and a record that DOES carry an index keeps it, so a future change to
+    the allotment order cannot be silently overwritten by this reconstruction.
+    """
+    if all(isinstance(m.get("index"), int) and not isinstance(m.get("index"), bool)
+           for m in materials):
+        return materials
+    seen: Dict[str, int] = {}
+    seats: Dict[int, int] = {}
+    for material in sorted(materials, key=_slot_number):
+        scenario = str(material.get("scenario_key") or "")
+        seats[id(material)] = seen.get(scenario, 0)
+        seen[scenario] = seats[id(material)] + 1
+    return [
+        material if isinstance(material.get("index"), int)
+        and not isinstance(material.get("index"), bool)
+        else dict(material, index=seats[id(material)])
+        for material in materials
+    ]
+
+
 def derive(record: Dict[str, Any], *, now: Optional[float] = None) -> Dict[str, Any]:
     """The batch record as the history panel needs it: status, read-only, counts, scenarios.
 
@@ -151,7 +187,7 @@ def derive(record: Dict[str, Any], *, now: Optional[float] = None) -> Dict[str, 
     else:
         status = PENDING_SELECTION
 
-    materials = [m for m in (record.get("materials") or []) if isinstance(m, dict)]
+    materials = _with_seats([m for m in (record.get("materials") or []) if isinstance(m, dict)])
 
     return {
         "batch_id": str(record.get("batch_id") or ""),
