@@ -66,4 +66,33 @@ if [ -z "$BACKEND_PYTHON" ]; then
 fi
 "$BACKEND_PYTHON" -m pytest backend/tests -q || fail "backend unit tests"
 
+echo "== gate 8: every first-party package an image imports is COPYed into it =="
+# Twice now a Dockerfile has shipped without a module its code imports at run time, and neither
+# time did anything fail until production: the imports sit inside functions, so the build, the
+# health check and every local test pass while the feature is dead in the container. First
+# backend/Dockerfile without audio_storage (symptom: material_id null), then web/Dockerfile
+# without it (symptom: /api/batch-history 502). This gate compares imports against COPYs.
+"$BACKEND_PYTHON" - <<'PY' || fail "image is missing a package it imports"
+import pathlib, re, sys
+
+FIRST_PARTY = {"audio_storage", "backend", "web", "skills"}
+ok = True
+for dockerfile, sources in (("backend/Dockerfile", "backend"), ("web/Dockerfile", "web")):
+    text = pathlib.Path(dockerfile).read_text(encoding="utf-8")
+    copied = set(re.findall(r"^COPY\s+(?:--from=\S+\s+)?(\w+)/", text, re.M))
+    imported = set()
+    for path in pathlib.Path(sources).rglob("*.py"):
+        if "tests" in path.parts or "scripts" in path.parts:
+            continue
+        body = path.read_text(encoding="utf-8")
+        imported |= set(re.findall(r"^\s*(?:from|import)\s+(\w+)", body, re.M))
+    missing = sorted((imported & FIRST_PARTY) - copied - {sources})
+    if missing:
+        ok = False
+        print("  %s never COPYs: %s" % (dockerfile, ", ".join(missing)))
+    else:
+        print("  %s: ok" % dockerfile)
+sys.exit(0 if ok else 1)
+PY
+
 exit "$status"

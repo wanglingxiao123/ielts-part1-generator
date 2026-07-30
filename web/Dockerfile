@@ -28,6 +28,13 @@ RUN pip install --no-cache-dir \
         "boto3>=1.40"
 
 COPY web/ /app/web/
+# batch_store.py reaches for `audio_storage.object_store` at run time, so the module has to be in
+# the image. Its absence did not break the build, the health check, or any local test -- the import
+# is inside a function and a local run resolves it from the repo. The only symptom was
+# `/api/batch-history` returning 502 with ModuleNotFoundError in the task log, i.e. the whole
+# history feature dead in production while every test was green. Same omission as
+# backend/Dockerfile had for the same module; fixed there earlier this session.
+COPY audio_storage/ /app/audio_storage/
 COPY --from=frontend /build/dist/ /app/web/static/
 
 # Non-root, binding port 80. That combination is normally impossible, and it works here for one
