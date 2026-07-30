@@ -79,6 +79,7 @@ from .auth import (
 from .batch_history import BatchHistory, BatchRecorder, new_batch_id
 from .fanout import (
     FANOUT_CONCURRENCY,
+    HEARTBEAT,
     FanOut,
     build_executor,
     plan_children,
@@ -615,6 +616,12 @@ async def _frames(fan: FanOut, recorder: Optional[BatchRecorder] = None) -> Asyn
             # it was asked for.
             recorder.start()
         async for event in fan.events():
+            if event is HEARTBEAT:
+                # An SSE **comment**, not an event: it must not reach a reducer, mint a `seq`, or be
+                # recorded. Its only job is to put bytes on the wire so no intermediary calls a
+                # silent-but-healthy batch a dead connection (see fanout.HEARTBEAT).
+                yield b": hb\n\n"
+                continue
             if recorder is not None:
                 recorder.on_event(event)
             yield ("data: %s\n\n" % json.dumps(event, ensure_ascii=False)).encode("utf-8")

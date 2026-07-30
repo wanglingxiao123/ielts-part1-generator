@@ -25,6 +25,7 @@ import threading
 
 import pytest
 
+from web import fanout
 from web.fanout import (FANOUT_CONCURRENCY, FanOut, build_executor, launch_order,
                         plan_children)
 
@@ -616,3 +617,89 @@ class TestAbandonment:
                 break
             await asyncio.sleep(0.005)
         assert held.closed is True, "an abandoned child's body was left open"
+
+
+# ── 心跳 ─────────────────────────────────────────────────────────────────────
+
+
+class TestHeartbeat:
+    """静默的合流必须仍然往线上写字节。
+
+    实测：一个 8 套的真实批次在两个相邻事件之间静默了 96 秒（216.6s → 313.0s）——一个 child 从
+    `generating` 到它的终态帧之间什么都不说，而并发 6 时后面那一波还没开始。96 秒长于所有中间层的
+    空闲读取容忍度（CloudFront 源站读取上限 60s，ALB 空闲默认 60s），所以不发心跳的话，一个跑得
+    好好的批次会在中途被掐断，浏览器看到的是「连接丢失」。
+
+    心跳是 `HEARTBEAT` 哨兵，由 `web/app.py` 成帧为 SSE **注释**（`: hb`）。它不进事件流：不进
+    reducer、不占 seq、不被 recorder 记录。测的就是这两件事——它出现，且它不是事件。
+    """
+
+    async def test_silence_yields_a_heartbeat(self, executor, monkeypatch):
+        """child 迟迟不说话时，合流自己发心跳，而不是干等。"""
+        monkeypatch.setattr(fanout, "HEARTBEAT_SECONDS", 0.05)
+        runtime = FanOutRuntimeClient()
+        body = runtime.body_for("slot-1")
+        fan = build(runtime, {"scenarios": ["a"], "count": 1}, executor)
+
+        seen = []
+
+        async def consume():
+            async for item in fan.events():
+                seen.append(item)
+                # 收到两个心跳就说明机制在转；然后放行让批次正常收尾。
+                if sum(1 for x in seen if x is fanout.HEARTBEAT) >= 2:
+                    for event in child_batch("a"):
+                        body.push_event(event)
+                    body.finish()
+
+        await asyncio.wait_for(consume(), timeout=10.0)
+
+        hearts = [x for x in seen if x is fanout.HEARTBEAT]
+        assert len(hearts) >= 2, "静默期没有发出心跳：%r" % (seen,)
+
+    async def test_heartbeat_is_not_an_event(self, executor, monkeypatch):
+        """心跳不能污染事件序列。
+
+        这是哨兵而不是 `{"type": "ping"}` 的全部理由。一个占了 seq 的 keepalive 会让重连的游标停在
+        一个不携带任何状态的帧上——6 分钟的批次有约 24 个这样的帧。
+        """
+        monkeypatch.setattr(fanout, "HEARTBEAT_SECONDS", 0.05)
+        runtime = FanOutRuntimeClient()
+        body = runtime.body_for("slot-1")
+        fan = build(runtime, {"scenarios": ["a"], "count": 1}, executor)
+
+        seen = []
+
+        async def consume():
+            async for item in fan.events():
+                seen.append(item)
+                if sum(1 for x in seen if x is fanout.HEARTBEAT) >= 1 and not body.closed:
+                    for event in child_batch("a"):
+                        body.push_event(event)
+                    body.finish()
+
+        await asyncio.wait_for(consume(), timeout=10.0)
+
+        events = [x for x in seen if x is not fanout.HEARTBEAT]
+        # 心跳不是 dict，所以任何按 `event["type"]` 分发的代码都碰不到它。
+        for heart in [x for x in seen if x is fanout.HEARTBEAT]:
+            assert not isinstance(heart, dict)
+        # 事件序列本身完好：一个 batch_started、一个终态、一个 batch_completed。
+        types = [e["type"] for e in events]
+        assert types[0] == "batch_started"
+        assert types[-1] == "batch_completed"
+        assert "material_completed" in types
+
+    async def test_a_busy_stream_needs_no_heartbeat(self, executor, monkeypatch):
+        """事件不断时不该额外插心跳——那只是噪音。"""
+        monkeypatch.setattr(fanout, "HEARTBEAT_SECONDS", 30.0)
+        runtime = FanOutRuntimeClient()
+        for slot in ("slot-1", "slot-2"):
+            body = runtime.body_for(slot)
+            for event in child_batch(slot):
+                body.push_event(event)
+            body.finish()
+        fan = build(runtime, {"scenarios": ["a"], "count": 2}, executor)
+
+        seen = await drain(fan)
+        assert not any(x is fanout.HEARTBEAT for x in seen)

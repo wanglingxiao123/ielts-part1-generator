@@ -80,6 +80,8 @@ __all__ = [
     "FanOut",
     "plan_children",
     "launch_order",
+    "HEARTBEAT",
+    "HEARTBEAT_SECONDS",
 ]
 
 # How many materials the web tier will have in flight at once.
@@ -97,8 +99,34 @@ FANOUT_CONCURRENCY = max(1, int(os.environ.get("WEB_FANOUT_CONCURRENCY", "6")))
 # report an honest `deadline_at`; the backend enforces its own budget inside each child.
 PER_MATERIAL_WALL_SECONDS = float(os.environ.get("WEB_PER_MATERIAL_WALL", "900"))
 
+# How long the merged stream may stay silent before it emits a keepalive.
+#
+# Measured, not guessed: a real 8-material batch went 96 seconds between two consecutive events
+# (216.6s -> 313.0s), and a larger batch waits longer -- a child produces nothing between
+# `generating` and its terminal frame, and with concurrency 6 a later wave has not started yet.
+#
+# 96 seconds of silence is longer than every intermediary's idle-read tolerance. CloudFront's
+# origin read timeout maxes out at 60s without a support case; ALB's idle timeout defaults to 60s.
+# Without a keepalive the connection is severed mid-batch and the browser sees a lost stream for a
+# batch that is running perfectly well. 15s leaves a wide margin under both.
+HEARTBEAT_SECONDS = float(os.environ.get("WEB_SSE_HEARTBEAT", "15"))
+
 # Marks a child's end on the merge queue. A unique object, so it can never collide with an event.
 _CHILD_DONE = object()
+
+# Yielded by `FanOut.events()` when the merge has been silent for `HEARTBEAT_SECONDS`.
+#
+# A sentinel object rather than a `{"type": "ping"}` dict, and that distinction is the whole design:
+# a keepalive must NOT enter the event stream. `web/app.py` frames it as an SSE **comment**
+# (`: hb`), which every layer already ignores -- `sseClient.ts:88` and `agentcore.ts:478` both skip
+# lines starting with `:`, and `agentcore.test.ts` has a test for it. So it reaches no reducer, mints
+# no `seq`, and is invisible to `since_seq` replay and to the batch recorder.
+#
+# The alternative -- the `ping` event §8 already defines -- would have to take a seq to be
+# well-formed, and then a reconnecting client's cursor would sit on a frame that carries no state.
+# Every 15 seconds of a 6-minute batch is ~24 such frames; a client resuming from one of them would
+# be told "nothing new" for a batch that had in fact delivered materials.
+HEARTBEAT = object()
 
 
 class ChildPlan(object):
@@ -493,8 +521,11 @@ class FanOut(object):
                 return custom.strip()
         return ""
 
-    async def events(self) -> AsyncIterator[Dict[str, Any]]:
+    async def events(self) -> AsyncIterator[Any]:
         """Yield one coherent batch's worth of events: one start, the middles, one completion.
+
+        Yields event dicts, plus the `HEARTBEAT` sentinel whenever the merge has been silent for
+        `HEARTBEAT_SECONDS`. The caller frames that as an SSE comment -- see `HEARTBEAT`.
 
         ``batch_started`` carries ``batch_id``, and that field is not decoration. The web tier mints
         the id (`new_batch_id`), keys the S3 record on it (`web/batch_history.py`) and plans the
@@ -570,7 +601,16 @@ class FanOut(object):
 
         try:
             while remaining > 0:
-                child, item = await queue.get()
+                try:
+                    # A timeout rather than a plain `get()`: the merge is silent for as long as
+                    # every in-flight child is silent, and a child says nothing between
+                    # `generating` and its terminal frame -- measured at 96s on a real batch.
+                    child, item = await asyncio.wait_for(queue.get(), HEARTBEAT_SECONDS)
+                except asyncio.TimeoutError:
+                    # Nothing arrived. Keep the connection alive and go back to waiting; the loop
+                    # condition is unchanged, so this cannot terminate the stream early.
+                    yield HEARTBEAT
+                    continue
                 if item is _CHILD_DONE:
                     remaining -= 1
                     continue
