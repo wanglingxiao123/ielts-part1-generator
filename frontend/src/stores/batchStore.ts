@@ -50,6 +50,8 @@ export interface BatchState {
   batchId: string | null
   status: BatchStatus
   total: number
+  /** 自定义场景的用户原文；目录场景为空串。分组标题用它，不用模型扩写的句子。 */
+  customLabel: string
   /**
    * 用户提交时选的「每场景几套」，顺序即他勾选的顺序。
    *
@@ -92,6 +94,7 @@ const EMPTY: BatchState = {
   batchId: null,
   status: 'queued',
   total: 0,
+  customLabel: '',
   requested: [],
   createdAt: null,
   seqHigh: 0,
@@ -253,10 +256,12 @@ export const useBatchStore = create<BatchState & Actions>((set, get) => ({
       let status = s.status
       let connection = s.connection
       let itemOrder = s.itemOrder
+      let customLabel = s.customLabel
 
       switch (event.event) {
         case 'hello':
           status = 'running'
+          if (event.custom_label) customLabel = event.custom_label
           break
         case 'progress': {
           const prev = items[event.material_id]
@@ -320,7 +325,7 @@ export const useBatchStore = create<BatchState & Actions>((set, get) => ({
           break
       }
 
-      return { seenSeqs, seqHigh, items, materials, status, connection, itemOrder }
+      return { seenSeqs, seqHigh, items, materials, status, connection, itemOrder, customLabel }
     })
     return true
   },

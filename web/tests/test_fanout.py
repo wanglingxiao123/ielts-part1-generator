@@ -25,7 +25,8 @@ import threading
 
 import pytest
 
-from web.fanout import FANOUT_CONCURRENCY, FanOut, build_executor, plan_children
+from web.fanout import (FANOUT_CONCURRENCY, FanOut, build_executor, launch_order,
+                        plan_children)
 
 from .conftest import FakeStreamingBody, FanOutRuntimeClient, slot_from_session
 
@@ -111,6 +112,56 @@ class TestPlanChildren:
             {"scenarios": ["a", "b", "c"], "count": 10}, batch_id="b1",
         )
         assert len(children) == 30 and len(slots) == 30
+
+
+class TestLaunchOrder:
+    """Which children get a worker first. Separate from the slot plan, and it has to stay separate:
+    slot ids are the frontend's card grid, start order is a scheduling choice."""
+
+    def test_every_scenario_gets_a_material_in_the_first_wave(self):
+        """The user's report: 「前面几个类别都跑完了，自定义类别才开始跑」.
+
+        Plan order groups a scenario's materials together, so with concurrency 6 a 7x3 batch put the
+        custom scenario in slots 19-21 -- three waves in. Nothing was wrong except the order.
+        """
+        children, _ = plan_children(
+            {"scenarios": ["a", "b", "c", "d", "e", "f"], "count": 3,
+             "custom_scenario": {"prompt_hint": "餐厅点餐", "count": 3}},
+            batch_id="b1",
+        )
+        order = launch_order(children)
+        assert len(order) == len(children) == 21
+        first_wave = [c.scenario for c in order[:7]]
+        assert sorted(first_wave) == ["a", "b", "c", "custom", "d", "e", "f"]
+
+    def test_the_slot_ids_are_untouched(self):
+        """Reordering the launch must not renumber anything: the frontend matches cards by exact id,
+        and a moved slot attaches a material to the wrong card."""
+        children, slots = plan_children(
+            {"scenarios": ["a", "b"], "counts": {"a": 2, "b": 2}}, batch_id="b1",
+        )
+        order = launch_order(children)
+        assert sorted(c.slot_ids[0] for c in order) == slots
+        for child in order:
+            assert child.slot_ids == children[child.index].slot_ids
+            assert child.seats == children[child.index].seats
+
+    def test_a_scenario_keeps_its_own_materials_in_order(self):
+        """Within one scenario, seat 0 starts before seat 1 -- so the first card of a group fills
+        first and 「第 1 套」 is not perpetually behind 「第 2 套」."""
+        children, _ = plan_children({"scenarios": ["a"], "count": 4}, batch_id="b1")
+        order = launch_order(children)
+        assert [c.slot_ids[0] for c in order] == ["slot-1", "slot-2", "slot-3", "slot-4"]
+
+    def test_every_child_is_launched_exactly_once(self):
+        children, _ = plan_children(
+            {"scenarios": ["a", "b", "c"], "counts": {"a": 1, "b": 5, "c": 2}}, batch_id="b1",
+        )
+        order = launch_order(children)
+        assert sorted(c.index for c in order) == list(range(len(children)))
+
+    def test_nothing_to_launch_is_not_an_error(self):
+        assert launch_order([]) == []
 
 
 # ── the merged stream ────────────────────────────────────────────────────────

@@ -756,9 +756,10 @@ export function BatchProgressPage() {
         // 一度用的是材料自带的 `material.scenario`，那是错的：模型会把「餐厅点餐」扩写成一整句
         // "A customer phones a restaurant to book a family dinner..."，于是标题变成模型的改写而
         // 不是用户的话，还长得撑破侧栏。目录场景不需要它（有中文名），所以只在这里用。
-        // 实时批次尚未落库，退回材料自带的场景句：它不是用户原文，但比一串哈希强，且这条路径
-        // 只在生成当下短暂用到——刷新后走的就是历史记录里的原文。
+        // 实时批次还没有历史记录可查（`useHistoricalBatch` 对活批次是关闭的），所以原文走 SSE 的
+        // `batch_started` 帧进 store。两条路都拿不到时才退回材料自带的场景句。
         const customLabel =
+          (isLiveBatch ? store.customLabel : '') ||
           historical.batch?.customLabel ||
           group.slots
             .map((slot) =>

@@ -23,6 +23,7 @@ import { api } from './endpoints'
 import { openBatchStream } from './sseClient'
 import type { SseEvent } from '@/contracts/api'
 import { useBatchStore } from '@/stores/batchStore'
+import { scenarioMeta } from '@/config/scenarioMeta'
 import RAW from './__fixtures__/real-batch.sse.txt?raw'
 
 /* ── a real material, borrowed from the captured batch ────────────────────── */
@@ -371,6 +372,37 @@ describe('the merged fan-out stream', () => {
     expect(ungenerated).toEqual([])
     // No placeholder survived. A leftover one is the exact shape of the defect.
     expect(after.itemOrder.filter((id) => id.includes('::'))).toEqual([])
+  })
+
+  /**
+   * 自定义场景的标题走 SSE，因为生成过程中没有别的路。
+   *
+   * 历史接口只对已结束的批次开放（`useHistoricalBatch(batchId, !isLiveBatch)`），所以活批次期间
+   * 前端手上唯一带着用户原文的东西就是 `batch_started.custom_label`。它以前被丢在适配层，标题于是
+   * 退回材料自带的 `scenario`——模型把「餐厅点餐」扩写成了一整句英文，用户看到的是自己没写过的话。
+   */
+  it('carries the user-typed custom scenario name from batch_started into the store', async () => {
+    const plan = [{ scenario: 'custom-6cf6e9b3', ok: true }]
+    const frames = mergedFrames(plan).map((frame) =>
+      frame.replace('"type":"batch_started",', '"type":"batch_started","custom_label":"餐厅点餐",'),
+    )
+    restore = installFanoutBackend(frames, ['custom-6cf6e9b3'])
+    const { transport } = installAgentCoreAdapter()
+    setTransport(transport)
+    const created = await api.createBatch({
+      requests: [{ scenario_key: 'custom-6cf6e9b3', count: 1 }],
+      options: { narration_mode: 'full' },
+    })
+
+    const events = await collect(created.batch_id)
+    expect(events.find((e) => e.event === 'hello')).toMatchObject({ custom_label: '餐厅点餐' })
+
+    for (const event of events) useBatchStore.getState().applyEvent(event)
+    expect(useBatchStore.getState().customLabel).toBe('餐厅点餐')
+    // 后续事件不得把它清空：标题在整批期间都要在。
+    expect(scenarioMeta('custom-6cf6e9b3', useBatchStore.getState().customLabel).titleZh).toBe(
+      '餐厅点餐',
+    )
   })
 
   it('groups the per-scenario index correctly across children', async () => {

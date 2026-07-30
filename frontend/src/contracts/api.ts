@@ -296,6 +296,13 @@ export interface SseHelloEvent {
   total: number
   server_time: string
   resumed_from: number
+  /**
+   * 自定义场景的用户原文（`餐厅点餐`），目录场景为空。
+   *
+   * 必须走这条事件：生成过程中前端不请求历史接口（那是给已结束批次的），所以在这之前拿不到
+   * 这段文本，标题只能退回材料自带的英文句——那是模型扩写的，不是用户输入的。
+   */
+  custom_label?: string
 }
 
 export interface SseProgressEvent {

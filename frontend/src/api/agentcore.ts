@@ -94,6 +94,8 @@ import { setSseFetch } from './sseClient'
 
 interface WireBatchStarted {
   type: 'batch_started'
+  /** 自定义场景的用户原文，web 层从 custom_scenario.prompt_hint 取。 */
+  custom_label?: string
   /**
    * The batch id the WEB TIER minted (`web-<ms>-<counter>`), and the only one that exists.
    *
@@ -537,6 +539,7 @@ function applyWire(session: Session, wire: WireEvent): void {
         total: wire.total,
         server_time: new Date(wire.at * 1000).toISOString(),
         resumed_from: 0,
+        custom_label: wire.custom_label,
       }))
       break
     }

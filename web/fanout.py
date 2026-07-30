@@ -79,6 +79,7 @@ __all__ = [
     "ChildPlan",
     "FanOut",
     "plan_children",
+    "launch_order",
 ]
 
 # How many materials the web tier will have in flight at once.
@@ -208,6 +209,33 @@ def plan_children(
             add(dict(base, scenarios=[], custom_scenario=one), "custom", 1)
 
     return children, slot_ids
+
+
+def launch_order(children: List[ChildPlan]) -> List[ChildPlan]:
+    """The order to *start* children in: one per scenario, round-robin, until all are started.
+
+    Slot ids stay exactly as `plan_children` allotted them -- they are the frontend's card grid and
+    must not move. What moves is who gets a worker first, and with a concurrency cap those are
+    different things: the plan groups a scenario's materials together, so a 21-set batch of 3 sets
+    each across 7 scenarios put the last scenario in slots 19-21 and it did not begin until two
+    waves had finished. The user watched every catalogue scenario complete before their custom one
+    started, which reads as "the custom one is stuck" -- and it is also the worst order for the
+    results page, whose groups fill one at a time instead of together.
+
+    Round-robin gives every scenario a material in the first wave, so all groups show progress from
+    the start. Total wall time is unchanged: the same N invocations through the same gate.
+    """
+    by_scenario: Dict[str, List[ChildPlan]] = {}
+    for child in children:
+        by_scenario.setdefault(child.scenario, []).append(child)
+    ordered: List[ChildPlan] = []
+    while by_scenario:
+        for scenario in list(by_scenario):
+            queue = by_scenario[scenario]
+            ordered.append(queue.pop(0))
+            if not queue:
+                del by_scenario[scenario]
+    return ordered
 
 
 class _Merge(object):
@@ -538,7 +566,7 @@ class FanOut(object):
             with gate:
                 self._pump(child, make_push(child))
 
-        futures = [self.executor.submit(run, child) for child in self.children]
+        futures = [self.executor.submit(run, child) for child in launch_order(self.children)]
 
         try:
             while remaining > 0:
