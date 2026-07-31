@@ -177,9 +177,14 @@ describe('历史批次面板', () => {
   })
 
   it('按日期分组，标题是今天 / 昨天', async () => {
+    // 基准是「今天正午」而不是此刻。原来用「此刻减 26 小时」当昨天，在午夜后跑就落到前天，
+    // 标签变成日期，测试在 00:14 挂掉——一个只在深夜出现的失败，比没有测试更费解。
+    const noon = new Date()
+    noon.setHours(12, 0, 0, 0)
+    const todayNoon = Math.floor(noon.getTime() / 1000)
     historyBatches = [
-      historyEntry({ batch_id: 'today' }),
-      historyEntry({ batch_id: 'yday', created_at: nowSeconds() - 26 * HOUR }),
+      historyEntry({ batch_id: 'today', created_at: todayNoon }),
+      historyEntry({ batch_id: 'yday', created_at: todayNoon - 24 * HOUR }),
     ]
     renderAt('today')
     await waitFor(() => expect(rowIds()).toEqual(['today', 'yday']))

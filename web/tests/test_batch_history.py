@@ -578,6 +578,100 @@ class TestSubmit:
             history.submit("nope", [], actor="a@b.c")
 
 
+class TestWithdraw:
+    """The counterpart `submit` shipped without.
+
+    The bug it fixes was visible only in the UI: the queue page's 撤回 button removed the row from the
+    browser's local list and nothing else, so the history panel kept showing 已提交 with no action able
+    to clear it. Nothing failed, and no test covered the undo direction at all.
+    """
+
+    def test_withdrawing_the_last_pick_clears_the_status(
+        self, history: BatchHistory, batch_store: InMemoryBatchStore,
+    ):
+        batch_store.save_index("b1", record(batch_id="b1"))
+        history.submit("b1", ["m1"], actor="a@b.c")
+
+        view = history.withdraw("b1", ["m1"])
+
+        assert view["status"] != SUBMITTED
+        assert view["submitted_at"] is None
+        assert view["submitted_by"] is None
+        assert view["submitted_material_ids"] == []
+
+    def test_withdrawing_one_of_several_keeps_the_batch_submitted(
+        self, history: BatchHistory, batch_store: InMemoryBatchStore,
+    ):
+        """Withdrawing one of three picks revises the submission rather than retracting it.
+
+        The distinction is the whole reason `withdraw` takes an id list: a reviewer who changes their
+        mind about one material has not un-submitted the batch.
+        """
+        batch_store.save_index("b1", record(batch_id="b1"))
+        history.submit("b1", ["m1", "m2", "m3"], actor="a@b.c")
+
+        view = history.withdraw("b1", ["m2"])
+
+        assert view["status"] == SUBMITTED
+        assert view["submitted_by"] == "a@b.c"
+        assert view["submitted_material_ids"] == ["m1", "m3"]
+
+    def test_withdrawing_without_ids_takes_the_whole_batch(
+        self, history: BatchHistory, batch_store: InMemoryBatchStore,
+    ):
+        batch_store.save_index("b1", record(batch_id="b1"))
+        history.submit("b1", ["m1", "m2"], actor="a@b.c")
+
+        view = history.withdraw("b1")
+
+        assert view["submitted_material_ids"] == []
+        assert view["submitted_at"] is None
+
+    def test_withdrawing_twice_is_the_same_as_once(
+        self, history: BatchHistory, batch_store: InMemoryBatchStore,
+    ):
+        """The caller is trying to reach a state, not apply a delta."""
+        batch_store.save_index("b1", record(batch_id="b1"))
+        history.submit("b1", ["m1"], actor="a@b.c")
+        history.withdraw("b1", ["m1"])
+
+        view = history.withdraw("b1", ["m1"])
+
+        assert view["submitted_material_ids"] == []
+        assert view["submitted_at"] is None
+
+    def test_withdrawing_an_id_that_was_never_submitted_changes_nothing(
+        self, history: BatchHistory, batch_store: InMemoryBatchStore,
+    ):
+        batch_store.save_index("b1", record(batch_id="b1"))
+        history.submit("b1", ["m1"], actor="a@b.c")
+
+        view = history.withdraw("b1", ["m9"])
+
+        assert view["status"] == SUBMITTED
+        assert view["submitted_material_ids"] == ["m1"]
+
+    def test_resubmitting_after_a_full_withdrawal_starts_a_new_submission(
+        self, history: BatchHistory, batch_store: InMemoryBatchStore,
+    ):
+        """`submitted_at` must move. It is "when the batch stopped awaiting a decision", and after a
+        withdrawal it started awaiting one again -- keeping the original time would date the new
+        submission to before the withdrawal."""
+        batch_store.save_index("b1", record(batch_id="b1"))
+        first = history.submit("b1", ["m1"], actor="a@b.c")
+        history.withdraw("b1")
+        time.sleep(0.01)
+
+        second = history.submit("b1", ["m1"], actor="a@b.c")
+
+        assert second["status"] == SUBMITTED
+        assert second["submitted_at"] > first["submitted_at"]
+
+    def test_withdraw_on_an_unknown_batch_raises(self, history: BatchHistory):
+        with pytest.raises(KeyError):
+            history.withdraw("nope")
+
+
 class TestReadOnly:
     def test_a_read_only_batch_is_flagged_by_the_backend(self, history: BatchHistory,
                                                           batch_store: InMemoryBatchStore):

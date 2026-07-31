@@ -63,6 +63,13 @@ export interface BatchState {
    */
   requested: RequestedScenario[]
   createdAt: number | null
+  /**
+   * 批次进入终态的时刻，用来冻结进度页那个计时器。
+   *
+   * 只在本次会话里有值：SSE 快照不带完成时间，所以刷新之后恢复一个已完成的批次时它是 null，
+   * 进度页据此不显示计时——而不是拿此刻减去 createdAt 算出「已用 3 天」。
+   */
+  finishedAt: number | null
   seqHigh: number
   seenSeqs: Set<number>
   items: Record<string, BatchItemState>
@@ -93,6 +100,7 @@ interface Actions {
 const EMPTY: BatchState = {
   batchId: null,
   status: 'queued',
+  finishedAt: null,
   total: 0,
   customLabel: '',
   requested: [],
@@ -254,6 +262,7 @@ export const useBatchStore = create<BatchState & Actions>((set, get) => ({
       const items = { ...s.items }
       const materials = { ...s.materials }
       let status = s.status
+      let finishedAt = s.finishedAt
       let connection = s.connection
       let itemOrder = s.itemOrder
       let customLabel = s.customLabel
@@ -320,12 +329,14 @@ export const useBatchStore = create<BatchState & Actions>((set, get) => ({
         case 'batch_done':
           status = event.status
           connection = event.status === 'done' ? 'done' : 'partial'
+          finishedAt = Date.now()
           break
         case 'ping':
           break
       }
 
-      return { seenSeqs, seqHigh, items, materials, status, connection, itemOrder, customLabel }
+      return { seenSeqs, seqHigh, items, materials, status, connection, itemOrder, customLabel,
+               finishedAt }
     })
     return true
   },

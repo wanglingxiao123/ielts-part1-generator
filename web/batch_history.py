@@ -354,6 +354,46 @@ class BatchHistory:
         self.store.save_index(batch_id, record)
         return derive(record, now=moment)
 
+    def withdraw(self, batch_id: str, material_ids: Optional[List[str]] = None, *,
+                 now: Optional[float] = None) -> Dict[str, Any]:
+        """Undo a submission, wholly or one material at a time.
+
+        The counterpart `submit` was shipped without. The queue page's per-row 撤回 button only
+        removed the row from the browser's local queue, so the batch stayed 已提交 in the history
+        panel forever -- a reviewer who withdrew everything saw an empty queue beside a batch still
+        claiming it had been submitted, and no action could clear it.
+
+        ``material_ids`` withdraws just those picks; omitting it withdraws the whole batch. The
+        distinction matters because withdrawing one of three picks is a revision of the submission,
+        not a retraction of it: the batch is still submitted, with a shorter list.
+
+        Clearing ``submitted_at`` only when the list becomes empty is what makes the status track the
+        act rather than the paperwork. And it clears `submitted_by` with it, since a batch nobody has
+        submitted cannot have a submitter -- leaving the name behind would make the record read as
+        submitted to anything that checks that field instead of `submitted_at`.
+
+        Idempotent, and never raises on an id that was not submitted: withdrawing twice is the same
+        request as withdrawing once, and the caller is trying to reach a state, not perform a delta.
+        """
+        moment = time.time() if now is None else now
+        record = self.store.load_index(batch_id)
+        if record is None:
+            raise KeyError(batch_id)
+
+        if material_ids is None:
+            remaining: List[str] = []
+        else:
+            dropped = {str(m) for m in material_ids}
+            remaining = [str(m) for m in (record.get("submitted_material_ids") or [])
+                         if str(m) not in dropped]
+
+        record["submitted_material_ids"] = remaining
+        if not remaining:
+            record["submitted_at"] = None
+            record["submitted_by"] = None
+        self.store.save_index(batch_id, record)
+        return derive(record, now=moment)
+
     # ── writes used by the recorder ──────────────────────────────────────────
 
     def recorder(self, batch_id: str, *, owner: str, requested_total: int,

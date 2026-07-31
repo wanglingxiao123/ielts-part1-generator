@@ -12,6 +12,7 @@ Route map:
     GET  /api/batch-history/{id}             one historical batch, with its materials' artifacts
     GET  /api/batch-history-material/{id}    one material by id alone, for the reader page
     POST /api/batch-history/{id}/submit      records the 已提交 status
+    POST /api/batch-history/{id}/withdraw    undoes it, wholly or per material
     GET  /login                   a server-rendered form, because the SPA has no local login UI
     GET  /*                       the frontend build, with SPA fallback to index.html
 
@@ -418,6 +419,44 @@ class WebTier:
                     _infra_error_body(
                         "BATCH_SUBMIT_FAILED",
                         "提交状态没有记录成功，请稍后重试。", exc),
+                    status_code=502,
+                )
+            return JSONResponse(view)
+
+        @app.post("/api/batch-history/{batch_id}/withdraw")
+        async def withdraw_batch(batch_id: str, request: Request) -> JSONResponse:
+            """Undo a submission. The counterpart `submit` shipped without.
+
+            `material_ids` withdraws those picks and leaves the batch submitted with a shorter list;
+            omitting it withdraws the batch. Without this route the queue page's 撤回 button only
+            emptied the browser's local list, and the history panel went on showing 已提交 with no
+            way to clear it.
+            """
+            body = _as_dict(await _json_body(request))
+            raw = body.get("material_ids")
+            if raw is not None and not isinstance(raw, list):
+                return JSONResponse(
+                    _error_body("bad_request", "material_ids must be a list when present"),
+                    status_code=400,
+                )
+            from starlette.concurrency import run_in_threadpool
+
+            try:
+                view = await run_in_threadpool(
+                    self.history.withdraw, batch_id,
+                    None if raw is None else [str(m) for m in raw],
+                )
+            except KeyError:
+                return JSONResponse(
+                    _error_body("BATCH_NOT_FOUND",
+                                "没有找到批次 %s 的历史记录" % batch_id, batch_id=batch_id),
+                    status_code=404,
+                )
+            except Exception as exc:  # noqa: BLE001
+                return JSONResponse(
+                    _infra_error_body(
+                        "BATCH_WITHDRAW_FAILED",
+                        "撤回状态没有记录成功，请稍后重试。", exc),
                     status_code=502,
                 )
             return JSONResponse(view)

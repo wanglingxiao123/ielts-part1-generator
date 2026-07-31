@@ -59,6 +59,19 @@ export const api = {
       body: { material_ids: materialIds },
     }),
 
+  /**
+   * 撤回「已提交」。给 materialIds 就只撤这几套，批次仍是已提交但清单变短；不给就整批撤回。
+   *
+   * 队列页的撤回按钮原来只删本机队列那一条，后端状态没动——审阅者把全部撤完，看到的是一个空队列
+   * 配一个仍写着「已提交」的批次，而且没有任何操作能清掉它。
+   */
+  withdrawBatch: (batchId: string, materialIds?: string[]) =>
+    request<BatchHistoryDetail>({
+      method: 'POST',
+      path: `/batch-history/${batchId}/withdraw`,
+      body: materialIds ? { material_ids: materialIds } : {},
+    }),
+
   getMaterial: (materialId: string) =>
     request<MaterialRecord>({ method: 'GET', path: `/materials/${materialId}` }),
 

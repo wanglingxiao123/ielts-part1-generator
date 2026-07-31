@@ -508,15 +508,33 @@ export function BatchProgressPage() {
     }
   }, [store.status])
 
+  /**
+   * 计时只在批次还在跑的时候走。
+   *
+   * 依赖数组原来是空的，所以定时器永不停：28/28 全部完成之后，「已用」还在一秒一秒往上加，看起来
+   * 像是还有活没干完。终态由 `store.status` 决定（done / partial / error），到了就清掉定时器，
+   * `now` 停在最后一次 tick，`elapsedMs` 随之冻结成这一批真正的耗时。
+   */
+  const running = store.status !== 'done' && store.status !== 'partial' && store.status !== 'failed'
   useEffect(() => {
+    if (!running) return
     const id = window.setInterval(() => setNow(Date.now()), 1000)
     return () => window.clearInterval(id)
-  }, [])
+  }, [running])
 
-  const elapsedMs = store.createdAt ? now - store.createdAt : 0
+  /**
+   * 冻结用 `finishedAt` 而不是最后一次 tick。差一秒是小事，要紧的是刷新之后：SSE 快照不带完成时间，
+   * 恢复一个已完成的批次时 `finishedAt` 是 null，这时不显示计时，而不是拿此刻减 `createdAt` 算出
+   * 「已用 3 天」。
+   */
+  const elapsedMs =
+    store.createdAt && (running || store.finishedAt)
+      ? (running ? now : store.finishedAt!) - store.createdAt
+      : 0
   const elapsed = `${Math.floor(elapsedMs / 60_000)}:${String(
     Math.floor((elapsedMs % 60_000) / 1000),
   ).padStart(2, '0')}`
+  const showElapsed = elapsedMs > 0
   /**
    * 「跑得比预估久」，而不是原来的「接近 15 分钟上限」。
    *
@@ -777,7 +795,12 @@ export function BatchProgressPage() {
               {!finished && <PhaseTrack phase={activePhase} finished={false} />}
             </>
           )}
-          <span className="muted">已用 {elapsed}</span>
+          {/* 跑完之后它描述的是一件已经结束的事，不是还在走的秒表，所以措辞跟着状态换。 */}
+          {showElapsed && (
+            <span className="muted">
+              {running ? '已用' : '耗时'} {elapsed}
+            </span>
+          )}
         </div>
       </div>
 

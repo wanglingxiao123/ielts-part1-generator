@@ -5,10 +5,12 @@
  * 「系统扣下、用户不该看」的抽屉。第三个页签因此换了主体：从「系统扣下的材料」
  * 变成「用户自己送进来的材料」。
  *
- * 队列目前是本机的（见 reviewQueueStore.ts：后端还没有记录这个状态的地方）。
- * 页面直说这一点，而不是假装它是服务端事实——那会让人以为换台电脑也能看到。
+ * 每行的摘要是本机的（见 reviewQueueStore.ts），而「这一批被提交了」是后端记录的事实
+ * （web/batch_history.py 的 submit / withdraw）。页面直说前者是本机的，而不是假装整份队列
+ * 都是服务端事实——那会让人以为换台电脑也能看到这些摘要。
  */
 import { Link } from 'react-router-dom'
+import { api } from '@/api/endpoints'
 import { scenarioMeta } from '@/config/scenarioMeta'
 import { useReviewQueue } from '@/stores/reviewQueueStore'
 
@@ -24,6 +26,23 @@ function submittedAgo(at: number): string {
 export function ReviewQueuePage() {
   const items = useReviewQueue((s) => s.items)
   const remove = useReviewQueue((s) => s.remove)
+
+  /**
+   * 撤回是两件事，和提交对称：删本机队列这一条，同时让后端把这套从批次的提交清单里去掉。
+   *
+   * 原来只做了第一件。于是把全部撤完之后，队列是空的，历史面板那条却还写着「已提交」，而且没有
+   * 任何操作能清掉——那个状态只有 submit 会写，没有东西会撤。
+   *
+   * 后端记不上不阻塞界面：本机那条已经删了，为了一个状态标签把行留在页面上更费解。失败只会让面板
+   * 上多留一个「已提交」，撤回下一条时会再试一次。
+   */
+  const withdraw = (materialId: string, batchId: string) => {
+    remove(materialId)
+    if (!batchId) return
+    void api
+      .withdrawBatch(batchId, [materialId])
+      .catch((err) => console.warn('[review-queue] 撤回状态没有记录成功', err))
+  }
 
   const byScenario = new Map<string, typeof items>()
   for (const item of items) {
@@ -78,7 +97,7 @@ export function ReviewQueuePage() {
                 <button
                   type="button"
                   className="btn btn-sm"
-                  onClick={() => remove(item.materialId)}
+                  onClick={() => withdraw(item.materialId, item.batchId)}
                 >
                   撤回
                 </button>
