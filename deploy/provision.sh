@@ -159,39 +159,65 @@ else
           \"StringEquals\":{\"aws:SourceAccount\":\"${ACCOUNT_ID}\"},
           \"ArnLike\":{\"aws:SourceArn\":\"arn:aws:bedrock-agentcore:${AWS_REGION}:${ACCOUNT_ID}:*\"}}
       }]}" --query 'Role.Arn' --output text
-    # bedrock-mantle is a SEPARATE service prefix from bedrock. GPT-5.6 is served only through the
-    # mantle endpoint, and `bedrock:InvokeModel` does not cover it -- the call fails with
-    # `access_denied ... not authorized to perform: bedrock-mantle:CreateInference`. Two actions are
-    # needed, discovered one 401 at a time by deploying: CreateInference for the call itself, and
-    # CallWithBearerToken because Strands' bedrock_mantle_config mints a bearer token per request
-    # rather than signing with SigV4 directly. Neither appears in the AWS docs we could find.
-    #
-    # Scoped to what the loop actually does: pull its image, log, invoke the model, synthesize
-    # speech, and read/write THIS bucket. No wildcard on S3 -- a demo role should not reach the
-    # other 40-odd buckets in this account. ECR and the metrics/token actions are required by the
-    # platform itself, not by our code, and the runtime fails to start without them.
-    aws iam put-role-policy --role-name "$RT_ROLE" --policy-name "${PROJECT}-runtime-inline" \
-      --policy-document "{
-        \"Version\":\"2012-10-17\",
-        \"Statement\":[
-          {\"Effect\":\"Allow\",\"Action\":[\"ecr:BatchGetImage\",\"ecr:GetDownloadUrlForLayer\"],
-           \"Resource\":\"arn:aws:ecr:${AWS_REGION}:${ACCOUNT_ID}:repository/${ECR_BACKEND}\"},
-          {\"Effect\":\"Allow\",\"Action\":\"ecr:GetAuthorizationToken\",\"Resource\":\"*\"},
-          {\"Effect\":\"Allow\",\"Action\":[\"bedrock:InvokeModel\",\"bedrock:InvokeModelWithResponseStream\"],\"Resource\":\"*\"},
-          {\"Effect\":\"Allow\",\"Action\":[\"bedrock-mantle:CreateInference\",\"bedrock-mantle:CreateResponse\",\"bedrock-mantle:CreateChatCompletion\",\"bedrock-mantle:CallWithBearerToken\",\"bedrock:CallWithBearerToken\"],\"Resource\":\"*\"},
-          {\"Effect\":\"Allow\",\"Action\":\"polly:SynthesizeSpeech\",\"Resource\":\"*\"},
-          {\"Effect\":\"Allow\",\"Action\":[\"s3:GetObject\",\"s3:PutObject\",\"s3:DeleteObject\"],
-           \"Resource\":\"arn:aws:s3:::${S3_BUCKET}/*\"},
-          {\"Effect\":\"Allow\",\"Action\":\"s3:ListBucket\",\"Resource\":\"arn:aws:s3:::${S3_BUCKET}\"},
-          {\"Effect\":\"Allow\",\"Action\":[\"logs:CreateLogGroup\",\"logs:CreateLogStream\",
-            \"logs:PutLogEvents\",\"logs:DescribeLogStreams\",\"logs:DescribeLogGroups\"],\"Resource\":\"*\"},
-          {\"Effect\":\"Allow\",\"Action\":\"cloudwatch:PutMetricData\",\"Resource\":\"*\",
-           \"Condition\":{\"StringEquals\":{\"cloudwatch:namespace\":\"bedrock-agentcore\"}}},
-          {\"Effect\":\"Allow\",\"Action\":\"bedrock-agentcore:GetWorkloadAccessToken\",\"Resource\":\"*\"},
-          {\"Effect\":\"Allow\",\"Action\":[\"xray:PutTraceSegments\",\"xray:PutTelemetryRecords\"],\"Resource\":\"*\"}
-        ]}"
-    echo "  created $RT_ROLE with a bucket-scoped policy"
+    echo "  created $RT_ROLE"
 fi
+
+# The inline policy is written on EVERY run, not only when the role is created. It used to sit inside
+# the `else` above, which meant an account whose role already existed never received a newly added
+# permission -- the upgrade path silently skipped it, and the symptom was an AccessDenied at run time
+# on a deployment that had just been "provisioned" successfully. `put-role-policy` overwrites by
+# name, so re-applying it is free and keeps the policy in the file the single source of truth.
+#
+# bedrock-mantle is a SEPARATE service prefix from bedrock. GPT-5.6 is served only through the
+# mantle endpoint, and `bedrock:InvokeModel` does not cover it -- the call fails with
+# `access_denied ... not authorized to perform: bedrock-mantle:CreateInference`. Two actions are
+# needed, discovered one 401 at a time by deploying: CreateInference for the call itself, and
+# CallWithBearerToken because Strands' bedrock_mantle_config mints a bearer token per request
+# rather than signing with SigV4 directly. Neither appears in the AWS docs we could find.
+#
+# The Code Interpreter actions are what let the audit side run its metrics script somewhere the
+# generator's blueprint does not exist. `strands_tools.shell` would have been the obvious way to
+# let an agent run a script, but it calls `pty.fork()` directly and takes no `agent` parameter,
+# so no sandbox can constrain it -- a shell-equipped audit agent can read the blueprint schema
+# off the local filesystem. Code Interpreter inverts that: the remote environment starts empty
+# and holds only the two files we upload. The identifier is the built-in
+# `aws.codeinterpreter.v1`, so there is no resource to provision here.
+#
+# Scoped to what the loop actually does: pull its image, log, invoke the model, synthesize
+# speech, run the audit metrics remotely, and read/write THIS bucket. No wildcard on S3 -- a
+# demo role should not reach the other 40-odd buckets in this account. ECR and the metrics/token
+# actions are required by the platform itself, not by our code, and the runtime fails to start
+# without them.
+aws iam put-role-policy --role-name "$RT_ROLE" --policy-name "${PROJECT}-runtime-inline" \
+  --policy-document "{
+    \"Version\":\"2012-10-17\",
+    \"Statement\":[
+      {\"Effect\":\"Allow\",\"Action\":[\"ecr:BatchGetImage\",\"ecr:GetDownloadUrlForLayer\"],
+       \"Resource\":\"arn:aws:ecr:${AWS_REGION}:${ACCOUNT_ID}:repository/${ECR_BACKEND}\"},
+      {\"Effect\":\"Allow\",\"Action\":\"ecr:GetAuthorizationToken\",\"Resource\":\"*\"},
+      {\"Effect\":\"Allow\",\"Action\":[\"bedrock:InvokeModel\",\"bedrock:InvokeModelWithResponseStream\"],\"Resource\":\"*\"},
+      {\"Effect\":\"Allow\",\"Action\":[\"bedrock-mantle:CreateInference\",\"bedrock-mantle:CreateResponse\",\"bedrock-mantle:CreateChatCompletion\",\"bedrock-mantle:CallWithBearerToken\",\"bedrock:CallWithBearerToken\"],\"Resource\":\"*\"},
+      {\"Effect\":\"Allow\",\"Action\":\"polly:SynthesizeSpeech\",\"Resource\":\"*\"},
+      {\"Effect\":\"Allow\",\"Action\":[\"s3:GetObject\",\"s3:PutObject\",\"s3:DeleteObject\"],
+       \"Resource\":\"arn:aws:s3:::${S3_BUCKET}/*\"},
+      {\"Effect\":\"Allow\",\"Action\":\"s3:ListBucket\",\"Resource\":\"arn:aws:s3:::${S3_BUCKET}\"},
+      {\"Effect\":\"Allow\",\"Action\":[\"logs:CreateLogGroup\",\"logs:CreateLogStream\",
+        \"logs:PutLogEvents\",\"logs:DescribeLogStreams\",\"logs:DescribeLogGroups\"],\"Resource\":\"*\"},
+      {\"Effect\":\"Allow\",\"Action\":\"cloudwatch:PutMetricData\",\"Resource\":\"*\",
+       \"Condition\":{\"StringEquals\":{\"cloudwatch:namespace\":\"bedrock-agentcore\"}}},
+      {\"Effect\":\"Allow\",\"Action\":\"bedrock-agentcore:GetWorkloadAccessToken\",\"Resource\":\"*\"},
+      {\"Effect\":\"Allow\",\"Action\":[
+         \"bedrock-agentcore:StartCodeInterpreterSession\",
+         \"bedrock-agentcore:InvokeCodeInterpreter\",
+         \"bedrock-agentcore:StopCodeInterpreterSession\",
+         \"bedrock-agentcore:GetCodeInterpreterSession\",
+         \"bedrock-agentcore:ListCodeInterpreterSessions\",
+         \"bedrock-agentcore:GetCodeInterpreter\",
+         \"bedrock-agentcore:ListCodeInterpreters\"],
+       \"Resource\":\"*\"},
+      {\"Effect\":\"Allow\",\"Action\":[\"xray:PutTraceSegments\",\"xray:PutTelemetryRecords\"],\"Resource\":\"*\"}
+    ]}"
+echo "  applied ${PROJECT}-runtime-inline (bucket-scoped, incl. Code Interpreter)"
 
 echo
 echo "provisioned. next:"
