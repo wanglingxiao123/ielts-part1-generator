@@ -1,0 +1,89 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "material.schema.json",
+  "title": "IELTS Listening Part 1 Material",
+  "description": "Delivered listening material. Contains the recording script only: no questions, answers, or analysis.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "model",
+    "extracted_at",
+    "test_package",
+    "content_kind",
+    "source_htmls",
+    "listening_material_parts"
+  ],
+  "properties": {
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Generating model identifier, or 'unspecified'."
+    },
+    "extracted_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC timestamp."
+    },
+    "test_package": { "type": "string", "minLength": 1 },
+    "content_kind": { "const": "listening_material" },
+    "source_htmls": {
+      "type": "array",
+      "maxItems": 0,
+      "description": "Always [] for original material."
+    },
+    "listening_material_parts": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "items": { "$ref": "#/definitions/part" }
+    }
+  },
+  "definitions": {
+    "part": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reference", "test_package", "scenario", "script", "source_htmls"],
+      "properties": {
+        "reference": { "const": "Part 1" },
+        "test_package": { "type": "string", "minLength": 1 },
+        "scenario": {
+          "type": "string",
+          "minLength": 1,
+          "description": "One concise sentence: participants, practical need, setting."
+        },
+        "script": { "$ref": "#/definitions/script" },
+        "source_htmls": { "type": "array", "maxItems": 0 }
+      }
+    },
+    "script": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reference", "test_package", "turns", "speaker_count"],
+      "properties": {
+        "reference": { "const": "Part 1" },
+        "test_package": { "type": "string", "minLength": 1 },
+        "turns": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/turn" }
+        },
+        "speaker_count": {
+          "const": 3,
+          "description": "Narrator plus two dialogue participants."
+        }
+      }
+    },
+    "turn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["speaker", "text"],
+      "properties": {
+        "speaker": {
+          "enum": ["speaker1", "speaker2", "speaker3"],
+          "description": "speaker1 = exam narrator (narration only, never carries answers); speaker2 = information provider; speaker3 = enquirer."
+        },
+        "text": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}
