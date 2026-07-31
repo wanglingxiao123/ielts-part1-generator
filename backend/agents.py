@@ -167,13 +167,23 @@ class ReadOnlySkillSandbox(_sandbox_base()):
         return self._checked(path).read_text(encoding=encoding)
 
     async def list_files(self, path: str, **_: Any) -> List[Any]:
+        """One directory level, as ``FileInfo`` entries carrying a bare ``name``.
+
+        ``name`` and not a path, which is the whole subtlety here. The skills plugin walks
+        directories by joining ``entry.name`` onto the directory it asked for, so returning a
+        pool-relative path would make it request ``references/references/specification.md``. The
+        first version of this method passed ``path=`` to ``FileInfo``, which does not accept it --
+        the constructor raised ``TypeError``, the plugin caught it and logged a warning, and the
+        activation response silently shipped without its resource listing. Nothing failed; the model
+        simply never learned which files the skill has.
+        """
         from strands.sandbox.types import FileInfo
 
         target = self._checked(path)
         entries: List[Any] = []
         for child in sorted(target.iterdir()):
             entries.append(FileInfo(
-                path=str(child.relative_to(self._root)),
+                name=child.name,
                 is_dir=child.is_dir(),
                 size=child.stat().st_size if child.is_file() else 0,
             ))

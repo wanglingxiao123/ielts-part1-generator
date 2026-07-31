@@ -268,6 +268,45 @@ class TestSandboxCannotLeaveThePool:
         with pytest.raises(PermissionError):
             asyncio.run(sandbox.list_files("../generate"))
 
+    def test_a_permitted_listing_returns_usable_entries(self, sandbox):
+        """The success path, which the refusal tests above cannot reach.
+
+        Added after a real failure that no test saw. ``FileInfo`` takes ``name``, not ``path``; the
+        first version passed ``path=`` and the constructor raised ``TypeError``. The skills plugin
+        catches that and logs a warning, so activation still succeeded -- just without its "Available
+        resources" listing, meaning the model was never told which files the skill has. Every refusal
+        test passed throughout, because they all raise before a ``FileInfo`` is ever built.
+
+        ``name`` must also be bare rather than pool-relative: the plugin joins it onto the directory
+        it asked for, so a path here becomes ``references/references/specification.md``.
+        """
+        entries = asyncio.run(sandbox.list_files("audit-listening-part1/references"))
+        assert entries, "the audit pool's references directory is not empty"
+        names = [entry.name for entry in entries]
+        assert "audit-rubric.md" in names, names
+        assert all("/" not in name for name in names), names
+
+    def test_the_plugin_really_does_list_resources_on_activation(self):
+        """End to end through the plugin, which is what the test above only implies.
+
+        This is the assertion that would have caught the bug: it exercises the plugin's own call into
+        the sandbox rather than the sandbox in isolation. The lesson from that failure is exactly
+        this -- a class tested directly can be correct while nothing reaches it.
+        """
+        from strands.vended_plugins.skills import AgentSkills, Skill
+
+        plugin = AgentSkills(skills=Skill.from_directory(str(_audit_pool())))
+        agent = agents_module.build_audit_agent()
+        response = asyncio.run(plugin.skills(
+            skill_name="audit-listening-part1",
+            tool_context=type("Ctx", (), {"agent": agent})(),
+        ))
+        assert "Available resources:" in response
+        assert "references/audit-rubric.md" in response
+        # And the listing stays inside the pool: no generate-side file is named.
+        assert "specification.md" not in response
+        assert "blueprint" not in response.split("Available resources:")[-1]
+
     def test_every_write_path_is_refused(self, sandbox):
         """The pool holds the validator the generator runs.
 
