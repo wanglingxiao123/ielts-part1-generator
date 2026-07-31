@@ -3,16 +3,49 @@
 #
 #   bash deploy/provision.sh
 #
-# Creates: 2 ECR repos, 1 ECS cluster, 1 security group, 1 log group, 2 IAM roles.
+# Creates: the S3 bucket, 2 ECR repos, 1 ECS cluster, 1 security group, 1 log group, 3 IAM roles.
 # Does NOT create: the AgentCore Runtime (see runtime.sh), the ECS service (see service.sh),
-# ALB / EIP / Route53 / CloudFront / Cognito (deliberately none -- see deploy-plan.md).
+# the ALB / CloudFront edge (see edge.sh).
 #
-# Everything here is cheap or free while idle. The only standing cost in this stack is a RUNNING
-# web task, which is why start/stop are separate scripts.
+# Everything here is cheap or free while idle. The standing costs in this stack are a RUNNING web
+# task (start/stop) and the ALB once edge.sh has run (see stop.sh on what that does and does not
+# stop).
 
 source "$(dirname "$0")/config.sh"
 require_creds
 require_region
+
+# The bucket every other piece writes into: materials, audio clips, batch history, the candidate
+# registry, and the user store. It used to be assumed to exist — the account this was built in
+# already had it — so a fresh account got through provisioning and then failed at the first
+# generate with an S3 404. Created here, versioned, and private.
+echo "== S3 bucket =="
+if aws s3api head-bucket --bucket "$S3_BUCKET" >/dev/null 2>&1; then
+    echo "  $S3_BUCKET already exists"
+else
+    # us-east-1 is the one region where `create-bucket` must NOT be given a
+    # LocationConstraint; passing it there is an InvalidLocationConstraint error.
+    if [ "$AWS_REGION" = "us-east-1" ]; then
+        aws s3api create-bucket --bucket "$S3_BUCKET" >/dev/null
+    else
+        aws s3api create-bucket --bucket "$S3_BUCKET" \
+            --create-bucket-configuration "LocationConstraint=${AWS_REGION}" >/dev/null
+    fi
+    # Versioning is what `teardown.sh --purge-s3` has to walk to empty the bucket, and it is on
+    # because a material overwritten by a bad revision should be recoverable.
+    aws s3api put-bucket-versioning --bucket "$S3_BUCKET" \
+        --versioning-configuration Status=Enabled >/dev/null
+    # Nothing in this system serves objects to the browser directly — audio reaches the player as a
+    # presigned URL (`action: presign_audio`), so no object ever needs to be public.
+    aws s3api put-public-access-block --bucket "$S3_BUCKET" \
+        --public-access-block-configuration \
+        "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true" \
+        >/dev/null
+    aws s3api put-bucket-encryption --bucket "$S3_BUCKET" \
+        --server-side-encryption-configuration \
+        '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}' >/dev/null
+    echo "  created $S3_BUCKET (versioned, private, SSE-S3)"
+fi
 
 echo "== ECR repositories =="
 for repo in "$ECR_BACKEND" "$ECR_FRONTEND"; do

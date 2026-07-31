@@ -16,7 +16,9 @@
 # a deliverable URL. `deploy/teardown.sh` is what actually takes cost to zero — at the cost of the
 # URL.
 #
-# While the task is down the CloudFront URL answers 502. Honest (the service is off) but not a
+# While the task is down the CloudFront URL answers 503 (measured — the ALB has no healthy target,
+# which is a 503, not the 502 an earlier version of this comment claimed). Honest (the service is
+# off) but not a
 # friendly page, which is worth knowing before pointing a client at it.
 
 source "$(dirname "$0")/config.sh"

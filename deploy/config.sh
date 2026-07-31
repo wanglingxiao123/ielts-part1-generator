@@ -75,7 +75,7 @@ export SUBNET_ID
 export WEB_PORT=80
 
 # Who may reach the **ALB**. The task itself no longer has public ingress: its security group admits
-# only the ALB's security group (see `deploy/alb.sh`), so this is the only network-level knob.
+# only the ALB's security group (see `deploy/edge.sh`), so this is the only network-level knob.
 #
 # 0.0.0.0/0 here is what makes a delivered CloudFront URL work -- CloudFront fetches from the origin
 # over the public internet from a large, changing set of IPs. Narrowing it to an office CIDR would

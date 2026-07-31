@@ -86,7 +86,7 @@ if [ -n "$CF_DOMAIN" ]; then
     fi
     echo "  (HTTPS end to end for the viewer; CloudFront -> ALB is plain HTTP inside AWS)"
     if [ "${running:-0}" = "0" ] || [ "${running:--}" = "-" ]; then
-        echo "  (the task is stopped, so the URL will 502 — run 'bash deploy/start.sh')"
+        echo "  (the task is stopped, so the URL will 503 — run 'bash deploy/start.sh')"
     fi
     # The ALB is reachable directly over plain HTTP by anyone who learns its hostname. Stated rather
     # than implied: it is the one hole this shape leaves, and it is a deliberate trade (locking the

@@ -13,9 +13,7 @@
     "CALIBRATED": false
   },
   "limits": {
-    "maxBatch": 6,
-    "hardLimitSeconds": 900,
-    "warnAtSeconds": 720
+    "perMaterialWallSeconds": 900
   },
   "flags": {
     "audioWebaudio": false

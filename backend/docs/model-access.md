@@ -58,6 +58,6 @@ must use `mantle`, because a pre-minted token expires and nothing refreshes it.
 | `IELTS_MODEL_ID` | `openai.gpt-5.6-terra` | switch within the family (`-sol` / `-luna`) without a rebuild |
 | `IELTS_MODEL_REGION` | `AWS_REGION` or `us-east-1` | must be `us-east-1` or `us-east-2`; no cross-region inference |
 | `IELTS_MODEL_AUTH` | `mantle` | `bearer` only for local work with an expired SigV4 chain |
-| `IELTS_CONCURRENCY` | `3` | lower this on 429s rather than adding retries |
+| `IELTS_CONCURRENCY` | `6` | in-invocation slots. Effectively dead in production (one material per invocation clamps it to 1); still governs the CLI. Measured safe at 3; lower it on 429s rather than adding retries |
 | `IELTS_P95_PER_MATERIAL` | `240` | per-material budget check before starting a slot |
 | `IELTS_SAFETY_MARGIN` | `90` | reserve for emitting the summary and closing cleanly |

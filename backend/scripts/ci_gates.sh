@@ -48,7 +48,7 @@ find backend \( -name '.venv' -o -name 'venv' -o -name '__pycache__' -o -name 's
     || fail "backend has a syntax error"
 echo "  ok"
 
-echo "== gate 6: skill contract regression suite (51 checks) =="
+echo "== gate 6: skill contract regression suite (78 checks) =="
 python3 skills/ielts-listening-skills/shared/tests/run_tests.py >/tmp/skill_tests.log 2>&1 \
     && tail -1 /tmp/skill_tests.log || { tail -20 /tmp/skill_tests.log; fail "skill suite"; }
 

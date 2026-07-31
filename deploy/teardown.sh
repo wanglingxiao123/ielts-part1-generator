@@ -116,7 +116,9 @@ for repo in "$ECR_BACKEND" "$ECR_FRONTEND"; do
 done
 
 echo "== IAM roles =="
-for role in "${PROJECT}-ecs-exec" "${PROJECT}-runtime"; do
+# `-web-task` used to be missing from this list, so a teardown left one role behind — the one that
+# carries InvokeAgentRuntime and S3 write access, which is the least appropriate one to orphan.
+for role in "${PROJECT}-ecs-exec" "${PROJECT}-web-task" "${PROJECT}-runtime"; do
     if aws iam get-role --role-name "$role" >/dev/null 2>&1; then
         for p in $(aws iam list-attached-role-policies --role-name "$role" \
                    --query 'AttachedPolicies[].PolicyArn' --output text); do
