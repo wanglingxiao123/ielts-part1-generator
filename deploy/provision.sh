@@ -105,10 +105,15 @@ else
       "Version":"2012-10-17",
       "Statement":[{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},
                     "Action":"sts:AssumeRole"}]}' --query 'Role.Arn' --output text
-    aws iam attach-role-policy --role-name "$EXEC_ROLE" \
-        --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
     echo "  created $EXEC_ROLE"
 fi
+
+# Outside the branch: attaching is idempotent, and a role that lost this policy (teardown.sh detaches
+# them) would otherwise never get it back on a re-provision. The symptom is a task that cannot pull
+# its own image.
+aws iam attach-role-policy --role-name "$EXEC_ROLE" \
+    --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+echo "  $EXEC_ROLE execution policy attached"
 
 echo "== IAM: web task role (the SigV4 caller) =="
 # Distinct from the execution role above: the execution role lets ECS pull the image and write
@@ -122,25 +127,33 @@ else
       "Version":"2012-10-17",
       "Statement":[{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},
                     "Action":"sts:AssumeRole"}]}' --query 'Role.Arn' --output text
-    # InvokeAgentRuntime authorises against BOTH the runtime and its endpoint resource, so both
-    # ARN shapes are listed. Wildcarding the id is unavoidable here because the runtime does not
-    # exist yet at provision time; deploy/runtime.sh prints the real ARN, and narrowing this to it
-    # afterwards is a one-line change worth making if the stack outlives the demo.
-    aws iam put-role-policy --role-name "$WEB_ROLE" --policy-name "${PROJECT}-web-inline" \
-      --policy-document "{
-        \"Version\":\"2012-10-17\",
-        \"Statement\":[
-          {\"Effect\":\"Allow\",\"Action\":\"bedrock-agentcore:InvokeAgentRuntime\",
-           \"Resource\":[
-             \"arn:aws:bedrock-agentcore:${AWS_REGION}:${ACCOUNT_ID}:runtime/*\",
-             \"arn:aws:bedrock-agentcore:${AWS_REGION}:${ACCOUNT_ID}:runtime/*/endpoint/*\"]},
-          {\"Effect\":\"Allow\",\"Action\":[\"s3:GetObject\",\"s3:PutObject\"],
-           \"Resource\":\"arn:aws:s3:::${S3_BUCKET}/*\"},
-          {\"Effect\":\"Allow\",\"Action\":\"s3:ListBucket\",\"Resource\":\"arn:aws:s3:::${S3_BUCKET}\"},
-          {\"Effect\":\"Allow\",\"Action\":[\"logs:CreateLogStream\",\"logs:PutLogEvents\"],\"Resource\":\"*\"}
-        ]}"
-    echo "  created $WEB_ROLE (InvokeAgentRuntime + the one bucket)"
+    echo "  created $WEB_ROLE"
 fi
+
+# Outside the branch above, deliberately, and for the same reason the runtime role's policy is: a
+# policy written only on creation means an account whose role already exists never receives a
+# permission this version added. The symptom is the worst kind -- provision reports success, and the
+# failure arrives later as AccessDenied from a deployment that was just "provisioned successfully".
+# `put-role-policy` overwrites by name, so re-running is free.
+#
+# InvokeAgentRuntime authorises against BOTH the runtime and its endpoint resource, so both ARN
+# shapes are listed. Wildcarding the id is unavoidable here because the runtime does not exist yet at
+# provision time; deploy/runtime.sh prints the real ARN, and narrowing this to it afterwards is a
+# one-line change worth making if the stack outlives the demo.
+aws iam put-role-policy --role-name "$WEB_ROLE" --policy-name "${PROJECT}-web-inline" \
+  --policy-document "{
+    \"Version\":\"2012-10-17\",
+    \"Statement\":[
+      {\"Effect\":\"Allow\",\"Action\":\"bedrock-agentcore:InvokeAgentRuntime\",
+       \"Resource\":[
+         \"arn:aws:bedrock-agentcore:${AWS_REGION}:${ACCOUNT_ID}:runtime/*\",
+         \"arn:aws:bedrock-agentcore:${AWS_REGION}:${ACCOUNT_ID}:runtime/*/endpoint/*\"]},
+      {\"Effect\":\"Allow\",\"Action\":[\"s3:GetObject\",\"s3:PutObject\"],
+       \"Resource\":\"arn:aws:s3:::${S3_BUCKET}/*\"},
+      {\"Effect\":\"Allow\",\"Action\":\"s3:ListBucket\",\"Resource\":\"arn:aws:s3:::${S3_BUCKET}\"},
+      {\"Effect\":\"Allow\",\"Action\":[\"logs:CreateLogStream\",\"logs:PutLogEvents\"],\"Resource\":\"*\"}
+    ]}"
+echo "  $WEB_ROLE inline policy written (InvokeAgentRuntime + the one bucket)"
 
 echo "== IAM: AgentCore runtime role =="
 RT_ROLE="${PROJECT}-runtime"

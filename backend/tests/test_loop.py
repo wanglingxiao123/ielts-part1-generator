@@ -8,6 +8,7 @@ pinned down offline and re-checked on every commit.
 from __future__ import annotations
 
 import copy
+import json
 
 import pytest
 
@@ -734,6 +735,157 @@ class TestReviseInstructionSeparation:
         assert "Advisory only" in message
         assert "do NOT rewrite compliant content" in message
         assert "Must fix" in message
+
+
+def compliance_review(*items, summary="s"):
+    return {"items": list(items), "summary": summary}
+
+
+def breach(code="C2", severity="critical", turn_index=5):
+    return {"code": code, "compliant": False, "severity": severity,
+            "turn_index": turn_index, "evidence": "e", "fix": "f"}
+
+
+class TestComplianceReviewIsConsumed:
+    """The C1-C6 review reaches every consumer of audit severity.
+
+    Written after measuring that it reached none of them. The auditor's SKILL.md tells it to keep the
+    review out of ``findings``, so every consumer that read only ``findings`` was silently reading
+    half the audit -- and a perfectly obedient auditor reporting a critical register breach produced
+    ``is_clean=True``, ``verdict=PASS``, score 88, and an empty revision instruction. No laziness, no
+    error, no signal: the highest-severity semantic defect the system can detect, discarded.
+    """
+
+    def _audit_with(self, *items, verdict="PASS", total=88):
+        audit = audit_doc(verdict, total)
+        audit["compliance_review"] = compliance_review(*items)
+        return audit
+
+    def test_a_critical_compliance_item_blocks_cleanliness(self):
+        assert not is_clean(self._audit_with(breach()), clean_crosscheck(), [])
+
+    def test_a_critical_compliance_item_forces_a_fail_verdict(self):
+        """The auditor states PASS honestly -- its verdict is defined over `findings`. Python has to
+        reconcile the two blocks, because `pick_better` ranks on verdict first."""
+        candidate = Candidate(GenOutput({}, {}), self._audit_with(breach()), clean_crosscheck(), "initial")
+        assert candidate.verdict == "FAIL"
+
+    def test_severity_caps_apply_to_compliance_items(self):
+        critical = Candidate(GenOutput({}, {}), self._audit_with(breach(severity="critical"), total=95),
+                             clean_crosscheck(), "initial")
+        major = Candidate(GenOutput({}, {}), self._audit_with(breach(severity="major"), total=95),
+                          clean_crosscheck(), "initial")
+        assert critical.score == 49
+        assert major.score == 69
+
+    def test_a_minor_compliance_item_only_lowers_the_verdict_one_step(self):
+        candidate = Candidate(GenOutput({}, {}), self._audit_with(breach(severity="minor"), total=90),
+                             clean_crosscheck(), "initial")
+        assert candidate.verdict == "PASS_WITH_MINOR_EDITS"
+        assert candidate.score == 90
+
+    def test_compliance_items_are_graded_into_the_revision_instruction(self):
+        audit = self._audit_with(breach("C2", "critical"), breach("C5", "major"),
+                                 breach("C3", "minor"), {"code": "C1", "compliant": True})
+        instruction = build_revise_instruction(audit, clean_crosscheck(), [])
+
+        assert sum("C2" in item for item in instruction.must_fix) == 1
+        assert sum("C5" in item for item in instruction.must_fix) == 1
+        assert sum("C3" in item for item in instruction.advisory) == 1
+        # A compliant item is not a defect, and reporting it as one costs a pointless rewrite.
+        assert not any("C1" in item for item in instruction.must_fix + instruction.advisory)
+
+    def test_a_clean_review_changes_nothing(self):
+        """The control. Without it, every test above would pass on a rule that always fires."""
+        audit = self._audit_with({"code": "C1", "compliant": True},
+                                 {"code": "C2", "compliant": True})
+        candidate = Candidate(GenOutput({}, {}), audit, clean_crosscheck(), "initial")
+        assert (candidate.verdict, candidate.score) == ("PASS", 88)
+        assert is_clean(audit, clean_crosscheck(), [])
+
+    def test_an_audit_without_the_block_is_unaffected(self):
+        """`compliance_review` is optional in the schema, so old audits must behave as before."""
+        audit = audit_doc("PASS", 88)
+        assert "compliance_review" not in audit
+        candidate = Candidate(GenOutput({}, {}), audit, clean_crosscheck(), "initial")
+        assert (candidate.verdict, candidate.score) == ("PASS", 88)
+        assert is_clean(audit, clean_crosscheck(), [])
+
+    def test_not_assessable_is_never_promoted_or_demoted(self):
+        audit = audit_doc("NOT_ASSESSABLE", 0)
+        audit["compliance_review"] = compliance_review(breach())
+        assert Candidate(GenOutput({}, {}), audit, clean_crosscheck(), "initial").verdict == "NOT_ASSESSABLE"
+
+
+class TestAuditReplyShape:
+    """What `audit_blind` accepts. Every case here was measured passing before the fix."""
+
+    def _envelope(self, reply):
+        from backend.steps.agent_steps import _audit_envelope
+        from backend.steps.call import ModelCallError
+
+        return _audit_envelope, ModelCallError, reply
+
+    def test_a_decoy_object_cannot_win(self):
+        """`extract_json` returns the first balanced object, which is right for prose-wrapped
+        replies and wrong when there are two. Measured: a reply opening with
+        `{"verdict": "PASS", "note": "let me reconsider"}` and then giving a real FAIL with critical
+        findings was delivered as a clean PASS, since the only check was `"verdict" in audit`."""
+        envelope, error, _ = self._envelope(None)
+        with pytest.raises(error):
+            envelope('{"verdict": "PASS", "note": "let me reconsider"}\n\n'
+                     '{"verdict": "FAIL", "score": {"total": 42}, '
+                     '"findings": [{"severity": "critical"}], "blind_information_map": []}',
+                     "audit")
+
+    @pytest.mark.parametrize("missing", ["score", "findings", "blind_information_map"])
+    def test_each_load_bearing_key_is_required(self, missing):
+        """Absence of any of these reads as good news. No `findings` means "no defects"; no
+        `blind_information_map` leaves the cross-check nothing to compare, which it reports clean."""
+        envelope, error, _ = self._envelope(None)
+        audit = audit_doc("PASS", 95)
+        audit.pop(missing)
+        with pytest.raises(error):
+            envelope(json.dumps(audit), "audit")
+
+    def test_a_complete_audit_passes(self):
+        envelope, _, _ = self._envelope(None)
+        assert envelope(json.dumps(audit_doc("PASS", 88)), "audit")["verdict"] == "PASS"
+
+
+class TestProviderErrorsUseTheInfraBudget:
+    @pytest.mark.asyncio
+    async def test_a_provider_exception_becomes_a_model_call_error(self):
+        """Otherwise it escapes `run_one` and `batch.py` charges it a whole refill round.
+
+        Measured before the fix: `_with_infra_retries` catches `ModelCallError`/`ScriptError` only, so
+        a throttling error made one call, propagated out of the Loop, and was recorded as
+        `unhandled_error` -- which is refillable, meaning a 429 bought a full regeneration instead of
+        a two-second backoff.
+        """
+        from backend.steps.agent_steps import _invoke
+        from backend.steps.call import ModelCallError
+
+        class Throttled:
+            async def invoke_async(self, message):
+                raise RuntimeError("ThrottlingException: rate exceeded")
+
+        with pytest.raises(ModelCallError) as excinfo:
+            await _invoke(Throttled(), "m", "generation")
+        assert "ThrottlingException" in str(excinfo.value)
+
+    @pytest.mark.asyncio
+    async def test_a_model_call_error_is_not_double_wrapped(self):
+        from backend.steps.agent_steps import _invoke
+        from backend.steps.call import ModelCallError
+
+        class Already:
+            async def invoke_async(self, message):
+                raise ModelCallError("original text")
+
+        with pytest.raises(ModelCallError) as excinfo:
+            await _invoke(Already(), "m", "audit")
+        assert str(excinfo.value) == "original text"
 
 
 class TestSlotIsolation:

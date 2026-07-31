@@ -22,7 +22,8 @@ in ``orchestration/loop.py``.
 from __future__ import annotations
 
 import json
-import re
+import shutil
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -40,7 +41,7 @@ __all__ = [
     "build_audit_payload",
     "build_revise_message",
     "generate",
-    "purge_plan_scratch",
+    "GenerationWorkspace",
     "revise",
 ]
 
@@ -95,70 +96,108 @@ def _envelope(reply: str, label: str) -> GenOutput:
     return GenOutput(material, blueprint)
 
 
-# Where a generation agent's scratch files may live. Deletion is confined to these roots: a rule
-# derived purely from the agent's own commands would follow a path anywhere on the filesystem, and a
-# malformed command could then name something that is not scratch at all.
-_SCRATCH_ROOTS = (Path("/tmp"), Path("/var/tmp"))
-
-# Paths appearing in a shell command. Deliberately broad on the left (any redirect or bare argument)
-# and narrow on the right (a .json file under a scratch root), because a missed file is a leak while
-# a spurious match is refused by the root check below.
-_PATH_IN_COMMAND = re.compile(r"(/(?:var/)?tmp/[\w.\-/]+\.json)")
+# Keys the audit schema requires, checked here because nothing else validates the audit reply and it
+# drives both the revision instructions and `pick_better`. Not the full schema: `jsonschema` in the
+# request path would reject an otherwise usable audit over a nested detail, and the Loop has no way to
+# repair one. These four are the ones whose absence is silently benign -- an audit missing `findings`
+# reads as "no defects", and one missing `blind_information_map` defeats the cross-check by having
+# nothing to compare, which `crosscheck` reports as clean.
+_AUDIT_REQUIRED_KEYS = ("verdict", "score", "findings", "blind_information_map")
 
 
-def purge_plan_scratch(agent: Any) -> List[str]:
-    """Delete the scratch JSON files a generation agent wrote. Returns what was removed.
+def _audit_envelope(reply: str, label: str) -> Dict[str, Any]:
+    """Parse and shape-check an audit reply.
 
-    **Why this exists, and it is the blindness boundary's third leg.** The skill tells the generator
-    to write the material and the blueprint to files so it can run its own validator, and that
-    blueprint file holds the answers for *this* material -- which turn carries which target, what the
-    self-correction replaces. Measured: the agent writes them to ``/tmp/material.json`` and
-    ``/tmp/blueprint.json``.
-
-    ``strands_tools.file_read`` resolves paths against the process working directory and never
-    consults ``agent.sandbox`` -- measured, its signature carries no ``agent`` at all. So the audit
-    agent, running in the same container moments later, could read that file by absolute path and the
-    isolation would be over. Not because anything was passed to it: because it was left lying around.
-
-    The two other legs stop different things and neither stops this one. The audit pool holding no
-    plan schema is about *shapes*; giving the auditor no ``shell`` is about *commands*. A plan file at
-    a fixed, guessable path defeats both.
-
-    Paths come from the agent's own commands rather than from a glob, so this deletes what this
-    generation produced and not a concurrent slot's files. Restricted to scratch roots regardless: an
-    agent that wrote ``> /etc/hosts`` should not have that honoured here.
+    ``extract_json`` scans for the first balanced object, which is the right behaviour for a model
+    that wraps its answer in prose -- but it means a reply containing two objects delivers the first.
+    Measured: a reply whose first object was ``{"verdict": "PASS", "note": "let me reconsider"}``
+    followed by a real ``FAIL`` with critical findings was accepted as a clean PASS, because the only
+    check was ``"verdict" in audit``. Requiring the four load-bearing keys makes a decoy object fail
+    to qualify, and ``ModelCallError`` puts the call back on the infrastructure budget.
     """
-    removed: List[str] = []
-    for message in getattr(agent, "messages", None) or []:
-        if not isinstance(message, dict):
-            continue
-        for block in message.get("content") or []:
-            use = block.get("toolUse") if isinstance(block, dict) else None
-            if not use or use.get("name") != "shell":
-                continue
-            command = use.get("input", {}).get("command")
-            # `shell` accepts a string, a list of strings, or a list of dicts.
-            texts: List[str] = []
-            for item in command if isinstance(command, list) else [command]:
-                if isinstance(item, str):
-                    texts.append(item)
-                elif isinstance(item, dict) and isinstance(item.get("command"), str):
-                    texts.append(item["command"])
-            for text in texts:
-                for candidate in _PATH_IN_COMMAND.findall(text):
-                    path = Path(candidate)
-                    if not any(root in path.parents for root in _SCRATCH_ROOTS):
-                        continue
-                    try:
-                        path.unlink()
-                    except FileNotFoundError:
-                        continue
-                    except OSError:
-                        # A file we cannot remove is worth reporting, not worth failing the
-                        # generation over -- the material is already produced and valid.
-                        continue
-                    removed.append(str(path))
-    return removed
+    audit = extract_json(reply)
+    missing = [key for key in _AUDIT_REQUIRED_KEYS if key not in audit]
+    if missing:
+        raise ModelCallError(
+            "%s reply is missing required keys %s; keys present=%s"
+            % (label, missing, sorted(audit.keys())[:10])
+        )
+    return audit
+
+
+class GenerationWorkspace(object):
+    """A private scratch directory for one generation, removed when the call returns.
+
+    **Why the directory rather than the two filenames.** The skill used to name ``/tmp/material.json``
+    and ``/tmp/blueprint.json``, and every concurrent generation therefore wrote the same two paths.
+    Measured on interleaved slots: slot A read back slot B's plan from ``/tmp/blueprint.json`` and
+    validated its own script against it; A's purge deleted B's files mid-run; and B's fresh write made
+    A's ``assert_no_plan_on_disk`` raise and kill A. One CLI batch with the default concurrency of 3
+    produced zero materials from nine generation attempts.
+
+    A per-call directory removes the shared name, and deleting the tree removes the need to reconstruct
+    which files were written -- the earlier purge parsed the agent's own shell commands with a regex,
+    which missed anything built by interpolation (``D=/tmp; cat > $D/blueprint.json``).
+
+    The plan must not outlive the generation regardless of how it was written, because
+    ``strands_tools.file_read`` resolves paths against the process working directory and consults no
+    sandbox: the audit agent built moments later can read any absolute path. The other two legs of the
+    boundary do not help -- the audit pool holding no plan schema is about *shapes*, and withholding
+    ``shell`` is about *commands*.
+    """
+
+    __slots__ = ("_dir",)
+
+    def __init__(self) -> None:
+        self._dir = Path(tempfile.mkdtemp(prefix="ielts-gen-"))
+
+    @property
+    def path(self) -> Path:
+        return self._dir
+
+    def instructions(self) -> str:
+        """The one paragraph telling the agent where to work. Included in every generation request."""
+        return (
+            "\n\n## Working directory\n\n"
+            "Write every scratch file under `%s`, which is yours alone and is deleted when this "
+            "request finishes. Use it for the material and blueprint JSON files the skill tells you "
+            "to validate. Do not write to `/tmp` directly: other work runs concurrently there, and a "
+            "shared filename means reading back someone else's file.\n\n"
+            "Write the path out in full in every command. Do not assign it to a shell variable -- "
+            "each `shell` call is its own process, and a variable set in one command is not visible "
+            "in the next." % self._dir
+        )
+
+    def remove(self) -> List[str]:
+        """Delete the directory. Returns the files that were in it, for logging."""
+        contents: List[str] = []
+        try:
+            contents = [str(p) for p in sorted(self._dir.rglob("*")) if p.is_file()]
+        except OSError:
+            pass
+        shutil.rmtree(self._dir, ignore_errors=True)
+        return contents
+
+
+async def _invoke(agent: Any, message: str, label: str) -> str:
+    """One agent call, with provider exceptions translated to ``ModelCallError``.
+
+    Without this the exception type is whatever the SDK raises, and ``loop.py``'s
+    ``_with_infra_retries`` catches only ``ModelCallError``/``ScriptError``. Measured: a throttling
+    error escaped ``run_one`` entirely, was caught by ``batch.py`` as ``unhandled_error``, and --
+    because that reason is refillable -- burned a whole refill round regenerating a material that had
+    nothing wrong with it, instead of waiting two seconds and retrying the one call.
+
+    The wrapper used to live in ``call.py``, which the pipeline no longer uses. Moving the model calls
+    to pre-defined agents left the translation behind, and nothing failed loudly enough to notice: a
+    throttle still produced a material, just via the most expensive path available.
+    """
+    try:
+        return str(await agent.invoke_async(message))
+    except ModelCallError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - SDK raises provider-specific errors
+        raise ModelCallError("%s call failed: %s: %s" % (label, type(exc).__name__, str(exc)[:300]))
 
 
 def _feedback_block(feedback: Optional[List[str]]) -> str:
@@ -190,18 +229,20 @@ async def generate(
     touching this function.
     """
     agent = build_generate_agent()
+    workspace = GenerationWorkspace()
     message = (
         "Generate one listening material for the scenario below.\n\n"
         "## Scenario\n\nid: %s\ncategory: %s\ntitle: %s\n\n%s"
         % (scenario.id, scenario.category, scenario.title_zh, scenario.prompt_hint)
+        + workspace.instructions()
         + _feedback_block(feedback)
     )
     try:
-        reply = str(await agent.invoke_async(message))
+        reply = await _invoke(agent, message, "generation")
     finally:
         # In `finally` because a failed generation leaves scratch files too, and the next step after a
         # failure is a retry or an audit either way.
-        purge_plan_scratch(agent)
+        workspace.remove()
     output = _envelope(reply, "generation")
     return GenOutput(_stamp(output.material, scenario.prompt_hint), output.blueprint)
 
@@ -270,12 +311,7 @@ async def audit_blind(material: Dict[str, Any], metrics: Dict[str, Any]) -> Dict
     # agent built on the next line.
     assert_no_plan_on_disk()
     agent = build_audit_agent()
-    audit = extract_json(str(await agent.invoke_async(payload)))
-    if "verdict" not in audit:
-        raise ModelCallError(
-            "audit reply carried no verdict; keys=%s" % sorted(audit.keys())[:8]
-        )
-    return audit
+    return _audit_envelope(await _invoke(agent, payload, "audit"), "audit")
 
 
 async def revise(
@@ -289,11 +325,14 @@ async def revise(
     the result.
     """
     agent = build_generate_agent()
+    workspace = GenerationWorkspace()
     try:
-        reply = str(await agent.invoke_async(
-            build_revise_message(material, blueprint, instruction)))
+        reply = await _invoke(
+            agent,
+            build_revise_message(material, blueprint, instruction) + workspace.instructions(),
+            "revision")
     finally:
-        purge_plan_scratch(agent)
+        workspace.remove()
     output = _envelope(reply, "revision")
 
     parts = material.get("listening_material_parts")

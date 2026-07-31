@@ -31,13 +31,17 @@ if ! aws ssm get-parameter --name "$SECRET_PARAM" --with-decryption >/dev/null 2
     aws ssm put-parameter --name "$SECRET_PARAM" --type SecureString \
         --value "$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')" \
         --query 'Version' --output text
-    # The execution role fetches it at task start, so it needs read access on this one parameter.
-    aws iam put-role-policy --role-name "${PROJECT}-ecs-exec" \
-        --policy-name "${PROJECT}-read-secret" --policy-document "{
-          \"Version\":\"2012-10-17\",
-          \"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"ssm:GetParameters\",
-            \"Resource\":\"arn:aws:ssm:${AWS_REGION}:${ACCOUNT_ID}:parameter${SECRET_PARAM}\"}]}"
 fi
+
+# Written every run, not only when the parameter is created. `teardown.sh` deletes the role's inline
+# policies but leaves the SSM parameter, so after a teardown the guard above is satisfied while the
+# read permission is gone -- and the task then fails to start with ResourceInitializationError
+# fetching the secret, which names the secret rather than the missing permission.
+aws iam put-role-policy --role-name "${PROJECT}-ecs-exec" \
+    --policy-name "${PROJECT}-read-secret" --policy-document "{
+      \"Version\":\"2012-10-17\",
+      \"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"ssm:GetParameters\",
+        \"Resource\":\"arn:aws:ssm:${AWS_REGION}:${ACCOUNT_ID}:parameter${SECRET_PARAM}\"}]}"
 
 if [ -z "${ALLOWED_EMAIL_DOMAINS:-}" ] || [ "${ALLOWED_EMAIL_DOMAINS}" = "*" ]; then
     echo "NOTE: ALLOWED_EMAIL_DOMAINS is unset, so ANY email address may register."

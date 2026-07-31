@@ -102,78 +102,105 @@ class TestScratchFilesAreGone:
     $45 with $39.
     """
 
-    def _agent_that_wrote(self, commands):
-        """A stand-in carrying a `shell` tool-use history, which is all the purge reads."""
-        return type("A", (), {"messages": [
-            {"content": [{"toolUse": {"name": "shell", "input": {"command": c}}}]}
-            for c in commands
-        ]})()
+    def test_the_workspace_is_private_per_call(self):
+        """Two generations must not share a path. The shared-name era is what caused the damage:
+        slot A read back slot B's plan, A's cleanup deleted B's files, and B's write killed A."""
+        from backend.steps.agent_steps import GenerationWorkspace
 
-    def test_a_written_plan_file_is_deleted(self, tmp_path):
-        from backend.steps import agent_steps
+        a, b = GenerationWorkspace(), GenerationWorkspace()
+        try:
+            assert a.path != b.path
+            assert a.path.is_dir() and b.path.is_dir()
+            # The agent is told where to work, or it falls back to the skill's own suggestion.
+            assert str(a.path) in a.instructions()
+        finally:
+            a.remove()
+            b.remove()
 
-        plan = Path("/tmp/blueprint.json")
-        plan.write_text(json.dumps({"items": [{"form_group": "booking"}]}), encoding="utf-8")
-        agent = self._agent_that_wrote(["cat > /tmp/blueprint.json <<'EOF'\n{}\nEOF"])
+    def test_removing_the_workspace_takes_the_whole_tree(self):
+        """Deleting the directory rather than reconstructing filenames.
 
-        removed = agent_steps.purge_plan_scratch(agent)
+        The earlier version parsed the agent's shell commands with a regex to find what to delete,
+        which missed any path built by interpolation (``D=/tmp; cat > $D/blueprint.json``). A tree
+        removal cannot miss a file, whatever the agent named it or however deep it put it.
+        """
+        from backend.steps.agent_steps import GenerationWorkspace
+
+        workspace = GenerationWorkspace()
+        (workspace.path / "nested").mkdir()
+        plan = workspace.path / "nested" / "whatever-i-called-it.json"
+        plan.write_text(json.dumps({"items": [{"form_group": "x"}]}), encoding="utf-8")
+
+        removed = workspace.remove()
 
         assert str(plan) in removed
         assert not plan.exists()
+        assert not workspace.path.exists()
 
-    def test_every_command_form_is_read(self):
-        """`shell` takes a string, a list, or a list of dicts. A form the purge cannot parse is a
-        plan file left on disk, so all three are exercised rather than just the common one."""
-        from backend.steps import agent_steps
+    @pytest.mark.asyncio
+    async def test_the_workspace_is_removed_even_when_the_call_fails(self):
+        """A failed generation leaves scratch files too, and the next step is a retry or an audit."""
+        import backend.steps.agent_steps as steps
+        from backend.steps.call import ModelCallError
 
-        paths = [Path("/tmp/purge_a.json"), Path("/tmp/purge_b.json"), Path("/tmp/purge_c.json")]
-        for path in paths:
-            path.write_text("{}", encoding="utf-8")
+        seen = {}
 
-        agent = self._agent_that_wrote([
-            "cat > /tmp/purge_a.json <<'EOF'\n{}\nEOF",
-            ["echo x", "python3 -m json.tool /tmp/purge_b.json"],
-            [{"command": "mv /x /tmp/purge_c.json"}],
-        ])
-        agent_steps.purge_plan_scratch(agent)
+        class Boom:
+            messages = []
 
-        assert [p for p in paths if p.exists()] == []
+            async def invoke_async(self, message):
+                seen["dir"] = [line for line in message.splitlines() if "ielts-gen-" in line]
+                raise RuntimeError("boom")
 
-    def test_nothing_outside_a_scratch_root_is_touched(self, tmp_path):
-        """The paths come from a model's output, so the roots are a hard restriction.
+        original = steps.build_generate_agent
+        steps.build_generate_agent = lambda: Boom()
+        try:
+            class S:
+                id = "x"; category = "c"; title_zh = "t"; prompt_hint = "h"
+            with pytest.raises(ModelCallError):
+                await steps.generate(S())
+        finally:
+            steps.build_generate_agent = original
 
-        Without it, a malformed command naming a repository file would have it deleted -- and the
-        skill pools contain the validator every generation depends on.
-        """
-        from backend.steps import agent_steps
+        assert seen["dir"], "the request never named a workspace"
+        leaked = [Path(part.strip("` ")) for line in seen["dir"] for part in line.split()
+                  if "ielts-gen-" in part]
+        assert leaked, leaked
+        assert not any(path.exists() for path in leaked), leaked
 
-        victim = tmp_path / "not-scratch.json"
-        victim.write_text("{}", encoding="utf-8")
-        agent = self._agent_that_wrote(["cat > %s <<'EOF'\n{}\nEOF" % victim])
-
-        removed = agent_steps.purge_plan_scratch(agent)
-
-        assert removed == []
-        assert victim.exists()
-
-    def test_the_audit_call_refuses_to_run_while_a_plan_is_on_disk(self):
-        """The second layer, and it raises rather than cleaning up.
-
-        The purge parses the agent's own commands, so a path built by string interpolation or written
-        through a Python heredoc can survive it. That is exactly when the guard has to fire: silently
-        deleting the file would leave the purge's wrong assumption in place for every later material.
-        """
-        from backend.deterministic.guards import BlindnessViolation, assert_no_plan_on_disk
+    def test_a_plan_left_outside_the_workspace_is_swept_not_raised(self):
+        """The backstop, and it deletes rather than raising. Measured why: the cutoff is the
+        *process* start and Runtime instances are long-lived, so one survivor file used to fail every
+        later material in that instance -- a real CLI batch spent 9 generation attempts and 6 refill
+        rounds to produce nothing. A guard whose false positive costs the whole batch cannot be
+        strict; removing the file keeps the property that actually matters."""
+        from backend.deterministic.guards import assert_no_plan_on_disk, sweep_plan_files_on_disk
 
         plan = Path("/tmp/leftover_plan.json")
         plan.write_text(json.dumps({"items": [{"item_form": "form", "form_group": "a"}]}),
                         encoding="utf-8")
         try:
-            with pytest.raises(BlindnessViolation) as excinfo:
-                assert_no_plan_on_disk()
-            assert "leftover_plan.json" in str(excinfo.value)
+            swept = sweep_plan_files_on_disk()
+            assert str(plan) in swept
+            assert not plan.exists()
+            assert_no_plan_on_disk()
         finally:
             plan.unlink(missing_ok=True)
+
+    def test_a_plan_in_a_subdirectory_is_found(self):
+        """`file_read` takes any absolute path, so depth is no protection. A non-recursive glob left
+        ``/tmp/x/blueprint.json`` invisible to the guard and readable by the agent."""
+        from backend.deterministic.guards import plan_files_on_disk
+
+        nested = Path("/tmp/ielts-guard-probe/deeper")
+        nested.mkdir(parents=True, exist_ok=True)
+        plan = nested / "plan.json"
+        plan.write_text(json.dumps({"items": [{"form_group": "x"}]}), encoding="utf-8")
+        try:
+            assert str(plan) in plan_files_on_disk(since=0)
+        finally:
+            import shutil
+            shutil.rmtree("/tmp/ielts-guard-probe", ignore_errors=True)
 
     def test_the_guard_is_content_based_not_name_based(self):
         """The generator picks its own filenames. A plan in `draft2.json` is just as readable."""

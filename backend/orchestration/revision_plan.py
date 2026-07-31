@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-__all__ = ["ReviseInstruction", "build_revise_instruction"]
+__all__ = ["ReviseInstruction", "build_revise_instruction", "compliance_severities"]
 
 
 class ReviseInstruction(object):
@@ -34,16 +34,49 @@ class ReviseInstruction(object):
         return {"must_fix": self.must_fix, "advisory": self.advisory}
 
 
+def _location(where: Any) -> str:
+    return "turn %s" % where if isinstance(where, int) else "whole script"
+
+
 def _finding_line(finding: Dict[str, Any]) -> str:
-    where = finding.get("turn_index")
-    location = "turn %s" % where if isinstance(where, int) else "whole script"
     return "[%s] %s (%s) — evidence: %s — fix: %s" % (
         finding.get("severity", "?"),
         finding.get("rule", ""),
-        location,
+        _location(finding.get("turn_index")),
         finding.get("evidence", ""),
         finding.get("fix", ""),
     )
+
+
+def _compliance_line(item: Dict[str, Any]) -> str:
+    return "[%s] %s specification compliance (%s) — evidence: %s — fix: %s" % (
+        item.get("severity", "?"),
+        item.get("code", "?"),
+        _location(item.get("turn_index")),
+        item.get("evidence", ""),
+        item.get("fix", ""),
+    )
+
+
+def compliance_severities(audit: Dict[str, Any]) -> List[str]:
+    """Severities of the non-compliant C1-C6 items. Empty when the review is absent or clean.
+
+    Separate from ``findings`` because the auditor is instructed to keep them separate (its SKILL.md
+    says "Report this in ``compliance_review``, not mixed into ``findings``"), which means every
+    consumer of audit severity has to read both or silently ignore half the audit.
+    """
+    if not isinstance(audit, dict):
+        return []
+    review = audit.get("compliance_review")
+    if not isinstance(review, dict):
+        return []
+    severities: List[str] = []
+    for item in review.get("items") or []:
+        if isinstance(item, dict) and item.get("compliant") is False:
+            severity = item.get("severity")
+            if isinstance(severity, str):
+                severities.append(severity)
+    return severities
 
 
 def build_revise_instruction(
@@ -71,6 +104,22 @@ def build_revise_instruction(
         if finding.get("severity") in ("critical", "major"):
             must_fix.append(line)
         elif finding.get("severity") == "minor":
+            advisory.append(line)
+
+    # The C1-C6 review, graded exactly like `findings`. It arrives in its own block because the
+    # auditor is told to keep it out of `findings`, and reading only `findings` therefore drops half
+    # the audit: a critical register breach the auditor reported in full would reach neither the
+    # revision instructions nor `is_clean`, and the material would ship at its uncapped score.
+    review = audit.get("compliance_review") if isinstance(audit, dict) else None
+    for item in (review or {}).get("items") or []:
+        if not isinstance(item, dict) or item.get("compliant") is not False:
+            continue
+        line = _compliance_line(item)
+        if item.get("severity") in ("critical", "major"):
+            must_fix.append(line)
+        else:
+            # Minor, or absent -- an item the auditor flagged without grading is still a note the
+            # generator should see, and advisory is the side that cannot force a pointless rewrite.
             advisory.append(line)
 
     for row in getattr(cross_check, "unrecoverable", []) or []:

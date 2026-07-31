@@ -65,14 +65,19 @@ Read all three of these before writing anything:
    - Do not expose this analysis in the result.
 
 5. Validate the JSON, and fix what it reports. **This step is yours to run, not the caller's.**
-   - Write the material and the blueprint to two separate `.json` files under `/tmp`.
-   - Write each file in ONE `shell` call, with a quoted heredoc, and check it parses before going on:
+   - Write the material and the blueprint to two separate `.json` files **inside the working
+     directory the request gives you**. Do not write to `/tmp` directly: other requests run at the
+     same time, and a shared filename means reading back someone else's file.
+   - Write each file in ONE `shell` call, with a quoted heredoc, and check it parses before going on.
+     **Spell the directory out in full every time.** Do not define a shell variable for it: measured,
+     an agent that wrote `WORK=/path | cat > $WORK/material.json` used a pipe instead of `;`, so
+     `$WORK` was empty in the second command and three calls failed before it gave up on the variable.
 
      ```
-     cat > /tmp/material.json <<'EOF'
+     cat > /the/absolute/working/directory/material.json <<'EOF'
      ...the complete material JSON...
      EOF
-     python3 -m json.tool /tmp/material.json > /dev/null && echo PARSE_OK
+     python3 -m json.tool /the/absolute/working/directory/material.json > /dev/null && echo PARSE_OK
      ```
 
      Emit the JSON exactly as it will appear in your reply. Measured: writing it by hand cost six
@@ -81,7 +86,7 @@ Read all three of these before writing anything:
      spelled out. If `PARSE_OK` does not appear, rewrite the whole file rather than patching it with
      `sed`: a patch that half-applies leaves the file broken in a new way.
    - Run the validator with `shell`, using the absolute skill path from `Location:`:
-     `python3 <skill dir>/scripts/validate_part1.py /tmp/material.json --blueprint /tmp/blueprint.json`
+     `python3 <skill dir>/scripts/validate_part1.py <workdir>/material.json --blueprint <workdir>/blueprint.json`
    - Read its output and fix every error, then run it again. Repeat until it reports no errors, or
      until further attempts stop making progress — a script the validator still complains about is
      delivered with those complaints attached, so a stuck loop is worse than an honest report.

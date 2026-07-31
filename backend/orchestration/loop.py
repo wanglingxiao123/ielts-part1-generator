@@ -36,7 +36,7 @@ from ..deterministic.metrics import run_metrics_remote
 from ..deterministic.runner import ScriptError
 from ..deterministic.validate import validate
 from ..steps import agent_steps
-from .revision_plan import build_revise_instruction
+from .revision_plan import build_revise_instruction, compliance_severities
 from ..steps.call import ModelCallError
 
 __all__ = [
@@ -92,13 +92,45 @@ class Candidate(object):
 
     @property
     def verdict(self) -> str:
-        return str(self.audit.get("verdict", "NOT_ASSESSABLE"))
+        """The audit verdict, lowered when the compliance review contradicts it.
+
+        The auditor derives its own verdict from ``findings`` alone -- its rubric says so, and its
+        SKILL.md tells it to keep the C1-C6 review in a separate block. So an audit reporting a
+        critical register breach in ``compliance_review`` and nothing in ``findings`` arrives as
+        ``PASS``. Taking that at face value delivered such a material as clean, at its full score.
+
+        Applied here rather than asking the auditor to combine them: this is the same ranking
+        judgement as ``pick_better``, and it has to be reproducible in a unit test.
+        """
+        stated = str(self.audit.get("verdict", "NOT_ASSESSABLE"))
+        if stated == "NOT_ASSESSABLE":
+            return stated
+        severities = compliance_severities(self.audit)
+        if "critical" in severities or "major" in severities:
+            return "FAIL"
+        if severities and VERDICT_RANK.get(stated, 0) > VERDICT_RANK["PASS_WITH_MINOR_EDITS"]:
+            return "PASS_WITH_MINOR_EDITS"
+        return stated
 
     @property
     def score(self) -> int:
+        """The audit score, capped by severity the way the rubric requires.
+
+        The rubric asks the auditor to apply these caps itself (critical -> at most 49, major -> at
+        most 69), and for findings it does. It has no reason to apply them for compliance items,
+        since its own verdict does not account for them either. So the cap is enforced here, over
+        whatever number arrived.
+        """
         score = self.audit.get("score")
         total = score.get("total") if isinstance(score, dict) else None
-        return total if isinstance(total, int) else 0
+        if not isinstance(total, int):
+            return 0
+        severities = compliance_severities(self.audit)
+        if "critical" in severities:
+            return min(total, 49)
+        if "major" in severities:
+            return min(total, 69)
+        return total
 
     def key(self) -> Tuple[int, int]:
         """Ranking key: verdict class first, score second.
@@ -220,15 +252,21 @@ class MaterialResult(object):
 def is_clean(audit: Dict[str, Any], cross_check: Any, validate_warnings: List[str]) -> bool:
     """Can this version be delivered without a revision pass?
 
-    Requires: no critical/major finding, both classes of cross-check defect empty, and no
-    advisory items at all. Minor findings and warnings still trigger a revision -- the parent
-    task requires the revision step to do real work, and if the worst happens the revision is
-    rejected by validation and we fall back at no cost to quality.
+    Requires: no graded finding in either of the auditor's two output blocks, both classes of
+    cross-check defect empty, and no advisory items at all. Minor findings and warnings still
+    trigger a revision -- the parent task requires the revision step to do real work, and if the
+    worst happens the revision is rejected by validation and we fall back at no cost to quality.
+
+    Both blocks, because the auditor is instructed to keep the C1-C6 compliance review out of
+    ``findings``. Reading only ``findings`` made a material with a critical register breach come back
+    "clean on first pass".
     """
     findings = audit.get("findings") if isinstance(audit, dict) else None
     for finding in findings or []:
         if isinstance(finding, dict) and finding.get("severity") in ("critical", "major", "minor"):
             return False
+    if compliance_severities(audit):
+        return False
     if getattr(cross_check, "hard_defects", None) or getattr(cross_check, "ambiguous", None):
         return False
     if validate_warnings:

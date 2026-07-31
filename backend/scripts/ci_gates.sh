@@ -140,4 +140,79 @@ if ok:
 sys.exit(0 if ok else 1)
 PY
 
+echo "== gate 10: every third-party package the backend imports is installed in the image =="
+# Gate 8 compares first-party packages, so it cannot see this: `strands_tools` was imported by
+# agents.py and sandboxed_metrics.py while appearing in neither the Dockerfile nor pyproject.toml. It
+# is not a dependency of `strands-agents`, so the image would have built, started, and answered /ping
+# -- then failed every material with `unhandled_error`, because both imports are inside functions and
+# `batch.py` catches everything. Nothing would have named the missing package.
+"$BACKEND_PYTHON" - <<'PY' || fail "the image does not install a package the backend imports"
+import ast, pathlib, re, sys
+
+# import name -> the distribution that provides it, when the two differ.
+DISTRIBUTION = {"strands": "strands-agents", "strands_tools": "strands-agents-tools",
+                "yaml": "pyyaml", "bedrock_agentcore": "bedrock-agentcore"}
+# First-party, including modules loaded off a runtime sys.path rather than as a package:
+# `cross_check` lives in skills/shared/ and is imported after that directory is appended, so it looks
+# like a third-party top-level import here. Gate 8 covers whether `skills/` reaches the image.
+FIRST_PARTY = {"audio_storage", "backend", "web", "skills", "config", "cross_check"}
+
+dockerfile = pathlib.Path("backend/Dockerfile").read_text(encoding="utf-8")
+pyproject = pathlib.Path("backend/pyproject.toml").read_text(encoding="utf-8")
+# `"name[extra]>=x"` in the pip line, and the same in pyproject's dependency list.
+installed = {m.lower() for m in re.findall(r'"([A-Za-z0-9_.-]+)(?:\[[^\]]*\])?[><=]', dockerfile)}
+declared = {m.lower() for m in re.findall(r'"([A-Za-z0-9_.-]+)(?:\[[^\]]*\])?[><=]', pyproject)}
+
+imported = set()
+for path in pathlib.Path("backend").rglob("*.py"):
+    if "tests" in path.parts or "scripts" in path.parts or "__pycache__" in path.parts:
+        continue
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Import):
+            imported |= {a.name.split(".")[0] for a in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            imported.add(node.module.split(".")[0])
+
+ok = True
+for name in sorted(imported):
+    if name in FIRST_PARTY or name in sys.stdlib_module_names:
+        continue
+    dist = DISTRIBUTION.get(name, name).lower()
+    for label, present in (("backend/Dockerfile", installed), ("backend/pyproject.toml", declared)):
+        if dist not in present:
+            ok = False
+            print("  %s never installs %s (imported as %s)" % (label, dist, name))
+sys.exit(0 if ok else 1)
+PY
+[ "$status" = 0 ] && echo "  ok"
+
+echo "== gate 11: no IAM policy is written only when its role is created =="
+# This trap has now been found twice in provision.sh: a `put-role-policy` inside the `else` of
+# `if aws iam get-role ...` means an account whose role already exists never receives a permission a
+# later version added. Provision reports success and the failure arrives later as AccessDenied, which
+# reads as a deployment problem rather than a provisioning one. `put-role-policy` overwrites by name,
+# so there is never a reason to guard it.
+"$BACKEND_PYTHON" - <<'PY' || fail "an IAM policy is written only on role creation"
+import pathlib, re, sys
+
+ok = True
+for script in sorted(pathlib.Path("deploy").glob("*.sh")):
+    depth, guarded = 0, []
+    for number, line in enumerate(script.read_text(encoding="utf-8").splitlines(), 1):
+        stripped = line.strip()
+        if re.match(r"^(if|for|while)\b", stripped):
+            depth += 1
+        elif stripped in ("fi", "done"):
+            depth = max(0, depth - 1)
+        # A policy call at any nesting level is suspect; at top level it always runs.
+        elif depth > 0 and re.search(r"aws iam (put-role-policy|attach-role-policy)", stripped):
+            guarded.append(number)
+    if guarded:
+        ok = False
+        print("  %s writes an IAM policy inside a conditional at line(s) %s"
+              % (script, ", ".join(str(n) for n in guarded)))
+sys.exit(0 if ok else 1)
+PY
+[ "$status" = 0 ] && echo "  ok"
+
 exit "$status"

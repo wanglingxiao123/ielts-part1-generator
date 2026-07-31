@@ -33,6 +33,7 @@ __all__ = [
     "assert_reference_text_blind",
     "blueprint_key_hits",
     "plan_files_on_disk",
+    "sweep_plan_files_on_disk",
 ]
 
 
@@ -131,7 +132,10 @@ def plan_files_on_disk(since: float = None) -> List[str]:
         if not directory.is_dir():
             continue
         try:
-            entries = sorted(directory.glob("*.json"))
+            # Recursive: `file_read` takes any absolute path, so a plan one directory down is exactly
+            # as readable as one at the top level. A non-recursive glob made `/tmp/x/blueprint.json`
+            # invisible to the guard while leaving it readable by the agent.
+            entries = sorted(directory.rglob("*.json"))
         except OSError:
             continue
         for path in entries:
@@ -146,25 +150,46 @@ def plan_files_on_disk(since: float = None) -> List[str]:
     return found
 
 
-def assert_no_plan_on_disk() -> None:
-    """Fail before an audit call if any scratch file still holds the generator's plan.
+def sweep_plan_files_on_disk(since: float = None) -> List[str]:
+    """Delete scratch plan files and return what was removed. Called before an audit.
 
-    The second layer behind ``purge_plan_scratch``, and it exists because that one depends on parsing
-    the agent's own shell commands. A path built by string interpolation, written through a Python
-    heredoc, or produced by a command form the regex does not cover survives the purge -- and what
-    survives is a file naming which turn carries which answer, at a path the audit agent can read
-    with ``file_read``, which resolves against the process working directory and consults no sandbox.
+    **Deleting rather than raising, and the reason is a measured blast radius.** The first version of
+    this raised ``BlindnessViolation``, which read as the right instinct: a leftover plan means an
+    assumption about how the agent writes files is wrong, and hiding that keeps it wrong. But the
+    cutoff is the *process* start, and AgentCore Runtime instances are long-lived, so one survivor
+    file poisoned every subsequent material in that instance -- measured through a real CLI batch: one
+    leftover file, all 3 slots failed, 9 generation attempts and 6 refill rounds spent, zero materials
+    produced. A guard whose false-positive cost is the whole batch does not get to be strict.
 
-    Raising rather than deleting here. A file the purge missed means the purge's assumption about how
-    the agent writes files is wrong, and deleting it quietly would keep that wrong assumption in place
-    for every later material. This is the same reasoning as ``assert_blind``: the whole failure mode
-    is silent, so the guard has to be the thing that makes noise.
+    So the noise moves and the safety stays: the file is removed, and the caller reports what it
+    removed. Nothing about the audit proceeds with a readable plan on disk either way, which is the
+    property that actually matters.
+
+    ``GenerationWorkspace`` makes this a backstop rather than the mechanism -- it deletes its own tree,
+    so anything reaching here was written outside the directory the agent was told to use.
     """
+    swept: List[str] = []
+    for path in plan_files_on_disk(since):
+        try:
+            Path(path).unlink()
+        except OSError:
+            continue
+        swept.append(path)
+    return swept
+
+
+def assert_no_plan_on_disk() -> None:
+    """Sweep, then fail only if a plan file survived deletion.
+
+    Reaching the raise means a readable plan is on disk and could not be removed -- a permissions or
+    filesystem problem, not a stale file -- and continuing would hand the auditor the answers.
+    """
+    sweep_plan_files_on_disk()
     stale = plan_files_on_disk()
     if stale:
         raise BlindnessViolation(
-            "generator plan data is still on disk and the audit agent could read it: %s"
-            % ", ".join(stale[:5])
+            "generator plan data is on disk, could not be removed, and the audit agent could read "
+            "it: %s" % ", ".join(stale[:5])
         )
 
 

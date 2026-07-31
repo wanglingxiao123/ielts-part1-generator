@@ -32,6 +32,7 @@ import asyncio
 import json
 import os
 import re
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -67,13 +68,25 @@ class MetricsError(RuntimeError):
 
 
 def _safe_session_name(material_id: str) -> str:
-    """A session name derived from the material, so concurrent slots cannot collide.
+    """A session name unique per instance, not merely per material id.
+
+    **The uniqueness has to come from something other than the caller's id, and this was measured.**
+    The Loop passes ``scenario_id-slot_id``, slot ids restart at ``slot-1`` every invocation, and a
+    refill re-runs the same slot -- so two runs of one scenario produce the identical name. The SDK
+    keeps a module-level ``_session_mapping`` and, on a name already in it, ``init_session`` *returns*
+    ``{"status": "error"}`` rather than raising. ``_ensure_session`` then reconnects the second caller
+    to the first one's remote environment, where it overwrites ``material.json``: the first
+    material's audit comes back computed from the second material's script, with no error anywhere.
+
+    ``uuid4`` rather than a counter: a counter is per-process, and two containers running the same
+    scenario would collide again.
 
     Sanitised because the platform rejects most punctuation, and truncated because a long id plus a
-    prefix exceeds the accepted length. The suffix keeps ids distinguishable after truncation.
+    prefix exceeds the accepted length -- the random suffix is appended after truncation so it always
+    survives.
     """
     cleaned = re.sub(r"[^A-Za-z0-9_-]", "-", material_id or "unknown")
-    return ("ielts-audit-%s" % cleaned)[:60]
+    return "%s-%s" % (("ielts-audit-%s" % cleaned)[:43], uuid.uuid4().hex[:16])
 
 
 class SandboxedMetrics(object):
@@ -103,6 +116,10 @@ class SandboxedMetrics(object):
         return AgentCoreCodeInterpreter(
             region=region,
             identifier=identifier,
+            # Default is True, which turns `cleanup_platform` into a no-op. A session per material
+            # that nothing releases means one leaked remote environment per material until the
+            # platform's 900s timeout reclaims it.
+            persist_sessions=False,
             session_timeout_seconds=SESSION_TIMEOUT_SECONDS,
         )
 
@@ -119,11 +136,17 @@ class SandboxedMetrics(object):
         )
 
         self._client = self._build_client()
-        self._client.init_session(InitSessionAction(
+        # The return value is checked, not discarded. `init_session` reports a name collision by
+        # returning {"status": "error"} rather than raising, and an unchecked call there silently
+        # reconnects this material to another one's remote environment -- where the metrics come back
+        # computed from the wrong script.
+        started = self._client.init_session(InitSessionAction(
             type="initSession",
             session_name=self._session,
             description="IELTS audit metrics for %s" % self._material_id,
         ))
+        if isinstance(started, dict) and started.get("status") != "success":
+            raise MetricsError("session init failed: %s" % str(started)[:300])
         result = self._client.write_files(WriteFilesAction(
             type="writeFiles",
             session_name=self._session,
@@ -182,6 +205,32 @@ class SandboxedMetrics(object):
         if result.get("status") != "success":
             raise MetricsError("material re-upload failed: %s" % str(result)[:300])
 
+    def _stop_blocking(self) -> None:
+        """Stop this instance's sessions and drop them from the SDK's module-level registry.
+
+        ``cleanup_platform`` alone releases nothing, and this was measured. It returns immediately
+        unless ``persist_sessions`` is false -- which it is not by default, and the constructor above
+        now sets it -- and it also returns early on ``self._started``, a flag the SDK sets only through
+        its ``@tool`` entry point, which this module bypasses. So the previous ``close`` left every
+        session alive until the platform's 900s timeout: one leaked remote environment per material.
+
+        Stopping the sessions directly does not depend on either flag. The module-level
+        ``_session_mapping`` is cleaned too, since a name left in it makes a later ``init_session``
+        with the same name return an error instead of creating a session.
+        """
+        from strands_tools.code_interpreter import agent_core_code_interpreter as sdk
+
+        for name, session in list(getattr(self._client, "_sessions", {}).items()):
+            try:
+                session.client.stop()
+            except Exception:  # noqa: BLE001 - see close()
+                pass
+            sdk._session_mapping.pop(name, None)
+        try:
+            self._client._sessions.clear()
+        except Exception:  # noqa: BLE001
+            pass
+
     async def close(self) -> None:
         """Release the remote session.
 
@@ -192,7 +241,7 @@ class SandboxedMetrics(object):
         if self._client is None:
             return
         try:
-            await asyncio.to_thread(self._client.cleanup_platform)
+            await asyncio.to_thread(self._stop_blocking)
         except Exception:  # noqa: BLE001 - see docstring
             pass
         finally:

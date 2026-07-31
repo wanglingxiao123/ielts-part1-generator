@@ -152,9 +152,21 @@ class TestLayerBoundaries:
             # `audit.get("severity")`, `.verdict`: reaching for the value to act on it.
             if isinstance(node, ast.Attribute):
                 assert node.attr not in ("verdict", "findings"), node.attr
-        # The one permitted mention, asserted so the narrowing stays deliberate.
-        source = (BACKEND / "steps" / "agent_steps.py").read_text(encoding="utf-8")
-        assert 'if "verdict" not in audit' in source
+        # The permitted use, asserted as behaviour rather than as a source string. The earlier form
+        # pinned the exact line `if "verdict" not in audit`, which broke the moment the presence check
+        # grew to cover the other three load-bearing keys -- a test that fails when the thing it
+        # guards gets stronger is testing the spelling, not the property.
+        from backend.steps.agent_steps import _audit_envelope
+        from backend.steps.call import ModelCallError
+
+        with pytest.raises(ModelCallError):
+            _audit_envelope('{"score": {"total": 90}}', "audit")
+        # Presence is checked; the value is not judged. A FAIL is returned as readily as a PASS.
+        for verdict in ("PASS", "FAIL"):
+            audit = _audit_envelope(
+                '{"verdict": "%s", "score": {"total": 10}, "findings": [], '
+                '"blind_information_map": []}' % verdict, "audit")
+            assert audit["verdict"] == verdict
 
     def test_only_the_loop_ranks_verdicts(self):
         """The verdict ranking table must exist in exactly one place."""

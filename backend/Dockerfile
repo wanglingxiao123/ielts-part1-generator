@@ -14,6 +14,7 @@ WORKDIR /app
 COPY backend/pyproject.toml /app/backend/pyproject.toml
 RUN pip install --no-cache-dir \
         "strands-agents[openai]>=1.50.0" \
+        "strands-agents-tools>=0.8.0" \
         "openai>=2.0.0" \
         "bedrock-agentcore>=0.1.0" \
         "pyyaml>=6.0"
