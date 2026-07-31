@@ -1,16 +1,25 @@
 #!/usr/bin/env bash
 # Create or update the AgentCore Runtime that runs the generation loop.
 #
-#   bash deploy/runtime.sh [image-tag]
+#   bash deploy/runtime.sh <image-tag>
 #
 # Prerequisite: the backend image is in ECR (bash backend/scripts/deploy.sh ...).
 # The Runtime has no public ingress; only the web tier's task role may invoke it.
+#
+# This is the script that switches live traffic, so the tag is required rather than defaulted. A
+# default of `dev` meant an argument-less run silently repointed production at whatever `dev` happened
+# to be. Rolling back means naming a known-good tag here:
+#
+#   bash deploy/runtime.sh known-good-20260730     # the last image before the agent-autonomy rewrite
+#
+# Switching Runtime *version* is not a rollback: each version records an image tag, so versions that
+# name the same tag are indistinguishable.
 
 source "$(dirname "$0")/config.sh"
 require_creds
 require_region
 
-TAG="${1:-dev}"
+TAG="${1:?a tag is required; this switches live traffic. Use known-good-20260730 to roll back.}"
 IMAGE="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_BACKEND}:${TAG}"
 ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${PROJECT}-runtime"
 

@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # Build and push the web image, register a task definition, create/update the ECS service.
 #
-#   bash deploy/service.sh [image-tag]
+#   bash deploy/service.sh <image-tag>
 #
 # The service starts at desiredCount=0 so provisioning costs nothing. Use deploy/start.sh
 # before a demo and deploy/stop.sh after it.
+#
+# The tag is required, and both ECR repositories are IMMUTABLE. The old `dev` default overwrote the
+# only copy of the previous image, which is the one thing that makes a bad deploy unrecoverable.
+# `known-good-20260730` names the last image from before the agent-autonomy rewrite.
 
 source "$(dirname "$0")/config.sh"
 require_creds
 require_region
 
-TAG="${1:-dev}"
+TAG="${1:?a tag is required; name this build. Tags are immutable, so do not reuse one.}"
 REPO="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_FRONTEND}"
 IMAGE="${REPO}:${TAG}"
 

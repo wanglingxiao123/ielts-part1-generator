@@ -215,4 +215,28 @@ sys.exit(0 if ok else 1)
 PY
 [ "$status" = 0 ] && echo "  ok"
 
+echo "== gate 12: no deploy script defaults its image tag =="
+# A defaulted tag is how rollback was lost. Both ECR repositories are IMMUTABLE now, so a reused tag
+# is rejected at push -- but `deploy/runtime.sh` does not push, it switches live traffic, and a
+# default there meant an argument-less run silently repointed production at whatever `dev` was.
+# Requiring the tag also makes the tag a decision rather than an accident.
+"$BACKEND_PYTHON" - <<'PY' || fail "a deploy script defaults its image tag"
+import pathlib, re, sys
+
+SCRIPTS = ["deploy/runtime.sh", "deploy/service.sh", "backend/scripts/deploy.sh"]
+ok = True
+for name in SCRIPTS:
+    path = pathlib.Path(name)
+    if not path.is_file():
+        continue
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        # `TAG="${1:-dev}"` defaults; `TAG="${1:?...}"` requires. Only the first is a problem.
+        match = re.search(r'TAG="\$\{(\d+):-', line)
+        if match:
+            ok = False
+            print("  %s:%d defaults the image tag: %s" % (name, number, line.strip()))
+sys.exit(0 if ok else 1)
+PY
+[ "$status" = 0 ] && echo "  ok"
+
 exit "$status"
