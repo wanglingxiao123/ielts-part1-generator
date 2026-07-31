@@ -104,134 +104,70 @@ flowchart LR
 
 黄色表示生成和修改，蓝色表示 AI 评价，灰色表示 Python 校验或流程决策，绿色表示采用与交付。
 
-### 2.1 谁在控制流程
+> **核心原则：Python 控制流程，AI 负责生成和评价。** AI 不能自行决定重试、通过或交付哪个版本。
 
-这里的 Agent Loop 不是“AI 自己决定下一步做什么”，而是一段由
-`backend/orchestration/loop.py` 控制的 Python 工作流。AI 只在被调用时负责生成、评价或修改；
-是否重试、是否进入修改、最终采用原稿还是修改稿，都由普通 Python 条件判断决定。当前流程只交付
-文字材料，不合成音频。
+### 2.1 两个 Skill
 
-Skill 也不是一个会自行运行的 Agent。它是一组供后端和 AI 共同使用的规范、脚本和数据契约：
+Skill 不是一个会自行运行的 Agent，而是“给 AI 的规范 + 给 Python 的检查脚本”。
 
-| 组成 | 作用 | 谁使用 |
+| | 生成 Skill | 审核 Skill |
 |---|---|---|
-| `SKILL.md`、`references/*.md` | 生成规范或评价标准，后端将其放进模型提示词 | AI |
-| `scripts/*.py` | 执行字段、数量、字数、轮次等机械检查或计算 | Python |
-| `schemas/*.json` | 规定生成结果和评价结果的数据结构 | Python / AI 输出契约 |
+| 目录 | `generate-ielts-listening-part1/` | `audit-ielts-listening-part1/` |
+| AI 规范 | `SKILL.md` + `references/specification.md` | `SKILL.md` + `references/audit-rubric.md` |
+| Python 脚本 | `scripts/validate_part1.py` | `scripts/audit_metrics.py` |
+| 职责 | 生成对话稿和十个信息点 | 评价自然度、难度和信息点质量 |
 
-### 2.2 生成材料：生成 Skill
+生成 AI 返回两份数据：
 
-```text
-generate-ielts-listening-part1/
-├── SKILL.md
-├── references/specification.md
-└── scripts/validate_part1.py
-```
+- `material`：对话稿；
+- `blueprint`：十个信息点的答案、证据句、对话位置和适用题型。
 
-- `SKILL.md` 和 `specification.md` 指导生成 AI 如何编写 IELTS Listening Part 1；
-- `validate_part1.py` 用普通 Python 检查输出格式和可机械判断的硬规则；
-- 生成 AI 一次返回 `material` 和 `blueprint` 两份结果。
+### 2.2 程序校验
 
-`material` 是最终给人阅读的对话稿。`blueprint` 是生成 AI 在写稿时设计的十个信息点，其中记录：
+生成后，Python 运行 `validate_part1.py`，检查能够明确计算的规则：
 
-```text
-信息点是什么
-答案出现在哪句话
-位于第几轮对话
-适合什么题型
-```
+| 检查类型 | 例子 |
+|---|---|
+| 数据格式 | 必填字段是否齐全，是否混入题目、答案或分析 |
+| 结构数量 | 是否有三个说话人、三段旁白、十个信息点，字数和轮数是否合规 |
+| 标注一致性 | 答案是否在证据句中，`turn_index` 是否指向正确对话，信息点顺序是否正确 |
 
-生成结束后，后端直接运行 `validate_part1.py`，不是让 AI 自己判断是否合格。它检查：
+程序不判断“对话是否自然”或“难度是否像 IELTS”。这些需要理解语义的问题留给审核 AI。
 
-- JSON 是否包含规定字段，是否出现 `questions`、`answer_key`、`analysis` 等禁止字段；
-- 是否正好有三个说话人、三段旁白和十个信息点；
-- 对话是否在 450-750 词、20-48 轮的硬范围内；
-- 每个信息点的答案是否出现在证据句中；
-- `turn_index` 指向的对话轮是否真的包含该证据句；
-- 十个信息点是否按顺序分布在正确的前后半段，并满足题型和干扰项要求。
+校验结果分为两级：
 
-它不会理解“对话自然不自然”或“难度像不像 IELTS”。相同输入每次得到相同结果，所以称为
-确定性校验。`errors` 会触发重新生成，最多生成三次；`warnings` 只作为后续修改建议。三次仍有
-错误时不会丢弃材料，而是保留最后一稿，并把校验发现附在交付结果中。
+- `errors`：触发重新生成，最多三次；
+- `warnings`：不阻断流程，只作为修改建议。
 
-生成重试和基础设施重试分开计数：`MAX_GENERATION_ATTEMPTS = 3` 处理材料校验失败，
-`MAX_INFRA_RETRIES = 3` 处理 429、截断响应等调用故障。网络或平台故障不会占用材料的生成机会。
+三次仍有错误时，系统保留最后一稿并附上校验发现。429、响应截断等基础设施故障另行重试，不占用
+三次生成机会。
 
-### 2.3 评价材料：审核 Skill
+### 2.3 AI 盲审
 
-```text
-audit-ielts-listening-part1/
-├── SKILL.md
-├── references/audit-rubric.md
-└── scripts/audit_metrics.py
-```
+审核前，`audit_metrics.py` 先准确计算字数、轮数、前后半段轮数和旁白字数，避免让 AI 自己计数。
+审核 AI 只看到这些指标和 `material`，**看不到生成 AI 的 `blueprint`**。
 
-- `SKILL.md` 和 `audit-rubric.md` 告诉评价 AI 如何判断自然度、难度和信息点质量；
-- `audit_metrics.py` 用普通 Python 计算 AI 不擅长精确统计的客观指标；
-- 评价 AI 根据评分标准、对话稿和客观指标进行语义评价。
+它必须独立阅读对话，重新找出可以命题的信息点。随后 Python
+用 `deterministic/crosscheck.py` 对比两份结果：
 
-`audit_metrics.py` 不负责完整评价，只计算：
+| 生成 AI 计划的信息点 | 审核 AI 独立找到的信息点 | 结果 |
+|---|---|---|
+| 入住日期：12 July | 入住日期：12 July | 匹配 |
+| 房型：double room | 房型：double room | 匹配 |
+| 价格：£85 | 未找到 | 需要检查或修改 |
 
-```text
-对话多少词
-对话多少轮
-前半段多少轮
-后半段多少轮
-旁白多少词
-```
+盲审验证的是：**生成者设计的信息点，能否只通过实际对话被独立找出来。** 如果审核 AI 提前看到
+`blueprint`，它可能顺着答案寻找证据，这项检查就失去了意义。
 
-这些准确数字会直接交给评价 AI，避免模型自己计数出错。对话是否自然、场景是否可信、信息是否
-容易听懂等需要理解语义的问题，才由评价 AI 判断。
+### 2.4 修改与交付
 
-### 2.4 为什么要盲审
+- 原稿没有问题：直接采用原稿；
+- 原稿需要修改：AI 同步修改 `material` 和 `blueprint`；
+- 修改完成：再次程序校验，并由一个无历史记忆的新审核 AI 复评；
+- 最终选择：Python 比较原稿和修改稿，采用评价更好的版本；
+- 修改失败、校验未通过或时间不足：回退到已完成评价的原稿。
 
-生成 AI 会同时交付对话稿 `material` 和自己的十个信息点计划 `blueprint`。评价 AI 只看到
-`material` 和 `audit_metrics.py` 算出的客观指标，看不到 `blueprint`，必须仅通过阅读对话，
-独立找出其中可以命题的信息点。
-
-例如，生成 AI 在 `blueprint` 中声明：
-
-```text
-1. 入住日期：12 July
-2. 房型：double room
-3. 价格：£85
-```
-
-评价 AI 只能看到实际对话：
-
-```text
-Customer: I'd like to arrive on 12 July.
-Receptionist: We have a double room for £85.
-```
-
-它需要自己重新找出日期、房型、价格等信息。随后
-`deterministic/crosscheck.py` 用普通 Python 比较两份信息图谱：
-
-```text
-生成 AI 计划的信息点       评价 AI 从脚本中找到的信息点
-入住日期：12 July          入住日期：12 July             匹配
-房型：double room          房型：double room             匹配
-价格：£85                  未找到                         需要检查或修改
-```
-
-盲审要验证的是：
-
-> 生成 AI 声称设计的信息点，能不能只通过实际对话被另一个评价者独立找出来。
-
-如果评价 AI 提前看到 `blueprint`，它可能顺着答案寻找证据，两份结果的一致性就不能证明材料真的
-清楚。代码因此限制评价输入只能包含 `material` 和客观指标，复评时也会创建一次没有历史记忆的
-新调用。
-
-### 2.5 修改、复评与交付
-
-如果原稿没有需要修改的问题，后端直接采用原稿。如果存在问题且时间预算充足，修改 AI 会根据
-评价发现同步修改 `material` 和 `blueprint`。
-
-修改稿不会直接交付。后端会再次运行确定性校验，并调用一个全新的评价 AI 进行盲审。最后由
-Python 比较原稿和修改稿的评价结果，采用更好的版本。修改失败、校验不通过或时间不足时，仍可
-回退到已经完成评价的原稿。
-
-最终交付的是选中的文字材料及其评价、校验信息，不执行语音合成。
+最终只交付选中的文字材料及其评价、校验信息，不合成音频。
 
 ---
 
