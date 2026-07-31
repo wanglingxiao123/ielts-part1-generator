@@ -24,7 +24,7 @@ frontend/dist/
 # analysis of them, not the papers themselves.
 #
 # Consequence: the regression suites that read these degrade to SKIP rather than fail. See
-# skills/ielts-listening-skills/shared/tests/run_tests.py and audio_storage/tests/run_tests.py.
+# skills/shared/tests/run_tests.py and audio_storage/tests/run_tests.py.
 material/归档/
 material/归档.zip
 material/*.html

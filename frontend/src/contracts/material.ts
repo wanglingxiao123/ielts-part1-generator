@@ -2,7 +2,7 @@
 /**
  * AUTO-GENERATED, DO NOT EDIT.
  *
- * Source: skills/ielts-listening-skills/shared/schemas/material.schema.json
+ * Source: skills/generate/generate-listening-part1/schemas/material.schema.json
  * Regenerate: npm run contracts:gen
  */
 /**

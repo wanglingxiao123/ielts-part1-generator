@@ -28,7 +28,9 @@ COPY config/ /app/config/
 COPY audio_storage/ /app/audio_storage/
 # The skill assets are copied at build time and read at runtime. They are never transcribed
 # into the backend: the human-maintained files stay the single source of truth.
-COPY skills/ielts-listening-skills/ /app/backend/skills/
+# Both pools, since IELTS_SKILLS_ROOT points at their parent: an agent whose pool is missing
+# activates no skill at all, and the failure surfaces as an unusable model reply.
+COPY skills/ /app/backend/skills/
 
 # Non-root. The process only reads skill files and writes to a temp dir.
 RUN useradd --create-home --uid 10001 ielts && chown -R ielts:ielts /app

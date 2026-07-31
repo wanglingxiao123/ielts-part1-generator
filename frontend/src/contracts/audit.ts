@@ -2,7 +2,7 @@
 /**
  * AUTO-GENERATED, DO NOT EDIT.
  *
- * Source: skills/ielts-listening-skills/shared/schemas/audit.schema.json
+ * Source: skills/audit/audit-listening-part1/schemas/audit.schema.json
  * Regenerate: npm run contracts:gen
  */
 /**
@@ -73,4 +73,36 @@ export interface IELTSListeningPart1AuditResult {
    * Non-blocking observations, e.g. word count outside the typical 600-650 band while inside the hard 450-750 limit. Advisory input to the revise step; never a failure signal.
    */
   warnings?: string[]
+  /**
+   * Specification-compliance pass: the semantic items no script can check (C1-C6 in audit-rubric.md). Separate from `findings` because these are the items the generator revises against, while `findings` also carries script-derived results. Optional so an audit of an unassessable artifact stays valid.
+   */
+  compliance_review?: {
+    /**
+     * One entry per checklist item reviewed, compliant or not.
+     */
+    items: {
+      /**
+       * Checklist item in audit-rubric.md.
+       */
+      code: 'C1' | 'C2' | 'C3' | 'C4' | 'C5' | 'C6'
+      compliant: boolean
+      severity?: 'critical' | 'major' | 'minor'
+      /**
+       * null for a finding about the script as a whole.
+       */
+      turn_index?: number | null
+      /**
+       * Shortest sufficient quote from the script.
+       */
+      evidence?: string
+      /**
+       * Concrete, minimal, actionable. 'Consider improving the pacing' is not a fix; 'split turn 12 into two exchanges' is.
+       */
+      fix?: string
+    }[]
+    /**
+     * One or two sentences on the overall compliance picture.
+     */
+    summary?: string
+  }
 }

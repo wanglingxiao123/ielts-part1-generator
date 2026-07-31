@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(here, '..', '..')
-const fxDir = resolve(repoRoot, 'skills/ielts-listening-skills/shared/tests/fixtures')
+const fxDir = resolve(repoRoot, 'skills/shared/tests/fixtures')
 const outPath = resolve(here, '..', 'src/mocks/fixtures/generated.ts')
 
 const FILES = [
@@ -33,7 +33,7 @@ const chunks = [
 /**
  * AUTO-GENERATED, DO NOT EDIT.
  *
- * Source: skills/ielts-listening-skills/shared/tests/fixtures/
+ * Source: skills/shared/tests/fixtures/
  * Regenerate: npm run fixtures:gen
  *
  * These are the real fixtures from 07-28-skill-contract, not invented data.

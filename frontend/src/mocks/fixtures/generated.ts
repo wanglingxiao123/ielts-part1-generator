@@ -2,7 +2,7 @@
 /**
  * AUTO-GENERATED, DO NOT EDIT.
  *
- * Source: skills/ielts-listening-skills/shared/tests/fixtures/
+ * Source: skills/shared/tests/fixtures/
  * Regenerate: npm run fixtures:gen
  *
  * These are the real fixtures from 07-28-skill-contract, not invented data.

@@ -1,5 +1,7 @@
-// Generates src/contracts/{material,blueprint,audit}.ts from the frozen JSON
-// Schemas in skills/ielts-listening-skills/shared/schemas/.
+// Generates src/contracts/{material,blueprint,audit}.ts from the frozen JSON Schemas.
+//
+// Each target names its own pool. The schemas are deliberately not in one shared directory: the
+// audit pool contains no blueprint schema, and that absence is the blindness boundary.
 //
 // Single source of truth (design.md §10): the frontend never hand-writes the
 // three contract types, so "the blueprint the frontend believes in" cannot
@@ -15,13 +17,17 @@ import { compile } from 'json-schema-to-typescript'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(here, '..', '..')
-const schemaDir = resolve(repoRoot, 'skills/ielts-listening-skills/shared/schemas')
 const outDir = resolve(here, '..', 'src/contracts')
 
+// Spelled out rather than globbed: a glob matching two subjects would pick one by directory order
+// and generate types for the wrong one.
+const GENERATE_SCHEMAS = 'skills/generate/generate-listening-part1/schemas'
+const AUDIT_SCHEMAS = 'skills/audit/audit-listening-part1/schemas'
+
 const TARGETS = [
-  { schema: 'material.schema.json', out: 'material.ts', root: 'Material' },
-  { schema: 'blueprint.schema.json', out: 'blueprint.ts', root: 'Blueprint' },
-  { schema: 'audit.schema.json', out: 'audit.ts', root: 'Audit' },
+  { dir: GENERATE_SCHEMAS, schema: 'material.schema.json', out: 'material.ts', root: 'Material' },
+  { dir: GENERATE_SCHEMAS, schema: 'blueprint.schema.json', out: 'blueprint.ts', root: 'Blueprint' },
+  { dir: AUDIT_SCHEMAS, schema: 'audit.schema.json', out: 'audit.ts', root: 'Audit' },
 ]
 
 const BANNER = [
@@ -29,21 +35,21 @@ const BANNER = [
   '/**',
   ' * AUTO-GENERATED, DO NOT EDIT.',
   ' *',
-  ' * Source: skills/ielts-listening-skills/shared/schemas/%SCHEMA%',
+  ' * Source: %SOURCE%',
   ' * Regenerate: npm run contracts:gen',
   ' */',
   '',
 ].join('\n')
 
 async function render(target) {
-  const schemaPath = resolve(schemaDir, target.schema)
+  const schemaPath = resolve(repoRoot, target.dir, target.schema)
   const schema = JSON.parse(await readFile(schemaPath, 'utf8'))
   const body = await compile(schema, target.root, {
     bannerComment: '',
     additionalProperties: false,
     style: { semi: false, singleQuote: true },
   })
-  return BANNER.replace('%SCHEMA%', target.schema) + body
+  return BANNER.replace('%SOURCE%', `${target.dir}/${target.schema}`) + body
 }
 
 const check = process.argv.includes('--check')

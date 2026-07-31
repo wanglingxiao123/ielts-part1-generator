@@ -11,6 +11,6 @@ frontend/dist/
 **/__pycache__/
 **/*.pyc
 skills/*.zip
-skills/ielts-listening-skills/shared/tests/
+skills/shared/tests/
 .DS_Store
 **/.DS_Store

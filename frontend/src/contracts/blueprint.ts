@@ -2,7 +2,7 @@
 /**
  * AUTO-GENERATED, DO NOT EDIT.
  *
- * Source: skills/ielts-listening-skills/shared/schemas/blueprint.schema.json
+ * Source: skills/generate/generate-listening-part1/schemas/blueprint.schema.json
  * Regenerate: npm run contracts:gen
  */
 export type ItemNumberList = number[]

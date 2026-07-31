@@ -26,17 +26,20 @@
 │   └── scenarios.yaml                # 场景分类、角色和场景说明
 ├── material/
 │   └── Part1_选材命制规范.md          # IELTS Part 1 选材与命制规范
-├── skills/ielts-listening-skills/
-│   ├── generate-ielts-listening-part1/
-│   │   ├── SKILL.md                  # 生成任务入口规范
-│   │   ├── references/specification.md
-│   │   └── scripts/validate_part1.py # 生成结果的确定性校验器
-│   ├── audit-ielts-listening-part1/
-│   │   ├── SKILL.md                  # 审核任务入口规范
-│   │   ├── references/audit-rubric.md
-│   │   └── scripts/audit_metrics.py  # 审核所需客观指标
-│   └── shared/
-│       ├── schemas/                  # material、blueprint、audit JSON Schema
+├── skills/                           # 两个技能池，各自独立；这个划分就是盲审边界
+│   ├── generate/                     # 生成 Agent 的池
+│   │   └── generate-listening-part1/
+│   │       ├── SKILL.md              # 生成任务入口规范
+│   │       ├── references/specification.md
+│   │       ├── schemas/              # material、blueprint JSON Schema
+│   │       └── scripts/validate_part1.py # 生成结果的确定性校验器
+│   ├── audit/                        # 审核 Agent 的池；不含 blueprint schema
+│   │   └── audit-listening-part1/
+│   │       ├── SKILL.md              # 审核任务入口规范
+│   │       ├── references/audit-rubric.md
+│   │       ├── schemas/audit.schema.json
+│   │       └── scripts/audit_metrics.py  # 审核所需客观指标
+│   └── shared/                       # 两侧都不激活的离线工具
 │       ├── cross_check.py            # 生成标注与盲审结果交叉检查
 │       └── tests/                    # Skill 契约回归测试
 ├── backend/                          # AgentCore Runtime
@@ -744,7 +747,7 @@ s3://ielts-part1-materials-{account}/
 python3.12 -m venv .venv-backend
 .venv-backend/bin/pip install -e 'backend[dev]'
 
-python3 skills/ielts-listening-skills/shared/tests/run_tests.py
+python3 skills/shared/tests/run_tests.py
 python3 audio_storage/tests/run_tests.py
 .venv-backend/bin/python -m pytest backend/tests -q
 .venv-backend/bin/python web/tests/run_tests.py
