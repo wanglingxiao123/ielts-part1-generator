@@ -74,31 +74,94 @@ flowchart TB
 
 ## 2. 生成流程（Agent Loop）
 
-确定性编排。每一个分支都是 `backend/orchestration/loop.py` 里的 Python `if`，模型无法参与——
-校验脚本没有注册成 tool，模型看不到也改不了这些判断。
+这里的 Agent Loop 不是“AI 自己决定下一步做什么”，而是一段由
+`backend/orchestration/loop.py` 控制的 Python 工作流。AI 只在被调用时完成生成、评价或修改；
+是否重试、是否修改、最终采用哪个版本，都由普通 Python 条件判断决定。
+
+Skill 也不是一个会自行运行的 Agent，而是一组提供给后端使用的材料：
+
+| 组成 | 作用 | 谁使用 |
+|---|---|---|
+| `SKILL.md`、`references/*.md` | 生成规范或评价标准，作为提示词交给模型 | AI |
+| `scripts/*.py` | 字段、数量、字数、轮次等可机械计算的检查 | Python |
+| `schemas/*.json` | 约束输入输出的数据结构 | Python / AI 输出契约 |
+
+生成 Skill 和评价 Skill 在流程中的职责如下：
+
+```text
+generate-ielts-listening-part1/
+├── SKILL.md + references/specification.md   指导生成 AI
+└── scripts/validate_part1.py                程序化校验生成结果
+
+audit-ielts-listening-part1/
+├── SKILL.md + references/audit-rubric.md    指导评价 AI
+└── scripts/audit_metrics.py                 程序化计算评价所需指标
+```
+
+一套材料从生成到交付的实际流程：
 
 ```mermaid
 flowchart TD
-    S(["一套材料"]) --> G["生成<br/>steps/generate.py"]
-    G --> V1{"确定性校验<br/>deterministic/validate.py"}
-    V1 -- "有错，且尝试 < 3" --> G
-    V1 -- "有错，已 3 次" --> DELIVER1["照常交付<br/>把校验意见附在材料上"]
-    V1 -- 通过 --> M
-
-    DELIVER1 --> M["度量<br/>deterministic/metrics.py"]
-    M --> A["盲读评价<br/>steps/audit.py<br/>只给脚本，不给标注"]
-    A --> X["程序化盲测对照<br/>deterministic/crosscheck.py<br/>四轮匹配"]
-    X --> D{"需要修改？"}
-    D -- 否 --> P
-    D -- "是，且时间预算够" --> R["修改<br/>同步修订 script 与 blueprint"]
-    D -- "是，但时间不够" --> DEG["degraded: true<br/>reason: time_budget"]
-    R --> AR["锚点修复 → 再校验"]
-    AR --> A2["复评（无记忆盲读）"]
-    A2 --> P["pick_better<br/>取分高版本"]
-    DEG --> P
-    P --> PUB["publish：写 S3 pending/<br/>Polly 逐 turn 合成<br/>manifest.json 最后写"]
+    S(["开始生成一套材料"]) --> GP["后端读取生成 Skill 的规范<br/>作为提示词交给生成 AI"]
+    GP --> G["生成 AI 返回两份结果<br/>material 对话稿 + blueprint 十个信息点标注"]
+    G --> V["Python 运行 validate_part1.py<br/>检查格式、字段、数量、字数、轮次、<br/>证据句和 turn_index 是否对应"]
+    V --> VD{"有硬错误吗？"}
+    VD -- "有，且未满 3 次" --> FB["后端把累计错误加入下一次生成提示"]
+    FB --> G
+    VD -- "没有" --> M
+    VD -- "有，且已满 3 次" --> VF["保留最后一稿<br/>并附上校验发现"]
+    VF --> M["Python 运行 audit_metrics.py<br/>准确计算字数、轮数和前后半段分布"]
+    M --> AP["后端读取评价 Skill 的评分标准"]
+    AP --> A["调用一个新的评价 AI<br/>只给 material + 指标，不给 blueprint"]
+    A --> IM["评价 AI 独立重建信息图谱<br/>并给出评分、结论和问题清单"]
+    IM --> X["Python 对比两份信息图谱<br/>生成 blueprint vs 评价 AI 重建结果"]
+    X --> D{"原稿需要修改吗？"}
+    D -- "不需要" --> P["采用原稿"]
+    D -- "需要，但时间不足" --> DEG["采用原稿并标记<br/>revision_skipped_time_budget"]
+    D -- "需要，且时间充足" --> R["修改 AI 根据问题清单<br/>同步修改 material + blueprint"]
+    R --> RV["Python 修复锚点并重新运行 validate_part1.py"]
+    RV --> RVD{"修改稿通过程序校验吗？"}
+    RVD -- "没有通过" --> P
+    RVD -- "通过" --> A2["调用全新的评价 AI 再次盲审<br/>不提供上次评价和修改指令"]
+    A2 --> PB["Python 比较原稿与修改稿评分<br/>采用较好的版本"]
+    PB --> PUB
+    P --> PUB["写入 S3、Polly 逐 turn 合成音频<br/>最后写 manifest.json"]
+    DEG --> PUB
     PUB --> E(["SSE 事件回传前端"])
 ```
+
+### 2.1 什么是确定性校验
+
+`validate_part1.py` 属于生成 Skill，但它由后端 Python 直接执行，不由生成 AI 调用或判定。
+它只检查能够明确计算的条件，例如：
+
+- JSON 是否包含规定字段，是否出现 `questions`、`answer_key`、`analysis` 等禁止字段；
+- 是否正好有三个说话人、三段旁白和十个信息点；
+- 对话是否在 450-750 词、20-48 轮的硬范围内；
+- 每个信息点的答案是否出现在证据句中；
+- `turn_index` 指向的对话轮是否真的包含该证据句；
+- 十个信息点是否按顺序分布在正确的前后半段，并满足题型和干扰项要求。
+
+它不会理解“对话自然不自然”或“难度像不像 IELTS”。相同输入每次得到相同结果，所以称为
+确定性校验。`errors` 会触发重新生成，`warnings` 只作为后续修改建议。
+
+### 2.2 什么是盲审
+
+生成 AI 会同时交付对话稿 `material` 和自己的十个信息点计划 `blueprint`。评价 AI 只看到
+`material` 和 `audit_metrics.py` 算出的客观指标，看不到 `blueprint`，必须仅通过阅读对话，
+独立找出其中可以命题的信息点。
+
+随后 `deterministic/crosscheck.py` 用普通 Python 比较两份结果：
+
+```text
+生成 AI 计划的信息点       评价 AI 从脚本中找到的信息点
+入住日期：12 July          入住日期：12 July             匹配
+房型：double room          房型：double room             匹配
+价格：£85                  未找到                         需要检查或修改
+```
+
+盲审要回答的是：生成者声称设计的信息点，能否只靠实际对话被独立恢复出来。如果先把
+`blueprint` 给评价 AI，它可能顺着标注寻找答案，两份结果的一致性就不能证明材料真的清楚。
 
 **基础设施重试与生成重试分开计数**：`MAX_GENERATION_ATTEMPTS = 3`（校验失败重生成），
 `MAX_INFRA_RETRIES = 3`（429、截断响应等）。限流不能说明材料质量，让它吃掉一次生成机会会
