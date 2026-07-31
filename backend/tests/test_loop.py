@@ -24,8 +24,8 @@ from backend.orchestration.loop import (
     run_one,
 )
 from backend.steps.call import ModelCallError
-from backend.steps.generate import GenOutput
-from backend.steps.revise import build_revise_instruction
+from backend.steps.agent_steps import GenOutput
+from backend.orchestration.revision_plan import build_revise_instruction
 
 
 class FakeScenario:
@@ -83,6 +83,8 @@ class Harness:
         self.generate_error = None
         self.generate_error_times = 0
         self.stages = []
+        self._runner = None
+        self.runner_closed = False
 
     async def generate(self, scenario, attempt=0, feedback=None):
         self.generate_calls.append({"attempt": attempt, "feedback": feedback})
@@ -93,7 +95,10 @@ class Harness:
     async def validate(self, material, blueprint):
         return self.validate_results.pop(0)
 
-    async def run_metrics(self, material):
+    async def run_metrics(self, material, runner=None):
+        # `runner` is the remote sandbox handle the Loop threads through. Accepted and ignored: the
+        # tests are about orchestration, and a real Code Interpreter session per test would make the
+        # suite depend on AWS.
         self.metrics_calls += 1
 
         class M:
@@ -116,6 +121,29 @@ class Harness:
     def crosscheck(self, blueprint, audit):
         return self.crosscheck_results.pop(0)
 
+    @property
+    def metrics_runner(self):
+        """Stands in for the remote metrics session.
+
+        Records whether it was closed, so `test_the_session_is_always_released` can assert the
+        wrapper releases what it opened on every exit path -- including the twelve early returns.
+        """
+        harness = self
+
+        class _Runner:
+            closed = False
+
+            async def run(self, material):
+                return {"assessable": True,
+                        "parts": [{"dialogue_words": 618, "dialogue_turns": 34}]}
+
+            async def close(self):
+                harness.runner_closed = True
+
+        if self._runner is None:
+            self._runner = _Runner()
+        return self._runner
+
     async def emit(self, stage, detail=None):
         self.stages.append(stage)
 
@@ -123,11 +151,15 @@ class Harness:
 @pytest.fixture
 def harness(material, blueprint, monkeypatch):
     h = Harness(material, blueprint)
-    monkeypatch.setattr(loop_module.generate_step, "generate", h.generate)
+    monkeypatch.setattr(loop_module.agent_steps, "generate", h.generate)
     monkeypatch.setattr(loop_module, "validate", h.validate)
-    monkeypatch.setattr(loop_module, "run_metrics", h.run_metrics)
-    monkeypatch.setattr(loop_module.audit_step, "audit_blind", h.audit_blind)
-    monkeypatch.setattr(loop_module.revise_step, "revise", h.revise)
+    monkeypatch.setattr(loop_module, "run_metrics_remote", h.run_metrics)
+    monkeypatch.setattr(loop_module.agent_steps, "audit_blind", h.audit_blind)
+    monkeypatch.setattr(loop_module.agent_steps, "revise", h.revise)
+    # The Loop builds a SandboxedMetrics when the caller supplies none, and that would reach AWS.
+    # Every test drives `run_one` directly, so a stub with the two methods the wrapper calls is
+    # enough -- and it also asserts the wrapper really does close what it opened.
+    monkeypatch.setattr(loop_module, "_build_metrics_runner", lambda *a, **k: h.metrics_runner)
     monkeypatch.setattr(loop_module, "crosscheck", h.crosscheck)
     monkeypatch.setattr(loop_module.asyncio, "sleep", lambda *a, **k: _noop())
     return h
@@ -695,7 +727,7 @@ class TestReviseInstructionSeparation:
         assert not any("weak cue" in item for item in instruction.must_fix)
 
     def test_message_labels_the_advisory_section_as_non_binding(self):
-        from backend.steps.revise import build_revise_message
+        from backend.steps.agent_steps import build_revise_message
 
         instruction = build_revise_instruction(audit_doc("PASS", 80), clean_crosscheck(), ["w"])
         message = build_revise_message({}, {}, instruction)

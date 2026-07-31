@@ -1,4 +1,0 @@
-interface:
-  display_name: "IELTS Part 1 Material Auditor"
-  short_description: "Audit IELTS Part 1 listening scripts"
-  default_prompt: "Use $audit-ielts-listening-part1 to audit this IELTS Part 1 listening material, return prioritized findings with evidence, and finish with an overall score."

@@ -94,11 +94,19 @@ class TestParameters:
         assert captured["params"]["reasoning"] == {"effort": "high"}
 
     def test_no_step_sets_a_temperature(self):
-        for name in ("generate.py", "audit.py", "revise.py"):
-            tree = ast.parse((BACKEND / "steps" / name).read_text(encoding="utf-8"))
+        # agents.py is where models are now built, so it is the file that could set one. The step
+        # modules are covered too: they used to build models themselves and a revert would put the
+        # parameter back there.
+        sources = [BACKEND / "agents.py",
+                   BACKEND / "steps" / "agent_steps.py",
+                   BACKEND / "steps" / "call.py"]
+        for name in sources:
+            tree = ast.parse(name.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if isinstance(node, ast.Constant) and node.value == "temperature":
-                    pytest.fail("%s sets a temperature the model rejects" % name)
+                    pytest.fail("%s sets a temperature the model rejects" % name.name)
+                if isinstance(node, ast.keyword) and node.arg == "temperature":
+                    pytest.fail("%s passes temperature= to a model" % name.name)
 
 
 class TestRegionGuard:

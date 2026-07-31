@@ -1,4 +1,0 @@
-interface:
-  display_name: "IELTS Listening Part 1 Generator"
-  short_description: "Generate validated IELTS Part 1 scripts as JSON"
-  default_prompt: "Use $generate-ielts-listening-part1 to create an original IELTS Listening Part 1 script as listening-material JSON."

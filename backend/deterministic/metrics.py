@@ -63,9 +63,7 @@ class MetricsResult(object):
         return {key: part[key] for key in keys if isinstance(part.get(key), int)}
 
 
-async def run_metrics(material: Dict[str, Any]) -> MetricsResult:
-    with temp_json(material=material) as files:
-        payload = await run_script_json(paths.metrics_script(), [files["material"], "--json"])
+def _wrap(payload: Dict[str, Any]) -> MetricsResult:
     return MetricsResult(
         assessable=bool(payload.get("assessable")),
         issues=[i for i in payload.get("issues", []) if isinstance(i, dict)],
@@ -75,3 +73,35 @@ async def run_metrics(material: Dict[str, Any]) -> MetricsResult:
             m for m in payload.get("manual_checks_required", []) if isinstance(m, str)
         ],
     )
+
+
+async def run_metrics(material: Dict[str, Any]) -> MetricsResult:
+    """Run the metrics script locally, as a subprocess.
+
+    Used by the CLI scripts and the tests. The Loop uses ``run_metrics_remote`` instead -- see there
+    for why the audit side does not run this in-process.
+    """
+    with temp_json(material=material) as files:
+        payload = await run_script_json(paths.metrics_script(), [files["material"], "--json"])
+    return _wrap(payload)
+
+
+async def run_metrics_remote(material: Dict[str, Any], runner: Any) -> MetricsResult:
+    """Run the metrics script in a remote sandbox, and wrap the result identically.
+
+    Same return type as ``run_metrics`` on purpose: the Loop consumes one interface and does not
+    know, or need to know, where the script ran.
+
+    Why the audit path uses this. The auditor's judgement is worth something only if it never saw the
+    generator's plan, and running the metrics script locally means running it in a container that
+    holds ``blueprint.schema.json``, ``specification.md`` and ``validate_part1.py``. That is safe as
+    long as nothing in the audit path can read them -- but "nothing can read them" is a property of
+    the whole container, and it degrades the moment any audit-side tool gains filesystem access. The
+    remote sandbox starts empty and receives two files, so the property is local to this call instead
+    of being a claim about everything else.
+
+    ``runner`` is injected rather than constructed here: ``deterministic/`` must not import the model
+    SDK (CI gate 2 greps for it), and a session is shared across a material's audit and re-audit.
+    """
+    payload = await runner.run(material)
+    return _wrap(payload)

@@ -11,7 +11,7 @@ from backend.deterministic.crosscheck import CrossCheckResult
 from backend.orchestration import batch as batch_module
 from backend.orchestration.batch import BatchRequest, Budget, run_batch
 from backend.orchestration.loop import Candidate, MaterialResult
-from backend.steps.generate import GenOutput
+from backend.steps.agent_steps import GenOutput
 from backend.orchestration.scenarios import (
     InvalidScenario,
     ScenarioCatalogue,

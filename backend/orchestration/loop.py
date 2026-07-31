@@ -32,12 +32,11 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..deterministic.anchors import repair_anchors
 from ..deterministic.crosscheck import crosscheck
-from ..deterministic.metrics import run_metrics
+from ..deterministic.metrics import run_metrics_remote
 from ..deterministic.runner import ScriptError
 from ..deterministic.validate import validate
-from ..steps import audit as audit_step
-from ..steps import generate as generate_step
-from ..steps import revise as revise_step
+from ..steps import agent_steps
+from .revision_plan import build_revise_instruction
 from ..steps.call import ModelCallError
 
 __all__ = [
@@ -305,11 +304,54 @@ async def _noop_emit(stage: str, detail: Optional[Dict[str, Any]] = None) -> Non
     return None
 
 
+def _build_metrics_runner(scenario_id: str, slot_id: str) -> Any:
+    """A remote metrics session for one material.
+
+    A named function rather than an inline construction so tests can substitute a stub: the real one
+    opens an AgentCore session, and a unit suite that reached AWS would be neither fast nor reliable.
+
+    Imports are local because ``sandboxed_metrics`` pulls in the tools package, and importing this
+    module must stay cheap for the deterministic layer.
+    """
+    from .. import paths
+    from ..sandboxed_metrics import SandboxedMetrics
+
+    return SandboxedMetrics("%s-%s" % (scenario_id, slot_id), paths.metrics_script())
+
+
 async def run_one(
     scenario: Any,
     slot_id: str = "slot-1",
     emit: Optional[Callable] = None,
     allow_revision: Callable[[], bool] = lambda: True,
+    metrics_runner: Optional[Any] = None,
+) -> MaterialResult:
+    """Run the Loop for one material, releasing the remote metrics session afterwards.
+
+    A wrapper purely so the cleanup is written once. ``_run_one`` has twelve return points -- every
+    branch that decides a material is finished is one -- and a session released at each of them is a
+    session someone eventually forgets to release, which leaks a remote environment per material
+    until the platform's 900s timeout reclaims it.
+
+    When a caller supplies its own runner it also owns its lifetime; that is how a batch can share
+    one session across a material's audit and re-audit.
+    """
+    owns_runner = metrics_runner is None
+    if owns_runner:
+        metrics_runner = _build_metrics_runner(scenario.id, slot_id)
+    try:
+        return await _run_one(scenario, slot_id, emit, allow_revision, metrics_runner)
+    finally:
+        if owns_runner:
+            await metrics_runner.close()
+
+
+async def _run_one(
+    scenario: Any,
+    slot_id: str,
+    emit: Optional[Callable],
+    allow_revision: Callable[[], bool],
+    metrics_runner: Any,
 ) -> MaterialResult:
     """Run the full Loop for one material.
 
@@ -317,10 +359,16 @@ async def run_one(
     15-minute hard limit it returns False and the Loop delivers the first audited version
     instead of spending two more model calls. That is a deliberate degradation: an honest
     material carrying its defect list beats the whole batch being cut off by a 504.
+
+    ``metrics_runner`` runs the audit metrics script somewhere the generator's plan does not exist,
+    and is always supplied by ``run_one`` above. The audit and the re-audit share one session:
+    creating it costs 2.5s, and paying that twice per material is waste.
     """
     emit = emit or _noop_emit
     timings: Dict[str, float] = {}
     started = time.monotonic()
+
+
 
     def mark(stage: str, since: float) -> None:
         timings[stage] = round(time.monotonic() - since, 2)
@@ -348,7 +396,7 @@ async def run_one(
         step_started = time.monotonic()
         try:
             candidate_gen = await _with_infra_retries(
-                lambda: generate_step.generate(scenario, attempt, seen_errors or None),
+                lambda: agent_steps.generate(scenario, attempt, seen_errors or None),
                 "generate", emit,
             )
         except (ModelCallError, ScriptError) as exc:
@@ -425,9 +473,10 @@ async def run_one(
     await emit("auditing", {})
     step_started = time.monotonic()
     try:
-        metrics_a = await _with_infra_retries(lambda: run_metrics(gen.material), "metrics", emit)
+        metrics_a = await _with_infra_retries(
+            lambda: run_metrics_remote(gen.material, metrics_runner), "metrics", emit)
         audit_a = await _with_infra_retries(
-            lambda: audit_step.audit_blind(gen.material, metrics_a.audit_metrics()),
+            lambda: agent_steps.audit_blind(gen.material, metrics_a.audit_metrics()),
             "audit", emit,
         )
     except (ModelCallError, ScriptError) as exc:
@@ -458,13 +507,13 @@ async def run_one(
                               validation_findings=validation_findings)
 
     # ---- revision ---------------------------------------------------------------------------
-    instruction = revise_step.build_revise_instruction(audit_a, cross_a, gen_warnings)
+    instruction = build_revise_instruction(audit_a, cross_a, gen_warnings)
     await emit("revising", {"must_fix": len(instruction.must_fix),
                             "advisory": len(instruction.advisory)})
     step_started = time.monotonic()
     try:
         revised = await _with_infra_retries(
-            lambda: revise_step.revise(gen.material, gen.blueprint, instruction), "revise", emit
+            lambda: agent_steps.revise(gen.material, gen.blueprint, instruction), "revise", emit
         )
     except (ModelCallError, ScriptError) as exc:
         # A failed revision is never fatal: the initial version is already audited and valid.
@@ -518,10 +567,10 @@ async def run_one(
     step_started = time.monotonic()
     try:
         metrics_b = await _with_infra_retries(
-            lambda: run_metrics(revised.material), "metrics_revised", emit
+            lambda: run_metrics_remote(revised.material, metrics_runner), "metrics_revised", emit
         )
         audit_b = await _with_infra_retries(
-            lambda: audit_step.audit_blind(revised.material, metrics_b.audit_metrics()),
+            lambda: agent_steps.audit_blind(revised.material, metrics_b.audit_metrics()),
             "re_audit", emit,
         )
     except (ModelCallError, ScriptError) as exc:

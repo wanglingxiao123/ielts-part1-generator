@@ -18,7 +18,7 @@ from backend.deterministic.guards import (
     assert_reference_text_blind,
     blueprint_key_hits,
 )
-from backend.steps.audit import BlindAuditInput, build_audit_payload
+from backend.steps.agent_steps import BlindAuditInput, build_audit_payload
 
 
 class TestPromptGuard:
@@ -81,7 +81,7 @@ class TestAuditPayloadIsBlind:
         """Structural proof for prd.md's "cannot be called with a blueprint" criterion."""
         import inspect
 
-        from backend.steps.audit import audit_blind
+        from backend.steps.agent_steps import audit_blind
 
         parameters = list(inspect.signature(audit_blind).parameters)
         assert parameters == ["material", "metrics"]
@@ -96,7 +96,7 @@ class TestAuditPayloadIsBlind:
         """
         import ast
 
-        import backend.steps.audit as module
+        import backend.steps.agent_steps as module
 
         tree = ast.parse(open(module.__file__, encoding="utf-8").read())
         imported = set()
@@ -107,17 +107,42 @@ class TestAuditPayloadIsBlind:
                 imported.update(alias.name for alias in node.names)
         assert not any("generate" in name or "revise" in name for name in imported), imported
 
-    def test_planning_identifiers_absent_from_audit_source(self):
-        """The CI grep from implement.md phase 3, executed as a test.
+    def test_planning_identifiers_absent_from_the_audit_functions(self):
+        """The CI grep from implement.md phase 3, narrowed to the functions it is about.
 
-        The design says a grep is more reliable than a comment; a grep that only lives in a CI
-        config is one edit away from silently disappearing, so it lives here too.
+        The grep used to cover a whole module that did nothing but audit. Now generation, revision
+        and audit share one module -- and generation legitimately handles the blueprint, because
+        producing it is its job. So the check is scoped to the audit functions' own ASTs instead of
+        the file, which keeps it meaningful: a blueprint reference inside `audit_blind` or
+        `build_audit_payload` is a leak, one inside `revise` is the feature.
+
+        Scoped by AST rather than by line range so it cannot be defeated by moving code around.
         """
-        import backend.steps.audit as module
+        import ast
 
-        source = open(module.__file__, encoding="utf-8").read()
-        for banned in ("blueprint", "form_group", "question_type_coverage", "item_form"):
-            assert banned not in source, banned
+        import backend.steps.agent_steps as module
+
+        tree = ast.parse(open(module.__file__, encoding="utf-8").read())
+        audit_functions = {"audit_blind", "build_audit_payload", "build_audit_message"}
+        checked = set()
+        for node in ast.walk(tree):
+            name = getattr(node, "name", None)
+            if name not in audit_functions:
+                continue
+            checked.add(name)
+            # Skip the docstring: it explains the boundary, and explaining it is not violating it.
+            body = node.body[1:] if (node.body and isinstance(node.body[0], ast.Expr)
+                                     and isinstance(node.body[0].value, ast.Constant)) else node.body
+            for inner in [n for stmt in body for n in ast.walk(stmt)]:
+                if isinstance(inner, ast.Constant) and isinstance(inner.value, str):
+                    for banned in ("blueprint", "form_group", "question_type_coverage",
+                                   "item_form"):
+                        assert banned not in inner.value, "%s: %r" % (name, inner.value[:60])
+                if isinstance(inner, ast.Name):
+                    assert "blueprint" not in inner.id, "%s references %s" % (name, inner.id)
+                if isinstance(inner, ast.Attribute):
+                    assert "blueprint" not in inner.attr, "%s reads .%s" % (name, inner.attr)
+        assert checked == audit_functions, "missed: %s" % (audit_functions - checked)
 
 
 class TestReferenceTextTier:
@@ -130,13 +155,22 @@ class TestReferenceTextTier:
             assert_reference_text_blind('example: {"question_type_coverage": {"form": [1]}}')
 
     def test_real_audit_system_prompt_is_clean(self):
-        from backend.steps.skill_prompts import audit_system_prompt
+        # The audit agent's system prompt is procedural; the rubric reaches it by activating a
+        # skill. So what must be clean is the pool's own text -- the rubric plus the schema the agent
+        # will read -- which is what an assembled prompt used to consist of.
+        from backend import agents as agents_module
 
-        prompt = audit_system_prompt()
-        assert "audit-rubric" in prompt
-        assert_reference_text_blind(prompt)
+        pool = agents_module.pool_dir("audit")
+        for path in sorted(pool.rglob("*.md")):
+            assert_reference_text_blind(path.read_text(encoding="utf-8"), str(path.name))
+        assert (pool / "audit-listening-part1" / "references" / "audit-rubric.md").is_file()
 
     def test_audit_prompt_excludes_the_planning_schema(self):
-        from backend.steps.skill_prompts import audit_system_prompt
+        from backend import agents as agents_module
 
-        assert "blueprint.schema.json" not in audit_system_prompt()
+        pool = agents_module.pool_dir("audit")
+        assert not list(pool.rglob("blueprint*.json"))
+        for path in sorted(pool.rglob("*")):
+            if path.is_file():
+                assert "blueprint.schema.json" not in path.read_text(
+                    encoding="utf-8", errors="ignore"), path.name

@@ -11,9 +11,16 @@ status=0
 
 fail() { echo "GATE FAILED: $1"; status=1; }
 
-echo "== gate 1: audit step carries no planning identifiers =="
-if grep -nE 'blueprint|form_group|question_type_coverage|item_form' backend/steps/audit.py; then
-    fail "BLINDNESS_VIOLATION in backend/steps/audit.py"
+echo "== gate 1: the audit pool carries no planning assets =="
+# Was a grep over backend/steps/audit.py. That module is gone: generation, revision and audit share
+# one file now, and generation legitimately handles the blueprint. So the check moved to where the
+# boundary actually lives -- the audit skill pool, which must not contain the generator's plan schema
+# in any form. The function-level version of this check is a unit test
+# (test_guards.py::test_planning_identifiers_absent_from_the_audit_functions).
+if grep -rlnE '"(blueprint|form_group|question_type_coverage|item_form)"' skills/audit/; then
+    fail "BLINDNESS_VIOLATION: the audit pool contains planning fields"
+elif ls skills/audit/*/schemas/blueprint*.json >/dev/null 2>&1; then
+    fail "BLINDNESS_VIOLATION: the audit pool ships a blueprint schema"
 else
     echo "  ok"
 fi
@@ -33,7 +40,7 @@ else
 fi
 
 echo "== gate 4: skill assets stay Python 3.9 parseable =="
-for f in skills/ielts-listening-skills/*/scripts/*.py skills/ielts-listening-skills/shared/*.py; do
+for f in skills/*/*/scripts/*.py skills/shared/*.py; do
     python3 -c "import ast,sys; ast.parse(open(sys.argv[1], encoding='utf-8').read())" "$f" \
         || fail "$f is not parseable by the system python3 ($(python3 -V 2>&1))"
 done
@@ -49,7 +56,7 @@ find backend \( -name '.venv' -o -name 'venv' -o -name '__pycache__' -o -name 's
 echo "  ok"
 
 echo "== gate 6: skill contract regression suite (78 checks) =="
-python3 skills/ielts-listening-skills/shared/tests/run_tests.py >/tmp/skill_tests.log 2>&1 \
+python3 skills/shared/tests/run_tests.py >/tmp/skill_tests.log 2>&1 \
     && tail -1 /tmp/skill_tests.log || { tail -20 /tmp/skill_tests.log; fail "skill suite"; }
 
 echo "== gate 7: backend unit tests =="

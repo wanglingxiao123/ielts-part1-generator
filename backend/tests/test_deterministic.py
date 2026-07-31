@@ -129,19 +129,32 @@ class TestLayerBoundaries:
                     root = name.split(".")[0]
                     assert root not in ("strands", "openai"), "%s imports %s" % (path.name, name)
 
-    def test_steps_do_not_read_quality_verdicts(self):
+    def test_steps_do_not_branch_on_quality_verdicts(self):
         """Steps must not decide anything; loop.py owns every branch (design.md §1).
 
-        Checks string and attribute *values* in the AST rather than raw text, so the modules'
-        explanatory comments neither satisfy nor break the assertion.
+        Narrowed from "must not mention a verdict at all" once the audit step became an agent call:
+        it has to assert the reply *contains* a verdict, because an audit whose verdict is missing is
+        an unusable reply and returning it silently would hand loop.py a phantom result. Checking for
+        presence is not deciding.
+
+        What stays forbidden is *reading the value* -- comparing it, ranking it, or testing severity.
+        The AST is walked rather than the text so the module's own explanation neither satisfies nor
+        breaks the assertion.
         """
-        for name in ("audit.py", "generate.py"):
-            tree = ast.parse((BACKEND / "steps" / name).read_text(encoding="utf-8"))
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                    assert node.value not in ("verdict", "findings", "severity"), name
-                if isinstance(node, ast.Attribute):
-                    assert node.attr not in ("verdict", "findings"), name
+        QUALITY = {"verdict", "findings", "severity", "score"}
+        tree = ast.parse((BACKEND / "steps" / "agent_steps.py").read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            # `x["verdict"] == "PASS"`, `severity in (...)`: a comparison against a quality value.
+            if isinstance(node, ast.Compare):
+                for side in [node.left, *node.comparators]:
+                    if isinstance(side, ast.Subscript) and isinstance(side.slice, ast.Constant):
+                        assert side.slice.value not in QUALITY, ast.dump(node)[:120]
+            # `audit.get("severity")`, `.verdict`: reaching for the value to act on it.
+            if isinstance(node, ast.Attribute):
+                assert node.attr not in ("verdict", "findings"), node.attr
+        # The one permitted mention, asserted so the narrowing stays deliberate.
+        source = (BACKEND / "steps" / "agent_steps.py").read_text(encoding="utf-8")
+        assert 'if "verdict" not in audit' in source
 
     def test_only_the_loop_ranks_verdicts(self):
         """The verdict ranking table must exist in exactly one place."""
@@ -155,16 +168,22 @@ class TestLayerBoundaries:
 
     def test_no_validation_script_is_registered_as_a_model_tool(self):
         """prd.md R2: a model that can call the validator can conclude it has passed."""
-        for name in ("generate.py", "audit.py", "revise.py", "call.py"):
+        for name in ("agent_steps.py", "call.py"):
             source = (BACKEND / "steps" / name).read_text(encoding="utf-8")
             assert "tools=[]" in source or "tools" not in source, name
 
     def test_skill_prompts_are_read_from_files_not_transcribed(self):
         """prd.md constraint: the skill files are the single source of truth."""
-        source = (BACKEND / "steps" / "skill_prompts.py").read_text(encoding="utf-8")
-        assert "read_text" in source
-        # A transcribed rubric would be long; the loader must stay small.
-        assert len(source.splitlines()) < 100
+        # Prompts are no longer assembled in Python at all: the agents activate a skill and read
+        # its reference files themselves. What must stay true is that no step module carries a
+        # transcribed copy of the specification or the rubric -- a second source of truth that
+        # would drift from the file reviewers actually edit.
+        for name in ("agent_steps.py", "call.py"):
+            source = (BACKEND / "steps" / name).read_text(encoding="utf-8")
+            for smell in ("Privately plan ten recordable details",
+                          "dialogue words outside",
+                          "160-230 words"):
+                assert smell not in source, "%s transcribes specification text: %r" % (name, smell)
 
     def test_skill_scripts_stay_python_39_parseable(self):
         """The system python3 is 3.9.6 and the Trellis scripts must keep working under it."""

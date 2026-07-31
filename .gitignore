@@ -44,3 +44,8 @@ audio_storage/probe_samples/*.mp3
 .trellis/
 .claude/
 AGENTS.md
+
+# Agents write scratch artifacts into their pool while working; they are not assets.
+skills/*/*/material.json
+skills/*/*/blueprint.json
+skills/*/*/*.tmp

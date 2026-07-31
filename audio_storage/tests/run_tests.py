@@ -54,7 +54,7 @@ from audio_storage.state_store import (
     TransitionInFlight,
 )
 
-FIXTURES = ROOT / "skills" / "ielts-listening-skills" / "shared" / "tests" / "fixtures"
+FIXTURES = ROOT / "skills" / "shared" / "tests" / "fixtures"
 MATERIAL_ID = "20260728-accommodation-rental-7f3a1c2d"
 SCENARIO_KEY = "accommodation-rental"
 

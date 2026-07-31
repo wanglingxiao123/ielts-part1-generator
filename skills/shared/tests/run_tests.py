@@ -14,14 +14,40 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-SKILLS = HERE.parents[1]
-ROOT = SKILLS.parents[1]
+SHARED = HERE.parent
+SKILLS = SHARED.parent
+ROOT = SKILLS.parent
 FIXTURES = HERE / "fixtures"
-VALIDATE = SKILLS / "generate-ielts-listening-part1" / "scripts" / "validate_part1.py"
-METRICS = SKILLS / "audit-ielts-listening-part1" / "scripts" / "audit_metrics.py"
-CROSS_CHECK = SKILLS / "shared" / "cross_check.py"
-RENDER = SKILLS / "shared" / "render_audit_report.py"
-SCHEMAS = SKILLS / "shared" / "schemas"
+
+# Assets live in pools now (`skills/generate/`, `skills/audit/`), one directory per subject inside
+# each, and the schemas are no longer shared -- each pool carries the ones its side needs. That split
+# is the blindness boundary expressed as files: the audit pool has no blueprint schema at all.
+#
+# Located by glob rather than by name so this suite keeps working when a second subject appears, and
+# so a moved directory fails loudly here rather than silently skipping a check.
+def _one(pool: str, pattern: str) -> Path:
+    matches = sorted((SKILLS / pool).glob(pattern))
+    if len(matches) != 1:
+        raise SystemExit("expected exactly one %s under skills/%s, found %d"
+                         % (pattern, pool, len(matches)))
+    return matches[0]
+
+
+VALIDATE = _one("generate", "*/scripts/validate_part1.py")
+METRICS = _one("audit", "*/scripts/audit_metrics.py")
+CROSS_CHECK = SHARED / "cross_check.py"
+RENDER = SHARED / "render_audit_report.py"
+GENERATE_SCHEMAS = VALIDATE.parents[1] / "schemas"
+AUDIT_SCHEMAS = METRICS.parents[1] / "schemas"
+
+
+def _schema(name: str) -> Path:
+    """A schema by filename, from whichever pool holds it."""
+    for directory in (GENERATE_SCHEMAS, AUDIT_SCHEMAS):
+        candidate = directory / name
+        if candidate.is_file():
+            return candidate
+    raise SystemExit("schema %s not found in either pool" % name)
 
 failures: list[str] = []
 
@@ -51,7 +77,7 @@ def test_schemas_are_valid() -> None:
         return
     for name in ("material.schema.json", "blueprint.schema.json", "audit.schema.json"):
         try:
-            Draft7Validator.check_schema(json.loads((SCHEMAS / name).read_text(encoding="utf-8")))
+            Draft7Validator.check_schema(json.loads(_schema(name).read_text(encoding="utf-8")))
             check(f"{name} is valid Draft-07", True)
         except Exception as exc:  # noqa: BLE001 - reporting any schema defect is the point
             check(f"{name} is valid Draft-07", False, str(exc))
@@ -64,7 +90,7 @@ def test_schemas_are_valid() -> None:
         ("blueprint", blueprint, "blueprint.schema.json"),
         ("audit", audit, "audit.schema.json"),
     ):
-        errors = list(Draft7Validator(json.loads((SCHEMAS / schema).read_text(encoding="utf-8"))).iter_errors(data))
+        errors = list(Draft7Validator(json.loads(_schema(schema).read_text(encoding="utf-8"))).iter_errors(data))
         check(f"{label} fixture matches its schema", not errors, "; ".join(e.message for e in errors[:3]))
 
 
