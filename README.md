@@ -101,34 +101,34 @@ audit-ielts-listening-part1/
 一套材料从生成到交付的实际流程：
 
 ```mermaid
-flowchart TD
-    S(["开始生成一套材料"]) --> GP["后端读取生成 Skill 的规范<br/>作为提示词交给生成 AI"]
-    GP --> G["生成 AI 返回两份结果<br/>material 对话稿 + blueprint 十个信息点标注"]
-    G --> V["Python 运行 validate_part1.py<br/>检查格式、字段、数量、字数、轮次、<br/>证据句和 turn_index 是否对应"]
-    V --> VD{"有硬错误吗？"}
-    VD -- "有，且未满 3 次" --> FB["后端把累计错误加入下一次生成提示"]
-    FB --> G
-    VD -- "没有" --> M
-    VD -- "有，且已满 3 次" --> VF["保留最后一稿<br/>并附上校验发现"]
-    VF --> M["Python 运行 audit_metrics.py<br/>准确计算字数、轮数和前后半段分布"]
-    M --> AP["后端读取评价 Skill 的评分标准"]
-    AP --> A["调用一个新的评价 AI<br/>只给 material + 指标，不给 blueprint"]
-    A --> IM["评价 AI 独立重建信息图谱<br/>并给出评分、结论和问题清单"]
-    IM --> X["Python 对比两份信息图谱<br/>生成 blueprint vs 评价 AI 重建结果"]
-    X --> D{"原稿需要修改吗？"}
-    D -- "不需要" --> P["采用原稿"]
-    D -- "需要，但时间不足" --> DEG["采用原稿并标记<br/>revision_skipped_time_budget"]
-    D -- "需要，且时间充足" --> R["修改 AI 根据问题清单<br/>同步修改 material + blueprint"]
-    R --> RV["Python 修复锚点并重新运行 validate_part1.py"]
-    RV --> RVD{"修改稿通过程序校验吗？"}
-    RVD -- "没有通过" --> P
-    RVD -- "通过" --> A2["调用全新的评价 AI 再次盲审<br/>不提供上次评价和修改指令"]
-    A2 --> PB["Python 比较原稿与修改稿评分<br/>采用较好的版本"]
-    PB --> PUB
-    P --> PUB["写入 S3、Polly 逐 turn 合成音频<br/>最后写 manifest.json"]
-    DEG --> PUB
-    PUB --> E(["SSE 事件回传前端"])
+flowchart LR
+    S(["开始"]) --> G["AI 生成材料"]
+    G --> V{"程序校验"}
+    V -- "未通过，最多重试 3 次" --> G
+    V -- "通过或重试结束" --> A["AI 盲审"]
+    A --> X{"需要修改？"}
+    X -- "否" --> P["采用原稿"]
+    X -- "是" --> R["AI 修改"]
+    R --> C["程序校验 + AI 复评"]
+    C --> B["原稿与修改稿择优"]
+    P --> D["合成音频并交付"]
+    B --> D
+    D --> E(["完成"])
+
+    classDef startEnd fill:#f3f4f6,stroke:#4b5563,color:#111827;
+    classDef generate fill:#fef3c7,stroke:#d97706,color:#78350f;
+    classDef audit fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
+    classDef decision fill:#f3f4f6,stroke:#6b7280,color:#111827;
+    classDef delivery fill:#dcfce7,stroke:#16a34a,color:#14532d;
+
+    class S,E startEnd;
+    class G,R generate;
+    class A,C audit;
+    class V,X,B decision;
+    class P,D delivery;
 ```
+
+黄色表示生成和修改，蓝色表示 AI 评价，灰色表示 Python 校验或流程决策，绿色表示采用与交付。
 
 ### 2.1 什么是确定性校验
 
