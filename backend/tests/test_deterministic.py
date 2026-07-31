@@ -166,11 +166,34 @@ class TestLayerBoundaries:
         ]
         assert hits == ["loop.py"], hits
 
-    def test_no_validation_script_is_registered_as_a_model_tool(self):
-        """prd.md R2: a model that can call the validator can conclude it has passed."""
-        for name in ("agent_steps.py", "call.py"):
-            source = (BACKEND / "steps" / name).read_text(encoding="utf-8")
-            assert "tools=[]" in source or "tools" not in source, name
+    def test_the_step_modules_register_no_tools_of_their_own(self):
+        """prd.md R2, restated for the current architecture.
+
+        The original form of this test asserted that no step module mentioned the word "tools" at
+        all, which stopped meaning anything once the agents gained tools deliberately -- and it broke
+        on a prose comment that happened to contain the word. What still matters is narrower: tool
+        wiring belongs to ``agents.py``, so a step module quietly attaching an extra tool to a call
+        would be a second place where capability is decided.
+
+        Note what R2 does and does not require. The generator *does* run the validator, and that is
+        safe because validation is a report rather than a gate: ``orchestration/loop.py`` re-runs it
+        on the delivered artifact, so an agent claiming a clean run gains nothing.
+        """
+        import ast
+
+        source = (BACKEND / "steps" / "agent_steps.py").read_text(encoding="utf-8")
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.keyword) and node.arg == "tools":
+                raise AssertionError("agent_steps.py passes tools=; that belongs to agents.py")
+
+        # `call.py` is exempt, and narrowly: its one `tools=[]` belongs to `call_json`, which no
+        # pipeline step uses any more -- only `scripts/smoke_model.py`, to prove the model endpoint
+        # answers at all. An empty list is the safe direction anyway.
+        call_source = (BACKEND / "steps" / "call.py").read_text(encoding="utf-8")
+        for node in ast.walk(ast.parse(call_source)):
+            if isinstance(node, ast.keyword) and node.arg == "tools":
+                assert isinstance(node.value, ast.List) and not node.value.elts, \
+                    "call.py may only ever pass tools=[]"
 
     def test_skill_prompts_are_read_from_files_not_transcribed(self):
         """prd.md constraint: the skill files are the single source of truth."""

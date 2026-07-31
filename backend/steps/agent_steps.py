@@ -22,11 +22,13 @@ in ``orchestration/loop.py``.
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..agents import build_audit_agent, build_generate_agent
-from ..deterministic.guards import assert_blind
+from ..deterministic.guards import assert_blind, assert_no_plan_on_disk
 from ..model import provider
 from .call import ModelCallError, extract_json
 
@@ -38,6 +40,7 @@ __all__ = [
     "build_audit_payload",
     "build_revise_message",
     "generate",
+    "purge_plan_scratch",
     "revise",
 ]
 
@@ -92,6 +95,72 @@ def _envelope(reply: str, label: str) -> GenOutput:
     return GenOutput(material, blueprint)
 
 
+# Where a generation agent's scratch files may live. Deletion is confined to these roots: a rule
+# derived purely from the agent's own commands would follow a path anywhere on the filesystem, and a
+# malformed command could then name something that is not scratch at all.
+_SCRATCH_ROOTS = (Path("/tmp"), Path("/var/tmp"))
+
+# Paths appearing in a shell command. Deliberately broad on the left (any redirect or bare argument)
+# and narrow on the right (a .json file under a scratch root), because a missed file is a leak while
+# a spurious match is refused by the root check below.
+_PATH_IN_COMMAND = re.compile(r"(/(?:var/)?tmp/[\w.\-/]+\.json)")
+
+
+def purge_plan_scratch(agent: Any) -> List[str]:
+    """Delete the scratch JSON files a generation agent wrote. Returns what was removed.
+
+    **Why this exists, and it is the blindness boundary's third leg.** The skill tells the generator
+    to write the material and the blueprint to files so it can run its own validator, and that
+    blueprint file holds the answers for *this* material -- which turn carries which target, what the
+    self-correction replaces. Measured: the agent writes them to ``/tmp/material.json`` and
+    ``/tmp/blueprint.json``.
+
+    ``strands_tools.file_read`` resolves paths against the process working directory and never
+    consults ``agent.sandbox`` -- measured, its signature carries no ``agent`` at all. So the audit
+    agent, running in the same container moments later, could read that file by absolute path and the
+    isolation would be over. Not because anything was passed to it: because it was left lying around.
+
+    The two other legs stop different things and neither stops this one. The audit pool holding no
+    plan schema is about *shapes*; giving the auditor no ``shell`` is about *commands*. A plan file at
+    a fixed, guessable path defeats both.
+
+    Paths come from the agent's own commands rather than from a glob, so this deletes what this
+    generation produced and not a concurrent slot's files. Restricted to scratch roots regardless: an
+    agent that wrote ``> /etc/hosts`` should not have that honoured here.
+    """
+    removed: List[str] = []
+    for message in getattr(agent, "messages", None) or []:
+        if not isinstance(message, dict):
+            continue
+        for block in message.get("content") or []:
+            use = block.get("toolUse") if isinstance(block, dict) else None
+            if not use or use.get("name") != "shell":
+                continue
+            command = use.get("input", {}).get("command")
+            # `shell` accepts a string, a list of strings, or a list of dicts.
+            texts: List[str] = []
+            for item in command if isinstance(command, list) else [command]:
+                if isinstance(item, str):
+                    texts.append(item)
+                elif isinstance(item, dict) and isinstance(item.get("command"), str):
+                    texts.append(item["command"])
+            for text in texts:
+                for candidate in _PATH_IN_COMMAND.findall(text):
+                    path = Path(candidate)
+                    if not any(root in path.parents for root in _SCRATCH_ROOTS):
+                        continue
+                    try:
+                        path.unlink()
+                    except FileNotFoundError:
+                        continue
+                    except OSError:
+                        # A file we cannot remove is worth reporting, not worth failing the
+                        # generation over -- the material is already produced and valid.
+                        continue
+                    removed.append(str(path))
+    return removed
+
+
 def _feedback_block(feedback: Optional[List[str]]) -> str:
     """Validator errors from earlier attempts, cumulative.
 
@@ -127,7 +196,12 @@ async def generate(
         % (scenario.id, scenario.category, scenario.title_zh, scenario.prompt_hint)
         + _feedback_block(feedback)
     )
-    reply = str(await agent.invoke_async(message))
+    try:
+        reply = str(await agent.invoke_async(message))
+    finally:
+        # In `finally` because a failed generation leaves scratch files too, and the next step after a
+        # failure is a retry or an audit either way.
+        purge_plan_scratch(agent)
     output = _envelope(reply, "generation")
     return GenOutput(_stamp(output.material, scenario.prompt_hint), output.blueprint)
 
@@ -191,6 +265,10 @@ async def audit_blind(material: Dict[str, Any], metrics: Dict[str, Any]) -> Dict
     """
     payload = build_audit_payload(BlindAuditInput(material=material, metrics=metrics))
     assert_blind(payload)
+    # The wire is clean; the disk has to be too. `file_read` resolves against the process working
+    # directory and consults no sandbox, so a plan file the generator left behind is readable by the
+    # agent built on the next line.
+    assert_no_plan_on_disk()
     agent = build_audit_agent()
     audit = extract_json(str(await agent.invoke_async(payload)))
     if "verdict" not in audit:
@@ -211,8 +289,11 @@ async def revise(
     the result.
     """
     agent = build_generate_agent()
-    reply = str(await agent.invoke_async(
-        build_revise_message(material, blueprint, instruction)))
+    try:
+        reply = str(await agent.invoke_async(
+            build_revise_message(material, blueprint, instruction)))
+    finally:
+        purge_plan_scratch(agent)
     output = _envelope(reply, "revision")
 
     parts = material.get("listening_material_parts")

@@ -10,12 +10,18 @@ the listening material and its information-point blueprint.
 
 ## Required Reference
 
-Use `file_read` on `references/specification.md` and read it completely before writing anything.
-It defines the authoring constraints and the exact JSON contract, and it is authoritative: drafting
-from memory of what an IELTS script looks like produces material the validator rejects.
+**Paths here are relative to this skill's own directory, and `file_read` does not resolve them for
+you.** The `Location:` line at the end of these instructions gives this file's absolute path; strip
+`SKILL.md` from it and prefix every path below with what remains. A bare `references/...` resolves
+against the process working directory and returns "No files found" — measured.
 
-The two output schemas are in `schemas/`. Read them with `file_read` as well —
-`schemas/material.schema.json` and `schemas/blueprint.schema.json`.
+Read all three of these before writing anything:
+
+- `references/specification.md` — the authoring constraints and the exact JSON contract. It is
+  authoritative: drafting from memory of what an IELTS script looks like produces material the
+  validator rejects.
+- `schemas/material.schema.json`
+- `schemas/blueprint.schema.json`
 
 ## Workflow
 
@@ -59,9 +65,23 @@ The two output schemas are in `schemas/`. Read them with `file_read` as well —
    - Do not expose this analysis in the result.
 
 5. Validate the JSON, and fix what it reports. **This step is yours to run, not the caller's.**
-   - Write the material and the blueprint to separate `.json` files in your working directory.
-   - Run the validator with `shell`:
-     `python3 scripts/validate_part1.py <material.json> --blueprint <blueprint.json>`
+   - Write the material and the blueprint to two separate `.json` files under `/tmp`.
+   - Write each file in ONE `shell` call, with a quoted heredoc, and check it parses before going on:
+
+     ```
+     cat > /tmp/material.json <<'EOF'
+     ...the complete material JSON...
+     EOF
+     python3 -m json.tool /tmp/material.json > /dev/null && echo PARSE_OK
+     ```
+
+     Emit the JSON exactly as it will appear in your reply. Measured: writing it by hand cost six
+     failed `shell` calls in a row, all spent repairing one malformed object — `{"speaker1","text":
+     ...}` instead of `{"speaker": "speaker1", "text": ...}`. Every turn object needs both keys
+     spelled out. If `PARSE_OK` does not appear, rewrite the whole file rather than patching it with
+     `sed`: a patch that half-applies leaves the file broken in a new way.
+   - Run the validator with `shell`, using the absolute skill path from `Location:`:
+     `python3 <skill dir>/scripts/validate_part1.py /tmp/material.json --blueprint /tmp/blueprint.json`
    - Read its output and fix every error, then run it again. Repeat until it reports no errors, or
      until further attempts stop making progress — a script the validator still complains about is
      delivered with those complaints attached, so a stuck loop is worse than an honest report.

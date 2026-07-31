@@ -20,6 +20,8 @@ every audit call and the guard would get switched off within a day. So:
 
 from __future__ import annotations
 
+import time
+from pathlib import Path
 from typing import Iterable, List, Sequence
 
 __all__ = [
@@ -27,8 +29,10 @@ __all__ = [
     "BLUEPRINT_JSON_FIELDS",
     "BlindnessViolation",
     "assert_blind",
+    "assert_no_plan_on_disk",
     "assert_reference_text_blind",
     "blueprint_key_hits",
+    "plan_files_on_disk",
 ]
 
 
@@ -98,6 +102,70 @@ def assert_blind(payload: str, label: str = "payload") -> None:
     hits = blueprint_key_hits(payload, BLUEPRINT_ONLY_KEYS)
     if hits:
         _fail(label, hits)
+
+
+# Where a generation agent's scratch files land. Same roots the purge covers; scanning the whole
+# filesystem would be slow and would match this repository's own fixtures.
+_SCRATCH_ROOTS = ("/tmp", "/var/tmp")
+
+# Only files this process could have produced are considered. Measured why: a developer machine's
+# /tmp held four blueprint files from runs days earlier, and a guard that fires on those fires on
+# every run, gets diagnosed as noise, and is switched off -- taking the real check with it. An older
+# file is also not this material's answer key, which is what the guard is protecting.
+_PROCESS_STARTED_AT = time.time()
+
+
+def plan_files_on_disk(since: float = None) -> List[str]:
+    """Scratch JSON files written since this process started that contain blueprint data.
+
+    Content-based rather than name-based. The generator picks its own filenames, and a plan written
+    to ``draft2.json`` is exactly as readable as one written to ``blueprint.json`` -- an audit agent
+    listing a directory sees both.
+
+    ``since`` is injectable so tests can pin the window rather than depend on wall-clock ordering.
+    """
+    cutoff = _PROCESS_STARTED_AT if since is None else since
+    found: List[str] = []
+    for root in _SCRATCH_ROOTS:
+        directory = Path(root)
+        if not directory.is_dir():
+            continue
+        try:
+            entries = sorted(directory.glob("*.json"))
+        except OSError:
+            continue
+        for path in entries:
+            try:
+                if path.stat().st_mtime < cutoff:
+                    continue
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            if blueprint_key_hits(text, BLUEPRINT_JSON_FIELDS):
+                found.append(str(path))
+    return found
+
+
+def assert_no_plan_on_disk() -> None:
+    """Fail before an audit call if any scratch file still holds the generator's plan.
+
+    The second layer behind ``purge_plan_scratch``, and it exists because that one depends on parsing
+    the agent's own shell commands. A path built by string interpolation, written through a Python
+    heredoc, or produced by a command form the regex does not cover survives the purge -- and what
+    survives is a file naming which turn carries which answer, at a path the audit agent can read
+    with ``file_read``, which resolves against the process working directory and consults no sandbox.
+
+    Raising rather than deleting here. A file the purge missed means the purge's assumption about how
+    the agent writes files is wrong, and deleting it quietly would keep that wrong assumption in place
+    for every later material. This is the same reasoning as ``assert_blind``: the whole failure mode
+    is silent, so the guard has to be the thing that makes noise.
+    """
+    stale = plan_files_on_disk()
+    if stale:
+        raise BlindnessViolation(
+            "generator plan data is still on disk and the audit agent could read it: %s"
+            % ", ".join(stale[:5])
+        )
 
 
 def assert_reference_text_blind(text: str, label: str = "reference text") -> None:

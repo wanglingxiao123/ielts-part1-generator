@@ -26,11 +26,20 @@ material either way.
 (``sandboxed_metrics.py``). The reason is measured rather than assumed: ``strands_tools.shell`` calls
 ``pty.fork()`` directly and its signature carries no ``agent``, so it never touches
 ``agent.sandbox`` and no sandbox can constrain it. A shell-equipped auditor can read the
-generator's blueprint schema off the local filesystem, which is the one thing the audit side cannot
-survive. Code Interpreter inverts the problem: the remote environment starts empty and holds only
-the two files uploaded to it.
+generator's files off the local filesystem, which is the one thing the audit side cannot survive.
+Code Interpreter inverts the problem: the remote environment starts empty and holds only the two
+files uploaded to it.
 
-``file_read`` *is* sandbox-routed, so it is bounded by ``ReadOnlySkillSandbox`` below.
+**``file_read`` is not sandbox-routed either, and this was measured after being assumed otherwise.**
+Its signature is ``(tool, **kwargs)``, its source names no sandbox, and calling it on the audit agent
+with an absolute path to the generate pool returns the file. ``ReadOnlySkillSandbox`` below therefore
+bounds what the *skills plugin* reads through it -- resource listing on activation -- and nothing
+about what the agent reads directly. What actually keeps the audit side blind is three things that do
+not depend on the SDK routing anything: the audit pool physically contains no plan schema, the
+auditor has no way to run a command, and ``steps/agent_steps.purge_plan_scratch`` deletes the
+generator's scratch files before the audit call, with ``guards.assert_no_plan_on_disk`` raising if any
+survived. The last of those is the one that matters most: a plan *schema* only reveals field names,
+while a plan *file* holds this material's answers.
 """
 
 from __future__ import annotations
@@ -109,18 +118,21 @@ def _sandbox_base() -> Any:
 
 
 class ReadOnlySkillSandbox(_sandbox_base()):
-    """Bounds ``file_read`` to one pool directory, and refuses every write.
+    """Confines sandbox-routed filesystem access to one pool directory, and refuses every write.
 
-    ``file_read`` is routed through ``agent.sandbox``, so this is enforceable for it -- unlike
-    ``shell``, which bypasses the sandbox entirely and is therefore simply not given to the auditor.
+    **What this does and does not cover.** Everything the SDK routes through ``agent.sandbox`` is
+    bounded here -- notably the skills plugin's resource listing on activation. Neither
+    ``strands_tools.shell`` nor ``strands_tools.file_read`` is routed through it: both were measured,
+    and neither signature carries an ``agent``. So this is a real boundary for the SDK's own
+    filesystem access and not a boundary against a determined agent, which is why the audit side also
+    relies on physical absence, on having no shell, and on the scratch purge in ``steps/agent_steps``.
 
     Two properties, both asserted by tests:
 
     * **reads are confined to the pool.** The default sandbox
-      (``NotASandboxLocalEnvironment``) resolves any path against the process cwd, so an auditor
-      could read the generator's schema or ``/etc/passwd``. Paths are resolved here and rejected
-      unless they stay inside the root, which also covers ``..`` traversal and symlinks, since
-      ``resolve()`` follows both.
+      (``NotASandboxLocalEnvironment``) resolves any path against the process cwd. Paths are resolved
+      here and rejected unless they stay inside the root, which also covers ``..`` traversal and
+      symlinks, since ``resolve()`` follows both.
     * **nothing is written.** A skill directory contains the validator the generator runs; an agent
       able to edit it could make the validator agree with anything.
 

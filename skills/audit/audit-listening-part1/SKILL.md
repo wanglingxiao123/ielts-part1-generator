@@ -28,13 +28,21 @@ your ability to judge whether a listener could recover it.
 
 ## Required Reference
 
-Use `file_read` on `references/audit-rubric.md` and read it completely before auditing. It is the
-authoritative rubric, the compliance checklist (C1-C6), and the reporting contract.
+**Paths here are relative to this skill's own directory, and `file_read` does not resolve them for
+you.** The `Location:` line at the end of these instructions gives this file's absolute path; strip
+`SKILL.md` from it and prefix every path below with what remains. A bare `references/...` resolves
+against the process working directory and returns "No files found" — measured.
 
-The output schema is `schemas/audit.schema.json`; read it with `file_read` too.
+Read both of these before auditing:
 
-Everything you need is in this skill's own directory. You will not find the generator's
-specification or its information-point annotation here, and that is deliberate — see below.
+- `references/audit-rubric.md` — the authoritative rubric, the compliance checklist (C1-C6), and the
+  reporting contract.
+- `schemas/audit.schema.json` — the output schema.
+
+Read nothing else. Everything you need is in this skill's own directory; the generator's
+specification and its information-point annotation are not here, and that is deliberate — see below.
+Do not go looking for them elsewhere on the filesystem either. An audit built on the generator's
+plan is worth nothing, and the failure is silent: the score simply comes out too high.
 
 ## Workflow
 
@@ -44,16 +52,21 @@ specification or its information-point annotation here, and that is deliberate �
    - Extract the narrator and two dialogue roles from labels or context.
    - If no usable listening script can be identified, report supported findings and use `NOT_ASSESSABLE`.
 
-2. Run deterministic checks. **This step is yours to run.**
-   - Write the material to a `.json` file, then run
-     `python3 scripts/audit_metrics.py --json <material.json>` with the code interpreter.
-   - The script reports word counts, turn counts, half balance, narration length, and candidate
-     spelling/numeric/correction markers. Use those numbers rather than counting by eye — a metric
-     you assert without calculating is the one most likely to be wrong.
-   - For a non-JSON artifact, calculate only what can be supported reliably.
-   - Treat script findings as evidence, then verify them by reading. Never accept a correction or an
-     indirect confirmation solely because a marker phrase appears: `actually` in a sentence that
-     corrects nothing is not a self-correction.
+2. Take the deterministic metrics as given. **You do not run this step, and you cannot.**
+   - The request already carries the output of `scripts/audit_metrics.py` — word counts, turn counts,
+     half balance, narration length, and candidate spelling/numeric/correction markers. Use those
+     numbers as they stand.
+   - You have no way to run the script yourself: it executes in an isolated environment that holds
+     only the material, because an auditor able to run commands could read the generator's plan off
+     the filesystem, and a score inflated that way looks entirely normal. So do not attempt to
+     execute it, and do not recount by eye — a metric you assert without calculating is the one most
+     likely to be wrong, and here the calculation has already been done.
+   - When a metric is absent from the request, say so rather than estimating it. An artifact that
+     arrived as loose text may have no countable structure, and an invented count is worse than a
+     missing one.
+   - Treat the script's marker findings as evidence, then verify them by reading. Never accept a
+     correction or an indirect confirmation solely because a marker phrase appears: `actually` in a
+     sentence that corrects nothing is not a self-correction.
 
 3. Identify the script and roles.
    - Treat container fields and metadata as contextual information, not compliance requirements.

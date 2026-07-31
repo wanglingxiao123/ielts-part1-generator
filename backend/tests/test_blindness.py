@@ -9,21 +9,30 @@ So these tests try to break the isolation rather than confirm it. Each one asks 
 obvious mistake here, would anything fail?" -- and the ones that check a sandbox actively attempt
 traversal, absolute paths, symlinks and writes rather than trusting the class to behave.
 
-The boundary has three independent parts, and each is tested on its own:
+The boundary has four independent parts, and each is tested on its own:
 
 1. **The audit pool holds nothing planning-related.** Physical: the files are not there.
-2. **`file_read` cannot leave the pool.** Enforced by ``ReadOnlySkillSandbox``, because the default
-   sandbox (``NotASandboxLocalEnvironment``) resolves every path against the process cwd and would
-   happily read the generator's schema or ``/etc/passwd``.
+2. **The generator's scratch files are deleted before the audit call.** This is the one that protects
+   the *answers* rather than the *shape*: the skill has the generator write its plan to a file so it
+   can run its own validator, and that file says which turn carries which target.
 3. **The auditor has no way to run a command.** Not by configuration but by absence:
    ``strands_tools.shell`` bypasses ``agent.sandbox`` entirely -- measured -- so the only safe
    arrangement is not to give it to the audit agent at all.
+4. **Sandbox-routed access cannot leave the pool.** ``ReadOnlySkillSandbox`` bounds what the SDK
+   itself reads (the skills plugin's resource listing).
+
+A correction worth recording, because the tests below were written on the wrong assumption and passed
+anyway: ``file_read`` is **not** sandbox-routed. Its signature is ``(tool, **kwargs)`` and its source
+names no sandbox, so an absolute path reaches the filesystem regardless of ``agent.sandbox``. The
+sandbox tests were real -- they test the class -- but the class was never in that path, and nothing
+here noticed for as long as no test called ``file_read`` through an agent. There is one now.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -85,8 +94,131 @@ class TestAuditPoolHoldsNoPlan:
         assert all('"%s"' % field in text for field in ("form_group", "item_form"))
 
 
+class TestScratchFilesAreGone:
+    """Part 2: the plan file the generator wrote, deleted before the auditor exists.
+
+    The highest-value leak in the system and the only one that carries answers. A plan *schema* tells
+    an auditor that a field called ``form_group`` exists; a plan *file* tells it that turn 8 replaces
+    $45 with $39.
+    """
+
+    def _agent_that_wrote(self, commands):
+        """A stand-in carrying a `shell` tool-use history, which is all the purge reads."""
+        return type("A", (), {"messages": [
+            {"content": [{"toolUse": {"name": "shell", "input": {"command": c}}}]}
+            for c in commands
+        ]})()
+
+    def test_a_written_plan_file_is_deleted(self, tmp_path):
+        from backend.steps import agent_steps
+
+        plan = Path("/tmp/blueprint.json")
+        plan.write_text(json.dumps({"items": [{"form_group": "booking"}]}), encoding="utf-8")
+        agent = self._agent_that_wrote(["cat > /tmp/blueprint.json <<'EOF'\n{}\nEOF"])
+
+        removed = agent_steps.purge_plan_scratch(agent)
+
+        assert str(plan) in removed
+        assert not plan.exists()
+
+    def test_every_command_form_is_read(self):
+        """`shell` takes a string, a list, or a list of dicts. A form the purge cannot parse is a
+        plan file left on disk, so all three are exercised rather than just the common one."""
+        from backend.steps import agent_steps
+
+        paths = [Path("/tmp/purge_a.json"), Path("/tmp/purge_b.json"), Path("/tmp/purge_c.json")]
+        for path in paths:
+            path.write_text("{}", encoding="utf-8")
+
+        agent = self._agent_that_wrote([
+            "cat > /tmp/purge_a.json <<'EOF'\n{}\nEOF",
+            ["echo x", "python3 -m json.tool /tmp/purge_b.json"],
+            [{"command": "mv /x /tmp/purge_c.json"}],
+        ])
+        agent_steps.purge_plan_scratch(agent)
+
+        assert [p for p in paths if p.exists()] == []
+
+    def test_nothing_outside_a_scratch_root_is_touched(self, tmp_path):
+        """The paths come from a model's output, so the roots are a hard restriction.
+
+        Without it, a malformed command naming a repository file would have it deleted -- and the
+        skill pools contain the validator every generation depends on.
+        """
+        from backend.steps import agent_steps
+
+        victim = tmp_path / "not-scratch.json"
+        victim.write_text("{}", encoding="utf-8")
+        agent = self._agent_that_wrote(["cat > %s <<'EOF'\n{}\nEOF" % victim])
+
+        removed = agent_steps.purge_plan_scratch(agent)
+
+        assert removed == []
+        assert victim.exists()
+
+    def test_the_audit_call_refuses_to_run_while_a_plan_is_on_disk(self):
+        """The second layer, and it raises rather than cleaning up.
+
+        The purge parses the agent's own commands, so a path built by string interpolation or written
+        through a Python heredoc can survive it. That is exactly when the guard has to fire: silently
+        deleting the file would leave the purge's wrong assumption in place for every later material.
+        """
+        from backend.deterministic.guards import BlindnessViolation, assert_no_plan_on_disk
+
+        plan = Path("/tmp/leftover_plan.json")
+        plan.write_text(json.dumps({"items": [{"item_form": "form", "form_group": "a"}]}),
+                        encoding="utf-8")
+        try:
+            with pytest.raises(BlindnessViolation) as excinfo:
+                assert_no_plan_on_disk()
+            assert "leftover_plan.json" in str(excinfo.value)
+        finally:
+            plan.unlink(missing_ok=True)
+
+    def test_the_guard_is_content_based_not_name_based(self):
+        """The generator picks its own filenames. A plan in `draft2.json` is just as readable."""
+        from backend.deterministic.guards import plan_files_on_disk
+
+        plan = Path("/tmp/draft2.json")
+        plan.write_text(json.dumps({"items": [{"form_group": "x"}]}), encoding="utf-8")
+        innocent = Path("/tmp/innocent_material.json")
+        innocent.write_text(json.dumps({"listening_material_parts": []}), encoding="utf-8")
+        try:
+            found = plan_files_on_disk(since=0)
+            assert str(plan) in found
+            assert str(innocent) not in found
+        finally:
+            plan.unlink(missing_ok=True)
+            innocent.unlink(missing_ok=True)
+
+    def test_files_predating_this_process_are_ignored(self):
+        """Otherwise the guard is unusable, which is worse than absent.
+
+        Measured on a developer machine: /tmp held four blueprint files from runs days earlier. A
+        guard that fires on those fires on every single run, gets read as noise, and is switched off
+        -- taking the real check with it. A file older than this process is also not this material's
+        answer key.
+        """
+        from backend.deterministic.guards import plan_files_on_disk
+
+        old = Path("/tmp/ancient_plan.json")
+        old.write_text(json.dumps({"items": [{"form_group": "x"}]}), encoding="utf-8")
+        os.utime(old, (1_600_000_000, 1_600_000_000))
+        try:
+            assert str(old) not in plan_files_on_disk()
+            assert str(old) in plan_files_on_disk(since=0)
+        finally:
+            old.unlink(missing_ok=True)
+
+    def test_a_clean_disk_passes(self):
+        """The control. A guard that always raised would pass every test above."""
+        from backend.deterministic.guards import assert_no_plan_on_disk
+
+        assert_no_plan_on_disk()
+
+
 class TestSandboxCannotLeaveThePool:
-    """Part 2: `file_read` is sandbox-routed, so this boundary is enforceable and enforced."""
+    """Part 4: what `ReadOnlySkillSandbox` actually covers -- the SDK's own filesystem access."""
 
     @pytest.fixture
     def sandbox(self):
@@ -183,6 +315,45 @@ class TestSandboxCannotLeaveThePool:
         text = asyncio.run(default.read_text(str(
             _generate_pool() / "generate-listening-part1" / "schemas" / "blueprint.schema.json")))
         assert "form_group" in text
+
+
+class TestWhatFileReadActuallyDoes:
+    """The measured behaviour of the tool, pinned so it stops being assumed.
+
+    This class exists because the assumption was wrong for a while and nothing failed. Every test in
+    ``TestSandboxCannotLeaveThePool`` passed -- they call the sandbox directly -- while the tool the
+    agent actually uses never consulted it. If a future SDK routes ``file_read`` through the sandbox,
+    these tests fail, and that failure is good news: it means the boundary can be tightened.
+    """
+
+    def test_file_read_takes_no_agent_and_names_no_sandbox(self):
+        import inspect
+
+        from strands_tools import file_read as module
+
+        fn = getattr(module, "file_read")
+        assert "agent" not in inspect.signature(fn).parameters
+        assert "sandbox" not in inspect.getsource(fn)
+
+    def test_the_audit_agent_can_in_fact_read_the_generate_pool(self):
+        """Uncomfortable, and that is the point of writing it down.
+
+        Asserting the leak rather than the protection, because the protection does not exist at this
+        layer and a test claiming otherwise would be worse than no test. What keeps the auditor blind
+        is that the *answers* are not on disk (``TestScratchFilesAreGone``) -- not that the filesystem
+        is unreachable.
+        """
+        from strands_tools import file_read as module
+
+        agent = agents_module.build_audit_agent()
+        target = _generate_pool() / "generate-listening-part1" / "schemas" / "blueprint.schema.json"
+        result = module.file_read(
+            {"toolUseId": "t", "name": "file_read",
+             "input": {"path": str(target), "mode": "view"}},
+            agent=agent,
+        )
+        assert result.get("status") == "success"
+        assert "form_group" in str(result)
 
 
 class TestAuditAgentCapabilities:
