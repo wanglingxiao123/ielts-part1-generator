@@ -165,6 +165,28 @@ Runtime 立即返回 job id，浏览器通过 `audio_status` 轮询。合成完�
 - Web 每 15 秒发 SSE 心跳；CloudFront origin read timeout 为 60 秒，ALB idle timeout 默认为
   120 秒。三者共同保证长时间生成不会因为静默而断流。
 
+### 2.5 鉴权与用户池
+
+系统**没有使用 Cognito**。注册、登录和 Session 都由 `web/auth.py` 实现，生产环境的用户池是
+S3 中的一个 JSON 对象：
+
+```text
+s3://ielts-part1-materials-{account}/web/users.json
+```
+
+每个用户记录包含标准化邮箱、密码摘要、管理员标记和创建时间。密码不以明文保存，而是使用
+PBKDF2-HMAC-SHA256、随机盐和 200,000 次迭代生成摘要。第一个注册的账号自动成为管理员；后续
+注册是否允许由 `ALLOWED_EMAIL_DOMAINS` 控制。域名限制只作用于新注册，不会使已有账号失效。
+
+登录成功后，Web 设置有效期 7 天的 `ielts_session` HttpOnly cookie。Cookie 中保存邮箱和过期
+时间，并使用 SSM `/ielts-part1/session-secret` 中的密钥做 HMAC-SHA256 签名；服务端不保存
+Session 表。每次鉴权除了验证签名和过期时间，还会确认该用户仍存在，因此从用户池删除账号即可
+使其现有 Session 失效。
+
+本地开发未配置 `USER_STORE_S3_BUCKET` 时，用户写入
+`USER_STORE_PATH`（默认 `/tmp/ielts-web-users.json`）。这套自建方案面向小规模内部使用，不提供
+邮箱验证、找回密码、MFA、企业 SSO 或 Cognito 式用户管理后台。
+
 ## 3. 生成流程（Agent Loop）
 
 ```mermaid
@@ -790,6 +812,8 @@ bash backend/scripts/check_ping.sh
 - `WEB_FANOUT_CONCURRENCY=6` 是起始配置，不是所有账号配额下的保证值；
 - 版权原因，真题样本不随仓库分发，相关测试会 skip；
 - ECS 服务默认单任务、单任务子网，无自动伸缩、蓝绿部署或应用级多可用区冗余；
+- 用户池是单个 S3 JSON 对象，更新采用整文件读写；进程锁只能保护单实例。扩展到多个 Web task
+  前应迁移到支持条件写或事务的用户存储，避免并发注册相互覆盖；
 - `stop.sh` 不删除 ALB，因此不能把常驻成本降为零；
 - `teardown.sh` 默认保留 S3，且始终保留 SSM secret 和历史 task definition revision；
 - GPT-5.6 当前部署限制在 `us-east-1` / `us-east-2`。
