@@ -102,4 +102,42 @@ for dockerfile, sources in (("backend/Dockerfile", "backend"), ("web/Dockerfile"
 sys.exit(0 if ok else 1)
 PY
 
+echo "== gate 9: every path a Dockerfile or codegen script names still exists =="
+# Gate 8 compares at package granularity, so `COPY skills/ielts-listening-skills/` satisfied it by
+# starting with `skills/` while naming a directory that had been deleted. Docker fails such a build,
+# but nobody builds an image to run the tests -- the reorganisation shipped with a Dockerfile that
+# would have produced a container holding no skill pool at all, and an agent with no pool activates
+# no skill and returns an unusable reply without anything naming the cause.
+#
+# The frontend codegen scripts are here for the same reason, from the other direction: those DID
+# fail loudly (ENOENT on `npm run verify`), which is how the Dockerfile was found. Pinning them keeps
+# that alarm working without needing node installed.
+"$BACKEND_PYTHON" - <<'PY' || fail "a referenced path no longer exists"
+import pathlib, re, sys
+
+ok = True
+for dockerfile in ("backend/Dockerfile", "web/Dockerfile"):
+    # `COPY --from=` reads an earlier build stage, not the build context, so its source is a path
+    # inside another image and does not exist here.
+    for source in re.findall(r"^COPY\s+(\S+)\s+\S+\s*$",
+                             pathlib.Path(dockerfile).read_text(encoding="utf-8"), re.M):
+        if source.startswith("--"):
+            continue
+        if not pathlib.Path(source).exists():
+            ok = False
+            print("  %s COPYs %s, which is not in the build context" % (dockerfile, source))
+
+# Repo-relative literals in the generators, which resolve against the repository root.
+for script in sorted(pathlib.Path("frontend/scripts").glob("*.mjs")):
+    body = script.read_text(encoding="utf-8")
+    for literal in re.findall(r"""["'`](skills/[^"'`\n]+)["'`]""", body):
+        if not pathlib.Path(literal).exists():
+            ok = False
+            print("  %s names %s, which does not exist" % (script, literal))
+
+if ok:
+    print("  ok")
+sys.exit(0 if ok else 1)
+PY
+
 exit "$status"
