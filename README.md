@@ -74,32 +74,6 @@ flowchart TB
 
 ## 2. 生成流程（Agent Loop）
 
-这里的 Agent Loop 不是“AI 自己决定下一步做什么”，而是一段由
-`backend/orchestration/loop.py` 控制的 Python 工作流。AI 只在被调用时完成生成、评价或修改；
-是否重试、是否修改、最终采用哪个版本，都由普通 Python 条件判断决定。
-
-Skill 也不是一个会自行运行的 Agent，而是一组提供给后端使用的材料：
-
-| 组成 | 作用 | 谁使用 |
-|---|---|---|
-| `SKILL.md`、`references/*.md` | 生成规范或评价标准，作为提示词交给模型 | AI |
-| `scripts/*.py` | 字段、数量、字数、轮次等可机械计算的检查 | Python |
-| `schemas/*.json` | 约束输入输出的数据结构 | Python / AI 输出契约 |
-
-生成 Skill 和评价 Skill 在流程中的职责如下：
-
-```text
-generate-ielts-listening-part1/
-├── SKILL.md + references/specification.md   指导生成 AI
-└── scripts/validate_part1.py                程序化校验生成结果
-
-audit-ielts-listening-part1/
-├── SKILL.md + references/audit-rubric.md    指导评价 AI
-└── scripts/audit_metrics.py                 程序化计算评价所需指标
-```
-
-一套材料从生成到交付的实际流程：
-
 ```mermaid
 flowchart LR
     S(["开始"]) --> G["AI 生成材料"]
@@ -111,7 +85,7 @@ flowchart LR
     X -- "是" --> R["AI 修改"]
     R --> C["程序校验 + AI 复评"]
     C --> B["原稿与修改稿择优"]
-    P --> D["合成音频并交付"]
+    P --> D["交付材料"]
     B --> D
     D --> E(["完成"])
 
@@ -130,10 +104,44 @@ flowchart LR
 
 黄色表示生成和修改，蓝色表示 AI 评价，灰色表示 Python 校验或流程决策，绿色表示采用与交付。
 
-### 2.1 什么是确定性校验
+### 2.1 谁在控制流程
 
-`validate_part1.py` 属于生成 Skill，但它由后端 Python 直接执行，不由生成 AI 调用或判定。
-它只检查能够明确计算的条件，例如：
+这里的 Agent Loop 不是“AI 自己决定下一步做什么”，而是一段由
+`backend/orchestration/loop.py` 控制的 Python 工作流。AI 只在被调用时负责生成、评价或修改；
+是否重试、是否进入修改、最终采用原稿还是修改稿，都由普通 Python 条件判断决定。当前流程只交付
+文字材料，不合成音频。
+
+Skill 也不是一个会自行运行的 Agent。它是一组供后端和 AI 共同使用的规范、脚本和数据契约：
+
+| 组成 | 作用 | 谁使用 |
+|---|---|---|
+| `SKILL.md`、`references/*.md` | 生成规范或评价标准，后端将其放进模型提示词 | AI |
+| `scripts/*.py` | 执行字段、数量、字数、轮次等机械检查或计算 | Python |
+| `schemas/*.json` | 规定生成结果和评价结果的数据结构 | Python / AI 输出契约 |
+
+### 2.2 生成材料：生成 Skill
+
+```text
+generate-ielts-listening-part1/
+├── SKILL.md
+├── references/specification.md
+└── scripts/validate_part1.py
+```
+
+- `SKILL.md` 和 `specification.md` 指导生成 AI 如何编写 IELTS Listening Part 1；
+- `validate_part1.py` 用普通 Python 检查输出格式和可机械判断的硬规则；
+- 生成 AI 一次返回 `material` 和 `blueprint` 两份结果。
+
+`material` 是最终给人阅读的对话稿。`blueprint` 是生成 AI 在写稿时设计的十个信息点，其中记录：
+
+```text
+信息点是什么
+答案出现在哪句话
+位于第几轮对话
+适合什么题型
+```
+
+生成结束后，后端直接运行 `validate_part1.py`，不是让 AI 自己判断是否合格。它检查：
 
 - JSON 是否包含规定字段，是否出现 `questions`、`answer_key`、`analysis` 等禁止字段；
 - 是否正好有三个说话人、三段旁白和十个信息点；
@@ -143,15 +151,61 @@ flowchart LR
 - 十个信息点是否按顺序分布在正确的前后半段，并满足题型和干扰项要求。
 
 它不会理解“对话自然不自然”或“难度像不像 IELTS”。相同输入每次得到相同结果，所以称为
-确定性校验。`errors` 会触发重新生成，`warnings` 只作为后续修改建议。
+确定性校验。`errors` 会触发重新生成，最多生成三次；`warnings` 只作为后续修改建议。三次仍有
+错误时不会丢弃材料，而是保留最后一稿，并把校验发现附在交付结果中。
 
-### 2.2 什么是盲审
+生成重试和基础设施重试分开计数：`MAX_GENERATION_ATTEMPTS = 3` 处理材料校验失败，
+`MAX_INFRA_RETRIES = 3` 处理 429、截断响应等调用故障。网络或平台故障不会占用材料的生成机会。
+
+### 2.3 评价材料：审核 Skill
+
+```text
+audit-ielts-listening-part1/
+├── SKILL.md
+├── references/audit-rubric.md
+└── scripts/audit_metrics.py
+```
+
+- `SKILL.md` 和 `audit-rubric.md` 告诉评价 AI 如何判断自然度、难度和信息点质量；
+- `audit_metrics.py` 用普通 Python 计算 AI 不擅长精确统计的客观指标；
+- 评价 AI 根据评分标准、对话稿和客观指标进行语义评价。
+
+`audit_metrics.py` 不负责完整评价，只计算：
+
+```text
+对话多少词
+对话多少轮
+前半段多少轮
+后半段多少轮
+旁白多少词
+```
+
+这些准确数字会直接交给评价 AI，避免模型自己计数出错。对话是否自然、场景是否可信、信息是否
+容易听懂等需要理解语义的问题，才由评价 AI 判断。
+
+### 2.4 为什么要盲审
 
 生成 AI 会同时交付对话稿 `material` 和自己的十个信息点计划 `blueprint`。评价 AI 只看到
 `material` 和 `audit_metrics.py` 算出的客观指标，看不到 `blueprint`，必须仅通过阅读对话，
 独立找出其中可以命题的信息点。
 
-随后 `deterministic/crosscheck.py` 用普通 Python 比较两份结果：
+例如，生成 AI 在 `blueprint` 中声明：
+
+```text
+1. 入住日期：12 July
+2. 房型：double room
+3. 价格：£85
+```
+
+评价 AI 只能看到实际对话：
+
+```text
+Customer: I'd like to arrive on 12 July.
+Receptionist: We have a double room for £85.
+```
+
+它需要自己重新找出日期、房型、价格等信息。随后
+`deterministic/crosscheck.py` 用普通 Python 比较两份信息图谱：
 
 ```text
 生成 AI 计划的信息点       评价 AI 从脚本中找到的信息点
@@ -160,23 +214,24 @@ flowchart LR
 价格：£85                  未找到                         需要检查或修改
 ```
 
-盲审要回答的是：生成者声称设计的信息点，能否只靠实际对话被独立恢复出来。如果先把
-`blueprint` 给评价 AI，它可能顺着标注寻找答案，两份结果的一致性就不能证明材料真的清楚。
+盲审要验证的是：
 
-**基础设施重试与生成重试分开计数**：`MAX_GENERATION_ATTEMPTS = 3`（校验失败重生成），
-`MAX_INFRA_RETRIES = 3`（429、截断响应等）。限流不能说明材料质量，让它吃掉一次生成机会会
-因为传输打嗝而判死一套本可救的材料。
+> 生成 AI 声称设计的信息点，能不能只通过实际对话被另一个评价者独立找出来。
 
-三处设计值得单独知道：
+如果评价 AI 提前看到 `blueprint`，它可能顺着答案寻找证据，两份结果的一致性就不能证明材料真的
+清楚。代码因此限制评价输入只能包含 `material` 和客观指标，复评时也会创建一次没有历史记忆的
+新调用。
 
-- **校验是报告，不是闸门。** 三次仍不通过时交付最后一次的产物，并把校验发现附上。曾测到
-  五条规则会拒掉真题——扣着材料让校验器的错误既不可申诉也不可见，交付并附意见则让它变成一条
-  出题人可以自己权衡的备注。
-- **评价环节盲读。** 评价方不接触生成方的信息点标注，必须自己从脚本重建信息图谱。两份独立图谱
-  程序化对照后，评价方找不回的点即为真实缺陷。该属性由四道防线保证：类型隔离
-  （`BlindAuditInput` 只有两个字段）、CI grep 门禁、运行期提示词线扫（`assert_blind`）、
-  复评无记忆。
-- **修改后必须复评。** 否则产物携带的评分来自修改前版本，修改环节等于无验收。
+### 2.5 修改、复评与交付
+
+如果原稿没有需要修改的问题，后端直接采用原稿。如果存在问题且时间预算充足，修改 AI 会根据
+评价发现同步修改 `material` 和 `blueprint`。
+
+修改稿不会直接交付。后端会再次运行确定性校验，并调用一个全新的评价 AI 进行盲审。最后由
+Python 比较原稿和修改稿的评价结果，采用更好的版本。修改失败、校验不通过或时间不足时，仍可
+回退到已经完成评价的原稿。
+
+最终交付的是选中的文字材料及其评价、校验信息，不执行语音合成。
 
 ---
 
