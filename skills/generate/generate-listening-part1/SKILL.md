@@ -76,7 +76,19 @@ The two output schemas are in `schemas/`. Read them with `file_read` as well —
 
 ## Output Rules
 
-- Return the material JSON and the blueprint JSON, each conforming exactly to its reference schema (`schemas/material.schema.json` and `schemas/blueprint.schema.json`).
+**Reply with ONE JSON object carrying both artifacts under these exact keys:**
+
+```
+{"material": { ...conforms to schemas/material.schema.json... },
+ "blueprint": { ...conforms to schemas/blueprint.schema.json... }}
+```
+
+Both keys are required, and the caller reads only your reply — files you wrote while working are
+scratch space on a container that is discarded, so an artifact left in `/tmp` is an artifact that
+was never delivered. Measured: an earlier version of this section said "return the material JSON and
+the blueprint JSON" without naming a container, and the agent replied with the material alone,
+having written both to files. The two-key envelope is what makes that impossible to get wrong.
+
 - Return no Markdown fences, introduction, explanation, questions, answer key, or quality report around the JSON.
 - Keep the two artifacts separate. The material must not contain blueprint fields, and the blueprint must not contain questions or an answer key.
 - Preserve turn order; store one spoken turn per `{speaker, text}` object.
