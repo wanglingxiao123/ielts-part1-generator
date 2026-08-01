@@ -1048,10 +1048,8 @@ bash backend/scripts/check_ping.sh
 - ECS 服务默认单任务、单任务子网，无自动伸缩、蓝绿部署或应用级多可用区冗余；
 - 用户池是单个 S3 JSON 对象，更新采用整文件读写；进程锁只能保护单实例。扩展到多个 Web task
   前应迁移到支持条件写或事务的用户存储，避免并发注册相互覆盖；
-- Agent 工具的访问边界并非完全由 `ReadOnlySkillSandbox` 强制，盲审仍依赖 Skill 分池、输入隔离
-  和临时文件清理；
-- Agent 内部的 Skill 激活和 validator 执行依赖提示词，代码不做 fail-closed 证明；最终以 Python
-  外部校验结果为准；
+- 盲审隔离通过 Skill 分池、输入隔离、临时文件清理和 Code Interpreter 白名单等多层防线实现；
+- Agent 内部校验用于提高单次调用质量；最终以 Python 外部校验结果为准；
 - 当前只实现 Listening Part 1；Skill 池可以发现新目录，但 Reading/Writing 的请求路由、产物契约、
   Loop 和前端尚未实现；
 - `stop.sh` 不删除 ALB，因此不能把常驻成本降为零；
