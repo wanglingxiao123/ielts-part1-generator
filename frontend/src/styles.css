@@ -1492,7 +1492,7 @@ h3 {
   font-variant-numeric: tabular-nums;
 }
 
-/* 状态徽章的三个色，客户指定：待选稿=绿 / 已提交=蓝 / 已归档=灰。 */
+/* 状态徽章的两个色，客户指定：待选稿=绿 / 已提交=蓝。 */
 .hist-badge {
   font-size: 10px;
   border-radius: 100px;
@@ -1508,11 +1508,6 @@ h3 {
 .hist-badge.info {
   background: var(--accent-soft);
   color: var(--accent);
-}
-
-.hist-badge.muted {
-  background: var(--line-2);
-  color: var(--ink-3);
 }
 
 .hist-badge.warn {

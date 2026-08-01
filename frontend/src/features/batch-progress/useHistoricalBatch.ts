@@ -13,7 +13,7 @@
  *
  * ## 只读从后端来
  *
- * `readOnly` 直接用响应里的 `read_only`，不在前端按状态重算。已提交与已归档只读的**理由**不同
+ * `readOnly` 直接用响应里的 `read_only`，不在前端按状态重算。已提交与候选过期两种只读的**理由**不同
  * （一个是决定已经做了，一个是决定再也做不了），前端重算一遍就是第二个会算错的地方。
  */
 import { useEffect, useState } from 'react'
@@ -26,7 +26,7 @@ export interface HistoricalBatch {
   batchId: string
   readOnly: boolean
   interrupted: boolean
-  /** 已归档 / 已提交 / 待选稿。用来在内容区顶部说清这是哪一种。 */
+  /** 已提交 / 待选稿。用来在内容区顶部说清这是哪一种。 */
   status: BatchHistoryDetail['status']
   submittedMaterialIds: string[]
   /** 卡位形状，和 store 的 `requested` 同构，所以 buildResultGroups 不必知道数据从哪来。 */
@@ -49,10 +49,15 @@ export interface HistoricalBatchState {
  *
  * 页面用它来表达「这一批是当前活批次，走 store，不要取历史」。做成参数而不是让调用方条件式地
  * 调用 hook，因为后者违反 hook 规则。
+ *
+ * `reloadToken` 变一次就重取一次。撤回是在另一个页面（审核队列）发生的，回到这一页时
+ * `read_only` 已经变了，而只依赖 `batchId` 的 effect 不会再跑——用户会看到一个仍然锁着的
+ * 批次，只有手动刷新才恢复。
  */
 export function useHistoricalBatch(
   batchId: string | undefined,
   enabled: boolean,
+  reloadToken = 0,
 ): HistoricalBatchState {
   const [state, setState] = useState<HistoricalBatchState>({
     batch: null,
@@ -86,7 +91,7 @@ export function useHistoricalBatch(
     return () => {
       cancelled = true
     }
-  }, [batchId, enabled])
+  }, [batchId, enabled, reloadToken])
 
   return state
 }

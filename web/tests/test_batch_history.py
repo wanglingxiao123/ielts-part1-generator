@@ -1,4 +1,4 @@
-"""Batch history: the record, its survival across a restart, the three statuses, and read-only.
+"""Batch history: the record, its survival across a restart, the two statuses, and read-only.
 
 Four properties here, each with a failure mode that would otherwise reach the client:
 
@@ -9,14 +9,16 @@ Four properties here, each with a failure mode that would otherwise reach the cl
   listed" test and still lose every material of an interrupted batch, so the interrupted case is
   asserted separately.
 
-* **The status derivation.** 待选稿 / 已提交 / 已归档 have to come from facts the backend can
-  substantiate. Two are derived (from candidate expiry) and one had to be added (`submit`), and the
-  tests pin which is which -- including that a submitted batch does not become 已归档 with age,
-  because "someone submitted this" is a recorded fact that time cannot unmake.
+* **The status derivation.** 待选稿 / 已提交 have to come from facts the backend can substantiate. The
+  first is the default and the second had to be added (`submit` / `withdraw`), and the tests pin that
+  a submitted batch does not lose the status with age -- "someone submitted this" is a recorded fact
+  that only a withdrawal unmakes.
 
-* **Read-only.** `read_only` is returned by the backend rather than re-derived in the UI, so a
-  submitted or archived batch cannot be made mutable by a frontend mistake. `test_a_read_only_batch`
-  asserts the flag AND that `submit` on an archived batch does not resurrect it.
+* **Read-only, which is NOT the status.** A third status (已归档) was dropped on the client's
+  instruction, but the boundary it reported is real: once the candidates expire, `select` fails. So
+  an expired batch is 待选稿 AND read-only, and `read_only` stays a separate field returned by the
+  backend. Re-deriving it from the status is the specific mistake these tests exist to catch -- it
+  would hand the user a live checkbox over candidates the backend refuses.
 
 * **Writes never block the stream.** The recorder hands snapshots to its own thread. A store that
   sleeps on every write is used to prove the events still flow -- an inline `put` would serialise
@@ -33,7 +35,6 @@ import pytest
 
 from web.app import WebTier, _scenario_shape
 from web.batch_history import (
-    ARCHIVED,
     CANDIDATE_TTL_SECONDS,
     PENDING_SELECTION,
     STALE_RUNNING_SECONDS,
@@ -165,23 +166,25 @@ class TestStatusDerivation:
         assert view["status"] == PENDING_SELECTION
         assert view["read_only"] is False
 
-    def test_an_unsubmitted_batch_past_the_candidate_ttl_is_archived(self):
-        """已归档 is the candidate expiry, not an age threshold picked to fill the third chip.
+    def test_an_expired_batch_stays_pending_selection_but_turns_read_only(self):
+        """The 已归档 status is gone; the boundary it reported is not.
 
-        Once `_candidates/` has aged out, `list_candidates` no longer offers the batch's materials
-        and no selection can be made against it -- so there is genuinely no decision left.
+        Once `_candidates/` has aged out, `list_candidates` no longer offers the batch's materials and
+        `select` fails -- so the batch has to be read-only even though its status is still 待选稿. This
+        is the case that breaks if anyone re-derives `read_only` from the status, which would hand the
+        user a live checkbox over candidates the backend will refuse.
         """
         now = time.time()
         view = derive(record(created_at=now - CANDIDATE_TTL_SECONDS - 1), now=now)
-        assert view["status"] == ARCHIVED
+        assert view["status"] == PENDING_SELECTION
         assert view["read_only"] is True
 
-    def test_the_boundary_is_the_candidate_ttl_exactly(self):
+    def test_read_only_flips_at_the_candidate_ttl_exactly(self):
         now = time.time()
         inside = derive(record(created_at=now - CANDIDATE_TTL_SECONDS + 60), now=now)
         outside = derive(record(created_at=now - CANDIDATE_TTL_SECONDS), now=now)
-        assert inside["status"] == PENDING_SELECTION
-        assert outside["status"] == ARCHIVED
+        assert (inside["status"], inside["read_only"]) == (PENDING_SELECTION, False)
+        assert (outside["status"], outside["read_only"]) == (PENDING_SELECTION, True)
 
     def test_a_submitted_batch_is_submitted(self):
         now = time.time()
@@ -190,10 +193,10 @@ class TestStatusDerivation:
         assert view["read_only"] is True
 
     def test_submission_outranks_age(self):
-        """已提交 stays 已提交 however old it gets.
+        """已提交 stays 已提交 however old it gets, until it is withdrawn.
 
-        The recorded fact is "someone submitted this", and age does not unmake it. Falling through
-        to 已归档 would make the panel forget a decision that was actually taken.
+        The recorded fact is "someone submitted this", and age does not unmake it -- only a
+        withdrawal does.
         """
         now = time.time()
         view = derive(

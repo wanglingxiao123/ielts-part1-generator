@@ -33,6 +33,7 @@ import {
   STATUS_FILTERS,
   STATUS_LABEL,
   STATUS_TONE,
+  normalizeStatus,
   timeOfDay,
   type StatusFilter,
 } from '@/domain/batchHistory'
@@ -255,8 +256,8 @@ function HistoryRow({
       </div>
       <div className="hist-row-foot">
         <span className="hist-sets">{setCountLabel(batch)}</span>
-        <span className={`hist-badge ${STATUS_TONE[batch.status]}`}>
-          {STATUS_LABEL[batch.status]}
+        <span className={`hist-badge ${STATUS_TONE[normalizeStatus(batch.status)]}`}>
+          {STATUS_LABEL[normalizeStatus(batch.status)]}
         </span>
         {/* 「任务中途没了」是这一批**永远**不会补齐的意思，所以说出来。不说的话组头的「4/6」
             看起来像还在生成。 */}

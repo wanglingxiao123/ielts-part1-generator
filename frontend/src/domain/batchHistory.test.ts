@@ -14,6 +14,7 @@ import {
   countByStatus,
   filterBatches,
   groupByDate,
+  normalizeStatus,
   scenarioTags,
   setCountLabel,
   STATUS_FILTERS,
@@ -99,18 +100,16 @@ describe('状态筛选', () => {
   const batches = [
     entry({ batch_id: 'p', status: 'pending_selection' }),
     entry({ batch_id: 's', status: 'submitted' }),
-    entry({ batch_id: 'a', status: 'archived' }),
   ]
 
-  it('四个 chip 就是客户给的四个，顺序也一样', () => {
-    expect(STATUS_FILTERS.map((c) => c.label)).toEqual(['全部', '待选稿', '已提交', '已归档'])
+  it('三个 chip 就是客户给的三个，顺序也一样', () => {
+    expect(STATUS_FILTERS.map((c) => c.label)).toEqual(['全部', '待选稿', '已提交'])
   })
 
   it('每个状态各筛出自己那条', () => {
     for (const [status, id] of [
       ['pending_selection', 'p'],
       ['submitted', 's'],
-      ['archived', 'a'],
     ] as const) {
       const hit = filterBatches(batches, { query: '', status })
       expect(hit.map((b) => b.batch_id)).toEqual([id])
@@ -118,7 +117,16 @@ describe('状态筛选', () => {
   })
 
   it('全部不筛', () => {
-    expect(filterBatches(batches, { query: '', status: 'all' })).toHaveLength(3)
+    expect(filterBatches(batches, { query: '', status: 'all' })).toHaveLength(2)
+  })
+
+  it('缓存下来的 archived 按已提交处理，两处都算得上', () => {
+    // 「已归档」删掉了，但浏览器可能还持有改动之前的响应。不归一的话它两个 chip 都进不去、
+    // 只在「全部」里露一面，chip 计数和「全部」于是对不上，看起来像筛选坏了。
+    const stale = [entry({ batch_id: 'old', status: 'archived' as never })]
+    expect(normalizeStatus('archived')).toBe('submitted')
+    expect(filterBatches(stale, { query: '', status: 'submitted' })).toHaveLength(1)
+    expect(countByStatus(stale)).toEqual({ all: 1, pending_selection: 0, submitted: 1 })
   })
 
   it('搜索与状态是「与」的关系', () => {
@@ -163,7 +171,6 @@ describe('状态筛选', () => {
       all: 2,
       pending_selection: 1,
       submitted: 1,
-      archived: 0,
     })
   })
 })

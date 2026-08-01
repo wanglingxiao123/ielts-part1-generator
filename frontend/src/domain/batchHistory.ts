@@ -13,8 +13,8 @@
  *
  * ## 状态的中文名在这里，不在后端
  *
- * 后端返回 `pending_selection | submitted | archived` 三个机器 token（web/batch_history.py），
- * 文案在这一层。这样客户改一个词不用动后端，也不用让后端持有中文文案。
+ * 后端返回 `pending_selection | submitted` 两个机器 token（web/batch_history.py），文案在这一层。
+ * 这样客户改一个词不用动后端，也不用让后端持有中文文案。
  */
 import type {
   BatchHistoryEntry,
@@ -28,30 +28,38 @@ import { CUSTOM_SCENARIO_KEY } from '@/config/scenarioTypes'
 /** 筛选 chip 的取值。`all` 不是一个后端状态，只是「不筛」。 */
 export type StatusFilter = 'all' | BatchHistoryStatus
 
-/** chip 的顺序与文案，客户给的：全部 / 待选稿 / 已提交 / 已归档。 */
+/** chip 的顺序与文案，客户给的：全部 / 待选稿 / 已提交。 */
 export const STATUS_FILTERS: ReadonlyArray<{ value: StatusFilter; label: string }> = [
   { value: 'all', label: '全部' },
   { value: 'pending_selection', label: '待选稿' },
   { value: 'submitted', label: '已提交' },
-  { value: 'archived', label: '已归档' },
 ]
 
 export const STATUS_LABEL: Record<BatchHistoryStatus, string> = {
   pending_selection: '待选稿',
   submitted: '已提交',
-  archived: '已归档',
 }
 
 /**
- * 徽章配色，客户指定：待选稿=绿色 / 已提交=蓝色 / 已归档=灰色。
+ * 徽章配色，客户指定：待选稿=绿色 / 已提交=蓝色。
  *
  * 返回 CSS 类名后缀而不是颜色值，颜色留在 styles.css 里跟其它徽章一起——在这里写 `#16a34a`
  * 会让主题色出现第二个来源。
  */
-export const STATUS_TONE: Record<BatchHistoryStatus, 'good' | 'info' | 'muted'> = {
+export const STATUS_TONE: Record<BatchHistoryStatus, 'good' | 'info'> = {
   pending_selection: 'good',
   submitted: 'info',
-  archived: 'muted',
+}
+
+/**
+ * 把响应里的状态收敛到当前的两个取值。
+ *
+ * `archived` 是删掉的第三个状态。后端不再产出它，但浏览器可能还持有改动之前的缓存响应，而一个
+ * 落到映射表外的取值会让徽章渲染成 `undefined`。按客户的要求归到「已提交」——那些批次确实已经
+ * 不能再选稿了，只读的结论一致，只是理由不同（`read_only` 仍由后端单独给出）。
+ */
+export function normalizeStatus(status: string): BatchHistoryStatus {
+  return status === 'pending_selection' ? 'pending_selection' : 'submitted'
 }
 
 /* ── 搜索 ────────────────────────────────────────────────────────────────── */
@@ -86,7 +94,9 @@ export function filterBatches(
 ): BatchHistoryEntry[] {
   const needle = query.trim().toLowerCase()
   return batches.filter((batch) => {
-    if (status !== 'all' && batch.status !== status) return false
+    // normalizeStatus 而不是直接比：筛「已提交」时一条缓存下来的 `archived` 也该出现在结果里，
+    // 因为徽章上写的就是「已提交」。不归一的话它两个 chip 都进不去，只在「全部」里露一面。
+    if (status !== 'all' && normalizeStatus(batch.status) !== status) return false
     if (needle.length === 0) return true
     return haystack(batch).includes(needle)
   })
@@ -100,9 +110,10 @@ export function countByStatus(
     all: batches.length,
     pending_selection: 0,
     submitted: 0,
-    archived: 0,
   }
-  for (const batch of batches) out[batch.status] += 1
+  // 经过 normalizeStatus：一条缓存下来的 `archived` 否则会写进一个映射表里没有的键，chip 计数
+  // 于是少一个，而「全部」仍然把它算进去——两个数字对不上，看起来像筛选坏了。
+  for (const batch of batches) out[normalizeStatus(batch.status)] += 1
   return out
 }
 

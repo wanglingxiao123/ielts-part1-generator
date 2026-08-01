@@ -58,7 +58,8 @@ interface ReviewQueueState {
   items: QueuedMaterial[]
   /** 重复提交同一套不会产生第二条：以 materialId 去重。 */
   submit: (items: QueuedMaterial[]) => void
-  remove: (materialId: string) => void
+  /** 整批撤回。撤回是批次级的动作——见 ReviewQueuePage 里为什么不再逐条撤。 */
+  removeBatch: (batchId: string) => void
   clear: () => void
 }
 
@@ -74,9 +75,9 @@ export const useReviewQueue = create<ReviewQueueState>((set) => ({
       return { items }
     }),
 
-  remove: (materialId) =>
+  removeBatch: (batchId) =>
     set((s) => {
-      const items = s.items.filter((i) => i.materialId !== materialId)
+      const items = s.items.filter((i) => i.batchId !== batchId)
       save(items)
       return { items }
     }),

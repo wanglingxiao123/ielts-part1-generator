@@ -39,17 +39,12 @@ Losing a history write is survivable and losing a batch is not, so every failure
 swallowed after being logged once. A batch that generated six materials must not fail because S3
 refused a few hundred bytes of metadata.
 
-## The three statuses, and which one had to be added
+## The two statuses, and which one had to be added
 
-The client asked for 待选稿 / 已提交 / 已归档. Checked against what the backend can actually
-substantiate:
+The client settled on 待选稿 / 已提交. Checked against what the backend can actually substantiate:
 
-* **待选稿** -- derived, from two facts that already exist: no submission is recorded against the
-  batch, AND its candidates are still resolvable. "Still resolvable" is not a guess:
-  `_candidates/` entries are hidden from `list_candidates` after `CANDIDATE_TTL_SECONDS`
-  (`backend/orchestration/candidate_store.py`), so a batch past that age can no longer have a
-  selection made against it through the normal path. While it is inside that window the batch is
-  genuinely awaiting a choice, which is what 待选稿 says.
+* **待选稿** -- derived: no submission is recorded against the batch. This is the default, and it is
+  where a batch stays until a reviewer submits it.
 
 * **已提交** -- **added**, because it did not exist. Material states are
   `pending / approved / rejected / production` and none of them means "a reviewer submitted this
@@ -57,23 +52,27 @@ substantiate:
   (`frontend/src/stores/reviewQueueStore.ts`), so it could not be a status the backend reports.
   Rather than invent a state directory or a material transition, the submission is recorded where
   the batch already lives: `submitted_at` / `submitted_by` / `submitted_material_ids` on the batch
-  record, written by the new `submit_batch` action. That is the smallest addition that makes the
+  record, written by `submit` and cleared by `withdraw`. That is the smallest addition that makes the
   status a recorded fact instead of a browser's private opinion, and it keeps the material state
   machine (`audio_storage/state_store.py`) untouched.
 
-* **已归档** -- derived: no submission was ever recorded and the candidates have expired. Nothing
-  can be selected in that batch any more, so there is no decision left to make and the batch is
-  history. This is deliberately a real boundary rather than an age threshold picked to fill the
-  third chip: it is the same expiry that makes the batch read-only in the first place.
+A submitted batch stays 已提交 however old it gets, until it is withdrawn. The recorded fact is
+"someone submitted this", and age does not unmake it -- only a withdrawal does.
 
-A submitted batch stays 已提交 however old it gets. The recorded fact is "someone submitted this",
-and age does not unmake it.
+There was a third status, 已归档, derived from "never submitted AND the candidates expired". It was
+dropped on the client's instruction. What made that safe was extending the candidate TTL from 24
+hours to 30 days (`backend/orchestration/candidate_store.py`): the boundary 已归档 reported was real
+-- `select` genuinely fails once `list_candidates` stops returning a candidate -- so removing the
+label without moving the boundary would have produced batches marked 待选稿 that refuse every
+selection. Reviews span days, and a one-day TTL was cutting them off mid-flight.
 
-## Read-only follows from the status, it is not a second rule
+## Read-only is a separate question from the status
 
-已提交 means the choice was made; 已归档 means the choice can no longer be made. Both are read-only
-for exactly the reason their name gives, so `derive` returns `read_only` alongside the status rather
-than leaving the frontend to re-derive a rule it could get subtly wrong.
+`read_only` is not derived from the status, and the distinction is load-bearing. A submitted batch is
+read-only because the choice was made. An unsubmitted batch whose candidates have expired is
+read-only because the choice can no longer be made. The second case has no status of its own any
+more, so if `read_only` were `status != PENDING_SELECTION` it would come back mutable -- giving the
+user a live checkbox and a submit button over candidates the backend will refuse.
 """
 
 from __future__ import annotations
@@ -88,7 +87,6 @@ from .batch_store import BatchStore, build_store, describe_store
 __all__ = [
     "PENDING_SELECTION",
     "SUBMITTED",
-    "ARCHIVED",
     "CANDIDATE_TTL_SECONDS",
     "STALE_RUNNING_SECONDS",
     "BatchHistory",
@@ -99,17 +97,22 @@ __all__ = [
 
 LOG = logging.getLogger(__name__)
 
-# The three product statuses. Values are machine tokens; the Chinese labels live in the frontend
+# The two product statuses. Values are machine tokens; the Chinese labels live in the frontend
 # (`frontend/src/domain/batchHistory.ts`), because copy is not the backend's to own.
+#
+# There used to be a third, 已归档, derived from "no submission recorded and the candidates expired".
+# It was dropped on the client's instruction, and the TTL change is what makes that honest rather than
+# cosmetic: candidates now live 30 days (`candidate_store.CANDIDATE_TTL_SECONDS`), so a batch inside
+# any realistic review window is genuinely still selectable. Renaming the status without extending the
+# TTL would have produced a batch labelled 待选稿 that refuses every selection.
 PENDING_SELECTION = "pending_selection"  # 待选稿
 SUBMITTED = "submitted"                  # 已提交
-ARCHIVED = "archived"                    # 已归档
 
 # Mirrors `backend/orchestration/candidate_store.CANDIDATE_TTL_SECONDS`. Duplicated rather than
 # imported: `web/` is deployed as its own image and does not ship `backend/` (see web/Dockerfile),
 # so importing it would be an ImportError in the container. `test_batch_history.py` asserts the two
 # constants agree, which is what keeps the duplicate honest.
-CANDIDATE_TTL_SECONDS = 24 * 3600
+CANDIDATE_TTL_SECONDS = 30 * 24 * 3600
 
 # After this long, a record still claiming `state: "running"` is a batch whose web task died --
 # nothing else can leave one in that state. Deliberately far above any real batch: the per-material
@@ -180,12 +183,11 @@ def derive(record: Dict[str, Any], *, now: Optional[float] = None) -> Dict[str, 
 
     candidates_expired = (moment - created_at) >= CANDIDATE_TTL_SECONDS
 
-    if submitted_at:
-        status = SUBMITTED
-    elif candidates_expired:
-        status = ARCHIVED
-    else:
-        status = PENDING_SELECTION
+    # Two statuses, and only submission decides between them. Expiry no longer produces a third:
+    # with a 30-day candidate TTL, a batch that has outlived its offers is old enough that a reviewer
+    # is not coming back to it, and showing it as 已提交 (read-only, below) is closer to the truth
+    # than inventing a status for it.
+    status = SUBMITTED if submitted_at else PENDING_SELECTION
 
     materials = _with_seats([m for m in (record.get("materials") or []) if isinstance(m, dict)])
 
@@ -194,9 +196,12 @@ def derive(record: Dict[str, Any], *, now: Optional[float] = None) -> Dict[str, 
         "created_at": created_at,
         "completed_at": record.get("completed_at"),
         "status": status,
-        # 待选稿 is the only status in which a selection can still be made. The other two are
-        # read-only for the reason their name gives -- see the module docstring.
-        "read_only": status != PENDING_SELECTION,
+        # Read-only is NOT the same question as the status, which is why it stayed a separate field.
+        # A submitted batch is read-only because the choice was made; an unsubmitted batch whose
+        # candidates have expired is read-only because the choice can no longer be made -- `select`
+        # would fail on a candidate `list_candidates` no longer returns. Deriving this from the status
+        # alone would give the second case a live checkbox that errors when clicked.
+        "read_only": bool(submitted_at) or candidates_expired,
         # A batch whose web task died mid-stream. Reported rather than smoothed over: the delivered
         # materials are genuinely usable and the missing ones are genuinely never coming.
         "interrupted": state == "running" and (moment - created_at) >= STALE_RUNNING_SECONDS,

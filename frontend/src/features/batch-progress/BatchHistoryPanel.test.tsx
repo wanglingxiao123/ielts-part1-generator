@@ -6,7 +6,8 @@
  * 1. 面板本身 —— 「按日期分组」「输入『酒店』只显示含酒店场景的批次」「状态 chip 点击切换」
  *    「当前选中的批次用蓝色左竖条标记 + 蓝色背景高亮」。
  *
- * 2. **只读**  —— 「历史批次（已提交/已归档）为只读视图——可看材料、可试听，但不能修改选稿」。
+ * 2. **只读**  —— 「已提交的历史批次为只读视图——可看材料、可试听，但不能修改选稿」。候选过期的
+ *    批次同样只读（状态仍是「待选稿」），因为 `select` 在后端已经做不成了。
  *    这一组是重点，因为它是一个**不能发生**的性质：一个只是忘了传 `readOnly` 的实现会渲染出一个
  *    看起来完全正常的页面，然后允许用户改一个历史批次的选稿。所以测的是「点了勾选框之后什么都
  *    没发生」，而不只是「按钮上有 disabled 属性」。
@@ -41,7 +42,7 @@ vi.mock('react-router-dom', async () => {
 })
 
 /** 每个端点被调了几次 / 传了什么，测「提交也记到后端」和「历史批次不去打 getBatch」用。 */
-const calls = { history: 0, detail: [] as string[], submit: [] as Array<[string, string[]]>, getBatch: 0 }
+const calls = { history: 0, detail: [] as string[], submit: [] as Array<[string, string[]]>, withdraw: [] as string[], getBatch: 0 }
 let historyBatches: BatchHistoryEntry[] = []
 let detailFor: (batchId: string) => BatchHistoryDetail
 
@@ -63,6 +64,10 @@ vi.mock('@/api/endpoints', () => ({
     },
     submitBatch: (batchId: string, materialIds: string[]) => {
       calls.submit.push([batchId, materialIds])
+      return Promise.resolve(detailFor(batchId))
+    },
+    withdrawBatch: (batchId: string) => {
+      calls.withdraw.push(batchId)
       return Promise.resolve(detailFor(batchId))
     },
     getBatch: () => {
@@ -149,6 +154,7 @@ beforeEach(() => {
   calls.history = 0
   calls.detail = []
   calls.submit = []
+  calls.withdraw = []
   calls.getBatch = 0
   navigations.length = 0
   historyBatches = []
@@ -229,17 +235,16 @@ describe('历史批次面板', () => {
     historyBatches = [
       historyEntry({ batch_id: 'pending', status: 'pending_selection' }),
       historyEntry({ batch_id: 'submitted', status: 'submitted' }),
-      historyEntry({ batch_id: 'archived', status: 'archived', read_only: true }),
     ]
     renderAt('pending')
-    await waitFor(() => expect(rowIds()).toHaveLength(3))
+    await waitFor(() => expect(rowIds()).toHaveLength(2))
 
-    await userEvent.click(chip('已归档'))
-    await waitFor(() => expect(rowIds()).toEqual(['archived']))
+    await userEvent.click(chip('已提交'))
+    await waitFor(() => expect(rowIds()).toEqual(['submitted']))
 
-    // 再点「全部」回到三条：chip 是切换，不是单向筛。
+    // 再点「全部」回到两条：chip 是切换，不是单向筛。
     await userEvent.click(chip('全部'))
-    await waitFor(() => expect(rowIds()).toHaveLength(3))
+    await waitFor(() => expect(rowIds()).toHaveLength(2))
   })
 
   it('chip 计数跟着搜索走', async () => {
@@ -339,9 +344,16 @@ describe('只读的历史批次', () => {
    * 卡片没有变成选中态。
    */
   it('勾选框被禁用，点它不会改变任何选稿', async () => {
-    historyBatches = [historyEntry({ batch_id: 'old', status: 'archived', read_only: true })]
+    // 候选过期：状态仍是「待选稿」，但只读——这正是 read_only 不能照 status 推的那个情形。
+    historyBatches = [
+      historyEntry({ batch_id: 'old', status: 'pending_selection', read_only: true }),
+    ]
     detailFor = (batchId) =>
-      detail(batchId, { status: 'archived', read_only: true, created_at: nowSeconds() - 40 * HOUR })
+      detail(batchId, {
+        status: 'pending_selection',
+        read_only: true,
+        created_at: nowSeconds() - 40 * 24 * HOUR,
+      })
     renderAt('old')
 
     await waitFor(() => expect(document.querySelectorAll('.mat-card').length).toBe(2))
@@ -374,18 +386,24 @@ describe('只读的历史批次', () => {
 
   it('说出为什么只读，不只是说「只读」', async () => {
     // 一个不说理由的禁用状态会被当成故障。
-    historyBatches = [historyEntry({ batch_id: 'old', status: 'archived', read_only: true })]
-    detailFor = (batchId) => detail(batchId, { status: 'archived', read_only: true })
+    historyBatches = [
+      historyEntry({ batch_id: 'old', status: 'pending_selection', read_only: true }),
+    ]
+    detailFor = (batchId) => detail(batchId, { status: 'pending_selection', read_only: true })
     renderAt('old')
-    await waitFor(() => expect(screen.getByText(/这一批已归档，是只读的/)).toBeInTheDocument())
-    expect(screen.getByText(/24 小时/)).toBeInTheDocument()
+    await waitFor(() =>
+      expect(screen.getByText(/这一批不能再选稿了，是只读的/)).toBeInTheDocument(),
+    )
+    expect(screen.getByText(/30 天/)).toBeInTheDocument()
   })
 
   it('材料照样能读、能试听 —— 阅读全文的入口在', async () => {
     // 客户的原话是「可看材料、可试听，但不能修改选稿」。试听在阅读页（生成音频），所以只读批次
     // 必须保留通往那里的链接。
-    historyBatches = [historyEntry({ batch_id: 'old', status: 'archived', read_only: true })]
-    detailFor = (batchId) => detail(batchId, { status: 'archived', read_only: true })
+    historyBatches = [
+      historyEntry({ batch_id: 'old', status: 'pending_selection', read_only: true }),
+    ]
+    detailFor = (batchId) => detail(batchId, { status: 'pending_selection', read_only: true })
     renderAt('old')
 
     await waitFor(() => expect(document.querySelectorAll('.mat-card').length).toBe(2))
@@ -425,8 +443,10 @@ describe('只读的历史批次', () => {
 describe('历史批次与活批次是两条路径', () => {
   it('历史批次不去打 getBatch，因为那个端点只认识本页会话的批次', async () => {
     // 打了就会 404，页面于是显示红色的「无法加载本批次」——一个完全好的历史批次被说成坏的。
-    historyBatches = [historyEntry({ batch_id: 'old', status: 'archived', read_only: true })]
-    detailFor = (batchId) => detail(batchId, { status: 'archived', read_only: true })
+    historyBatches = [
+      historyEntry({ batch_id: 'old', status: 'pending_selection', read_only: true }),
+    ]
+    detailFor = (batchId) => detail(batchId, { status: 'pending_selection', read_only: true })
     renderAt('old')
 
     await waitFor(() => expect(document.querySelectorAll('.mat-card').length).toBe(2))

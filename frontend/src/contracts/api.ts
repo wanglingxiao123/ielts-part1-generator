@@ -130,18 +130,19 @@ export interface BatchSnapshot {
 /* ── GET /api/batches — batch history (web/batch_history.py) ──────────────── */
 
 /**
- * The three statuses the history panel filters on.
+ * The two statuses the history panel filters on.
  *
  * Not `BatchStatus`. That one is about a run's outcome (queued/running/partial/done/failed) and is
  * per-request; this one is about what a reviewer can still do with a batch, which is a fact about
- * storage. A batch can perfectly well be `done` and `archived` at once, so collapsing them into one
+ * storage. A batch can perfectly well be `done` and `submitted` at once, so collapsing them into one
  * enum would force a choice between two things that are both true.
  *
- * `pending_selection` is derived (the candidates are still resolvable), `archived` is derived (they
- * are not), and `submitted` is RECORDED — it is the transition the backend did not have before this
- * feature. See web/batch_history.py's docstring for why each is what it is.
+ * `pending_selection` is the default and `submitted` is RECORDED — it is the transition the backend
+ * did not have before this feature. There was a third, `archived`, derived from expired candidates;
+ * it was dropped on the client's instruction. `normalizeStatus` in domain/batchHistory.ts still folds
+ * it into `submitted`, because a browser can hold a cached response from before the change.
  */
-export type BatchHistoryStatus = 'pending_selection' | 'submitted' | 'archived'
+export type BatchHistoryStatus = 'pending_selection' | 'submitted'
 
 export interface BatchHistoryMaterialSummary {
   material_id: string
@@ -160,8 +161,10 @@ export interface BatchHistoryEntry {
   status: BatchHistoryStatus
   /**
    * Whether a selection can still be made in this batch. Comes from the BACKEND rather than being
-   * re-derived here: 已提交 and 已归档 are read-only for different reasons, and a frontend that
-   * reimplemented the rule could get one of them subtly wrong and offer a control that cannot work.
+   * re-derived from `status`, and that is deliberate: a submitted batch is read-only because the
+   * choice was made, while an unsubmitted batch whose candidates expired is read-only because the
+   * choice can no longer be made. The second case has no status of its own, so `status ===
+   * 'submitted'` would render it mutable and hand the user a control the backend will refuse.
    */
   read_only: boolean
   /** The web task died mid-batch. The materials listed did arrive; the missing ones never will. */

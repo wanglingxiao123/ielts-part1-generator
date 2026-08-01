@@ -37,8 +37,8 @@
  *    （`web/batch_history.py`），`/api/batch-history` 读回来。在这之前批次只活在
  *    `api/agentcore.ts` 的一个 `Map` 里，刷新即失——所以「历史」过去不是没做，是没有数据。
  *
- *    **历史批次是只读的。** 客户的话：「已提交/已归档为只读视图——可看材料、可试听，但不能
- *    修改选稿」。只读与否由**后端**给（`read_only`），不在这里重新推导：已提交和已归档只读的
+ *    **历史批次是只读的。** 客户的话：「已提交为只读视图——可看材料、可试听，但不能修改选稿」。
+ *    只读与否由**后端**给（`read_only`），不在这里重新推导：已提交与候选过期两种只读的
  *    理由不同，前端再算一遍就多一个会算错的地方。落地成三件事：勾选框禁用、底栏换成一句说明、
  *    「提交审核」不出现。可读、可比、可试听（阅读页的「生成音频」）全都留着——试听走
  *    `preview_audio`，它按 id 直接读候选（`load` 不套 TTL，只有 `list_candidates` 套），
@@ -213,7 +213,7 @@ interface CardProps {
   /** 'a' | 'b' | null —— 对比模式下这张卡是 A 还是 B。 */
   pickSide: 'a' | 'b' | null
   /**
-   * 历史批次（已提交 / 已归档）的只读视图。
+   * 历史批次的只读视图（已提交，或候选已过保留期）。
    *
    * 只关掉**选稿**：勾选框 `disabled`。阅读全文、时间轴、对比点选一个都不动，因为客户的原话是
    * 「可看材料、可试听，但不能修改选稿」。用 `disabled` 而不是不渲染那个按钮：按钮消失会让人以为
@@ -466,7 +466,7 @@ export function BatchProgressPage() {
    * `/api/batch-history/{id}` 取。这个判据是两条数据路径的唯一分岔点。
    */
   const isLiveBatch = Boolean(batchId) && store.batchId === batchId
-  const historical = useHistoricalBatch(batchId, !isLiveBatch)
+  const historical = useHistoricalBatch(batchId, !isLiveBatch, historyToken)
 
   // Refresh / revisit: reattach to the in-flight batch (prd R3).
   //
@@ -507,6 +507,28 @@ export function BatchProgressPage() {
       setHistoryToken((n) => n + 1)
     }
   }, [store.status])
+
+  /**
+   * 回到这个页签时重取历史批次。
+   *
+   * 撤回发生在审核队列页：那里改的是后端的 `submitted_*`，也就是这一页的 `read_only`。而
+   * `useHistoricalBatch` 原来只依赖 `batchId`，切回来时 effect 不会再跑，用户看到的还是一个锁着
+   * 的批次——checkbox 点不动、底栏写着「已提交审核，不能修改选稿」——只有手动刷新才恢复。
+   *
+   * 用 visibilitychange 而不是在撤回处跨页面推状态：两个页面之间没有共享的批次状态，而一个为此新增
+   * 的全局 store 会是第二份 `read_only`，和后端那份迟早不一致。
+   */
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') setHistoryToken((n) => n + 1)
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('focus', onVisible)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('focus', onVisible)
+    }
+  }, [])
 
   /**
    * 计时只在批次还在跑的时候走。
@@ -830,13 +852,13 @@ export function BatchProgressPage() {
           <strong>
             {historical.batch.status === 'submitted'
               ? '这一批已经提交过审核'
-              : '这一批已归档'}
+              : '这一批不能再选稿了'}
             ，是只读的
           </strong>
           <div>
             {historical.batch.status === 'submitted'
-              ? '选稿已经做过，所以不能再改。'
-              : '可选稿的时限已过（候选材料只保留 24 小时），所以不能再改选稿。'}
+              ? '选稿已经做过。想重新选，到「审核队列」把这一批撤回。'
+              : '候选材料的保留期已过（30 天），所以不能再改选稿。'}
             材料照常可以阅读、并排对比；到阅读页还可以生成音频试听。
           </div>
         </div>
@@ -1119,7 +1141,7 @@ export function BatchProgressPage() {
           <div className="bar-left">
             <span aria-hidden="true">🔒</span>
             <span>
-              {historical.batch.status === 'submitted' ? '已提交审核' : '已归档'}
+              {historical.batch.status === 'submitted' ? '已提交审核' : '候选已过期'}
               ，不能修改选稿
             </span>
             {historical.batch.submittedMaterialIds.length > 0 && (

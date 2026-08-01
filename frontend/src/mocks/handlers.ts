@@ -190,7 +190,7 @@ function savePlan(plan: ConstructorParameters<typeof MockBatch>[0]) {
  * 历史批次记录。**localStorage**，不是 sessionStorage——这一点是刻意的。
  *
  * 别的 mock 状态（batch plan、audio job）用 sessionStorage 就够了，因为它们对应的真后端状态只需
- * 要撑过一次刷新。批次记录不是：它在真后端是 S3 里的对象，会活过整个部署、活到「已归档」。用
+ * 要撑过一次刷新。批次记录不是：它在真后端是 S3 里的对象，会活过整个部署、活到候选过期之后。用
  * sessionStorage 会让面板在关掉标签页之后空掉，那是假后端的失忆看起来像功能没实现——而这个功能
  * 存在的全部理由就是「刷新之后还在」。
  *
@@ -223,20 +223,18 @@ function saveHistory(items: BatchHistoryEntry[]) {
 }
 
 /** 后端 `derive` 的状态推导，逐条照搬。 */
-const MOCK_CANDIDATE_TTL_SECONDS = 24 * 3600
+const MOCK_CANDIDATE_TTL_SECONDS = 30 * 24 * 3600
 const MOCK_STALE_RUNNING_SECONDS = 2 * 3600
 
 function deriveHistory(entry: BatchHistoryEntry, nowSeconds: number): BatchHistoryEntry {
   const age = nowSeconds - entry.created_at
-  const status: BatchHistoryEntry['status'] = entry.submitted_at
-    ? 'submitted'
-    : age >= MOCK_CANDIDATE_TTL_SECONDS
-      ? 'archived'
-      : 'pending_selection'
+  // 两个状态，只由「提交过没有」决定。`read_only` 是**另一个**问题，所以单独算：候选过期的批次
+  // 没有自己的状态了，但它同样选不了稿——照 status 推的话会给它一个点得动、后端却会拒的 checkbox。
+  const status: BatchHistoryEntry['status'] = entry.submitted_at ? 'submitted' : 'pending_selection'
   return {
     ...entry,
     status,
-    read_only: status !== 'pending_selection',
+    read_only: Boolean(entry.submitted_at) || age >= MOCK_CANDIDATE_TTL_SECONDS,
     interrupted: entry.state === 'running' && age >= MOCK_STALE_RUNNING_SECONDS,
   }
 }
@@ -317,11 +315,14 @@ function refreshRunningHistory() {
 }
 
 /**
- * 预置两条历史，一条已提交、一条已归档。
+ * 预置两条历史：一条已提交，一条候选已过期。
  *
- * 没有它们，`npm run dev:mock` 里三个状态 chip 有两个永远是空的——而只读视图（客户明确要求的
- * 「已提交/已归档为只读」）就完全没有办法在浏览器里看到。归档那条的 `created_at` 放在候选过期
- * 之外，也就是让 mock 真的走一遍那个边界，而不是直接写死一个 `status: 'archived'`。
+ * 没有它们，`npm run dev:mock` 里「已提交」这个 chip 永远是空的，只读视图也完全没办法在浏览器里
+ * 看到。
+ *
+ * 第二条现在验证的是一个比原来更容易搞错的边界：状态删到只剩两个之后，候选过期的批次**状态仍是
+ * 「待选稿」**，但 `read_only` 是 true。它的 `created_at` 放在候选保留期之外，让 mock 真的走一遍
+ * 推导，而不是写死一个 `read_only`——照 status 推 read_only 的实现会在这条上给出可点的 checkbox。
  */
 const SEEDED_KEY = 'bcielts.v1.mock.batchHistory.seeded'
 
@@ -349,8 +350,8 @@ function seedHistory() {
       submitted: true,
     },
     {
-      batchId: 'web-seed-archived',
-      // 过了候选窗口，所以状态是**推导**出来的 archived，不是写死的。
+      batchId: 'web-seed-expired',
+      // 过了候选保留期：状态仍是「待选稿」，但只读。两者都是**推导**出来的，不是写死的。
       ageSeconds: MOCK_CANDIDATE_TTL_SECONDS + 5 * 3600,
       scenarios: [
         { scenario_key: 'employment-vacancy', count: 1 },
@@ -569,8 +570,8 @@ const mockTransport = async (spec: RequestSpec): Promise<unknown> => {
   if (spec.method === 'GET' && resource === 'batch-history' && !id) {
     seedHistory()
     refreshRunningHistory()
-    // 每次读都重新推导状态，因为状态是时间的函数：一条 23 小时前的批次在一小时后必须自己变成
-    // 已归档，而不需要任何人来写它。后端的 `derive` 也是在读取时算的，理由相同。
+    // 每次读都重新推导，因为 `read_only` 是时间的函数：候选保留期一过，批次必须自己变成只读，
+    // 不需要任何人来写它。后端的 `derive` 也是在读取时算的，理由相同。
     const nowSeconds = Date.now() / 1000
     const response: BatchHistoryResponse = {
       batches: loadHistory().map((b) => deriveHistory(b, nowSeconds)),

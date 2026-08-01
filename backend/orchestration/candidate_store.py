@@ -27,10 +27,16 @@ __all__ = ["CandidateStore", "S3CandidateStore", "InMemoryCandidateStore", "buil
 
 CANDIDATE_PREFIX = "_candidates/"
 CLAIM_PREFIX = "_claims/"
-# Offers are ephemeral. An abandoned batch would otherwise leave candidates visible to
-# list_candidates forever, and a reviewer picking a two-day-old offer would be selecting a
-# material nobody remembers generating.
-CANDIDATE_TTL_SECONDS = 24 * 3600
+# How long an offer stays selectable. Was 24h on the reasoning that "a reviewer picking a two-day-old
+# offer would be selecting a material nobody remembers generating" -- which turned out to be a
+# statement about the *reviewer's* memory, not about the material, and the client's actual workflow
+# spans days. A batch that expired mid-review left a reviewer looking at their own materials with no
+# way to choose one, and nothing in the UI could explain why.
+#
+# 30 days rather than unbounded: expiry is also what stops an abandoned batch's losing siblings from
+# living forever. Measured before changing it -- 330 candidates total 4 MB, ~11 KB each -- so a month
+# of retention costs tens of megabytes, which is not a reason to cut a review short.
+CANDIDATE_TTL_SECONDS = 30 * 24 * 3600
 
 
 def _candidate_key(material_id: str) -> str:
