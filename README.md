@@ -176,25 +176,10 @@ Runtime 立即返回 job id，浏览器通过 `audio_status` 轮询。合成完�
 
 ### 2.5 鉴权与用户池
 
-系统**没有使用 Cognito**。注册、登录和 Session 都由 `web/auth.py` 实现，生产环境的用户池是
-S3 中的一个 JSON 对象：
-
-```text
-s3://ielts-part1-materials-{account}/web/users.json
-```
-
-每个用户记录包含标准化邮箱、密码摘要、管理员标记和创建时间。密码不以明文保存，而是使用
-PBKDF2-HMAC-SHA256、随机盐和 200,000 次迭代生成摘要。第一个注册的账号自动成为管理员；后续
-注册是否允许由 `ALLOWED_EMAIL_DOMAINS` 控制。域名限制只作用于新注册，不会使已有账号失效。
-
-登录成功后，Web 设置有效期 7 天的 `ielts_session` HttpOnly cookie。Cookie 中保存邮箱和过期
-时间，并使用 SSM `/ielts-part1/session-secret` 中的密钥做 HMAC-SHA256 签名；服务端不保存
-Session 表。每次鉴权除了验证签名和过期时间，还会确认该用户仍存在，因此从用户池删除账号即可
-使其现有 Session 失效。
-
-本地开发未配置 `USER_STORE_S3_BUCKET` 时，用户写入
-`USER_STORE_PATH`（默认 `/tmp/ielts-web-users.json`）。这套自建方案面向小规模内部使用，不提供
-邮箱验证、找回密码、MFA、企业 SSO 或 Cognito 式用户管理后台。
+系统**没有使用 Cognito**。`web/auth.py` 将用户保存在
+`s3://ielts-part1-materials-{account}/web/users.json`，使用 PBKDF2 密码摘要和由 SSM 密钥签名的
+7 天 HttpOnly cookie；`ALLOWED_EMAIL_DOMAINS` 控制新用户注册。本地开发可回退到本地 JSON。
+这套方案面向小规模内部使用，不提供邮箱验证、找回密码、MFA 或企业 SSO。
 
 ## 3. 生成流程（Agent Loop）
 
@@ -231,22 +216,17 @@ Agent，蓝色节点是独立审核 Agent，灰色节点是 Python 程序作出�
 
 整个流程可以按下面的顺序理解：
 
-1. **拆分任务**：用户可以一次申请多套材料。Web 将批次拆开，每套材料分别启动一个独立的
-   AgentCore Runtime 请求；不同材料之间可以并行，但互不共享 Agent 会话。
-2. **生成初稿**：Runtime 创建生成 Agent，并把具体场景交给它。生成 Agent 激活生成 Skill，
-   读取命制规范和 Schema，产出对话稿 `material` 与十个信息点 `blueprint`。
-3. **程序验收初稿**：Agent 返回后，Python 重新运行确定性校验。若发现格式、数量或标注错误，
-   校验报告会交给一个全新的生成 Agent 重写，最多尝试三次。即使三次后仍有错误，系统也保留
-   最后一稿和错误报告，继续进入审核，避免校验器误判导致整套材料消失。
-4. **独立盲审**：Python 只把对话稿和客观统计数据交给审核 Agent，不提供生成者的
-   `blueprint`。审核 Agent 必须独立判断材料质量并重新找出可命题的信息点，Python 再将两份
-   信息点进行交叉检查。
-5. **决定是否修改**：如果程序校验、盲审和交叉检查没有需要处理的问题，直接采用原稿；如果
-   存在缺陷且剩余时间足够，Python 才启动修改流程。
-6. **修改并重新验收**：修改由一个全新的生成 Agent 完成。修改稿先再次通过 Python 校验；
-   校验不通过就放弃修改稿、回退原稿，校验通过才交给另一个全新的审核 Agent 从零复评。
-7. **择优交付**：原稿和修改稿都有各自的审核结果。Python 按固定规则选择质量更高的一版，
-   最终只交付文字材料及其校验、审核信息；音频不属于这条自动生成流程。
+1. **拆分任务**：Web 将批次拆成独立的 Runtime 请求并行执行，每套材料使用独立 Agent 会话。
+2. **生成初稿**：生成 Agent 激活 Skill，读取规范和 Schema，产出对话稿 `material` 与信息点
+   `blueprint`。
+3. **程序校验**：Python 检查格式、数量和标注；失败时携带报告重新生成，最多三次。次数用完后
+   保留最后一稿和校验报告，继续审核。
+4. **独立盲审**：审核 Agent 只接收对话稿和客观指标，独立评价并重建信息点。Python 再将结果
+   与 `blueprint` 交叉检查。
+5. **决定修改**：结果干净则采用原稿；存在缺陷且时间充足则进入修改。
+6. **修改复评**：全新的生成 Agent 修改原稿。修改稿通过 Python 校验后，再由全新的审核 Agent
+   从零复评；校验失败则回退原稿。
+7. **择优交付**：Python 比较两版审核结果并选择较优版本，只交付文字材料及质量信息。
 
 因此，这套系统不是让一个 AI 从头到尾自行决定下一步，而是
 “**Agent 执行需要理解语言的工作，Python 控制流程并验收结果**”：
@@ -289,14 +269,6 @@ category: booking
 title: 酒店预订
 客户联系酒店前台咨询并预订房间……
 ```
-
-“这是听力生成任务”目前由三处共同确定：
-
-1. 生成 Agent 的 system prompt 将其定义为 listening-material generation specialist；
-2. `agent_steps.generate()` 的请求明确写 `Generate one listening material`；
-3. `skills/generate/` 当前只有 Listening Part 1 生成 Skill。
-
-因此当前没有 Listening、Reading、Writing 之间的动态学科路由。
 
 ### 3.2 创建本轮所需的 Agent
 
@@ -347,9 +319,7 @@ Agent 先看到池内 Skill 的 name + description
   → 返回 Skill 规定的 JSON
 ```
 
-这些动作由模型通过工具调用完成，不是 Python 逐项强制的状态机。当前代码会检查最终 JSON 外壳，
-但不会 fail-closed 地证明模型确实激活过 Skill 或执行过内部 validator；因此 Agent 内部校验只用于
-提高一次调用的自我修正能力，不能作为可信门禁。真正强制执行的是返回后的 Python 外部校验。
+这些动作由模型通过工具调用完成，不是 Python 逐项强制的状态机。
 
 当前两个 Skill 的内容是：
 
@@ -492,20 +462,8 @@ skills/
     └── audit-reading-passage1/          # 示例，当前不存在
 ```
 
-但“能发现 Skill”不等于新学科已经端到端可用。当前这些地方仍是 Listening Part 1 专用的：
-
-- 请求和场景模型，以及 `Generate one listening material` 任务消息；
-- `GenOutput` 与 Loop 固定使用 `material + blueprint`；
-- `backend/paths.py` 按固定文件名在整个池中唯一解析 `validate_part1.py` 和
-  `audit_metrics.py`；加入第二份同名脚本会产生歧义，不同文件名又不会自动进入外层 Loop；
-- 锚点修复、交叉检查、审核输入和择优规则；
-- 前端的场景选择、材料展示和审阅交互。
-
-扩展 Reading/Writing 时还需要增加明确的 capability/task 路由、对应输入与产物契约、确定性脚本、
-适合该学科的 Loop 策略和前端页面。不要只把新 Skill 放进池里就让模型自由猜任务；Python 应先
-根据用户请求确定能力，再让 Agent 在最小必要 Skill 池中工作。
-
-最终交付仍是候选文字材料及其校验、审核信息。音频属于用户后续主动操作。
+Skill 自动发现不等于新学科已经端到端可用。扩展 Reading/Writing 仍需增加任务路由、产物契约、
+确定性脚本、Loop 策略和前端交互。
 
 ## 4. 部署前准备
 
@@ -545,6 +503,9 @@ export AWS_REGION=us-east-1
 > AgentCore 的创建/查询动作中有一部分使用 `"Resource": "*"`；建议通过专用部署 role、
 > permissions boundary 或组织 SCP 进一步限制账号和区域。若组织要求 KMS、强制标签或私有
 > 网络，还需由云平台管理员补充相应条件。
+
+<details>
+<summary>展开部署者 IAM policy JSON</summary>
 
 ```json
 {
@@ -763,6 +724,8 @@ export AWS_REGION=us-east-1
 }
 ```
 
+</details>
+
 `iam:PassRole` 风险较高：它允许 AWS 服务以指定角色运行。不要把它改成不受限的
 `"Resource": "*"`，也不要移除 `iam:PassedToService` 条件。
 
@@ -972,8 +935,7 @@ origin-facing 托管前缀列表和自定义 header 校验；现有脚本未实�
 | `IELTS_MAX_REFILL_ROUNDS` | `2` | 批次缺项后的补生成轮数 |
 | `IELTS_SCRIPT_TIMEOUT` | `60` | 确定性脚本超时 |
 
-前端运行时配置位于 `frontend/public/config.json`。告警阈值目前带
-`CALIBRATED: false`，表示它们是启发式参考值，尚未通过足量真实材料校准。
+前端运行时配置位于 `frontend/public/config.json`。
 
 ## 7. S3 数据结构
 
@@ -1086,9 +1048,10 @@ bash backend/scripts/check_ping.sh
 - ECS 服务默认单任务、单任务子网，无自动伸缩、蓝绿部署或应用级多可用区冗余；
 - 用户池是单个 S3 JSON 对象，更新采用整文件读写；进程锁只能保护单实例。扩展到多个 Web task
   前应迁移到支持条件写或事务的用户存储，避免并发注册相互覆盖；
-- 生成 Agent 的 `shell` 与两个 Agent 的 `file_read` 是 Strands 本地工具，不受
-  `ReadOnlySkillSandbox` 完整约束；盲审安全依赖 Skill 分池、审核侧无 shell、blueprint 不进入
-  请求、生成临时目录清理和 Code Interpreter 白名单上传等多道防线；
+- Agent 工具的访问边界并非完全由 `ReadOnlySkillSandbox` 强制，盲审仍依赖 Skill 分池、输入隔离
+  和临时文件清理；
+- Agent 内部的 Skill 激活和 validator 执行依赖提示词，代码不做 fail-closed 证明；最终以 Python
+  外部校验结果为准；
 - 当前只实现 Listening Part 1；Skill 池可以发现新目录，但 Reading/Writing 的请求路由、产物契约、
   Loop 和前端尚未实现；
 - `stop.sh` 不删除 ALB，因此不能把常驻成本降为零；
