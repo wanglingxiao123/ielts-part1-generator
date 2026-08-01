@@ -47,8 +47,11 @@
 │   ├── pyproject.toml                # Python 依赖与 pytest 配置
 │   ├── app.py                        # Runtime action 入口
 │   ├── request.py                    # 生成请求解析
+│   ├── agents.py                     # 两类 Strands Agent、Skill 池和工具权限
+│   ├── sandboxed_metrics.py          # 在 AgentCore Code Interpreter 中计算审核指标
 │   ├── model/provider.py             # Bedrock Mantle 模型适配
-│   ├── steps/                        # generate、audit、revise 三类 AI 调用
+│   ├── steps/
+│   │   └── agent_steps.py            # generate、audit、revise 的输入输出边界
 │   ├── deterministic/                # 校验、指标、锚点与交叉检查包装
 │   ├── orchestration/
 │   │   ├── loop.py                   # 单套材料 Agent Loop
@@ -107,6 +110,7 @@ flowchart LR
     ALB["ALB<br/>HTTP"]
     WEB["ECS Fargate<br/>FastAPI Web"]
     RT["AgentCore Runtime<br/>生成与审核 Loop"]
+    CI["AgentCore Code Interpreter<br/>隔离计算审核指标"]
     MODEL["Bedrock Mantle<br/>GPT-5.6"]
     S3["S3<br/>材料、批次、用户、音频"]
     SSM["SSM<br/>Session Secret"]
@@ -117,6 +121,7 @@ flowchart LR
     WEB <--> S3
     SSM -. "任务启动时注入" .-> WEB
     RT --> MODEL
+    RT --> CI
     RT <--> S3
     RT -. "用户试听/选稿后" .-> POLLY
 ```
@@ -128,7 +133,8 @@ flowchart LR
 | 浏览器 | 选择场景、显示逐套生成进度、审阅材料、发起试听或选稿 |
 | CloudFront + ALB | 提供稳定 HTTPS 地址，将动态请求转发到 Web 服务 |
 | Web / ECS | 登录与 session、批次历史、调用 Runtime、把多条结果流合并成 SSE |
-| AgentCore Runtime | 执行生成、校验、盲审、修改和按需音频 action；`PUBLIC` 网络模式用于访问 AWS 公网服务 |
+| AgentCore Runtime | 创建 Strands Agent，执行生成、校验、盲审、修改和按需音频 action；`PUBLIC` 网络模式用于访问 AWS 公网服务 |
+| AgentCore Code Interpreter | 在空白远程环境中运行审核指标脚本；只接收脚本和当前 `material` |
 | Bedrock Mantle | 承载生成、审核和修改所需的 GPT-5.6 调用 |
 | S3 | 保存候选材料、批次、用户数据、审核状态和按需生成的音频 |
 | SSM | 保存 Web session 签名密钥，避免容器重启后用户集体掉线 |
@@ -194,15 +200,18 @@ Session 表。每次鉴权除了验证签名和过期时间，还会确认该用
 
 ```mermaid
 flowchart LR
-    S(["开始"]) --> G["AI 生成"]
-    G --> V{"程序校验"}
+    Q["生成请求"] --> F["Web 并发拆分<br/>每套一个 Runtime"]
+    F --> G["生成 Agent<br/>选 Skill 并生成"]
+    G --> V{"Python 校验"}
     V -- "错误，最多 3 次" --> G
-    V -- "通过或次数用完" --> A["AI 盲审"]
-    A --> X{"需要修改？"}
+    V -- "通过或次数用完" --> A["独立审核 Agent<br/>盲审原稿"]
+    A --> X{"Python 判断<br/>是否修改"}
     X -- "否" --> O["采用原稿"]
-    X -- "是" --> R["AI 修改"]
-    R --> C["程序校验 + AI 复评"]
-    C --> B["原稿/修改稿择优"]
+    X -- "是" --> R["全新生成 Agent<br/>修改原稿"]
+    R --> C{"Python 校验<br/>修改稿通过？"}
+    C -- "否" --> O
+    C -- "是" --> E["全新审核 Agent<br/>复评修改稿"]
+    E --> B["Python<br/>原稿/修改稿择优"]
     O --> D["交付文字材料"]
     B --> D
 
@@ -211,46 +220,185 @@ flowchart LR
     classDef code fill:#f3f4f6,stroke:#6b7280,color:#111827;
     classDef done fill:#dcfce7,stroke:#16a34a,color:#14532d;
     class G,R ai;
-    class A,C audit;
-    class V,X,B code;
+    class A,E audit;
+    class Q,F,V,X,C,B code;
     class O,D done;
 ```
 
-**Python 控制调用顺序、重试和最终选稿；AI 只负责生成、语义审核和修改。** 这不是让模型自己
-决定何时调用工具的自治 Agent。
+当前实现是“**Agent 被赋予自主执行 Skill 的工具，Python 确定性编排并验收外层流程**”：
 
-### 3.1 两个 Skill
+- Agent 负责激活 Skill、读取 Skill 资源、调用自己的工具并根据脚本报告修稿；
+- Python 决定最多尝试几次、外部校验是否通过、审核能看到什么、是否进入修改、最终采用哪一版。
 
-Skill 是“给 AI 的任务规范 + 配套的程序脚本”，不是独立运行的 Agent。
+Agent 不能凭自己运行过 validator 就宣布通过。Python 会在 Agent 返回后重新校验真实产物。
+
+### 3.1 从浏览器到生成 Agent
+
+一次请求的实际调用链如下：
+
+```text
+浏览器 POST /api/invocations（action=generate）
+  → web/app.py
+  → web/fanout.py：按数量拆成一套一个 ChildPlan
+  → web/runtime_client.py：每套使用新的 runtimeSessionId 调用 AgentCore
+  → backend/app.py::invoke(payload)
+  → backend/request.py::parse_generate_request()
+  → backend/orchestration/batch.py::run_batch()
+  → backend/orchestration/loop.py::run_one()
+  → backend/steps/agent_steps.py::generate()
+  → backend/agents.py::build_generate_agent()
+  → Strands Agent.invoke_async()
+```
+
+Runtime 的 Python 入口是 `backend/app.py` 中的 `@app.entrypoint invoke()`。它读取 payload 的
+`action`：`generate` 进入生成流程，`list_scenarios`、`select`、`preview_audio` 等进入各自
+action。`backend/request.py` 再把场景 id 和数量展开成 `Scenario`。
+
+Python 最终传给生成 Agent 的不是整套命制规范，而是明确的任务和场景，例如：
+
+```text
+Generate one listening material for the scenario below.
+
+id: booking-hotel
+category: booking
+title: 酒店预订
+客户联系酒店前台咨询并预订房间……
+```
+
+“这是听力生成任务”目前由三处共同确定：
+
+1. 生成 Agent 的 system prompt 将其定义为 listening-material generation specialist；
+2. `agent_steps.generate()` 的请求明确写 `Generate one listening material`；
+3. `skills/generate/` 当前只有 Listening Part 1 生成 Skill。
+
+因此当前没有 Listening、Reading、Writing 之间的动态学科路由。
+
+### 3.2 Agent 在哪里定义
+
+Agent 不是运行时生成的一段新代码。`backend/agents.py` 保存固定定义，Python 每次调用时据此
+创建一个新的 Strands `Agent` 对象：
+
+```python
+Agent(
+    model=provider.build_model(...),
+    system_prompt=...,
+    plugins=[AgentSkills(skills=Skill.from_directory(...))],
+    tools=...,
+    sandbox=ReadOnlySkillSandbox(...),
+)
+```
+
+创建新实例是为了隔离会话：不同材料、生成重试、第一次盲审和修改后复评都不共享对话历史或
+Skill 激活状态。
+
+系统有两类 Agent、两个 Skill 池：
+
+| Agent | Skill 池 | 工具 | 用途 |
+|---|---|---|---|
+| 生成 Agent | `skills/generate/` | `skills`、`file_read`、`shell` | 初稿生成与修改 |
+| 审核 Agent | `skills/audit/` | `skills`、`file_read`；**无 shell** | 原稿盲审与修改稿复评 |
+
+修改没有单独的 Skill。修改步骤创建一个全新的生成 Agent，复用生成 Skill，因为修改稿仍须满足
+同一份 specification、Schema 和 validator。
+
+### 3.3 Agent 如何读取 Skill
+
+`backend/agents.py` 使用 Strands SDK 的原生目录加载：
+
+```python
+skills = Skill.from_directory("skills/generate")
+plugin = AgentSkills(skills=skills)
+```
+
+system prompt 要求模型执行下面的过程：
+
+```text
+Agent 先看到池内 Skill 的 name + description
+  → 根据任务调用 skills("generate-listening-part1")
+  → 获得 SKILL.md 和资源清单
+  → 用 file_read 打开 reference 与 Schema
+  → 生成 Agent 用 shell 运行 Skill 指定的 validator
+  → 返回 Skill 规定的 JSON
+```
+
+这些动作由模型通过工具调用完成，不是 Python 逐项强制的状态机。当前代码会检查最终 JSON 外壳，
+但不会 fail-closed 地证明模型确实激活过 Skill 或执行过内部 validator；因此 Agent 内部校验只用于
+提高一次调用的自我修正能力，不能作为可信门禁。真正强制执行的是返回后的 Python 外部校验。
+
+当前两个 Skill 的内容是：
 
 | | 生成 Skill | 审核 Skill |
 |---|---|---|
-| 入口 | `generate-ielts-listening-part1/SKILL.md` | `audit-ielts-listening-part1/SKILL.md` |
-| 详细规范 | `references/specification.md` | `references/audit-rubric.md` |
-| 程序脚本 | `scripts/validate_part1.py` | `scripts/audit_metrics.py` |
-| AI 工作 | 生成 `material` 和 `blueprint` | 评价自然度、难度和命题可用性 |
+| 目录 | `skills/generate/generate-listening-part1/` | `skills/audit/audit-listening-part1/` |
+| 入口 | `SKILL.md` | `SKILL.md` |
+| 规范 | `references/specification.md` | `references/audit-rubric.md` |
+| Schema | `material.schema.json`、`blueprint.schema.json` | `audit.schema.json` |
+| 脚本 | `validate_part1.py` | `audit_metrics.py` |
+
+生成结果的统一外壳是：
+
+```json
+{
+  "material": {},
+  "blueprint": {}
+}
+```
 
 `material` 是对话稿；`blueprint` 是生成者声明的十个信息点，包括答案、证据句、对话位置和适用
-题型。
+题型。`agent_steps.py` 负责解析这个外壳，并补上模型无法可靠知道的真实模型 id 和 UTC 时间。
 
-### 3.2 确定性校验
+### 3.4 生成与双层确定性校验
 
-生成后，Python 必定运行 `validate_part1.py`。它不调用模型，只检查可以明确计算的规则：
+生成 Agent 被要求在一次调用内部执行完整 Skill 工作流：
+
+1. 读取 specification 和两份 Schema；
+2. 生成 `material` 与 `blueprint`；
+3. 将临时 JSON 写进本次调用独占的 `/tmp/ielts-gen-*` 目录；
+4. 用 `shell` 运行 `validate_part1.py`；
+5. 根据报告修改并重新检查；
+6. 把两个完整产物放进回复，而不是只留在临时文件。
+
+Agent 调用结束后，`GenerationWorkspace` 无论成功失败都会删除整个临时目录。随后 Python 仍然
+执行独立校验：
+
+```text
+repair_anchors()
+  → validate_part1.py
+  → 通过：进入盲审
+  → errors：累积反馈给新的生成 Agent，最多三次
+```
+
+validator 不调用模型，只检查可明确计算的规则：
 
 - **数据格式**：必填字段、Schema、禁止出现的题目/答案/分析字段；
 - **结构数量**：说话人、旁白、十个信息点、字数和轮数；
 - **标注一致性**：答案是否在证据句中、`turn_index` 是否指向该句、信息点顺序是否正确。
 
-`errors` 会触发重新生成，最多三次；`warnings` 只作为建议。三次仍有错误时保留最后一稿并附上
-发现，避免校验器误判导致整个场景少交材料。429、响应截断等基础设施故障有独立重试，不占三次
-内容生成机会。
+`warnings` 不触发重生成，只作为修改建议。三次仍有错误时保留最后一稿、继续审核并附上
+`validation_findings`；校验是报告，不是扣住材料的闸门。429、空响应、错误 JSON 外壳等调用故障
+使用独立的基础设施重试预算，不占三次内容生成机会。
 
-### 3.3 AI 盲审
+### 3.5 盲审与指标沙箱
 
-`audit_metrics.py` 先计算准确的字数、轮数和前后半段分布。审核 AI 得到这些指标和
-`material`，但**看不到 `blueprint`**，必须从对话中独立找出可命题信息点。
+盲审前，Python 通过 AgentCore Code Interpreter 计算字数、轮数和前后半段分布。远程环境从空白
+开始，只上传：
 
-随后 Python 交叉检查两份结果：
+```text
+audit_metrics.py
+material.json
+```
+
+不会上传 `blueprint`。同一个 Code Interpreter session 可在修改后复评时复用，但只替换
+`material.json`，完成后由 `loop.py` 关闭。
+
+审核 Agent 接收的业务输入被 `BlindAuditInput` 固定为两个字段：
+
+```text
+material + metrics
+```
+
+它激活审核 Skill、读取 rubric，并在看不到本材料 `blueprint` 的情况下独立重建信息点。Python
+随后执行纯代码交叉检查：
 
 | 生成者的 `blueprint` | 盲审独立找到 | 结果 |
 |---|---|---|
@@ -258,18 +406,80 @@ Skill 是“给 AI 的任务规范 + 配套的程序脚本”，不是独立运�
 | 房型：double room | 房型：double room | 匹配 |
 | 价格：£85 | 未找到 | 需要检查或修改 |
 
-盲审验证的是：生成者设计的信息点，能否只通过实际对话被另一个评审独立识别。如果把
-`blueprint` 提前交给审核 AI，它可能顺着答案找证据，这项检查便失去独立性。
+隔离依靠多道边界：生成/审核 Skill 分池、审核 Agent 无 shell、请求不包含 blueprint、生成临时
+目录在审核前删除、审核前执行 `assert_no_plan_on_disk()`、远程指标环境只上传两个白名单文件。
 
-### 3.4 修改与交付
+### 3.6 修改、独立复评与择优
 
-- 原稿无问题，直接交付；
-- 有问题且时间预算允许，AI 同步修改 `material` 和 `blueprint`；
-- 修改稿重新经过程序校验和一次无历史上下文的 AI 复评；
-- Python 比较两版审核结果，选择更好的一版；
-- 修改失败、修改稿校验失败或时间不足，回退到已经完成审核的原稿。
+如果原稿审核和交叉检查都干净，Python 直接交付原稿。否则在时间预算允许时：
 
-最终结果是候选文字材料及其校验、审核信息。音频属于用户后续主动操作。
+1. `loop.py` 将审核缺陷和交叉检查结果整理成 must-fix / advisory；
+2. 创建全新的生成 Agent，使用同一生成 Skill 输出完整修改版 `material + blueprint`；
+3. Python 修复/核验锚点并再次运行 validator；
+4. 修改稿不通过则回退到已经审核过的原稿；
+5. 修改稿通过后，创建全新的审核 Agent，从零盲审修改稿；
+6. Python 对原稿和修改稿执行 `pick_better()`，平分时选择修改稿。
+
+第一次盲审和复评是同一种 Agent 配置，但不是同一个实例或会话。复评 Agent 看不到第一次审核结论
+和修改指令，避免只针对已知问题寻找证据。
+
+### 3.7 并发与时间预算
+
+生产环境由 `web/fanout.py` 为每套材料发起一个独立 Runtime invocation，每个请求使用新的
+`runtimeSessionId`。`WEB_FANOUT_CONCURRENCY=6` 表示同时最多运行 6 套，不是每批最多 6 套：
+第一个任务完成后，队列中的下一套立即开始。这个数是可调的流量保护值，不是 AgentCore 硬限制；
+出现 429 时应下调。
+
+单个 Runtime invocation 只处理一套材料，因此 Runtime 内部并发实际为 1；AgentCore 的 15 分钟
+同步限制约束单套材料。时间不足时可以跳过可选修改，但不会中断已经完成审核的原稿。
+
+### 3.8 核心代码索引
+
+| 路径 | 作用 |
+|---|---|
+| `web/fanout.py` | 将批次拆成每套一次 Runtime 调用，限制并发并合并 SSE |
+| `web/runtime_client.py` | SigV4 调用 AgentCore，创建独立 session |
+| `backend/app.py` | AgentCore Python 入口和 action 路由 |
+| `backend/request.py` | 把场景 id、数量和自定义场景解析为 slot |
+| `backend/orchestration/batch.py` | 单次 Runtime 的时间预算、补生成和事件输出 |
+| `backend/orchestration/loop.py` | 单套材料的重试、校验、盲审、修改、复评和择优 |
+| `backend/agents.py` | Strands Agent、Skill 池、工具和只读 Skill sandbox |
+| `backend/steps/agent_steps.py` | 三类模型调用的消息与输入输出边界 |
+| `backend/deterministic/anchors.py` | 可确定修复的 blueprint 锚点同步 |
+| `backend/deterministic/validate.py` | Python 调用生成 Skill validator 的包装 |
+| `backend/deterministic/crosscheck.py` | blueprint 与盲审信息图交叉检查 |
+| `backend/sandboxed_metrics.py` | Code Interpreter session 与白名单文件上传 |
+
+### 3.9 如何扩展到其他 IELTS 能力
+
+**增加采用同类工作流的 Skill**：在对应池中增加一个包含 `SKILL.md` 的目录，并提供它声明的
+references、Schema 和 scripts。`Skill.from_directory()` 会自动发现 Skill，无需在 `agents.py`
+写新的目录名。
+
+```text
+skills/
+├── generate/
+│   ├── generate-listening-part1/
+│   └── generate-reading-passage1/       # 示例，当前不存在
+└── audit/
+    ├── audit-listening-part1/
+    └── audit-reading-passage1/          # 示例，当前不存在
+```
+
+但“能发现 Skill”不等于新学科已经端到端可用。当前这些地方仍是 Listening Part 1 专用的：
+
+- 请求和场景模型，以及 `Generate one listening material` 任务消息；
+- `GenOutput` 与 Loop 固定使用 `material + blueprint`；
+- `backend/paths.py` 按固定文件名在整个池中唯一解析 `validate_part1.py` 和
+  `audit_metrics.py`；加入第二份同名脚本会产生歧义，不同文件名又不会自动进入外层 Loop；
+- 锚点修复、交叉检查、审核输入和择优规则；
+- 前端的场景选择、材料展示和审阅交互。
+
+扩展 Reading/Writing 时还需要增加明确的 capability/task 路由、对应输入与产物契约、确定性脚本、
+适合该学科的 Loop 策略和前端页面。不要只把新 Skill 放进池里就让模型自由猜任务；Python 应先
+根据用户请求确定能力，再让 Agent 在最小必要 Skill 池中工作。
+
+最终交付仍是候选文字材料及其校验、审核信息。音频属于用户后续主动操作。
 
 ## 4. 部署前准备
 
@@ -367,6 +577,7 @@ export AWS_REGION=us-east-1
         "ecr:DescribeRepositories",
         "ecr:DescribeImages",
         "ecr:ListImages",
+        "ecr:PutImageTagMutability",
         "ecr:BatchCheckLayerAvailability",
         "ecr:GetDownloadUrlForLayer",
         "ecr:BatchGetImage",
@@ -566,11 +777,13 @@ aws iam attach-user-policy \
 |---|---|---|
 | `ielts-part1-ecs-exec` | ECS 平台 | 拉取 Web 镜像、写日志、读取 session secret |
 | `ielts-part1-web-task` | Web 应用 | 调用 AgentCore、读写项目 S3 桶 |
-| `ielts-part1-runtime` | AgentCore | 拉取 Runtime 镜像、调用模型和 Polly、读写项目 S3 桶 |
+| `ielts-part1-runtime` | AgentCore | 调用模型、Code Interpreter 和 Polly，读写项目 S3 桶 |
 
 这些策略由 `deploy/provision.sh` 和 `deploy/service.sh` 自动创建，无需手工复制。
 `bedrock-mantle:*` 与 `bedrock:*` 是不同权限前缀；Runtime 调用 GPT-5.6 需要脚本中列出的
-Mantle 权限，不能只授予 `bedrock:InvokeModel`。
+Mantle 权限，不能只授予 `bedrock:InvokeModel`。盲审指标还需要
+`bedrock-agentcore:StartCodeInterpreterSession`、`InvokeCodeInterpreter` 和
+`StopCodeInterpreterSession` 等权限；当前 Runtime 内联策略已经包含。
 
 ## 5. 从零部署
 
@@ -584,19 +797,31 @@ aws sts get-caller-identity
 # 1. 创建 S3、ECR、ECS cluster、日志组和三个运行期角色
 bash deploy/provision.sh
 
-# 2. 构建并推送 AgentCore Runtime 镜像（默认 tag: dev）
+# provision.sh 当前不会设置 tag mutability；显式锁住两个 repository，保证旧标签不会被覆盖
+aws ecr put-image-tag-mutability \
+  --repository-name ielts-part1-backend \
+  --image-tag-mutability IMMUTABLE
+aws ecr put-image-tag-mutability \
+  --repository-name ielts-part1-frontend \
+  --image-tag-mutability IMMUTABLE
+
+# 为本次部署选择一个未使用过的不可变标签
+export RELEASE_TAG=20260801-agent-autonomy
+
+# 2. 构建并推送 AgentCore Runtime 镜像
 bash backend/scripts/deploy.sh \
-  "$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${AWS_REGION}.amazonaws.com/ielts-part1-backend"
+  "$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${AWS_REGION}.amazonaws.com/ielts-part1-backend" \
+  "$RELEASE_TAG"
 
 # 3. 创建 AgentCore Runtime
-bash deploy/runtime.sh
+bash deploy/runtime.sh "$RELEASE_TAG"
 
 # 4. 创建 ALB、CloudFront、目标组和网络规则
 bash deploy/edge.sh
 
 # 5. 构建 Web 镜像并创建 ECS 服务
 # 公网使用前必须限制可注册邮箱域名
-ALLOWED_EMAIL_DOMAINS=example.com bash deploy/service.sh
+ALLOWED_EMAIL_DOMAINS=example.com bash deploy/service.sh "$RELEASE_TAG"
 
 # 6. 将 ECS 服务扩到 1，并打印访问地址
 bash deploy/start.sh
@@ -604,6 +829,11 @@ bash deploy/start.sh
 
 建议先执行 `edge.sh` 再执行 `service.sh`。ECS 不能给已存在且未配置负载均衡器的服务原地增加
 ALB；顺序相反时，`service.sh` 会明确删除并重建服务。
+
+`provision.sh` 当前只创建 repository，不设置 tag mutability，所以上面的两条命令不能省略。
+`deploy.sh`、`runtime.sh` 和 `service.sh` 都要求显式传入 tag。不要复用 `dev` 或覆盖旧标签；
+回退是重新执行 `runtime.sh <known-good-tag>` 和 `service.sh <known-good-tag>`，明确指向已验证
+镜像。
 
 ### 5.1 验证
 
@@ -617,9 +847,16 @@ curl -si https://<CLOUDFRONT_DOMAIN>/healthz | head -1
 
 ### 5.2 日常更新与启停
 
-重新执行对应脚本即可更新镜像和 Runtime；脚本按现有资源执行创建或更新。
+更新时使用新的发布标签重新构建镜像，再明确切换 Runtime 和 Web。旧标签保留用于回退：
 
 ```bash
+export RELEASE_TAG=20260802-fix-1
+bash backend/scripts/deploy.sh \
+  "$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${AWS_REGION}.amazonaws.com/ielts-part1-backend" \
+  "$RELEASE_TAG"
+bash deploy/runtime.sh "$RELEASE_TAG"
+ALLOWED_EMAIL_DOMAINS=example.com bash deploy/service.sh "$RELEASE_TAG"
+
 bash deploy/stop.sh    # ECS desiredCount=0；保留 ALB、CloudFront 和稳定 URL
 bash deploy/start.sh   # ECS desiredCount=1；等待服务稳定
 bash deploy/status.sh
@@ -651,6 +888,7 @@ bash deploy/teardown.sh --yes --purge-s3
 | ECS cluster/service | `ielts-part1` / `ielts-part1-web` |
 | ECS task definition | `ielts-part1-web`，ARM64，0.5 vCPU / 1 GB |
 | AgentCore Runtime | `ielts_part1_runtime` |
+| AgentCore Code Interpreter | 内置 `aws.codeinterpreter.v1`，按材料创建临时 session |
 | CloudWatch log group | `/ecs/ielts-part1-web`，保留 7 天 |
 | SSM SecureString | `/ielts-part1/session-secret` |
 | ALB / target group | `ielts-part1-alb` / `ielts-part1-tg` |
@@ -698,6 +936,8 @@ origin-facing 托管前缀列表和自定义 header 校验；现有脚本未实�
 | `IELTS_MODEL_ID` | `openai.gpt-5.6-terra` | 模型 id |
 | `IELTS_MODEL_REGION` | `AWS_REGION` | 模型区域 |
 | `IELTS_MODEL_AUTH` | `mantle` | `bearer` 仅适合本地临时调试 |
+| `IELTS_CODE_INTERPRETER_REGION` | `AWS_REGION` | 审核指标 Code Interpreter 区域 |
+| `IELTS_CODE_INTERPRETER_ID` | `aws.codeinterpreter.v1` | 内置 Code Interpreter identifier |
 | `IELTS_CONCURRENCY` | `6` | Runtime 内并发槽；Web 单套调用时实际夹到 1 |
 | `IELTS_HARD_LIMIT` | `900` | 平台同步上限 |
 | `IELTS_P95_PER_MATERIAL` | `240` | 预算估算值 |
@@ -734,6 +974,7 @@ s3://ielts-part1-materials-{account}/
 ```
 
 - 自动生成结束后，候选信息写入 `_candidates/` 和批次空间；不会自动出现音频。
+- 未选候选保留 30 天，期间可以跨日审阅和提交；过期后不再允许选稿。
 - 用户试听或选稿后才创建 `audio/`。`manifest.json` 最后写入，是“音频完整”的哨兵；没有
   manifest 的目录不会被当作完整音频交付。
 - `_history/` 保存状态迁移审计记录，不随材料跨状态目录移动。
@@ -787,6 +1028,8 @@ bash backend/scripts/check_ping.sh
 | 材料在结尾一次性出现 | 检查 CloudFront `Compress` 必须为 `false` |
 | 模型返回 429 | 下调 `WEB_FANOUT_CONCURRENCY`，不要盲目增加重试 |
 | `bedrock-mantle:CreateInference` denied | Runtime 角色缺少 Mantle 权限，重新运行 `provision.sh` 或核对内联策略 |
+| Code Interpreter 创建或调用失败 | 核对 Runtime 角色的 Code Interpreter 权限和 `IELTS_CODE_INTERPRETER_REGION` |
+| 生成 Agent 一直等待工具确认 | 确认代码通过 `agents.py` 设置了非交互 shell 环境变量 |
 | `invalid_api_key` / security token invalid | 先运行 `aws sts get-caller-identity` 检查本地凭证是否过期 |
 | 试听后长时间无音频 | 查看 `_candidates/{material_id}.job.json`；首次合成通常需 1 到 2 分钟 |
 | 登录后随机失效 | 核对 ECS task definition 是否从 SSM 注入同一个 `SESSION_SECRET` |
@@ -817,6 +1060,11 @@ bash backend/scripts/check_ping.sh
 - ECS 服务默认单任务、单任务子网，无自动伸缩、蓝绿部署或应用级多可用区冗余；
 - 用户池是单个 S3 JSON 对象，更新采用整文件读写；进程锁只能保护单实例。扩展到多个 Web task
   前应迁移到支持条件写或事务的用户存储，避免并发注册相互覆盖；
+- 生成 Agent 的 `shell` 与两个 Agent 的 `file_read` 是 Strands 本地工具，不受
+  `ReadOnlySkillSandbox` 完整约束；盲审安全依赖 Skill 分池、审核侧无 shell、blueprint 不进入
+  请求、生成临时目录清理和 Code Interpreter 白名单上传等多道防线；
+- 当前只实现 Listening Part 1；Skill 池可以发现新目录，但 Reading/Writing 的请求路由、产物契约、
+  Loop 和前端尚未实现；
 - `stop.sh` 不删除 ALB，因此不能把常驻成本降为零；
 - `teardown.sh` 默认保留 S3，且始终保留 SSM secret 和历史 task definition revision；
 - GPT-5.6 当前部署限制在 `us-east-1` / `us-east-2`。
