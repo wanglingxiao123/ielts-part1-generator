@@ -820,9 +820,11 @@ bash deploy/start.sh
 ALB；顺序相反时，`service.sh` 会明确删除并重建服务。
 
 `provision.sh` 当前只创建 repository，不设置 tag mutability，所以上面的两条命令不能省略。
-`deploy.sh`、`runtime.sh` 和 `service.sh` 都要求显式传入 tag。不要复用 `dev` 或覆盖旧标签；
-回退是重新执行 `runtime.sh <known-good-tag>` 和 `service.sh <known-good-tag>`，明确指向已验证
-镜像。
+`deploy.sh`、`runtime.sh` 和 `service.sh` 都要求显式传入 tag。不要复用 `dev` 或覆盖旧标签。
+
+回退不走这三个脚本，用 `deploy/rollback.sh`（见 §5.3）。`service.sh <known-good-tag>` 不是可用的
+回退路径：它无条件执行 `docker build && docker push`，而两个 ECR repository 都是 IMMUTABLE，推送
+已存在的 tag 必然失败；它还需要可用的 Docker daemon，而客户正在等的时刻不适合发现 Docker 没开。
 
 ### 5.1 验证
 
@@ -854,7 +856,49 @@ bash deploy/status.sh
 `stop.sh` 只停止 Fargate 任务。ALB 仍有固定费用，CloudFront 地址继续存在但在无健康目标时返回
 503。
 
-### 5.3 拆除
+每次部署后在 [`deploy/RELEASES.md`](deploy/RELEASES.md) 补一行。镜像标签本身不携带 git commit，
+不记录就等于没有回退能力。
+
+### 5.3 回退到已验证版本
+
+```bash
+bash deploy/rollback.sh --to prod-20260801 --dry-run   # 先看清当前与目标，什么都不改
+bash deploy/rollback.sh --to prod-20260801
+```
+
+`--to` 后面是 `deploy/RELEASES.md` 里的 git tag；Runtime version 和 taskdef revision 从该 tag 的
+附注中解析，所以台账和实际回退目标不会各说各话。也可以绕过 tag 直接指定
+`--runtime-version 17` / `--taskdef 31`，两者可单独使用，只回退一层。
+
+回退不需要 Docker，也不需要构建：两个产物已经在 AWS 里存在——ECS task definition revision 钉住了
+旧 Web 镜像，AgentCore Runtime version 钉住了旧后端镜像。脚本只是把流量重新指向它们。
+
+**不会改变的东西**（结构上决定，不是靠小心）：
+
+- **CloudFront 与 ALB**：交付 URL 是分发的属性，不属于任何版本，只有 `edge.sh` / `teardown.sh`
+  管理它们，回退脚本不调用这两个；
+- **S3**：不读不写任何对象，材料、批次、用户和音频原样保留；
+- **登录态**：`SESSION_SECRET` 来自 SSM，跨回退稳定，已登录用户不会掉线。
+
+实测（2026-08-05 演练）：Web 层回退约 3 分钟（`update-service` 到 `services-stable`）；Runtime
+层切 `DEFAULT` endpoint 的 liveVersion 通常 1 到 3 分钟。演练记录和耗时见
+`deploy/RELEASES.md`。
+
+回退**不能**解决的一种情况：如果被回退掉的那个版本已经按新结构写过数据（改了 `_candidates/`
+记录或 `material.json` 的形状），回退后旧代码会读到新格式。桶开了版本控制，但版本控制救不了结构
+不兼容。涉及数据结构的改动应换用新的 key 前缀发布。
+
+Runtime 层有两条路径，脚本默认用前者：
+
+| 路径 | 命令 | 特点 |
+|---|---|---|
+| 切 endpoint 版本 | `rollback.sh --runtime-version 17` | 不产生新 version，版本列表保持真实历史 |
+| 重指镜像 | `runtime.sh <known-good-tag>` | 产生新 version；endpoint 切换失败时的后备 |
+
+多个 version 指向同一镜像标签时，它们彼此不可区分，切换等于没切。`rollback.sh` 会在这种情况下
+打印 WARNING 而不是假装成功。
+
+### 5.4 拆除
 
 ```bash
 bash deploy/teardown.sh --yes
