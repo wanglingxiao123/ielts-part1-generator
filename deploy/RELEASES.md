@@ -7,13 +7,17 @@
 
 ## 当前生产版本
 
-**`prod-20260801`** — Runtime version **17** + ECS taskdef **`ielts-part1-web:32`**
+**`prod-20260805`** — Runtime version **17** + ECS taskdef **`ielts-part1-web:32`**
 
 回退命令见 [`rollback.sh`](rollback.sh)：
 
 ```bash
-bash deploy/rollback.sh --to prod-20260801
+bash deploy/rollback.sh --to prod-20260805 --dry-run   # 先看清，什么都不改
+bash deploy/rollback.sh --to prod-20260805
 ```
+
+`prod-20260801`（taskdef :31）是上一个锚点，两者代码相同，只差
+`ALLOWED_EMAIL_DOMAINS`。除非需要临时放开域名限制，回退目标用 `prod-20260805`。
 
 ## 台账
 
@@ -21,7 +25,7 @@ bash deploy/rollback.sh --to prod-20260801
 
 | 日期 | 镜像标签 | git commit | git tag | Runtime ver | taskdef | 说明 |
 |---|---|---|---|---|---|---|
-| 2026-08-05 | `two-states-20260801`（未变） | `380869a` | — | 17（未变） | **32** | 仅收紧 `ALLOWED_EMAIL_DOMAINS`：`*` → `amazon.com,example.com`。同时作为回退演练素材，见下方演练记录 |
+| 2026-08-05 | `two-states-20260801`（未变） | `fa598d9` | `prod-20260805` | 17（未变） | **32** | 仅收紧 `ALLOWED_EMAIL_DOMAINS`：`*` → `amazon.com,example.com`，镜像未重建。同时作为回退演练素材，见下方演练记录 |
 | 2026-08-01 | `two-states-20260801` | `380869a` | `prod-20260801` | 17 | 31 | 状态收到两个、撤回改为整批、候选保留期延到 30 天 |
 | 2026-07-31 | `agent-autonomy` | `a3bf922`（推定） | — | 16 | ~30 | Agent 自主性重写：Python 只做调度，模型步骤改为调预定义 Agent |
 | 2026-07-30 | `known-good-20260730`（backend）/ `dev`（frontend） | — | `backup/main-20260801-pre-agent-autonomy`（远端分支） | 15 | — | agent-autonomy 重写之前的最后一版 |
