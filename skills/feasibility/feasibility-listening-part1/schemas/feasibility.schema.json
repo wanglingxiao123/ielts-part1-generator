@@ -1,0 +1,109 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "feasibility.schema.json",
+  "title": "IELTS Listening Part 1 Question Feasibility Verdict",
+  "description": "Semantic half of the question-feasibility preflight. The deterministic half (blueprint version, validator errors, answer-variety counts) is supplied by validate_part1.py; this document carries only what a model can add. The two are combined by question_feasibility_preflight.py, which is the authoritative consumer of this shape. Not a material audit: no verdict, no score.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "feasible",
+    "reasons",
+    "category_semantics_ok"
+  ],
+  "properties": {
+    "feasible": {
+      "type": "boolean",
+      "description": "Whether ten reliable, uniquely-answerable, gap-fillable Part 1 items can be written from the ten planned points. A false here costs a full material regeneration, so it must be accompanied by specific reasons."
+    },
+    "reasons": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "One entry per problem, each naming the item number and the concrete cause. Required non-empty whenever either boolean is false; may be empty when both are true."
+    },
+    "category_semantics_ok": {
+      "type": "boolean",
+      "description": "Whether every item's answer_category is semantically true of its answer. The validator already checked the values are among the 13 permitted strings; only a reader of both script and plan can check they are correct."
+    },
+    "qr027_exception": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requested"
+      ],
+      "properties": {
+        "requested": {
+          "type": "boolean",
+          "description": "Mandatory whenever this object is present: it is the whole meaning of the object. An exception object without it reads as a request while the consumer reads it as no request."
+        },
+        "justification": {
+          "type": "string",
+          "minLength": 1,
+          "description": "What about the scenario makes the answer-variety concentration unavoidable. Required when requested is true; a requested exception with no justification is how a limit gets bypassed silently."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "requested": {
+                "const": true
+              }
+            },
+            "required": [
+              "requested"
+            ]
+          },
+          "then": {
+            "required": [
+              "justification"
+            ]
+          }
+        }
+      ],
+      "description": "Optional as a whole -- omit the key entirely when not requesting an exception. Written, it must be written correctly. justification is conditionally required rather than unconditionally: {\"requested\": false} is legal, because declining to request an exception leaves nothing to justify."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "feasible": {
+            "const": false
+          }
+        },
+        "required": [
+          "feasible"
+        ]
+      },
+      "then": {
+        "properties": {
+          "reasons": {
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "category_semantics_ok": {
+            "const": false
+          }
+        },
+        "required": [
+          "category_semantics_ok"
+        ]
+      },
+      "then": {
+        "properties": {
+          "reasons": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ]
+}

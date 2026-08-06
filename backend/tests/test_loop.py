@@ -76,6 +76,13 @@ class Harness:
         self.generate_calls = []
         self.audit_calls = []
         self.revise_calls = []
+        self.feasibility_calls = []
+        # What the stubbed feasibility agent replies. A feasible plan by default, because every test
+        # in this file is about something else and a stub that rejected would make forty of them
+        # assert against a REGENERATE_MATERIAL they never asked for. Tests that care set it.
+        self.feasibility_reply = {"feasible": True, "reasons": ["stub"],
+                                 "category_semantics_ok": True}
+        self.feasibility_error = None
         self.validate_results = []
         self.audit_results = []
         self.revise_output = None
@@ -84,6 +91,10 @@ class Harness:
         self.generate_error = None
         self.generate_error_times = 0
         self.stages = []
+        # Stage names paired with their payloads. `stages` alone cannot answer "what did the
+        # feasibility event actually say", and an event that fires with the wrong detail is the
+        # failure mode an operator reading the stream would hit.
+        self.events = []
         self._runner = None
         self.runner_closed = False
 
@@ -112,6 +123,13 @@ class Harness:
     async def audit_blind(self, material, metrics):
         self.audit_calls.append({"material": material, "metrics": metrics})
         return self.audit_results.pop(0)
+
+    async def feasibility_audit(self, material, blueprint, qr027):
+        self.feasibility_calls.append({"material": material, "blueprint": blueprint,
+                                       "qr027": qr027})
+        if self.feasibility_error:
+            raise self.feasibility_error
+        return self.feasibility_reply
 
     async def revise(self, material, blueprint, instruction):
         self.revise_calls.append(instruction)
@@ -147,6 +165,7 @@ class Harness:
 
     async def emit(self, stage, detail=None):
         self.stages.append(stage)
+        self.events.append((stage, detail))
 
 
 @pytest.fixture
@@ -157,6 +176,11 @@ def harness(material, blueprint, monkeypatch):
     monkeypatch.setattr(loop_module, "run_metrics_remote", h.run_metrics)
     monkeypatch.setattr(loop_module.agent_steps, "audit_blind", h.audit_blind)
     monkeypatch.setattr(loop_module.agent_steps, "revise", h.revise)
+    # Patched unconditionally, with no opt-out flag. `run_one` judges feasibility for every delivered
+    # material, so a test that forgot to enable it would reach a real model -- and there is no
+    # `check_feasibility=False` parameter to skip the call, deliberately: a switch that turns the
+    # judgment off is a switch that gets left off in production.
+    monkeypatch.setattr(loop_module.agent_steps, "feasibility_audit", h.feasibility_audit)
     # The Loop builds a SandboxedMetrics when the caller supplies none, and that would reach AWS.
     # Every test drives `run_one` directly, so a stub with the two methods the wrapper calls is
     # enough -- and it also asserts the wrapper really does close what it opened.
@@ -170,12 +194,28 @@ async def _noop():
     return None
 
 
+# Copied off a real `validate_part1.py --json` run over the two shared fixtures, not invented: the
+# feasibility verdict is assembled from exactly these keys, so a thin `{"dialogue_words": 618}` would
+# have made every delivered material come back VALIDATION_INCOMPLETE -- a verdict no real run can
+# produce, quietly turning the default path of sixty tests into an artefact of the fixture.
+#
+# The same metrics ride on `bad_validation` because that is what the validator really does (measured:
+# ten errors, and the version and all three counts still present). It is what makes the
+# deliver-with-findings path answer REGENERATE_MATERIAL rather than "could not decide".
+V2_METRICS = {"dialogue_words": 618, "blueprint_schema_version": 2, "qr027_numeric_answers": 1,
+              "qr027_spelled_answers": 9, "qr027_largest_category": 2,
+              "qr027_category_counts": {"person_name": 1, "location": 2, "contact": 1,
+                                        "facility": 2, "preference": 1, "quantity": 1,
+                                        "requirement": 2},
+              "qr027_within_limits": True}
+
+
 def ok_validation(warnings=None):
-    return ValidationResult([], warnings or [], {"dialogue_words": 618})
+    return ValidationResult([], warnings or [], copy.deepcopy(V2_METRICS))
 
 
 def bad_validation(errors):
-    return ValidationResult(errors, [], {})
+    return ValidationResult(errors, [], copy.deepcopy(V2_METRICS))
 
 
 class TestGenerationBudget:
@@ -909,3 +949,393 @@ class TestSlotIsolation:
             batch_module.run_one = original
         assert not result.ok and result.reason == "unhandled_error"
         assert "boom" in result.detail
+
+
+class TestFeasibilityIsJudgedButNeverGates:
+    """AC6: the judgment can fail in any way at all and the material still comes back.
+
+    This is the property the whole `run_one`/`_run_one` split exists for. `audit_failed`,
+    `model_error` and `unhandled_error` are all in `batch.REFILLABLE_FAILURES`, so an `ok=False`
+    here would not merely lose the verdict -- it would discard a finished, audited, validated
+    material AND spend one of the batch's refill rounds regenerating it from scratch. One
+    feasibility timeout would cost a material the user already paid four model calls for.
+    """
+
+    @pytest.mark.asyncio
+    async def test_three_failed_calls_still_deliver_the_material(self, harness):
+        """AC6 in full: retried on the infra budget, exhausted, delivered, honestly labelled."""
+        harness.feasibility_error = ModelCallError("503 from the judge")
+        harness.validate_results = [ok_validation()]
+        harness.audit_results = [audit_doc("PASS", 91)]
+        harness.crosscheck_results = [clean_crosscheck()]
+        result = await run_one(FakeScenario(), "slot-1", harness.emit)
+
+        assert result.ok, "a verdict is never worth a slot"
+        assert result.candidate is not None and result.selected_version == "initial"
+        assert len(harness.feasibility_calls) == 3, "MAX_INFRA_RETRIES, not one attempt"
+        assert result.feasibility["outcome"] == "SEMANTICS_MISSING"
+        # Two retry events and then nothing: `_with_infra_retries` emits on each retry it is about
+        # to make, so the final exhaustion produces no event of its own. That is why the error text
+        # has to travel on `feasibility_checked` -- without it the failure leaves no trace at all.
+        assert harness.stages.count("infra_retry") == 2
+        detail = dict(harness.events)["feasibility_checked"]
+        assert detail["outcome"] == "SEMANTICS_MISSING"
+        assert "503 from the judge" in detail["error"]
+
+    @pytest.mark.asyncio
+    async def test_the_reason_says_the_semantics_are_missing_not_that_the_material_is_unfit(
+        self, harness
+    ):
+        """SEMANTICS_MISSING and never REGENERATE_MATERIAL, and the distinction is expensive.
+
+        Folding "we could not ask" into "the material is unfit" would assert a defect in order to
+        report an outage, and stage 4 acts on REGENERATE_MATERIAL by regenerating.
+        """
+        harness.feasibility_error = ModelCallError("timeout")
+        harness.validate_results = [ok_validation()]
+        harness.audit_results = [audit_doc("PASS", 91)]
+        harness.crosscheck_results = [clean_crosscheck()]
+        result = await run_one(FakeScenario(), "slot-1", harness.emit)
+        assert result.feasibility["outcome"] != "REGENERATE_MATERIAL"
+        assert any("semantics missing" in reason for reason in result.feasibility["reasons"])
+
+    @pytest.mark.asyncio
+    async def test_a_script_error_is_also_survived(self, harness):
+        """`ScriptError` shares the infra budget with `ModelCallError`, so it must behave alike."""
+        from backend.deterministic.runner import ScriptError
+
+        harness.feasibility_error = ScriptError("the preflight script vanished")
+        harness.validate_results = [ok_validation()]
+        harness.audit_results = [audit_doc("PASS", 91)]
+        harness.crosscheck_results = [clean_crosscheck()]
+        result = await run_one(FakeScenario(), "slot-1", harness.emit)
+        assert result.ok and result.feasibility["outcome"] == "SEMANTICS_MISSING"
+
+    @pytest.mark.asyncio
+    async def test_an_unexpected_exception_type_is_survived_too(self, harness):
+        """The `except Exception` in `_attach_feasibility`, and it is not defensive padding.
+
+        `_with_infra_retries` only catches the two infra classes, so a `KeyError` inside the judge's
+        reply handling would propagate straight out of `run_one` -- past the slot, into `_run_slot`'s
+        `unhandled_error`, which is refillable. The broad catch is what keeps a bug in the newest
+        step from being able to delete a finished material.
+        """
+        harness.feasibility_error = KeyError("reply had no such key")
+        harness.validate_results = [ok_validation()]
+        harness.audit_results = [audit_doc("PASS", 91)]
+        harness.crosscheck_results = [clean_crosscheck()]
+        result = await run_one(FakeScenario(), "slot-1", harness.emit)
+        assert result.ok and result.feasibility["outcome"] == "SEMANTICS_MISSING"
+        # Not retried: only the two infra classes are. One attempt, then the honest verdict.
+        assert len(harness.feasibility_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_failed_slot_is_never_judged(self, harness):
+        """Nothing about question feasibility is answerable for a material that does not exist."""
+        harness.generate_error = ModelCallError("503")
+        harness.generate_error_times = 99
+        result = await run_one(FakeScenario(), "slot-1", harness.emit)
+        assert not result.ok and result.candidate is None
+        assert harness.feasibility_calls == []
+        assert "feasibility_checked" not in harness.stages
+        assert "feasibility" not in result.as_dict(), (
+            "the failure payload's shape is pinned by test_wire_contract and must not grow a key"
+        )
+
+
+class TestFeasibilityReachesEverySuccessBranch:
+    """AC7: `_run_one` has eight `ok=True` returns and all eight must carry a verdict.
+
+    Hooked on `run_one` rather than inside `_run_one` precisely so this cannot be partially true --
+    but "cannot" is the claim under test, so each branch is driven to its own return statement by
+    its own `note` and the verdict is asserted there. A branch that stopped being judged would
+    otherwise show up as a `feasibility: {}` nobody looks at.
+    """
+
+    @staticmethod
+    def _assert_judged(result, harness, expected_note):
+        assert result.ok and result.note == expected_note, result.note
+        assert result.feasibility["outcome"] == "PASS", result.feasibility
+        assert result.as_dict()["feasibility"] is result.feasibility
+        # The candidate and the result hold the same dict, not two copies that could diverge.
+        assert result.candidate.feasibility is result.feasibility
+        assert len(harness.feasibility_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_clean_on_first_pass(self, harness):
+        harness.validate_results = [ok_validation()]
+        harness.audit_results = [audit_doc("PASS", 91)]
+        harness.crosscheck_results = [clean_crosscheck()]
+        result = await run_one(FakeScenario(), "slot-1", harness.emit)
+        self._assert_judged(result, harness, "clean_on_first_pass")
+
+    @pytest.mark.asyncio
+    async def test_revision_skipped_time_budget(self, harness):
+        harness.validate_results = [ok_validation()]
+        harness.audit_results = [audit_doc("PASS_WITH_MINOR_EDITS", 72,
+                                           findings=[{"severity": "minor", "rule": "r",
+                                                      "evidence": "e", "fix": "f"}])]
+        harness.crosscheck_results = [clean_crosscheck()]
+        result = await run_one(FakeScenario(), "slot-1", harness.emit,
+                              allow_revision=lambda: False)
+        self._assert_judged(result, harness, "revision_skipped_time_budget")
+
+    @pytest.mark.asyncio
+    async def test_revise_call_failed(self, harness, monkeypatch):
+        async def boom(*args, **kwargs):
+            raise ModelCallError("revise 503")
+
+        monkeypatch.setattr(loop_module.agent_steps, "revise", boom)
+        harness.validate_results = [ok_validation()]
+        harness.audit_results = [audit_doc("PASS_WITH_MINOR_EDITS", 72,
+                                           findings=[{"severity": "minor", "rule": "r",
+                                                      "evidence": "e", "fix": "f"}])]
+        harness.crosscheck_results = [clean_crosscheck()]
+        result = await run_one(FakeScenario(), "slot-1", harness.emit)
+        self._assert_judged(result, harness, "revise_call_failed")
+
+    @pytest.mark.asyncio
+    async def test_revise_rejected_anchor_desync(self, harness, clone):
+        broken = clone(harness.blueprint)
+        broken["items"][2]["evidence"] = "a sentence that appears nowhere"
+        harness.revise_output = GenOutput(clone(harness.material), broken)
+        harness.validate_results = [ok_validation()]
+        harness.audit_results = [audit_doc("PASS_WITH_MINOR_EDITS", 74,
+                                           findings=[{"severity": "minor", "rule": "r",
+                                                      "evidence": "e", "fix": "f"}])]
+        harness.crosscheck_results = [clean_crosscheck()]
+        result = await run_one(FakeScenario(), "slot-1", harness.emit)
+        self._assert_judged(result, harness, "revise_rejected_anchor_desync")
+
+    @pytest.mark.asyncio
+    async def test_revise_validation_unavailable(self, harness, monkeypatch):
+        from backend.deterministic.runner import ScriptError
+
+        calls = {"n": 0}
+
+        async def flaky(material, blueprint):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return ok_validation()
+            raise ScriptError("validator crashed on the revision")
+
+        monkeypatch.setattr(loop_module, "validate", flaky)
+        harness.audit_results = [audit_doc("PASS_WITH_MINOR_EDITS", 72,
+                                           findings=[{"severity": "minor", "rule": "r",
+                                                      "evidence": "e", "fix": "f"}])]
+        harness.crosscheck_results = [clean_crosscheck()]
+        result = await run_one(FakeScenario(), "slot-1", harness.emit)
+        self._assert_judged(result, harness, "revise_validation_unavailable")
+
+    @pytest.mark.asyncio
+    async def test_revise_rejected_by_validate(self, harness):
+        harness.validate_results = [ok_validation(), bad_validation(["speaker_count must be 3"])]
+        harness.audit_results = [audit_doc("PASS_WITH_MINOR_EDITS", 72,
+                                           findings=[{"severity": "minor", "rule": "r",
+                                                      "evidence": "e", "fix": "f"}])]
+        harness.crosscheck_results = [clean_crosscheck()]
+        result = await run_one(FakeScenario(), "slot-1", harness.emit)
+        self._assert_judged(result, harness, "revise_rejected_by_validate")
+
+    @pytest.mark.asyncio
+    async def test_re_audit_failed(self, harness, monkeypatch):
+        calls = {"n": 0}
+
+        async def second_audit_explodes(material, metrics):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return audit_doc("PASS_WITH_MINOR_EDITS", 72,
+                                 findings=[{"severity": "minor", "rule": "r", "evidence": "e",
+                                            "fix": "f"}])
+            raise ModelCallError("re-audit 503")
+
+        monkeypatch.setattr(loop_module.agent_steps, "audit_blind", second_audit_explodes)
+        harness.validate_results = [ok_validation(), ok_validation()]
+        harness.crosscheck_results = [clean_crosscheck()]
+        result = await run_one(FakeScenario(), "slot-1", harness.emit)
+        self._assert_judged(result, harness, "re_audit_failed")
+
+    @pytest.mark.asyncio
+    async def test_selected_initial(self, harness):
+        harness.validate_results = [ok_validation(), ok_validation()]
+        harness.audit_results = [audit_doc("PASS", 92,
+                                           findings=[{"severity": "minor", "rule": "r",
+                                                      "evidence": "e", "fix": "f"}]),
+                                 audit_doc("PASS", 61)]
+        harness.crosscheck_results = [clean_crosscheck(), clean_crosscheck()]
+        result = await run_one(FakeScenario(), "slot-1", harness.emit)
+        self._assert_judged(result, harness, "selected_initial")
+
+    @pytest.mark.asyncio
+    async def test_selected_revised(self, harness):
+        harness.validate_results = [ok_validation(), ok_validation()]
+        harness.audit_results = [audit_doc("PASS_WITH_MINOR_EDITS", 70,
+                                           findings=[{"severity": "minor", "rule": "r",
+                                                      "evidence": "e", "fix": "f"}]),
+                                 audit_doc("PASS", 92)]
+        harness.crosscheck_results = [clean_crosscheck(), clean_crosscheck()]
+        result = await run_one(FakeScenario(), "slot-1", harness.emit)
+        self._assert_judged(result, harness, "selected_revised")
+
+    @pytest.mark.asyncio
+    async def test_every_success_note_in_the_module_is_covered_here(self):
+        """Guards the list above, which is otherwise a snapshot of one afternoon's reading.
+
+        A ninth `ok=True` return added later would be judged (the hook is on `run_one`) but nothing
+        would prove it, and "all eight are covered" would keep passing while meaning less. Parsed
+        out of the module so adding a branch without adding a case here fails.
+        """
+        import ast
+
+        source = open(loop_module.__file__, encoding="utf-8").read()
+        notes, sites = set(), 0
+        for node in ast.walk(ast.parse(source)):
+            if not (isinstance(node, ast.Call)
+                    and getattr(node.func, "id", None) == "MaterialResult"):
+                continue
+            # `MaterialResult(slot_id, scenario.id, True, ...)`: the third positional is `ok`.
+            positional = node.args[2] if len(node.args) > 2 else None
+            if not (isinstance(positional, ast.Constant) and positional.value is True):
+                continue
+            sites += 1
+            for keyword in node.keywords:
+                if keyword.arg == "note":
+                    if isinstance(keyword.value, ast.Constant):
+                        notes.add(keyword.value.value)
+                    else:
+                        # `note="selected_%s" % best.label`, the one computed note. It is one return
+                        # site but two reachable outcomes, which is why sites and notes are counted
+                        # separately rather than being assumed equal.
+                        notes.update({"selected_initial", "selected_revised"})
+        covered = set()
+        for name in dir(TestFeasibilityReachesEverySuccessBranch):
+            if name.startswith("test_"):
+                covered.add(name[len("test_"):])
+        assert notes - covered == set(), "unjudged-branch cases missing: %s" % (notes - covered)
+        assert sites == 8, "expected eight ok=True returns, found %d" % sites
+        assert len(notes) == 9, "expected nine reachable notes, found %s" % sorted(notes)
+
+
+class TestWhatTheJudgeIsHanded:
+    """AC7's other half: the verdict has to be about the material actually delivered.
+
+    Handing over the initial version's plan while shipping the revision would produce a verdict that
+    reads as authoritative and describes a script nobody sees -- the same class of defect as
+    `validation_findings` computed from the losing version, which this file already pins.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_delivered_version_is_the_one_judged(self, harness, clone):
+        """The revision wins, so the revision's blueprint must be the one on the wire."""
+        marked = clone(harness.blueprint)
+        marked["items"][0]["evidence"] = harness.material[
+            "listening_material_parts"][0]["script"]["turns"][4]["text"]
+        harness.revise_output = GenOutput(clone(harness.material), marked)
+        harness.validate_results = [ok_validation(), ok_validation()]
+        harness.audit_results = [audit_doc("PASS_WITH_MINOR_EDITS", 70,
+                                           findings=[{"severity": "minor", "rule": "r",
+                                                      "evidence": "e", "fix": "f"}]),
+                                 audit_doc("PASS", 92)]
+        harness.crosscheck_results = [clean_crosscheck(), clean_crosscheck()]
+        result = await run_one(FakeScenario(), "slot-1", harness.emit)
+
+        assert result.selected_version == "revised"
+        handed = harness.feasibility_calls[0]
+        assert handed["blueprint"] == result.candidate.gen.blueprint
+        assert handed["material"] == result.candidate.gen.material
+        assert handed["blueprint"]["items"][0]["evidence"] == marked["items"][0]["evidence"]
+
+    @pytest.mark.asyncio
+    async def test_the_initial_candidate_carries_its_own_validation(self, harness):
+        """The 8c change. Without it `initial.validation` stays None and every one of the seven
+        fallback branches above would report VALIDATION_INCOMPLETE -- a system-side "could not
+        decide" produced by a missing constructor argument, on materials that validated cleanly."""
+        harness.validate_results = [ok_validation()]
+        harness.audit_results = [audit_doc("PASS", 91)]
+        harness.crosscheck_results = [clean_crosscheck()]
+        result = await run_one(FakeScenario(), "slot-1", harness.emit)
+        assert result.candidate.validation is not None
+        assert result.candidate.validation.metrics["blueprint_schema_version"] == 2
+
+    @pytest.mark.asyncio
+    async def test_only_the_qr027_keys_are_handed_over(self, harness):
+        """Not the whole metrics dict. `dialogue_words` is not the judge's business, and every extra
+        number in the prompt is one more thing it might start applying a threshold to."""
+        harness.validate_results = [ok_validation()]
+        harness.audit_results = [audit_doc("PASS", 91)]
+        harness.crosscheck_results = [clean_crosscheck()]
+        await run_one(FakeScenario(), "slot-1", harness.emit)
+        qr027 = harness.feasibility_calls[0]["qr027"]
+        assert set(qr027) == {key for key in V2_METRICS if key.startswith("qr027_")}
+        assert "dialogue_words" not in qr027
+        assert qr027["qr027_numeric_answers"] == 1 and qr027["qr027_spelled_answers"] == 9
+
+    @pytest.mark.asyncio
+    async def test_a_delivered_material_with_validator_errors_is_judged_unfit(self, harness):
+        """The deliver-with-findings path, which is the one case where the two verdicts disagree.
+
+        Three attempts failed validation and the material was delivered anyway (correct -- the user
+        asked for a script and got one). The feasibility verdict is REGENERATE_MATERIAL, because
+        questions must not be written against a script the validator has ten errors about. That is
+        the whole point of the verdict travelling with the material instead of gating it.
+        """
+        harness.validate_results = [bad_validation(["e1"]), bad_validation(["e2"]),
+                                    bad_validation(["e3"])]
+        harness.audit_results = [audit_doc("PASS", 91)]
+        harness.crosscheck_results = [clean_crosscheck()]
+        result = await run_one(FakeScenario(), "slot-1", harness.emit)
+        assert result.ok and result.validation_findings == ["e3"]
+        assert result.feasibility["outcome"] == "REGENERATE_MATERIAL"
+        assert "e3" in " ".join(result.feasibility["reasons"])
+
+    @pytest.mark.asyncio
+    async def test_an_infeasible_reply_reaches_the_verdict_intact(self, harness):
+        harness.feasibility_reply = {"feasible": False,
+                                     "reasons": ["items 4 and 7 share one turn"],
+                                     "category_semantics_ok": True}
+        harness.validate_results = [ok_validation()]
+        harness.audit_results = [audit_doc("PASS", 91)]
+        harness.crosscheck_results = [clean_crosscheck()]
+        result = await run_one(FakeScenario(), "slot-1", harness.emit)
+        assert result.ok, "an unfit plan is still a delivered material (design.md 8.2)"
+        assert result.feasibility["outcome"] == "REGENERATE_MATERIAL"
+        assert "items 4 and 7 share one turn" in result.feasibility["reasons"]
+        # Recorded only. Acting on it is stage 4, and a regeneration triggered here would spend the
+        # batch's refill budget on a decision this task deliberately does not make.
+        assert len(harness.generate_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_justified_qr027_breach_carries_its_text(self, harness):
+        harness.feasibility_reply = {
+            "feasible": True, "reasons": ["five numeric answers are inherent to a booking code"],
+            "category_semantics_ok": True,
+            "qr027_exception": {"requested": True,
+                                "justification": "the scenario is a booking reference"},
+        }
+        breached = dict(V2_METRICS, qr027_numeric_answers=5, qr027_spelled_answers=5)
+        harness.validate_results = [ValidationResult([], [], breached)]
+        harness.audit_results = [audit_doc("PASS", 91)]
+        harness.crosscheck_results = [clean_crosscheck()]
+        result = await run_one(FakeScenario(), "slot-1", harness.emit)
+        assert result.feasibility["outcome"] == "PASS_WITH_JUSTIFICATION"
+        assert result.feasibility["justification"] == "the scenario is a booking reference"
+        assert result.feasibility["qr027"]["qr027_numeric_answers"] == 5
+
+    @pytest.mark.asyncio
+    async def test_a_v1_record_is_reported_as_unsupported_not_regenerated(self, harness):
+        """v1 is display-only by product decision, and it is the one outcome that must never
+        become REGENERATE_MATERIAL: regenerating an archive is not a repair."""
+        v1 = {"dialogue_words": 618}
+        harness.validate_results = [ValidationResult([], [], v1)]
+        harness.audit_results = [audit_doc("PASS", 91)]
+        harness.crosscheck_results = [clean_crosscheck()]
+        result = await run_one(FakeScenario(), "slot-1", harness.emit)
+        assert result.ok and result.feasibility["outcome"] == "VALIDATION_INCOMPLETE"
+        # A v1 record read with --allow-v1 has no version key at all (measured in stage 3A), which
+        # is VALIDATION_INCOMPLETE. UNSUPPORTED_VERSION needs a version that was read and is not 2.
+        harness.validate_results = [ValidationResult([], [], dict(V2_METRICS,
+                                                                 blueprint_schema_version=1))]
+        harness.audit_results = [audit_doc("PASS", 91)]
+        harness.crosscheck_results = [clean_crosscheck()]
+        second = await run_one(FakeScenario(), "slot-2", harness.emit)
+        assert second.feasibility["outcome"] == "UNSUPPORTED_VERSION"

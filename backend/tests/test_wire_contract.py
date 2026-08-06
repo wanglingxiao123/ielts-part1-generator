@@ -46,7 +46,11 @@ FRONTEND_STAGE_EVENTS = frozenset({
 # assumed -- `grep -rn validation_reported frontend/src` returns nothing. Listed here rather than
 # left out so that the distinction is recorded: renaming one of these breaks nobody, renaming one
 # above breaks the page silently.
-BACKEND_ONLY_EVENTS = frozenset({"validation_reported"})
+# `feasibility_checked` belongs here and not above, and the choice is forced rather than stylistic:
+# the list above is asserted in BOTH directions, so a name the frontend does not yet reference would
+# fail `test_the_frontend_really_does_reference_these_names`. Displaying the verdict to a user is
+# §6.1 stage 11; until then this event exists for an operator reading the stream.
+BACKEND_ONLY_EVENTS = frozenset({"validation_reported", "feasibility_checked"})
 
 # Keys on a successful `material_completed` payload. Present-but-empty is fine; absent is not,
 # because the frontend reads one shape and an absent key cannot be distinguished from "clean".
@@ -70,6 +74,14 @@ def _frontend_text() -> str:
     return "\n".join(parts)
 
 
+def _backend_text() -> str:
+    return "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in (REPO / "backend").rglob("*.py")
+        if "tests" not in p.parts and "__pycache__" not in p.parts
+    )
+
+
 class TestStageEvents:
     def test_every_event_the_frontend_handles_is_still_produced(self):
         """Grep both sides and compare.
@@ -79,11 +91,7 @@ class TestStageEvents:
         would let the rare ones be renamed silently -- and the rare ones are exactly the ones nobody
         exercises by hand before shipping.
         """
-        backend_text = "\n".join(
-            p.read_text(encoding="utf-8")
-            for p in (REPO / "backend").rglob("*.py")
-            if "tests" not in p.parts and "__pycache__" not in p.parts
-        )
+        backend_text = _backend_text()
         missing = sorted(name for name in FRONTEND_STAGE_EVENTS
                          if '"%s"' % name not in backend_text)
         assert missing == [], (
@@ -110,6 +118,21 @@ class TestStageEvents:
         now_used = sorted(name for name in BACKEND_ONLY_EVENTS if name in text)
         assert now_used == [], (
             "the frontend now consumes %s; move it into FRONTEND_STAGE_EVENTS" % now_used
+        )
+
+    def test_backend_only_events_are_actually_emitted(self):
+        """The positive half, and without it this set is a permanently-green assertion.
+
+        The test above only checks these names are ABSENT from the frontend, which a typo satisfies
+        perfectly: `feasibilty_checked` is absent from the frontend too. So a renamed or deleted
+        observability event would leave the set unchanged, still passing, still read as coverage --
+        exactly the shape `guards.assert_carries_plan` was rewritten to avoid.
+        """
+        backend_text = _backend_text()
+        missing = sorted(name for name in BACKEND_ONLY_EVENTS
+                         if '"%s"' % name not in backend_text)
+        assert missing == [], (
+            "these are pinned as backend-only but nothing emits them: %s" % missing
         )
 
 

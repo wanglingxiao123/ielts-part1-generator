@@ -549,3 +549,103 @@ class TestAuditMessageCarriesNoPlan:
         text = fixture.read_text(encoding="utf-8")
         for field in PLANNING_FIELDS:
             assert '"%s"' % field not in text, field
+
+
+def _feasibility_pool() -> Path:
+    return agents_module.pool_dir(agents_module.FEASIBILITY_POOL)
+
+
+class TestThreePoolsStayApart:
+    """The feasibility pool is the third one, and its isolation runs the other way.
+
+    Parts 1-4 above keep the plan AWAY from the audit side. This pool is *given* the plan, so what has
+    to hold here is different: it must not be reachable from either of the other two agents. A pool
+    member is offered to the model by name and description, so a feasibility skill inside the generate
+    pool lets the generator activate it mid-run and approve its own work; inside the audit pool it ends
+    "the audit pool physically contains no plan schema", which is one of the three legs the blind audit
+    stands on.
+
+    ci_gates gate 1b checks the pool membership on the filesystem. These tests check the runtime
+    consequence, because a gate that greps and a plugin that resolves are two different things.
+    """
+
+    def test_the_pool_exists_and_holds_exactly_one_skill(self):
+        pool = _feasibility_pool()
+        skills = sorted(p.parent.name for p in pool.rglob("SKILL.md"))
+        assert skills == ["feasibility-listening-part1"], skills
+
+    def test_it_ships_the_verdict_schema_and_no_script(self):
+        """Its answer is a JSON document, and it has nothing to run: the counts arrive calculated."""
+        pool = _feasibility_pool()
+        assert (pool / "feasibility-listening-part1" / "schemas"
+                / "feasibility.schema.json").is_file()
+        assert list(pool.rglob("*.py")) == []
+
+    def test_the_feasibility_agent_has_no_shell(self):
+        """Same tool set as the auditor, for a different reason.
+
+        The auditor is denied `shell` because a shell would let it read the plan. This agent is handed
+        the plan, so that reason does not apply -- it has no shell because it has nothing to run, and
+        granting it would hand out unsandboxed command execution (`strands_tools.shell` bypasses
+        `agent.sandbox`) in exchange for nothing.
+        """
+        agent = agents_module.build_feasibility_agent()
+        assert sorted(agent.tool_names) == ["file_read", "skills"]
+        assert agent.sandbox.root == _feasibility_pool().resolve()
+
+    @pytest.mark.parametrize("builder,pool,skill", [
+        ("build_audit_agent", "AUDIT_POOL", "feasibility-listening-part1"),
+        ("build_audit_agent", "AUDIT_POOL", "generate-listening-part1"),
+        ("build_generate_agent", "GENERATE_POOL", "feasibility-listening-part1"),
+        ("build_generate_agent", "GENERATE_POOL", "audit-listening-part1"),
+        ("build_feasibility_agent", "FEASIBILITY_POOL", "generate-listening-part1"),
+        ("build_feasibility_agent", "FEASIBILITY_POOL", "audit-listening-part1"),
+    ])
+    def test_no_agent_can_activate_another_pool_s_skill(self, builder, pool, skill):
+        """All six directions among three pools. The two-pool version covered one of them.
+
+        Enumerated rather than sampled because the failure mode is asymmetric: whichever pair someone
+        forgets is the pair that breaks. The generate/feasibility direction is the newly interesting
+        one -- a generator that can activate this skill can approve its own plan.
+        """
+        from strands.vended_plugins.skills import AgentSkills, Skill
+
+        pool_dir = agents_module.pool_dir(getattr(agents_module, pool))
+        plugin = AgentSkills(skills=Skill.from_directory(str(pool_dir)))
+        agent = getattr(agents_module, builder)()
+        response = asyncio.run(plugin.skills(
+            skill_name=skill,
+            tool_context=type("Ctx", (), {"agent": agent})(),
+        ))
+        assert "not found" in response, response[:200]
+
+    def test_each_agent_can_activate_its_own(self):
+        """The control for the six above, which would all pass if activation never worked at all."""
+        from strands.vended_plugins.skills import AgentSkills, Skill
+
+        for builder, pool, skill in (
+            ("build_audit_agent", "AUDIT_POOL", "audit-listening-part1"),
+            ("build_generate_agent", "GENERATE_POOL", "generate-listening-part1"),
+            ("build_feasibility_agent", "FEASIBILITY_POOL", "feasibility-listening-part1"),
+        ):
+            pool_dir = agents_module.pool_dir(getattr(agents_module, pool))
+            plugin = AgentSkills(skills=Skill.from_directory(str(pool_dir)))
+            agent = getattr(agents_module, builder)()
+            response = asyncio.run(plugin.skills(
+                skill_name=skill,
+                tool_context=type("Ctx", (), {"agent": agent})(),
+            ))
+            assert "not found" not in response, (skill, response[:200])
+
+    def test_the_three_pools_are_three_distinct_directories(self):
+        roots = {agents_module.pool_dir(name).resolve()
+                 for name in (agents_module.GENERATE_POOL, agents_module.AUDIT_POOL,
+                              agents_module.FEASIBILITY_POOL)}
+        assert len(roots) == 3, roots
+
+    def test_the_feasibility_agent_shares_no_state_either(self):
+        first = agents_module.build_feasibility_agent()
+        second = agents_module.build_feasibility_agent()
+        assert first is not second
+        assert first.messages == [] and second.messages == []
+        assert first.state is not second.state

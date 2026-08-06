@@ -41,15 +41,23 @@ CROSS_CHECK = SHARED / "cross_check.py"
 RENDER = SHARED / "render_audit_report.py"
 GENERATE_SCHEMAS = VALIDATE.parents[1] / "schemas"
 AUDIT_SCHEMAS = METRICS.parents[1] / "schemas"
+# The feasibility pool ships a schema and no script, so it is located by its schema rather than by a
+# scripts/ glob like the other two. `_one` doubles as the pool-membership assertion: a second skill
+# directory, or the directory moved into another pool, exits here instead of skipping the checks.
+FEASIBILITY_SCHEMAS = _one("feasibility", "*/schemas/feasibility.schema.json").parent
+
+# Every pool that carries schemas. Named once, because three places need the same list and the failure
+# mode of updating two of them is a schema that is never checked -- which reads as passing.
+SCHEMA_DIRS = (GENERATE_SCHEMAS, AUDIT_SCHEMAS, FEASIBILITY_SCHEMAS)
 
 
 def _schema(name: str) -> Path:
     """A schema by filename, from whichever pool holds it."""
-    for directory in (GENERATE_SCHEMAS, AUDIT_SCHEMAS):
+    for directory in SCHEMA_DIRS:
         candidate = directory / name
         if candidate.is_file():
             return candidate
-    raise SystemExit("schema %s not found in either pool" % name)
+    raise SystemExit("schema %s not found in any pool" % name)
 
 failures: list[str] = []
 
@@ -89,6 +97,7 @@ SCHEMA_NAMES = (
     "blueprint.schema.json",
     "blueprint.read.schema.json",
     "audit.schema.json",
+    "feasibility.schema.json",
 )
 
 
@@ -104,7 +113,7 @@ def _validator(name: str):
     from jsonschema import Draft7Validator, RefResolver
 
     store: dict[str, object] = {}
-    for directory in (GENERATE_SCHEMAS, AUDIT_SCHEMAS):
+    for directory in SCHEMA_DIRS:
         for path in sorted(directory.glob("*.json")):
             document = json.loads(path.read_text(encoding="utf-8"))
             store[path.name] = document
@@ -1809,6 +1818,128 @@ def test_preflight_outcome_names_are_pinned() -> None:
           repr(sorted(as_dict)))
 
 
+# --- layer 1: the feasibility schema IS the contract -----------------------------------------------
+#
+# design.md AC2 splits the same contract across three layers, and this is the authoritative one. The
+# backend's `_feasibility_envelope` restates its values-and-types subset in plain Python because
+# `jsonschema` is a dev dependency the container never installs; the preflight's
+# `_semantics_problem` restates a smaller subset again as a last-resort check at the verdict. When the
+# three disagree, THIS file wins and the others are the bug.
+
+def _feasibility_case(**over) -> dict:
+    base = {"feasible": True, "reasons": ["item 4 reads cleanly"], "category_semantics_ok": True}
+    for key, value in over.items():
+        if value is _ABSENT:
+            base.pop(key, None)
+        else:
+            base[key] = value
+    return base
+
+
+def test_feasibility_schema_contract() -> None:
+    """The whole shape: three required keys, the two `if/then` rules, and no unknown keys."""
+    print("feasibility schema")
+    try:
+        import jsonschema  # noqa: F401 - availability probe
+    except ImportError:
+        print("  SKIP  jsonschema not installed")
+        return
+
+    def errors(data: object) -> list[str]:
+        return _schema_errors("feasibility.schema.json", data)
+
+    check("a feasible reply with a reason validates", errors(_feasibility_case()) == [],
+          repr(errors(_feasibility_case())))
+    # The anti-tightening assertion, and the counterpart of stage 3A's "feasible:true + empty reasons
+    # must PASS": `reasons` is required to be PRESENT always and non-empty only on a rejection. Without
+    # this case, `minItems: 1` could move up to the property itself and every negative case below
+    # would still pass.
+    check("a feasible reply with an empty reasons list validates",
+          errors(_feasibility_case(reasons=[])) == [])
+
+    for label, data in (
+        ("feasible missing", _feasibility_case(feasible=_ABSENT)),
+        ("reasons missing", _feasibility_case(reasons=_ABSENT)),
+        ("category_semantics_ok missing", _feasibility_case(category_semantics_ok=_ABSENT)),
+        # `"false"` explicitly, because it is a measured false-green shape: read by truthiness it
+        # becomes a PASS, so the material would ship as feasible while the model said the opposite.
+        ("feasible is the string 'false'", _feasibility_case(feasible="false")),
+        ("category_semantics_ok is 1", _feasibility_case(category_semantics_ok=1)),
+        ("reasons is a bare string", _feasibility_case(reasons="item 6 is ambiguous")),
+        ("reasons carries a non-string", _feasibility_case(reasons=[{"item": 6}])),
+        # `[""]` explicitly: a non-empty list carrying zero information, the second measured
+        # false-green shape. The schema catches it with `minLength: 1` on the items.
+        ("reasons carries an empty string", _feasibility_case(reasons=[""])),
+        ("feasible:false with no reasons", _feasibility_case(feasible=False, reasons=[])),
+        ("category_semantics_ok:false with no reasons",
+         _feasibility_case(category_semantics_ok=False, reasons=[])),
+        ("an unknown top-level key", _feasibility_case(confidence=0.4)),
+        ("not an object at all", ["feasible"]),
+    ):
+        check(f"schema rejects: {label}", errors(data) != [])
+
+
+def test_feasibility_schema_qr027_exception() -> None:
+    """design.md D2's four positives and ten negatives, one row per case.
+
+    ONE ROW IS AN INTENDED DIVERGENCE: a whitespace-only `justification` (negative 7) passes here and
+    is rejected by `_feasibility_envelope`'s `strip()`. That is not a gap to be closed by adding a
+    `pattern` -- expressing "not blank" in JSON Schema means keeping a regex aligned with Python's
+    `str.strip()` semantics, and each layer here uses the tool it is good at. The divergence is
+    asserted below so it stays a decision rather than becoming a surprise.
+
+    Positives 2 and 4 are the anti-tightening assertions. An earlier draft of this schema required
+    `["requested", "justification"]` unconditionally, which rejects the entirely legal
+    `{"requested": false}` -- declining to request an exception leaves nothing to justify. Every
+    negative case below passed against that broken version.
+    """
+    print("feasibility schema: qr027_exception")
+    try:
+        import jsonschema  # noqa: F401 - availability probe
+    except ImportError:
+        print("  SKIP  jsonschema not installed")
+        return
+
+    def errors(exception) -> list[str]:
+        data = _feasibility_case() if exception is _ABSENT else _feasibility_case(
+            qr027_exception=exception)
+        return _schema_errors("feasibility.schema.json", data)
+
+    for label, exception in (
+        ("1: the key is absent", _ABSENT),
+        ("2: {'requested': false}", {"requested": False}),
+        ("3: requested with a justification",
+         {"requested": True, "justification": "three items share one category inherently"}),
+        ("4: not requested, justification present anyway",
+         {"requested": False, "justification": "n/a"}),
+    ):
+        check(f"schema accepts positive {label}", errors(exception) == [], repr(errors(exception)))
+
+    for label, exception in (
+        ("1a: a string", "yes"),
+        ("1b: a list", []),
+        ("1c: a number", 0),
+        ("1d: null", None),
+        ("2: an empty object", {}),
+        ("3: justification with no requested", {"justification": "the venue names are lexical"}),
+        ("4a: requested is the string 'true'", {"requested": "true"}),
+        ("4b: requested is 1", {"requested": 1}),
+        ("4c: requested is null", {"requested": None}),
+        ("5: requested true with no justification", {"requested": True}),
+        ("6: an empty justification", {"requested": True, "justification": ""}),
+        ("8: a numeric justification", {"requested": True, "justification": 5}),
+        ("9: an unknown key alongside",
+         {"requested": True, "justification": "inherent", "confidence": 0.4}),
+        ("10: justification misspelled", {"requested": True, "justifcation": "inherent"}),
+    ):
+        check(f"schema rejects negative {label}", errors(exception) != [])
+
+    # Negative 7, stated as the divergence it is rather than omitted.
+    blank = {"requested": True, "justification": "   "}
+    check("schema ACCEPTS a whitespace-only justification -- rejected by the envelope's strip(), "
+          "not here (intended, see docstring)", errors(blank) == [], repr(errors(blank)))
+
+
 def main() -> int:
     for suite in (
         test_schemas_are_valid,
@@ -1846,6 +1977,8 @@ def main() -> int:
         test_preflight_rejection_must_be_explained,
         test_preflight_thresholds_have_one_source,
         test_preflight_outcome_names_are_pinned,
+        test_feasibility_schema_contract,
+        test_feasibility_schema_qr027_exception,
     ):
         suite()
     print()

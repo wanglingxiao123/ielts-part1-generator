@@ -1,4 +1,4 @@
-"""The three model steps, each one call to a pre-defined agent.
+"""The four model steps, each one call to a pre-defined agent.
 
 Replaces ``generate.py`` / ``audit.py`` / ``revise.py``, which between them assembled prompts from
 skill files, named which skill to use, and told the model exactly what to produce. The agents do
@@ -10,8 +10,10 @@ What is left here is the part Python still owns:
 * **the envelope.** An agent's reply is text; somebody has to insist it contains the two artifacts
   and raise when it does not. That is ``ModelCallError``, which the Loop retries on the
   infrastructure budget.
-* **the information flow.** ``audit`` builds the auditor's message, and the blueprint is not in it.
-  This module is where that boundary is visible in one place.
+* **the information flow.** ``audit`` builds the auditor's message, and the blueprint is not in it;
+  ``feasibility_audit`` builds a message that must carry it. This module is where both halves of that
+  boundary are visible in one place, which is the point of keeping them adjacent: each one's guard
+  reads as the other's mirror image.
 * **the fields the model cannot know.** Real model id, real UTC timestamp. A model's
   ``extracted_at`` is a hallucinated clock reading.
 
@@ -28,18 +30,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from ..agents import build_audit_agent, build_generate_agent
-from ..deterministic.guards import assert_blind, assert_no_plan_on_disk
+from ..agents import build_audit_agent, build_feasibility_agent, build_generate_agent
+from ..deterministic.guards import assert_blind, assert_carries_plan, assert_no_plan_on_disk
 from ..model import provider
 from .call import ModelCallError, extract_json
 
 __all__ = [
     "BlindAuditInput",
+    "FeasibilityInput",
     "GenOutput",
     "audit_blind",
     "build_audit_message",
     "build_audit_payload",
+    "build_feasibility_message",
+    "build_feasibility_payload",
     "build_revise_message",
+    "feasibility_audit",
     "generate",
     "GenerationWorkspace",
     "revise",
@@ -312,6 +318,244 @@ async def audit_blind(material: Dict[str, Any], metrics: Dict[str, Any]) -> Dict
     assert_no_plan_on_disk()
     agent = build_audit_agent()
     return _audit_envelope(await _invoke(agent, payload, "audit"), "audit")
+
+
+class FeasibilityInput(object):
+    """Everything the non-blind feasibility judge is given. Immutable, and exactly three fields.
+
+    Shaped like :class:`BlindAuditInput` on purpose, and it is the same argument read the other way
+    round: there the class exists so that *adding* a field is a visible act, here so that *losing*
+    one is. ``blueprint`` is the field this whole step depends on, and the failure mode of dropping it
+    is silent (see :func:`assert_carries_plan`), so it is named in a type rather than being the second
+    of three positional arguments.
+
+    Frozen for the same reason as the blind input: nothing can rearrange the inputs after
+    construction, so what the guard checked is what gets sent.
+    """
+
+    __slots__ = ("material", "blueprint", "qr027")
+
+    def __init__(
+        self, material: Dict[str, Any], blueprint: Dict[str, Any], qr027: Dict[str, Any]
+    ) -> None:
+        object.__setattr__(self, "material", material)
+        object.__setattr__(self, "blueprint", blueprint)
+        object.__setattr__(self, "qr027", qr027)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError("FeasibilityInput is frozen")
+
+    def __delattr__(self, name: str) -> None:
+        raise AttributeError("FeasibilityInput is frozen")
+
+
+def build_feasibility_payload(data: FeasibilityInput) -> str:
+    """Serialise the non-blind input into the judge's message.
+
+    **Not** built on :func:`build_audit_payload`. That function's only caller follows it with
+    ``assert_blind``, and its docstring says the blindness there is an omission rather than a filter;
+    giving it a blueprint parameter would turn "blind" into an option, which is the shape
+    ``guards.assert_blind`` exists to refuse. Two payload builders whose guards contradict each other
+    is the honest arrangement.
+
+    The plan is checked before assembly, on the object, because ten items can be counted structurally
+    there and only textually here.
+
+    ``qr027`` counts come from the validator and are handed over rather than described, for the same
+    reason ``metrics`` are handed to the auditor: a count asserted without calculation is the one most
+    likely to be wrong. The judge is told not to recount them; the thresholds are applied by
+    ``question_feasibility_preflight``, not by either side of this call.
+    """
+    assert_carries_plan(data.blueprint)
+    return "\n\n".join([
+        "Judge whether ten reliable IELTS Listening Part 1 items can be written from the plan below, "
+        "for the material below. You are given both deliberately: the question is about these "
+        "specific ten information points.",
+        "## material.json\n\n%s" % json.dumps(data.material, ensure_ascii=False, indent=2),
+        "## blueprint.json\n\n%s" % json.dumps(data.blueprint, ensure_ascii=False, indent=2),
+        "## Answer-variety counts (already calculated; do not recount, and do not apply thresholds)"
+        "\n\n%s" % json.dumps(data.qr027, ensure_ascii=False, indent=2),
+    ])
+
+
+def build_feasibility_message(
+    material: Dict[str, Any], blueprint: Dict[str, Any], qr027: Dict[str, Any]
+) -> str:
+    """Convenience wrapper over :class:`FeasibilityInput` + :func:`build_feasibility_payload`."""
+    return build_feasibility_payload(FeasibilityInput(material, blueprint, qr027))
+
+
+# The three keys `question_feasibility_preflight.REQUIRED_SEMANTICS` reads, verbatim. A reply missing
+# any of them cannot be turned into a verdict, so the preflight would answer SEMANTICS_MISSING -- and
+# a retry here is far cheaper than delivering a material nobody can write questions for.
+_FEASIBILITY_REQUIRED_KEYS = ("feasible", "reasons", "category_semantics_ok")
+_FEASIBILITY_BOOL_KEYS = ("feasible", "category_semantics_ok")
+_FEASIBILITY_ALLOWED_KEYS = frozenset(_FEASIBILITY_REQUIRED_KEYS) | {"qr027_exception"}
+_QR027_EXCEPTION_KEYS = frozenset({"requested", "justification"})
+
+
+def _feasibility_envelope(reply: str, label: str) -> Dict[str, Any]:
+    """Parse a feasibility reply and check it against the contract, in values as well as keys.
+
+    **Why this checks values and not only keys, given that the preflight checks them too.** The two
+    layers are deliberately overlapping, because they stand in different places. Here the call has
+    only just returned and the infrastructure retry budget is still intact, so a reply that wrote
+    ``"false"`` where ``false`` belonged is very likely correct on the next attempt -- that is this
+    call's slip, not a property of the material. ``ModelCallError`` therefore puts it back on the
+    budget. ``question_feasibility_preflight._semantics_problem`` stands at the *verdict*, with no
+    retries left, and can only report honestly that it cannot decide. Keeping just this layer would
+    assume the preflight is never called by anything else (it is a skill script, so it is); keeping
+    just that one would upgrade a repairable formatting wobble into "this material cannot be judged".
+
+    The full contract lives in ``schemas/feasibility.schema.json`` and is enforced against positive
+    and negative cases by ``skills/shared/tests``. This is its values-and-types subset restated in
+    plain Python: ``jsonschema`` is a dev dependency, and importing a new third-party package into
+    ``backend/`` fails ci_gates gate 10 (measured) because the container never installs it.
+
+    One intended divergence from the schema, asserted by the tests rather than left to be discovered:
+    a whitespace-only ``justification`` passes the schema (``minLength: 1`` counts characters) and
+    raises here (``strip()``). Expressing "not blank" in JSON Schema needs a pattern whose semantics
+    are harder to keep aligned with Python's, so each layer uses the tool it is good at.
+    """
+    data = extract_json(reply)
+
+    # 1. The three keys the verdict is built from. `extract_json` returns the first balanced object,
+    #    so a reply that opens with a decoy summary object arrives here instead of the real answer --
+    #    measured on the audit side, where a `{"verdict": "PASS", "note": ...}` decoy was accepted as
+    #    a clean pass. Requiring all three makes a decoy fail to qualify.
+    missing = [key for key in _FEASIBILITY_REQUIRED_KEYS if key not in data]
+    if missing:
+        raise ModelCallError(
+            "%s reply is missing required keys %s; keys present=%s"
+            % (label, missing, sorted(data.keys())[:10])
+        )
+
+    # 2. Both flags must be real booleans. `isinstance(x, bool)` rather than a truth test, because
+    #    the string `"false"` is truthy: a `feasible: "false"` read by truthiness becomes a PASS, and
+    #    the material ships as feasible while the model said the opposite.
+    for key in _FEASIBILITY_BOOL_KEYS:
+        if not isinstance(data[key], bool):
+            raise ModelCallError(
+                "%s reply has %s=%r (%s); it must be a JSON boolean"
+                % (label, key, data[key], type(data[key]).__name__)
+            )
+
+    # 3. `reasons` is a list of strings. A bare string is iterable, so without the type check a
+    #    reply of `"reasons": "item 6 is ambiguous"` would satisfy every check below character by
+    #    character.
+    reasons = data["reasons"]
+    if not isinstance(reasons, list) or any(not isinstance(item, str) for item in reasons):
+        raise ModelCallError(
+            "%s reply has reasons=%s; it must be a list of strings"
+            % (label, type(reasons).__name__ if not isinstance(reasons, list)
+               else [type(item).__name__ for item in reasons][:5])
+        )
+
+    # 4. A rejection has to be actionable. `feasible: false` costs a full material regeneration, and
+    #    a rejection with no stated cause gives the next attempt nothing to avoid. Blank entries
+    #    count as no reason: `[""]` and `["   "]` are non-empty lists carrying zero information.
+    if not all(data[key] for key in _FEASIBILITY_BOOL_KEYS):
+        if not any(item.strip() for item in reasons):
+            raise ModelCallError(
+                "%s reply rejects the plan (feasible=%r, category_semantics_ok=%r) with no usable "
+                "reason: %r" % (label, data["feasible"], data["category_semantics_ok"], reasons[:5])
+            )
+
+    # 5. `qr027_exception` is optional as a whole and strict once written -- see below.
+    if "qr027_exception" in data:
+        _check_qr027_exception(data["qr027_exception"], label)
+
+    # 6. No unknown top-level keys, matching the schema's `additionalProperties: false`. A stray
+    #    `"confidence": 0.4` means the model is answering against some other contract, in which case
+    #    `feasible` may not mean what this side reads it to mean either.
+    unknown = sorted(set(data) - _FEASIBILITY_ALLOWED_KEYS)
+    if unknown:
+        raise ModelCallError(
+            "%s reply carries keys outside the contract: %s" % (label, unknown[:5])
+        )
+    return data
+
+
+def _check_qr027_exception(exception: Any, label: str) -> None:
+    """The five sub-rules for ``qr027_exception``, each mirroring one schema rule.
+
+    ==  ============================================  ===================================
+    a   is an object                                  ``"type": "object"``
+    b   ``requested`` present and a real boolean      ``required: ["requested"]`` + type
+    c   ``requested: true`` needs a non-blank string  ``if/then`` + ``minLength: 1``
+    d   ``requested: false`` needs no justification   not in an unconditional ``required``
+    e   no keys beyond the two                        ``additionalProperties: false``
+    ==  ============================================  ===================================
+
+    Rule (d) is the one worth spelling out, because getting it wrong is easy in the strict direction:
+    an unconditional ``required: ["requested", "justification"]`` rejects the entirely legal
+    ``{"requested": false}``, where declining to request an exception leaves nothing to justify.
+
+    Rule (b) exists because ``requested`` is the whole meaning of the object. A
+    ``{"justification": "..."}`` reads like a request, while ``preflight._justification_of`` requires
+    ``requested is True`` and reads it as no request at all -- so it would arrive as a silent semantic
+    downgrade rather than as an error.
+
+    **How this relates to the preflight's reading of the same value, since they differ.** The
+    preflight interprets a malformed exception as "no exception requested" (a request that says
+    nothing is not a request). This layer calls it a contract violation and retries. They are not in
+    conflict: with retries left, the model gets a chance to say what it meant; with none left, the
+    conservative reading stands.
+    """
+    if not isinstance(exception, dict):
+        raise ModelCallError(
+            "%s reply has qr027_exception=%r (%s); it must be an object"
+            % (label, exception, type(exception).__name__)
+        )
+    requested = exception.get("requested")
+    if "requested" not in exception or not isinstance(requested, bool):
+        raise ModelCallError(
+            "%s reply has a qr027_exception whose `requested` is %s; it must be a JSON boolean, "
+            "because it is what makes the object mean anything"
+            % (label, "absent" if "requested" not in exception else repr(requested))
+        )
+    justification = exception.get("justification")
+    if requested:
+        if not isinstance(justification, str) or not justification.strip():
+            raise ModelCallError(
+                "%s reply requests a QR-027 exception with justification=%r; an exception granted "
+                "without a stated cause is a permanently lowered limit"
+                % (label, justification)
+            )
+    elif "justification" in exception and not isinstance(justification, str):
+        # Not required when `requested` is false, but a value of the wrong type still says the model
+        # is working from a different contract.
+        raise ModelCallError(
+            "%s reply has a qr027_exception whose justification is %s, not a string"
+            % (label, type(justification).__name__)
+        )
+    unknown = sorted(set(exception) - _QR027_EXCEPTION_KEYS)
+    if unknown:
+        raise ModelCallError(
+            "%s reply has a qr027_exception carrying keys outside the contract: %s. A misspelled "
+            "`justifcation` is caught here rather than becoming a silent no-reason request."
+            % (label, unknown[:5])
+        )
+
+
+async def feasibility_audit(
+    material: Dict[str, Any], blueprint: Dict[str, Any], qr027: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Judge question feasibility for a finalised material. Three parameters, all required.
+
+    The mirror of :func:`audit_blind`: that one asserts the plan is absent, this one asserts it is
+    present. Neither check is redundant with the other and neither can be written as an option on a
+    shared function.
+
+    No ``assert_no_plan_on_disk`` here. That guard protects a *blind* agent from reading the plan off
+    the filesystem, and this agent is being handed the plan on the wire. Sweeping scratch files here
+    would guard nothing while suggesting to the next reader that this call is blind.
+
+    A fresh agent per call, like the other two, so no material's judgment inherits another's.
+    """
+    payload = build_feasibility_payload(FeasibilityInput(material, blueprint, qr027))
+    agent = build_feasibility_agent()
+    return _feasibility_envelope(await _invoke(agent, payload, "feasibility"), "feasibility")
 
 
 async def revise(

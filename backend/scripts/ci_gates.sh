@@ -25,6 +25,29 @@ else
     echo "  ok"
 fi
 
+echo "== gate 1b: the feasibility skill lives in its own pool =="
+# Gate 1 above cannot cover this. It asks "does the audit pool contain planning fields", and the
+# feasibility skill is *supposed* to read a blueprint -- so the only thing worth checking is where it
+# lives. That check falls entirely outside gate 1's grep (measured): moving the skill directory into
+# skills/generate/ breaks nothing there, and moving it into skills/audit/ would trip gate 1 only
+# because of the schema's field names rather than because of the pool boundary itself.
+#
+# Why the boundary matters in both directions: a pool member is offered to the model by name and
+# description, so a feasibility skill in the generate pool lets the generator activate it mid-run and
+# approve its own work, and one in the audit pool ends "the audit pool physically contains no plan
+# schema" -- one of the three legs holding the blind audit up. An isolation that only holds in a
+# design document is not an isolation.
+if [ ! -d skills/feasibility ]; then
+    fail "the feasibility pool (skills/feasibility/) does not exist"
+elif [ "$(find skills/feasibility -mindepth 2 -maxdepth 2 -name SKILL.md | wc -l | tr -d ' ')" != "1" ]; then
+    fail "skills/feasibility/ must hold exactly one skill directory"
+elif find skills/audit skills/generate -mindepth 1 -maxdepth 1 -type d -name '*feasibility*' \
+        | grep . ; then
+    fail "POOL_VIOLATION: a feasibility skill directory is in the audit or generate pool"
+else
+    echo "  ok"
+fi
+
 echo "== gate 2: deterministic layer has no model dependency =="
 if grep -rnE '^[[:space:]]*(from|import)[[:space:]]+(strands|openai)' backend/deterministic/; then
     fail "deterministic/ imports a model SDK"
@@ -159,7 +182,13 @@ DISTRIBUTION = {"strands": "strands-agents", "strands_tools": "strands-agents-to
 # First-party, including modules loaded off a runtime sys.path rather than as a package:
 # `cross_check` lives in skills/shared/ and is imported after that directory is appended, so it looks
 # like a third-party top-level import here. Gate 8 covers whether `skills/` reaches the image.
-FIRST_PARTY = {"audio_storage", "backend", "web", "skills", "config", "cross_check"}
+#
+# `question_feasibility_preflight` and `validate_part1` are the same case one pool over: both live in
+# skills/generate/generate-listening-part1/scripts/, and `deterministic/feasibility.py` imports the
+# first after inserting that directory (the aggregator then imports the second at its own module
+# scope). Without them listed here this gate demands that pip install two of our own skill scripts.
+FIRST_PARTY = {"audio_storage", "backend", "web", "skills", "config", "cross_check",
+               "question_feasibility_preflight", "validate_part1"}
 
 dockerfile = pathlib.Path("backend/Dockerfile").read_text(encoding="utf-8")
 pyproject = pathlib.Path("backend/pyproject.toml").read_text(encoding="utf-8")

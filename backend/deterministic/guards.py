@@ -27,8 +27,12 @@ from typing import Iterable, List, Sequence
 __all__ = [
     "BLUEPRINT_ONLY_KEYS",
     "BLUEPRINT_JSON_FIELDS",
+    "FEASIBILITY_ITEM_COUNT",
+    "FEASIBILITY_PLAN_VERSION",
     "BlindnessViolation",
+    "MissingPlanViolation",
     "assert_blind",
+    "assert_carries_plan",
     "assert_no_plan_on_disk",
     "assert_reference_text_blind",
     "blueprint_key_hits",
@@ -39,6 +43,10 @@ __all__ = [
 
 class BlindnessViolation(RuntimeError):
     """Raised when an audit prompt carries generator-side planning information."""
+
+
+class MissingPlanViolation(RuntimeError):
+    """Raised when a non-blind prompt does not carry the usable plan it is supposed to judge."""
 
 
 # Every entry appears in blueprint.schema.json and in neither material.schema.json nor
@@ -205,6 +213,79 @@ def assert_no_plan_on_disk() -> None:
         raise BlindnessViolation(
             "generator plan data is on disk, could not be removed, and the audit agent could read "
             "it: %s" % ", ".join(stale[:5])
+        )
+
+
+# The plan shape a non-blind judge must be given. Both values are duplicated from the validator and
+# named here rather than inlined, so a drift shows up as a failing test instead of as a guard that
+# quietly accepts the wrong thing:
+#   FEASIBILITY_PLAN_VERSION -- `validate_part1.BLUEPRINT_SCHEMA_VERSION` (also `V_KEY`'s only
+#     accepted value; anything else reads as "version unknown", not as another version)
+#   FEASIBILITY_ITEM_COUNT   -- `validate_part1.py`'s `len(items) != 10` check, and
+#     `question_feasibility_preflight.ITEM_COUNT`
+FEASIBILITY_PLAN_VERSION = 2
+FEASIBILITY_ITEM_COUNT = 10
+
+_PLAN_VERSION_KEY = "blueprint_schema_version"
+
+
+def assert_carries_plan(blueprint: object, label: str = "feasibility payload") -> None:
+    """Fail the call unless a usable v2 ten-item plan is actually being handed over.
+
+    The mirror image of :func:`assert_blind`, and it exists because that mirror failure is invisible.
+    A blindness leak at least changes the payload; a *missing* plan changes nothing observable. If the
+    blueprint argument goes astray -- a default value survives, an upstream field is read under the
+    wrong key, an empty dict is passed -- the judge sees only the script and answers anyway, with
+    exactly the confidence it would have had with the plan. Its reply is the same shape, nothing
+    raises, and the verdict is about a question nobody asked: "could ten items be written from *some*
+    plan" instead of "from *this* one".
+
+    **Takes the blueprint object, not the assembled payload string.** Counting ten of anything in
+    serialised text means counting substrings, which turns a structural question into a textual one.
+    Call this before assembling the message.
+
+    **Deliberately not built on :func:`blueprint_key_hits`.** The first design of this guard reused
+    it, and that guard could never fail: ``BLUEPRINT_ONLY_KEYS`` contains the bare word
+    ``blueprint``, which the payload's own ``## blueprint.json`` heading always matches -- so ``{}``,
+    an empty ``items`` list, and a v1 plan would all have been waved through. An assertion that
+    cannot fail is worse than no assertion, because it is read as coverage.
+
+    The four criteria are ordered, each subscripting what the previous one established. The version
+    criterion demands ``== 2`` rather than restating the validator's three-branch reading of the
+    field: the question here is "is this a v2 plan", not "how should a version value be interpreted",
+    and that second question already has exactly one implementation.
+    """
+    if not isinstance(blueprint, dict) or not blueprint:
+        raise MissingPlanViolation(
+            "%s carries no plan to judge (%s); a non-blind judgment without the plan is a "
+            "judgment of the script alone" % (label, type(blueprint).__name__)
+        )
+
+    version = blueprint.get(_PLAN_VERSION_KEY)
+    # `bool` first: `True == 1` and, more to the point, `isinstance(True, int)` holds, so a bare
+    # int check would accept `True` as a version number.
+    if isinstance(version, bool) or not isinstance(version, int) \
+            or version != FEASIBILITY_PLAN_VERSION:
+        raise MissingPlanViolation(
+            "%s carries a plan whose %s is %r, not %d; only v%d plans are judged"
+            % (label, _PLAN_VERSION_KEY, version, FEASIBILITY_PLAN_VERSION,
+               FEASIBILITY_PLAN_VERSION)
+        )
+
+    items = blueprint.get("items")
+    if not isinstance(items, list) or len(items) != FEASIBILITY_ITEM_COUNT:
+        raise MissingPlanViolation(
+            "%s carries %s plan items, not %d; the judgment is about a specific ten"
+            % (label, len(items) if isinstance(items, list) else "no", FEASIBILITY_ITEM_COUNT)
+        )
+
+    # Only that each item is an object. What is *inside* an item is `validate_part1.py`'s question,
+    # and re-checking it here would be a second implementation of the item contract.
+    bad = [index for index, item in enumerate(items, 1) if not isinstance(item, dict)]
+    if bad:
+        raise MissingPlanViolation(
+            "%s carries plan items that are not objects at position(s) %s"
+            % (label, bad[:5])
         )
 
 

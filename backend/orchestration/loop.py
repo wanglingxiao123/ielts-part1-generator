@@ -12,7 +12,12 @@ decide it has passed will eventually decide it has passed.
     generate -> validate -> [errors: regenerate, at most 2 retries; then deliver anyway]
       -> metrics -> blind audit -> cross-check (pure Python)
       -> revise -> anchor repair -> validate
-      -> blind re-audit (memoryless) -> pick_better -> deliver
+      -> blind re-audit (memoryless) -> pick_better -> question-feasibility judgment -> deliver
+
+The feasibility judgment is the one non-blind step, and it runs last for that reason: it is handed
+the plan the two audits were kept away from, so it cannot contaminate a blind conclusion that has
+already been reached. Its verdict travels with the material and gates question generation
+downstream; it never withholds the material (§8.2 -- the user receives what they asked for).
 
 Validation is a REPORT, not a gate. The retries stay -- a retry that fixes the material is worth
 two minutes -- but the final give-up delivers the last attempt instead of discarding it. The
@@ -32,6 +37,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..deterministic.anchors import repair_anchors
 from ..deterministic.crosscheck import crosscheck
+from ..deterministic.feasibility import preflight_verdict
 from ..deterministic.metrics import run_metrics_remote
 from ..deterministic.runner import ScriptError
 from ..deterministic.validate import validate
@@ -74,7 +80,7 @@ class Candidate(object):
     the four inseparable rather than to remember to keep them aligned.
     """
 
-    __slots__ = ("gen", "audit", "cross_check", "label", "validation")
+    __slots__ = ("gen", "audit", "cross_check", "label", "validation", "feasibility")
 
     def __init__(
         self,
@@ -89,6 +95,16 @@ class Candidate(object):
         self.cross_check = cross_check
         self.label = label
         self.validation = validation
+        # The question-feasibility verdict for the version actually delivered. Filled in by
+        # ``run_one`` after selection rather than passed to the constructor, because it can only be
+        # computed once ``pick_better`` has chosen: judging both candidates would mean two model
+        # calls to answer a question about one delivered material.
+        #
+        # Deliberately not part of the four-artifact invariant above. Those four must never be
+        # separated because a delivered script beside another version's score is a lie about the
+        # material; this is a judgement *about* the chosen four, and ``None`` here is a truthful
+        # "not judged" rather than a mismatch.
+        self.feasibility: Optional[Dict[str, Any]] = None
 
     @property
     def verdict(self) -> str:
@@ -148,6 +164,11 @@ class MaterialResult(object):
     __slots__ = ("slot_id", "scenario_id", "ok", "candidate", "selected_version", "route",
                  "reason", "detail", "note", "degraded", "degraded_reason", "timings",
                  "anchor_repairs", "warnings", "validation_findings",
+                 # The question-feasibility verdict, assigned by `run_one` after `_run_one` returns
+                 # (see `_attach_feasibility`). Not a constructor argument on purpose: every one of
+                 # `_run_one`'s twelve returns would otherwise have to pass it, which is the edit
+                 # this whole arrangement exists to avoid.
+                 "feasibility",
                  # Assigned by batch.py once the material is offered for selection. They are not
                  # constructor arguments because the Loop does not know about S3 or scenario keys
                  # -- it produces a material, and publication is somebody else's decision.
@@ -201,6 +222,10 @@ class MaterialResult(object):
         # would either hide these behind copy that says "does not affect use", or make every
         # word-count deviation read as a defect. The reader page renders them as reference notes.
         self.validation_findings = validation_findings or []
+        # `{}` and not `None`, so a reader never has to distinguish "no verdict yet" from "no
+        # feasibility concept" -- an empty dict is falsy either way, and `.get("outcome")` on it
+        # answers None rather than raising.
+        self.feasibility: Dict[str, Any] = {}
         self.material_id: Optional[str] = None
         self.scenario_key: Optional[str] = None
         self.group_key: Optional[str] = None
@@ -245,6 +270,11 @@ class MaterialResult(object):
             # Present but empty on the normal path. Always emitted rather than conditionally added,
             # so the frontend reads one shape and an absent key cannot be mistaken for "clean".
             "validation_findings": self.validation_findings,
+            # `question_feasibility_preflight.Verdict.as_dict()` verbatim: outcome / reasons / qr027 /
+            # justification. Question generation reads `outcome` and must not start unless it is one
+            # of the three deciding exits; this task records the verdict and does not act on it (the
+            # regenerate-and-refill decision belongs to §6.1 stage 4).
+            "feasibility": self.feasibility,
             "timings": self.timings,
         }
 
@@ -357,6 +387,71 @@ def _build_metrics_runner(scenario_id: str, slot_id: str) -> Any:
     return SandboxedMetrics("%s-%s" % (scenario_id, slot_id), paths.metrics_script())
 
 
+def _qr027_counts(validation: Any) -> Dict[str, Any]:
+    """The answer-variety counts from a validation result, for the feasibility judge.
+
+    The same selection ``question_feasibility_preflight._qr027_snapshot`` makes -- every ``qr027_*``
+    key present, whatever they are -- rather than the three the preflight names individually. A key
+    the validator adds later reaches the judge without an edit here, and the judge is told not to
+    apply thresholds to any of them, so a count it does not recognise costs nothing.
+
+    Never raises. A validation without metrics yields ``{}``, and the judge then answers about
+    everything except answer variety; the preflight decides separately whether the numbers it needs
+    are present (``VALIDATION_INCOMPLETE``), which is not this function's call to make.
+    """
+    metrics = getattr(validation, "metrics", None)
+    if not isinstance(metrics, dict):
+        return {}
+    return {key: value for key, value in metrics.items() if str(key).startswith("qr027_")}
+
+
+async def _attach_feasibility(result: MaterialResult, emit: Callable) -> None:
+    """Judge question feasibility for the delivered material and record the verdict on it.
+
+    **Never fails the slot, on any path.** By the time this runs the material is finished: generated,
+    validated, audited, possibly revised and re-audited. Turning a failure here into
+    ``ok=False`` would discard all of that -- and worse, ``audit_failed`` and ``unhandled_error`` are
+    both in ``batch.REFILLABLE_FAILURES``, so the slot would also spend a refill round regenerating a
+    material that was already fit to deliver. When the call cannot be completed the verdict is left to
+    be assembled from ``feasibility=None``, which the preflight answers with ``SEMANTICS_MISSING``:
+    "this could not be judged", which is true, and which stops question generation just as a rejection
+    would without claiming the material is at fault.
+
+    That is also why the ``except`` is broad. The three-attempt budget already covers
+    ``ModelCallError`` and ``ScriptError``; what is caught here is everything else, because the
+    alternative is an exception escaping into the slot task and being recorded as a refillable
+    failure of the whole material.
+    """
+    candidate = result.candidate
+    failure: Optional[str] = None
+    try:
+        feasibility = await _with_infra_retries(
+            lambda: agent_steps.feasibility_audit(
+                candidate.gen.material, candidate.gen.blueprint,
+                _qr027_counts(candidate.validation),
+            ),
+            "feasibility", emit,
+        )
+    except Exception as exc:  # noqa: BLE001 - see docstring: a verdict is never worth a slot
+        feasibility = None
+        failure = str(exc)[:200]
+    verdict = preflight_verdict(
+        candidate.validation.as_dict() if candidate.validation is not None else {},
+        feasibility,
+    )
+    candidate.feasibility = verdict
+    result.feasibility = verdict
+    # One event, and it carries `error` when the call could not be completed. Without that field the
+    # exhausted-retry case would leave no trace anywhere: `_with_infra_retries` emits `infra_retry`
+    # for the attempts it is about to retry and nothing at all when the last one fails, and the
+    # `SEMANTICS_MISSING` reason the preflight writes describes the absent reply, not why it is absent.
+    detail: Dict[str, Any] = {"outcome": verdict.get("outcome"),
+                              "reasons": (verdict.get("reasons") or [])[:3]}
+    if failure is not None:
+        detail["error"] = failure
+    await emit("feasibility_checked", detail)
+
+
 async def run_one(
     scenario: Any,
     slot_id: str = "slot-1",
@@ -373,15 +468,29 @@ async def run_one(
 
     When a caller supplies its own runner it also owns its lifetime; that is how a batch can share
     one session across a material's audit and re-audit.
+
+    **The feasibility judgment is attached here for exactly the same reason.** Eight of those twelve
+    returns are "delivered, but by a degraded route", and the verdict has to appear on every material
+    that reaches a user. Adding it inside ``_run_one`` would mean editing eight branches and trusting
+    the ninth to remember -- the failure this wrapper already exists to prevent. So ``_run_one`` is
+    left untouched and the judgment happens on the single path out.
+
+    It runs after ``metrics_runner.close()`` deliberately: the judge uses no metrics session, and a
+    remote environment held open across one more model call is 25-38s of leaked session per material.
     """
     owns_runner = metrics_runner is None
     if owns_runner:
         metrics_runner = _build_metrics_runner(scenario.id, slot_id)
     try:
-        return await _run_one(scenario, slot_id, emit, allow_revision, metrics_runner)
+        result = await _run_one(scenario, slot_id, emit, allow_revision, metrics_runner)
     finally:
         if owns_runner:
             await metrics_runner.close()
+    # Only a delivered material can be judged. A failed slot has no candidate, and nothing about
+    # question feasibility is answerable for a material that does not exist.
+    if result.ok and result.candidate is not None:
+        await _attach_feasibility(result, emit or _noop_emit)
+    return result
 
 
 async def _run_one(
@@ -525,7 +634,12 @@ async def _run_one(
 
     # The one place the plan and the audit meet: pure Python, no model, no token cost.
     cross_a = crosscheck(gen.blueprint, audit_a)
-    initial = Candidate(gen, audit_a, cross_a, "initial")
+    # `result` is the validation of the material `gen` actually holds, on both paths into here: the
+    # attempt that passed, or -- when none did -- the last attempt, which is the one delivered. It is
+    # attached because the feasibility verdict is assembled from the delivered version's own metrics,
+    # and re-running the validator in `run_one` to recover numbers already computed here would be
+    # both slower and a second chance to disagree.
+    initial = Candidate(gen, audit_a, cross_a, "initial", result)
     await emit("audited", {"verdict": initial.verdict, "score": initial.score,
                            "cross_check_ok": cross_a.ok})
 

@@ -1,4 +1,4 @@
-"""The two agents, each holding a pool of skills it chooses from.
+"""The three agents, each holding a pool of skills it chooses from.
 
 Replaces the previous shape, where every step built a fresh ``Agent`` and handed it exactly one
 skill whose instructions Python had already assembled. The model had no choice to make, and adding
@@ -6,11 +6,20 @@ a subject meant editing the backend. Here each agent sees every skill in its poo
 name + description and activates the one that fits, so a reading or writing capability is a new
 directory rather than a code change.
 
-**Two pools, not one agent with all skills.** The generator and the auditor are separate agents
+**Separate pools, not one agent with all skills.** The generator and the auditor are separate agents
 because the auditor's value comes from what it has *not* seen. One agent holding both pools could
 activate the generate skill while auditing and read the authoring specification's private planning
 rules; worse, a single conversation would carry the plan it had just written into the audit of it.
-Two agents share no state at all.
+The agents share no state at all.
+
+**The third pool is non-blind, and that is why it is a third pool.** ``feasibility`` judges whether
+ten reliable items can be written from a specific plan, so it is handed the script and the plan
+together -- a judgment neither one alone supports. It cannot live in ``audit``: that pool holding no
+plan schema is one of the three legs keeping the material audit blind, and ci_gates gate 1 fails on
+the attempt. It cannot live in ``generate`` either, because a pool member is offered to the model by
+name and description, so the generator would be able to activate it mid-run and approve its own
+work. It runs after both audits are finished, so what it reads cannot contaminate a blind conclusion
+that has already been reached.
 
 **Where the tools differ, and why.**
 
@@ -54,9 +63,12 @@ from .model import provider
 __all__ = [
     "AUDIT_POOL",
     "AUDIT_SYSTEM_PROMPT",
+    "FEASIBILITY_POOL",
+    "FEASIBILITY_SYSTEM_PROMPT",
     "GENERATE_POOL",
     "GENERATE_SYSTEM_PROMPT",
     "build_audit_agent",
+    "build_feasibility_agent",
     "build_generate_agent",
     "pool_dir",
 ]
@@ -64,14 +76,23 @@ __all__ = [
 # Pool directory names under the skills root. Each holds one directory per subject.
 GENERATE_POOL = "generate"
 AUDIT_POOL = "audit"
+FEASIBILITY_POOL = "feasibility"
 
 # Reasoning effort per role. The auditor runs higher: a verdict that drifts between runs is worse
 # than a slow one, because the revision instructions and the pick-better decision are both built
-# from it.
+# from it. The feasibility judge matches it for the same reason -- its `false` costs a full material
+# regeneration, so a conclusion that drifts between runs is expensive in both directions.
 GENERATE_EFFORT = "medium"
 AUDIT_EFFORT = "high"
+FEASIBILITY_EFFORT = "high"
 GENERATE_MAX_TOKENS = 32000
 AUDIT_MAX_TOKENS = 32000
+# Matched to the other two even though the reply is only a few booleans and a short reason list.
+# `max_output_tokens` is one budget shared with the reasoning tokens (`provider.build_model` passes
+# both in the same params), so a ceiling sized for the visible answer at `effort="high"` would be
+# spent on reasoning and truncate the JSON -- which arrives as a parse failure and burns three
+# retries on a call that was working. Billing is per token produced, so the headroom costs nothing.
+FEASIBILITY_MAX_TOKENS = 32000
 
 # Procedural only. Every authoring and grading rule lives in the skill files, so neither prompt
 # names a subject -- that is what lets a second pool member work without touching this file.
@@ -101,6 +122,23 @@ AUDIT_SYSTEM_PROMPT = (
     "because it was made without it. A detail you cannot recover from the script is a real defect, "
     "because a candidate hearing the recording once will not recover it either.\n\n"
     "Reply with the JSON the skill's schema specifies and nothing else."
+)
+
+FEASIBILITY_SYSTEM_PROMPT = (
+    "You are a listening-material question-feasibility specialist.\n\n"
+    "Your available skills are listed in your system context. Decide which one covers the material "
+    "you were sent, and activate it with the `skills` tool before judging anything. Then execute its "
+    "workflow completely, reading the rubric and the schema it points to with `file_read`.\n\n"
+    "You are given the script and the generator's information-point plan together, and that is "
+    "deliberate: you answer whether reliable items can be written from those specific points, which "
+    "cannot be judged from either one alone. You are not auditing the material -- its quality was "
+    "already decided by an auditor that never saw the plan -- so produce no verdict and no score.\n\n"
+    "Judge the plan as given. Do not propose changes to the script, do not propose different "
+    "information points, and do not recalculate the counts the request already carries.\n\n"
+    "Reply with one JSON object conforming to the skill's schema and nothing else: no Markdown "
+    "fences, no commentary before or after it. Every negative conclusion must carry a specific "
+    "reason -- a rejection here costs a full regeneration of the material, and one nobody can act on "
+    "is worse than none."
 )
 
 
@@ -301,4 +339,30 @@ def build_audit_agent() -> Any:
     return _build(
         AUDIT_POOL, AUDIT_SYSTEM_PROMPT,
         effort=AUDIT_EFFORT, max_tokens=AUDIT_MAX_TOKENS, with_shell=False,
+    )
+
+
+def build_feasibility_agent() -> Any:
+    """A non-blind judge over the feasibility pool. No ``shell`` -- and for a different reason.
+
+    The auditor is denied ``shell`` because a shell would let it read the generator's plan, which is
+    the one thing the audit side cannot survive. This agent is *given* the plan, so that reason does
+    not apply. It has no shell because it has nothing to run: the answer-variety counts arrive
+    pre-calculated, the deterministic checks were already made by the validator, and the verdict is
+    assembled by ``question_feasibility_preflight``. Granting ``shell`` would hand out unsandboxed
+    command execution (``strands_tools.shell`` bypasses ``agent.sandbox`` -- see the module
+    docstring) in exchange for nothing.
+
+    **A third pool rather than a member of the audit pool.** A skill that reads blueprints cannot
+    live in ``skills/audit/`` without breaking "the audit pool physically contains no plan schema",
+    which is one of the three things keeping the material audit blind -- and ci_gates gate 1 fails
+    immediately if it is tried, measured. It is not in the generate pool either: pools are offered to
+    the model by name and description, so a generator holding this skill could activate it mid-run
+    and approve its own work.
+
+    Built per call like the other two, so no material's judgment can inherit another's.
+    """
+    return _build(
+        FEASIBILITY_POOL, FEASIBILITY_SYSTEM_PROMPT,
+        effort=FEASIBILITY_EFFORT, max_tokens=FEASIBILITY_MAX_TOKENS, with_shell=False,
     )
