@@ -20,9 +20,16 @@ const repoRoot = resolve(here, '..', '..')
 const fxDir = resolve(repoRoot, 'skills/shared/tests/fixtures')
 const outPath = resolve(here, '..', 'src/mocks/fixtures/generated.ts')
 
+// BLUEPRINT_V1_LEGACY earns its place twice over. It is the frontend's only REAL v1 record — the
+// alternative, hand-downgrading the v2 fixture inside a test, can only ever contain the fields
+// whoever wrote the test remembered to change — and its `: Blueprint` annotation makes tsc assert
+// that an archived record still satisfies the contract the frontend generates from the READ schema.
+// If someone points codegen back at the write-side schema, this line stops compiling: `item_form:
+// "multiple_choice"` and `form_group: null` are both in there.
 const FILES = [
   { file: 'material_valid.json', name: 'MATERIAL_VALID', type: 'Material' },
   { file: 'blueprint_valid.json', name: 'BLUEPRINT_VALID', type: 'Blueprint' },
+  { file: 'blueprint_v1_legacy.json', name: 'BLUEPRINT_V1_LEGACY', type: 'Blueprint' },
   { file: 'blueprint_bad_anchor.json', name: 'BLUEPRINT_BAD_ANCHOR', type: 'Blueprint' },
   { file: 'audit_valid.json', name: 'AUDIT_VALID', type: 'Audit' },
   { file: 'audit_aligned.json', name: 'AUDIT_ALIGNED', type: 'Audit' },

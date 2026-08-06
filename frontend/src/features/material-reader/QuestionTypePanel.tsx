@@ -26,13 +26,19 @@ export function QuestionTypePanel({ analysis }: { analysis: FormGroupAnalysis })
             const groups = analysis.groups.filter((g) => g.itemForm === row.itemForm)
             return (
               <tr key={row.itemForm}>
+                {/* row.itemForm 是 CurrentLayout（三值），所以字形表可以直接索引；历史版式没有行，
+                    也没有字形——见 domain/types.ts 上那段注释。 */}
                 <td>
                   {ITEM_FORM_GLYPH[row.itemForm]} {row.label}
                 </td>
                 <td>
                   {row.itemFormNumbers.map((n) => circled(n)).join('') || '—'}{' '}
-                  {/* 两份声明本该一致；不一致说明产物自相矛盾，得退回重生成。 */}
-                  {!row.agrees && (
+                  {/*
+                    两份声明本该一致；不一致说明产物自相矛盾，得退回重生成。
+                    版本未知时不出这个标：coverage 读不出来，`agrees` 必然为 false，
+                    挂上去就是把「读不懂」说成「材料矛盾」。
+                  */}
+                  {c.known && !row.agrees && (
                     <span className="flag flag-bad" title="两处记录对不上，材料本身自相矛盾">
                       记录矛盾
                     </span>
@@ -67,7 +73,16 @@ export function QuestionTypePanel({ analysis }: { analysis: FormGroupAnalysis })
       <div className="row" style={{ marginTop: 8, fontSize: 12 }}>
         <span>
           十道题是否齐备：
-          {c.coversAllTen ? (
+          {/*
+            未知版本单独说一句，不能落进下面的「没有着落」分支。那个分支会列出第 1…10 题全部缺失
+            ——对一个明明声明了十个点、只是本前端读不懂其合同的记录，那是在指控材料有问题，
+            而真正该说的是「这个页面太旧」。这里也不猜版本：`known` 由版本字段本身决定。
+          */}
+          {!c.known ? (
+            <span className="flag flag-warn" title="这份记录声明的 blueprint 版本本页面尚不支持，题型信息未做判断">
+              版本未知，题型信息暂不解读
+            </span>
+          ) : c.coversAllTen ? (
             <span className="flag flag-good">1–10 题各有着落</span>
           ) : (
             <span className="flag flag-bad">

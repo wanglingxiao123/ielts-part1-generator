@@ -13,13 +13,19 @@
 import type { ItemForm } from '@/contracts'
 import type { Thresholds } from '@/config/runtimeConfig'
 import { displayTurns } from './joinArtifacts'
-import { itemLayout, layoutCoverage } from './blueprintVersion'
+import { CURRENT_LAYOUTS, coverageAvailable, itemLayout, layoutCoverage } from './blueprintVersion'
+import type { CurrentLayout } from './blueprintVersion'
 import { ITEM_FORM_LABEL } from './types'
 import type { ViewMaterial } from './types'
 
 export interface FormGroupSummary {
   /** null → ungrouped items of this item_form (form_group === null). */
   name: string | null
+  /**
+   * `ItemForm` (four values), unlike `CoverageRow.itemForm`. A group is grouped-up REAL DATA, so a
+   * v1 record's `multiple_choice` points form a group like any other; narrowing here would mean
+   * dropping them from the grouping and under-reporting what an archived material contains.
+   */
   itemForm: ItemForm
   /**
    * True when `form_group` is null, i.e. these points were never declared to
@@ -37,7 +43,14 @@ export interface FormGroupSummary {
 }
 
 export interface CoverageRow {
-  itemForm: ItemForm
+  /**
+   * `CurrentLayout`, not `ItemForm`: the table has exactly one row per layout the UI renders.
+   *
+   * A v1 record's `multiple_choice` points get no row — deliberately, and the narrower type is what
+   * says so. They are still counted in `consistency` below, which asks whether the artefact's two
+   * views of ITSELF agree and must therefore see every layout the data declares.
+   */
+  itemForm: CurrentLayout
   label: string
   /** Numbers as declared by the coverage map (either version's name). */
   coverageNumbers: number[]
@@ -55,6 +68,15 @@ export interface CoverageConsistency {
   /** Item numbers where item_form disagrees with the coverage map. */
   disagreeingNumbers: number[]
   consistent: boolean
+  /**
+   * False when the record declares a version this build does not know, in which case every field
+   * above is meaningless rather than merely negative and the UI must say so instead of rendering it.
+   *
+   * Without this flag an unknown-version record produced `missingNumbers: [1..10]` — the panel then
+   * told the reviewer that all ten points were absent from a record that in fact declares them all,
+   * which is a defect report against the material for what is really a stale reader.
+   */
+  known: boolean
 }
 
 export interface FormGroupAnalysis {
@@ -65,7 +87,7 @@ export interface FormGroupAnalysis {
   hasViableQuestionGroup: boolean
 }
 
-const FORMS: ItemForm[] = ['form', 'table', 'note']
+const FORMS: readonly CurrentLayout[] = CURRENT_LAYOUTS
 
 export function analyseFormGroups(
   view: ViewMaterial,
@@ -135,6 +157,10 @@ export function analyseFormGroups(
   }
   groups.sort((a, b) => a.turnStart - b.turnStart)
 
+  // Version-keyed: `layoutCoverage()` reads the field THIS version declares, and returns empty for a
+  // version this build does not know. `known` is what separates "declares no layouts" from "cannot
+  // be interpreted" — see the guard on the consistency result below.
+  const known = coverageAvailable(view.blueprint)
   const coverage = layoutCoverage(view.blueprint)
   const rows: CoverageRow[] = FORMS.map((form) => {
     const coverageNumbers = [...(coverage[form] ?? [])].sort((a, b) => a - b)
@@ -187,14 +213,34 @@ export function analyseFormGroups(
   return {
     groups,
     rows,
-    consistency: {
-      coversAllTen,
-      duplicateNumbers,
-      missingNumbers,
-      extraNumbers,
-      disagreeingNumbers,
-      consistent: coversAllTen && disagreeingNumbers.length === 0,
-    },
+    /**
+     * An unknown version reports NOTHING rather than everything-is-missing.
+     *
+     * The numbers above are all computed against an empty coverage map in that case, so they would
+     * read as "all ten points absent, all ten self-contradictory" — a maximally alarming defect
+     * report about a record this build simply cannot interpret. `consistent: false` is kept (nothing
+     * was verified, so nothing may be claimed as consistent) while the specific accusations are
+     * withheld, and `known: false` tells the panel to explain itself instead.
+     */
+    consistency: known
+      ? {
+          coversAllTen,
+          duplicateNumbers,
+          missingNumbers,
+          extraNumbers,
+          disagreeingNumbers,
+          consistent: coversAllTen && disagreeingNumbers.length === 0,
+          known: true,
+        }
+      : {
+          coversAllTen: false,
+          duplicateNumbers: [],
+          missingNumbers: [],
+          extraNumbers: [],
+          disagreeingNumbers: [],
+          consistent: false,
+          known: false,
+        },
     hasViableQuestionGroup: groups.some((g) => g.canFormQuestion),
   }
 }

@@ -328,7 +328,7 @@ Agent 先看到池内 Skill 的 name + description
 | 目录 | `skills/generate/generate-listening-part1/` | `skills/audit/audit-listening-part1/` |
 | 入口 | `SKILL.md` | `SKILL.md` |
 | 规范 | `references/specification.md` | `references/audit-rubric.md` |
-| Schema | `material.schema.json`、`blueprint.schema.json` | `audit.schema.json` |
+| Schema | `material.schema.json`、`blueprint.schema.json`（写侧，只允许 v2）、`blueprint.read.schema.json`（读侧，v1/v2 都收） | `audit.schema.json` |
 | 脚本 | `validate_part1.py` | `audit_metrics.py` |
 
 生成结果的统一外壳是：

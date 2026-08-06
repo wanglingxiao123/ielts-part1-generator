@@ -11,6 +11,7 @@ import {
   AUDIT_ALIGNED,
   AUDIT_VALID,
   BLUEPRINT_BAD_ANCHOR,
+  BLUEPRINT_V1_LEGACY,
   BLUEPRINT_VALID,
   MATERIAL_VALID,
 } from './generated'
@@ -19,6 +20,17 @@ const clone = <T,>(x: T): T => structuredClone(x)
 
 export const BASE_MATERIAL: Material = MATERIAL_VALID
 export const BASE_BLUEPRINT: Blueprint = BLUEPRINT_VALID
+/**
+ * 真实 v1 记录：无版本字段、旧 coverage 名 `question_type_coverage`、三个点是
+ * `item_form: "multiple_choice"`、这三个点的 `form_group` 为 null、`note` 是空数组。
+ *
+ * 与同一份 v2 夹具同源（`build_fixtures.py` 的 downgrade），所以脚本、轮次、evidence 全部相同，
+ * 唯一的变量就是版本形态——前端读 v1 出问题时，可以确定不是材料换了。
+ *
+ * 前端此前是在测试里把 v2 夹具手工降级。那种写法只能包含「写测试的人当时记得改的字段」：真实
+ * v1 的空 `note: []` 和 `multiple_choice` 都不在其中，兼容分支因此从未真正被测到。
+ */
+export const BASE_BLUEPRINT_V1: Blueprint = BLUEPRINT_V1_LEGACY
 /** audit_valid has a genuine unrecoverable point (blind seq 5 sits at turn 16). */
 export const BASE_AUDIT_WITH_GAP: Audit = AUDIT_VALID
 /** audit_aligned matches the blueprint one-for-one. */
@@ -248,6 +260,8 @@ export type FixtureKind =
   | 'anchorCaseDiffers'
   /** evidence 在脚本里不存在 → 挪不了，这一条旁注不显示。 */
   | 'anchorUnresolvable'
+  /** 真实 v1 归档记录：旧 coverage 名 + `multiple_choice` + nullable group（见 BASE_BLUEPRINT_V1）。 */
+  | 'v1Legacy'
 
 export interface RecordOverrides {
   materialId: string
@@ -345,6 +359,16 @@ export function buildRecord(kind: FixtureKind, o: RecordOverrides): MaterialReco
         ...base,
         verdict: 'PASS',
         blueprint: unresolvableAnchorBlueprint(),
+        audit: BASE_AUDIT_ALIGNED,
+        cross_check: CROSS_CHECK_ALIGNED,
+      }
+    case 'v1Legacy':
+      // 归档记录本来就是 PASS 过的成品，审核结论沿用 aligned 那一份：这一套要检验的是「旧形态还
+      // 读得对吗」，掺进 verdict 或 cross_check 的差异只会让失败原因变得难分辨。
+      return {
+        ...base,
+        verdict: 'PASS',
+        blueprint: BASE_BLUEPRINT_V1,
         audit: BASE_AUDIT_ALIGNED,
         cross_check: CROSS_CHECK_ALIGNED,
       }

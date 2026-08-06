@@ -5,7 +5,6 @@ import type {
   Blueprint,
   BlueprintItem,
   FindingSeverity,
-  ItemForm,
   ItemType,
   Material,
   SpeakerId,
@@ -13,6 +12,8 @@ import type {
 } from '@/contracts'
 import type { CrossCheck } from '@/contracts/api'
 import type { AnchorOmission, AnchorRepair } from './anchors'
+import { isCurrentLayout } from './blueprintVersion'
+import type { CurrentLayout } from './blueprintVersion'
 
 /**
  * 说话人标签。客户的原话：「是 speak1 和 speak2，而不是你现在的信息持有方和需求方什么的」。
@@ -82,13 +83,21 @@ export interface ViewMaterial {
   anchorOmissions: AnchorOmission[]
 }
 
-export const ITEM_FORM_GLYPH: Record<ItemForm, string> = {
+/**
+ * 只给**本产品还在出的三种版式**配字形和名字，键是 `CurrentLayout` 而不是 `ItemForm`。
+ *
+ * 这两个类型不一样，差别就是这里要表达的：`ItemForm` 有四个值，因为读侧 schema 必须收下带
+ * `multiple_choice` 的历史记录；能渲染的只有三种。若按 `ItemForm` 建表，TS 会要求补一个
+ * `multiple_choice` 的字形和中文名——那等于把客户已经删掉的版式重新摆到命题人面前，看着像仍可选。
+ * 历史值不是「缺一个标签」，而是「不该有标签」，所以走下面的 `layoutLabel` 回退。
+ */
+export const ITEM_FORM_GLYPH: Record<CurrentLayout, string> = {
   form: '▤',
   table: '▦',
   note: '▭',
 }
 
-export const ITEM_FORM_LABEL: Record<ItemForm, string> = {
+export const ITEM_FORM_LABEL: Record<CurrentLayout, string> = {
   form: '表单',
   table: '表格',
   note: '填空',
@@ -97,12 +106,12 @@ export const ITEM_FORM_LABEL: Record<ItemForm, string> = {
 /**
  * 标签查找必须走这里，不要直接索引 `ITEM_FORM_LABEL`。
  *
- * v1 记录里的 `item_form` 可能是 `multiple_choice`——已不在 union 内，但真实数据里就有。直接索引
- * 会渲染出 `undefined：①②`。回退用原字符串而不是「未知」：读的人需要知道这份历史记录声明的到底
- * 是什么，才判断得出面板说的对不对。
+ * v1 记录里的 `item_form` 可能是 `multiple_choice`——真实数据里就有，因此在 `ItemForm` union 内，
+ * 但不在上面两张表内。直接索引会渲染出 `undefined：①②`。回退用原字符串而不是「未知」：读的人需要
+ * 知道这份历史记录声明的到底是什么，才判断得出面板说的对不对。
  */
 export function layoutLabel(layout: string): string {
-  return ITEM_FORM_LABEL[layout as ItemForm] ?? layout
+  return isCurrentLayout(layout) ? ITEM_FORM_LABEL[layout] : layout
 }
 
 /**

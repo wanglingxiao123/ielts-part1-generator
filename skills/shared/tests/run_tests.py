@@ -84,6 +84,41 @@ def validate_mutated(mutate, *extra: str, base: str = "blueprint_valid.json") ->
     return run(VALIDATE, str(FIXTURES / "material_valid.json"), "--blueprint", str(path), *extra)
 
 
+SCHEMA_NAMES = (
+    "material.schema.json",
+    "blueprint.schema.json",
+    "blueprint.read.schema.json",
+    "audit.schema.json",
+)
+
+
+def _validator(name: str):
+    """A validator that can resolve this schema's cross-file ``$ref``s.
+
+    ``blueprint.schema.json`` is ``allOf: [blueprint.read.schema.json, <v2 narrowing>]``, so it is
+    meaningless without the referenced document. A bare ``Draft7Validator(schema)`` would try to
+    fetch ``blueprint.read.schema.json`` over the network and fail -- or worse, in a future
+    jsonschema, resolve to nothing and report zero errors on everything. The store is built from the
+    directory rather than listing files, so a schema added later is resolvable without editing this.
+    """
+    from jsonschema import Draft7Validator, RefResolver
+
+    store: dict[str, object] = {}
+    for directory in (GENERATE_SCHEMAS, AUDIT_SCHEMAS):
+        for path in sorted(directory.glob("*.json")):
+            document = json.loads(path.read_text(encoding="utf-8"))
+            store[path.name] = document
+            store[path.resolve().as_uri()] = document
+    target = _schema(name)
+    document = store[target.name]
+    return Draft7Validator(document, resolver=RefResolver(
+        base_uri=target.resolve().as_uri(), referrer=document, store=store))
+
+
+def _schema_errors(name: str, data: object) -> list[str]:
+    return [e.message for e in _validator(name).iter_errors(data)]
+
+
 def test_schemas_are_valid() -> None:
     print("schemas")
     try:
@@ -91,7 +126,7 @@ def test_schemas_are_valid() -> None:
     except ImportError:
         print("  SKIP  jsonschema not installed")
         return
-    for name in ("material.schema.json", "blueprint.schema.json", "audit.schema.json"):
+    for name in SCHEMA_NAMES:
         try:
             Draft7Validator.check_schema(json.loads(_schema(name).read_text(encoding="utf-8")))
             check(f"{name} is valid Draft-07", True)
@@ -104,10 +139,109 @@ def test_schemas_are_valid() -> None:
     for label, data, schema in (
         ("material", material, "material.schema.json"),
         ("blueprint", blueprint, "blueprint.schema.json"),
+        ("blueprint (read side)", blueprint, "blueprint.read.schema.json"),
         ("audit", audit, "audit.schema.json"),
     ):
-        errors = list(Draft7Validator(json.loads(_schema(schema).read_text(encoding="utf-8"))).iter_errors(data))
-        check(f"{label} fixture matches its schema", not errors, "; ".join(e.message for e in errors[:3]))
+        errors = _schema_errors(schema, data)
+        check(f"{label} fixture matches its schema", not errors, "; ".join(errors[:3]))
+
+
+def test_write_and_read_schemas_disagree_where_they_should() -> None:
+    """The two blueprint schemas answer different questions, so they must differ on real inputs.
+
+    Requirement: "明确 schema 是写侧 schema，或实现真正的 v1/v2 读侧 schema，不要让文档与行为冲突."
+    Before this split, ``blueprint.schema.json`` described itself as the write-side contract while an
+    ``else`` branch required v1's ``question_type_coverage`` -- so it also validated the archived
+    records it claimed not to govern. Doc and behaviour said different things and nothing caught it.
+
+    Every case below is a shape that must land differently on the two documents, or land the same on
+    both for a stated reason. A single merged schema cannot satisfy this table: JSON Schema branches
+    only intersect, so one document admitting an archived record also lets the generator emit one.
+    """
+    print("write-side vs read-side blueprint schema")
+    try:
+        import jsonschema  # noqa: F401
+    except ImportError:
+        print("  SKIP  jsonschema not installed")
+        return
+
+    WRITE, READ = "blueprint.schema.json", "blueprint.read.schema.json"
+    v1 = json.loads((FIXTURES / "blueprint_v1_legacy.json").read_text(encoding="utf-8"))
+    v2 = json.loads((FIXTURES / "blueprint_valid.json").read_text(encoding="utf-8"))
+
+    def mutate(base: dict, fn) -> dict:
+        payload = copy.deepcopy(base)
+        fn(payload)
+        return payload
+
+    def add_response_form(bp: dict) -> None:
+        bp["items"][0]["response_form"] = "word"
+
+    def both_coverage_names(bp: dict) -> None:
+        bp["completion_layout_coverage"] = bp["question_type_coverage"]
+
+    def drop_coverage(bp: dict) -> None:
+        del bp["question_type_coverage"]
+
+    def to_mc(bp: dict) -> None:
+        bp["items"][0]["item_form"] = "multiple_choice"
+
+    def null_group(bp: dict) -> None:
+        bp["items"][0]["form_group"] = None
+
+    def drop_response_form(bp: dict) -> None:
+        del bp["items"][0]["response_form"]
+
+    def rename_coverage(bp: dict) -> None:
+        bp["question_type_coverage"] = bp.pop("completion_layout_coverage")
+
+    def drop_version(bp: dict) -> None:
+        del bp["blueprint_schema_version"]
+
+    def bogus_layout(bp: dict) -> None:
+        bp["items"][0]["item_form"] = "essay"
+
+    def version_three(bp: dict) -> None:
+        bp["blueprint_schema_version"] = 3
+
+    # (label, payload, want_write_ok, want_read_ok)
+    cases = (
+        # The split itself: one real archived record, two different and both-correct answers.
+        ("the real v1 archive", v1, False, True),
+        ("the v2 fixture", v2, True, True),
+        # v1 leniency is bounded. A v1 carrying v2's item fields is a v2 that lost its version field,
+        # and reading it as a lenient v1 would skip every v2 recomputation on it.
+        ("v1 + a v2 item field", mutate(v1, add_response_form), False, False),
+        ("v1 carrying both coverage names", mutate(v1, both_coverage_names), False, False),
+        ("v1 with no coverage map at all", mutate(v1, drop_coverage), False, False),
+        ("v1 + a layout that never existed", mutate(v1, bogus_layout), False, False),
+        # Requirement 2's second half: v2 is strict on BOTH sides. Read leniency is for records that
+        # predate the contract, not for records that declare it and then break it.
+        ("v2 + multiple_choice", mutate(v2, to_mc), False, False),
+        ("v2 + a null form_group", mutate(v2, null_group), False, False),
+        ("v2 missing response_form", mutate(v2, drop_response_form), False, False),
+        ("v2 using the v1 coverage name", mutate(v2, rename_coverage), False, False),
+        # The one line that turns the read contract into a write contract.
+        ("a v2-shaped record with no version field", mutate(v2, drop_version), False, False),
+        # 'Readable' means v1 or v2. An unknown version is to be surfaced, not rendered through
+        # whichever field name it happens to carry.
+        ("version 3", mutate(v2, version_three), False, False),
+    )
+    for label, payload, write_ok, read_ok in cases:
+        for schema, want in ((WRITE, write_ok), (READ, read_ok)):
+            errors = _schema_errors(schema, payload)
+            side = "write" if schema is WRITE else "read"
+            check(f"{side}: {label} -> {'accepted' if want else 'rejected'}",
+                  (not errors) == want, "; ".join(errors[:3]) or "accepted unexpectedly")
+
+    # Asserting the DIRECTION of the difference, not merely that a difference exists: the write side
+    # must be strictly the narrower of the two. If a future edit made the write schema accept
+    # something the read schema rejects, every case above could still pass while the two documents
+    # had quietly swapped roles.
+    write_only = [label for label, payload, w, r in cases if w and not r]
+    check("nothing is writable but unreadable", not write_only, str(write_only))
+    check("the archived record is the case that separates them",
+          bool(_schema_errors(WRITE, v1)) and not _schema_errors(READ, v1))
 
 
 def test_warning_does_not_fail() -> None:
@@ -558,6 +692,78 @@ def test_blueprint_version_is_read_not_guessed() -> None:
           result.returncode == 1 and "response_form" in result.stdout, result.stdout)
 
 
+def test_v1_leniency_is_scoped_to_the_layout_enum() -> None:
+    """v1 reading tolerates `multiple_choice` and nothing else, and never for a v2 record.
+
+    Requirements: "v1 读取允许历史 MC；默认新生成和所有 v2 仍严格禁止 MC."
+
+    Two failure directions, both real. Too strict and every archived record looks malformed halfway
+    through -- which is what happened when the coverage-key check exempted MC inline while the
+    per-item check did not. Too lenient and `--allow-v1` becomes a blanket "skip the layout rules"
+    switch: new generation would be one forgotten flag away from writing a layout the client removed.
+
+    So leniency is keyed on the READ version, not on the flag. `--allow-v1` only decides whether a
+    versionless record is an error; it does not widen what a v2 record may contain. And the widening
+    stops at the enum: a layout that never existed is still an error under v1, and the homogeneity
+    rule is not relaxed at all -- measured, all 9 MC points in every archived record and capture in
+    this repo have `form_group: null`, so no real record needs a mixed group tolerated.
+    """
+    print("v1 layout leniency is scoped")
+
+    v1_ok = validate("blueprint_v1_legacy.json", "--allow-v1")
+    # Asserted on the MESSAGES, not on the exit code. The archived record has three MC points and a
+    # `multiple_choice` coverage key; a bare returncode check would keep passing if leniency were
+    # removed from one of the two checks and re-added as some other error the fixture also trips.
+    check("the archived v1 record's multiple_choice draws no layout complaint",
+          v1_ok.returncode == 0
+          and "item_form must be one" not in v1_ok.stdout
+          and "unknown layout" not in v1_ok.stdout,
+          v1_ok.stdout)
+
+    def to_mc(bp: dict) -> None:
+        """One v2 item becomes MC, with coverage moved to match.
+
+        Coverage is kept in agreement on purpose: otherwise the cross-check fires and the case would
+        pass on a reason it is not about, which is how this kind of test goes vacuous.
+        """
+        bp["items"][0]["item_form"] = "multiple_choice"
+        for numbers in bp["completion_layout_coverage"].values():
+            if 1 in numbers:
+                numbers.remove(1)
+        bp["completion_layout_coverage"]["multiple_choice"] = [1]
+
+    for label, extra in (("by default", ()), ("even with --allow-v1", ("--allow-v1",))):
+        result = validate_mutated(to_mc, *extra)
+        check(f"a v2 record carrying multiple_choice is rejected {label}",
+              result.returncode == 1
+              and "item_form must be one of ['form', 'note', 'table']" in result.stdout
+              and "unknown layout 'multiple_choice'" in result.stdout,
+              result.stdout[:600])
+
+    def to_invented_layout(bp: dict) -> None:
+        bp["items"][4]["item_form"] = "matching"
+        bp["question_type_coverage"]["matching"] = bp["question_type_coverage"].pop("multiple_choice")
+
+    result = validate_mutated(to_invented_layout, "--allow-v1", base="blueprint_v1_legacy.json")
+    check("a v1 record carrying a layout that never existed is still rejected",
+          result.returncode == 1 and "item_form must be one" in result.stdout, result.stdout[:600])
+
+    def mc_joins_a_named_group(bp: dict) -> None:
+        """The MC point stops being standalone and joins the form group.
+
+        This is the case leniency deliberately does NOT cover: the group is then heterogeneous, and
+        relaxing that would weaken a v2 constraint to buy a compatibility no real record needs.
+
+        Coverage is left alone -- item 5 keeps its `multiple_choice` layout, so it stays under the
+        `multiple_choice` key and the cross-check has nothing to say. Only the grouping changes.
+        """
+        bp["items"][4]["form_group"] = "A"
+
+    result = validate_mutated(mc_joins_a_named_group, "--allow-v1", base="blueprint_v1_legacy.json")
+    check("v1 leniency does not extend to a group mixing multiple_choice with form",
+          result.returncode == 1 and "mixes item_form values" in result.stdout, result.stdout[:600])
+
+
 def test_response_form_derivation() -> None:
     """Table-driven, because the derivation is where this field can quietly go wrong.
 
@@ -997,6 +1203,7 @@ def test_archive_samples_do_not_crash() -> None:
 def main() -> int:
     for suite in (
         test_schemas_are_valid,
+        test_write_and_read_schemas_disagree_where_they_should,
         test_warning_does_not_fail,
         test_new_checks_catch_defects,
         test_malformed_turns_stay_reportable,
@@ -1006,6 +1213,7 @@ def main() -> int:
         test_remaining_rules_do_not_reject_real_papers,
         test_grouping_cannot_be_faked,
         test_blueprint_version_is_read_not_guessed,
+        test_v1_leniency_is_scoped_to_the_layout_enum,
         test_response_form_derivation,
         test_v2_declarations_are_recomputed,
         test_group_constraints_are_distinguishable,

@@ -342,8 +342,22 @@ def main() -> None:
         mutate(copy)
         write(name, copy)
 
-    # A v1 record: no version field, the v1 coverage name, and the nullable form_group v1 allowed.
-    # This is the read-compatibility input, not a defect -- it must PASS with --allow-v1.
+    # A REAL v1 record. This is the read-compatibility input, not a defect -- it must PASS with
+    # --allow-v1, and it is the only fixture that exercises the v1 branch end to end.
+    #
+    # Every shape here was copied off the captured batch in
+    # frontend/src/api/__fixtures__/real-batch.sse.txt rather than invented:
+    #   - no version field, and the v1 coverage NAME (question_type_coverage);
+    #   - `item_form: "multiple_choice"` on two points -- the layout the client removed, which
+    #     archived records still carry. Without these the v1 branch was never really tested: the
+    #     old downgrade produced a record that also satisfied v2's item_form enum, so the whole
+    #     leniency could have been absent and every test would still have passed;
+    #   - those MC points ungrouped (`form_group: null`). Measured over every archived blueprint and
+    #     capture in the repo: all 9 real MC points are ungrouped, none sits in a named group. So the
+    #     fixture must NOT put one in a group -- that would demand leniency no real record needs;
+    #   - `note: []`, an empty layout list. The real capture has one, and an empty array is exactly
+    #     what a `.filter()`/`.flat()` bug silently swallows;
+    #   - nullable `form_group`, which v1 allowed to mean "standalone gap-fill".
     def downgrade(bp: dict) -> None:
         bp.pop("blueprint_schema_version")
         bp["question_type_coverage"] = bp.pop("completion_layout_coverage")
@@ -352,6 +366,20 @@ def main() -> None:
                 item.pop(key)
             if item["item_form"] == "note":
                 item["form_group"] = None
+        # All three note points (5, 6, 7) become MC, which empties `note` exactly as the real capture
+        # does. They are already ungrouped by the loop above, matching the measured reality that no
+        # real MC point sits in a named group.
+        for number in (5, 6, 7):
+            bp["items"][number - 1]["item_form"] = "multiple_choice"
+        # The coverage map must keep AGREEING with item_form, because that agreement is what the
+        # reader's consistency panel reports and what validate_part1 cross-checks. Rebuilt from the
+        # items rather than hand-edited: a hand-edited map would make this fixture a coverage-mismatch
+        # defect on top of being a v1 record, and the compatibility tests would then pass or fail for
+        # the wrong reason. `note` is retained as an empty list on purpose.
+        coverage: dict[str, list[int]] = {"form": [], "table": [], "note": [], "multiple_choice": []}
+        for item in bp["items"]:
+            coverage[item["item_form"]].append(item["number"])
+        bp["question_type_coverage"] = coverage
     variant("blueprint_v1_legacy.json", downgrade)
 
     # Version detection: an unrecognised version must be reported, never read as v1.

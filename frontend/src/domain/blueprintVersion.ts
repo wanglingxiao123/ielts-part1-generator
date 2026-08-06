@@ -16,8 +16,30 @@
  */
 import type { Blueprint, BlueprintItem, ItemForm } from '@/contracts'
 
-/** Layout keys a v1 record may carry beyond the current three-value union. */
+/** Layout keys a coverage map may be keyed by. Wider than `ItemForm`: a map key is not validated. */
 export type LayoutKey = ItemForm | string
+
+/**
+ * The three layouts v2 permits and the UI renders.
+ *
+ * `ItemForm` is FOUR values, because the read schema — which generates it — must admit archived
+ * records carrying `multiple_choice`. So `ItemForm` answers "what may arrive?" and `CurrentLayout`
+ * answers "what do we render?", and the glyph/label maps in `types.ts` are keyed on the latter.
+ * Keying them on `ItemForm` would demand a glyph for a layout this product no longer produces;
+ * inventing one would put the deleted layout back in front of reviewers as if it were on offer.
+ */
+export const CURRENT_LAYOUTS = ['form', 'table', 'note'] as const
+export type CurrentLayout = (typeof CURRENT_LAYOUTS)[number]
+
+/**
+ * The one extra layout v1 records may carry. v1 read path only — never written, never valid in v2.
+ *
+ * Typed as `ItemForm` rather than as a bare string, so it is a compile error if the read schema ever
+ * drops `multiple_choice` from its enum while this constant still claims records carry it.
+ */
+export const V1_LEGACY_LAYOUT: ItemForm = 'multiple_choice'
+
+export type BlueprintVersion = 1 | 2 | 'unknown'
 
 /**
  * Decided by the version field ALONE — never by whether the v2 fields happen to be present.
@@ -27,30 +49,57 @@ export type LayoutKey = ItemForm | string
  * than falling back to 1 for the same reason: an unrecognised version is a defect to surface, not a
  * value to guess at.
  */
-export function blueprintVersion(bp: Blueprint): 1 | 2 | 'unknown' {
+export function blueprintVersion(bp: Blueprint): BlueprintVersion {
   if (!('blueprint_schema_version' in bp) || bp.blueprint_schema_version === undefined) return 1
   return bp.blueprint_schema_version === 2 ? 2 : 'unknown'
 }
 
 /**
- * The compatibility layer's only exit: coverage keyed by whatever layouts the data itself declares.
+ * Coverage read from the field THIS VERSION declares, not from whichever field happens to be there.
  *
- * v1 keys that fell out of the union (`multiple_choice`) are KEPT. Dropping them is precisely the
- * regression this exists to fix — the panel told reviewers that a material generated last week
- * contradicted itself, because two of its item numbers lived under a key the flattening skipped.
- * Whether a value is still a legal layout is the write-side schema's question; what the display
- * layer asks is whether the artefact's two views of itself agree.
+ * The field is selected by `blueprintVersion()`, so a record cannot be read through the other
+ * version's name:
+ *
+ *   - v2 reads `completion_layout_coverage` only. A v2 record that also carries the v1 name is a
+ *     record the validator rejects outright; honouring the v1 name as a fallback here would render
+ *     it as if it were fine, which is the opposite of surfacing it.
+ *   - v1 reads `question_type_coverage` only, for the same reason in reverse.
+ *   - `'unknown'` returns EMPTY, and callers must branch on `coverageAvailable()` before treating an
+ *     empty map as data. An unrecognised version rendered through either name would state layout
+ *     facts about a record whose contract this build does not know — the earlier `??` chain did
+ *     exactly that, silently reading a version-3 record through whichever name it happened to have.
+ *
+ * Within the selected field, keys are taken as the data declares them: v1's `multiple_choice` is
+ * KEPT. Dropping it is the regression this exists to fix — the panel told reviewers that a material
+ * generated last week contradicted itself, because two of its item numbers lived under a key the
+ * flattening skipped. Whether a value is still a legal layout is the write-side schema's question;
+ * what the display layer asks is whether the artefact's two views of itself agree.
  */
 export function layoutCoverage(bp: Blueprint): Record<LayoutKey, number[]> {
-  const raw = (bp.completion_layout_coverage ?? bp.question_type_coverage ?? {}) as Record<
-    string,
-    unknown
-  >
+  const version = blueprintVersion(bp)
+  if (version === 'unknown') return {}
+  const raw = (version === 2 ? bp.completion_layout_coverage : bp.question_type_coverage) as
+    | Record<string, unknown>
+    | undefined
   const out: Record<LayoutKey, number[]> = {}
-  for (const [key, value] of Object.entries(raw)) {
+  for (const [key, value] of Object.entries(raw ?? {})) {
+    // Empty arrays are preserved: the real capture carries `note: []`, and a declared-but-empty
+    // layout is different information from an absent one.
     if (Array.isArray(value)) out[key] = value.filter((n): n is number => typeof n === 'number')
   }
   return out
+}
+
+/**
+ * Whether layout facts may be stated about this record at all.
+ *
+ * False for an unrecognised version, where `layoutCoverage()` returns empty because the contract is
+ * unknown — NOT because the record declares no layouts. Without this distinction a UI would report
+ * "第 1…10 题没有对应信息点" for a v3 record, which reads as a defect in the material rather than as
+ * this build being too old to interpret it.
+ */
+export function coverageAvailable(bp: Blueprint): boolean {
+  return blueprintVersion(bp) !== 'unknown'
 }
 
 /**
@@ -64,7 +113,12 @@ export function itemLayout(item: BlueprintItem): LayoutKey {
   return item.item_form as LayoutKey
 }
 
-/** True for a layout value outside the current three-value union, i.e. v1-only data. */
+/** True for a layout value outside the three the UI renders, i.e. v1-only data. */
 export function isLegacyLayout(layout: LayoutKey): boolean {
-  return !(['form', 'table', 'note'] as string[]).includes(layout)
+  return !(CURRENT_LAYOUTS as readonly string[]).includes(layout)
+}
+
+/** Narrowing guard for the three renderable layouts — the way into a `CurrentLayout`-keyed map. */
+export function isCurrentLayout(layout: LayoutKey): layout is CurrentLayout {
+  return (CURRENT_LAYOUTS as readonly string[]).includes(layout)
 }

@@ -24,9 +24,18 @@ const outDir = resolve(here, '..', 'src/contracts')
 const GENERATE_SCHEMAS = 'skills/generate/generate-listening-part1/schemas'
 const AUDIT_SCHEMAS = 'skills/audit/audit-listening-part1/schemas'
 
+// The blueprint target is the READ schema, not blueprint.schema.json. The frontend RECEIVES
+// blueprints, so its type must admit every record it may be handed: a v1 record's null form_group
+// and old coverage name included. Generating from the write-side schema would type away data that
+// arrives in practice, and every reader would then need a cast to handle what it actually got.
+//
+// The write-side schema is intentionally absent from this list. It is `allOf: [read, narrowing]`,
+// and json-schema-to-typescript resolves that to the same members with the same optionality --
+// it ignores if/then and does not intersect required-lists across allOf branches -- so a second
+// target would emit a near-identical interface that merely looked like a stricter type.
 const TARGETS = [
   { dir: GENERATE_SCHEMAS, schema: 'material.schema.json', out: 'material.ts', root: 'Material' },
-  { dir: GENERATE_SCHEMAS, schema: 'blueprint.schema.json', out: 'blueprint.ts', root: 'Blueprint' },
+  { dir: GENERATE_SCHEMAS, schema: 'blueprint.read.schema.json', out: 'blueprint.ts', root: 'Blueprint' },
   { dir: AUDIT_SCHEMAS, schema: 'audit.schema.json', out: 'audit.ts', root: 'Audit' },
 ]
 

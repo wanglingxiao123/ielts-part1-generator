@@ -62,6 +62,11 @@ NUMERIC_TOKEN_RE = re.compile(r"^[£$€]?\d+(?:[.,:/]\d+)*(?:st|nd|rd|th|am|pm|
 # it names the KIND of detail (a preference or chosen alternative) and remains a fine completion
 # answer, so it stays.
 ITEM_FORMS = {"form", "table", "note"}
+# v1 read path ONLY. `multiple_choice` was a legal layout before the client narrowed the brief, so
+# archived records carry it and must stay readable; new generation and every v2 record are still held
+# to ITEM_FORMS alone. Use `item_forms_for(version)` rather than testing this set directly -- the
+# leniency has to be keyed on version, or it leaks into the write path.
+V1_LEGACY_ITEM_FORMS = ITEM_FORMS | {"multiple_choice"}
 TABLE_FORMS = {"form", "table"}
 DETAIL_TYPES = {"name", "number", "address", "price", "datetime", "quantity", "condition", "option"}
 SPELLED_TYPES = {"name"}
@@ -185,6 +190,24 @@ def blueprint_version(blueprint: dict, errors: list[str]) -> int:
         "(omit the field entirely for a v1 record -- an unknown version is not read as v1)"
     )
     return 0
+
+
+def item_forms_for(version: int) -> set[str]:
+    """Legal `item_form` values for the version being READ.
+
+    The whole point of keying this on version: v1 records legitimately carry `multiple_choice`, and
+    reporting it makes every archived record look malformed, but admitting it unconditionally would
+    let new generation write a layout the client removed. One function so the two answers cannot
+    drift apart -- the coverage-key check and the per-item check previously disagreed, with the
+    coverage side lenient and the item side strict, so a real archived record failed halfway through.
+
+    Deliberately NOT extended to the homogeneity check below. Measured across every archived
+    blueprint and captured batch reachable in this repo (3 captured blueprints + backend/docs/sample,
+    9 MC points total): every single MC point has `form_group: null`, so no real record needs a mixed
+    group to be tolerated. Widening that check too would weaken a v2 constraint to buy compatibility
+    nothing asked for.
+    """
+    return V1_LEGACY_ITEM_FORMS if version == 1 else ITEM_FORMS
 
 
 def answer_tokens(target: str) -> list[str]:
@@ -354,10 +377,11 @@ def validate_grouping(items: list[dict], coverage: object, errors: list[str], wa
     # the parser only accepts 0-9. Enumerating rather than reading the field also keeps the label
     # right for an item whose own `number` is wrong or missing, which is a case these very errors
     # co-occur with.
+    legal_forms = item_forms_for(version)
     for index, item in enumerate(items):
         form, group = item.get("item_form"), item.get("form_group")
-        if form not in ITEM_FORMS:
-            errors.append(f"blueprint.items[{index}].item_form must be one of {sorted(ITEM_FORMS)}")
+        if form not in legal_forms:
+            errors.append(f"blueprint.items[{index}].item_form must be one of {sorted(legal_forms)}")
         if isinstance(group, str) and group.strip():
             groups.setdefault((form, group), []).append(item.get("number"))
             labels.setdefault(group, set()).add(form)
@@ -406,10 +430,10 @@ def validate_grouping(items: list[dict], coverage: object, errors: list[str], wa
         return
     declared: list[int] = []
     for form, numbers in coverage.items():
-        # v1 data legitimately carries a `multiple_choice` key: it was a valid layout before the
-        # client narrowed the brief. Reporting it as an unknown type on the v1 read path would make
-        # every archived record look malformed, so only v2 is held to the three-value set.
-        if form not in ITEM_FORMS and not (version == 1 and form == "multiple_choice"):
+        # Same accessor as the per-item check above, deliberately. These two were written separately
+        # and disagreed: the coverage side exempted v1's `multiple_choice` inline while the item side
+        # was unconditionally strict, so a real archived record passed here and failed there.
+        if form not in legal_forms:
             errors.append(f"{coverage_key} has unknown layout {form!r}")
         if not isinstance(numbers, list):
             errors.append(f"{coverage_key}[{form!r}] must be a list")

@@ -587,6 +587,68 @@ describe('formGroups', () => {
     expect(declared.ungrouped).toBe(false)
     expect(declared.spanWarn).toBe(true)
   })
+
+  /**
+   * 真实 v1 归档记录整条走完分析，用的是 `blueprint_v1_legacy.json` 本身。
+   *
+   * 只测 `layoutCoverage()` 不够：把 v1 读错的那个 bug 出在 `formGroups` 的 flattening 里
+   * （`FORMS.flatMap` 把 `multiple_choice` 整个漏掉），而 `layoutCoverage()` 当时是对的。
+   * 一致性面板是唯一会把这类错误说成「材料自相矛盾」的地方，所以要在这一层断言。
+   */
+  const v1View = joinFromRecord(buildRecord('v1Legacy', { ...O, materialId: 'm-v1' }))
+
+  it('reads a real v1 record as self-consistent', () => {
+    const g = analyseFormGroups(v1View, T)
+    expect(g.consistency.known).toBe(true)
+    // 十个点都有着落——包括 coverage 里那三个 `multiple_choice` 号码。漏掉那个键会让它们报成缺失，
+    // 也就是那次「上周刚生成的材料自相矛盾」的虚报。
+    expect(g.consistency.missingNumbers).toEqual([])
+    expect(g.consistency.extraNumbers).toEqual([])
+    expect(g.consistency.duplicateNumbers).toEqual([])
+    expect(g.consistency.coversAllTen).toBe(true)
+    expect(g.consistency.disagreeingNumbers).toEqual([])
+    expect(g.consistency.consistent).toBe(true)
+  })
+
+  it('gives the v1-only layout no table row but still groups its points', () => {
+    const g = analyseFormGroups(v1View, T)
+    // 表格只列 UI 还在渲染的三种版式：历史版式不该以「可选题型」的样子出现在命题人面前。
+    expect(g.rows.map((r) => r.itemForm)).toEqual(['form', 'table', 'note'])
+    // 但这些点没有被丢掉——它们在 groups 里，因为那是「这份材料里实际有什么」。
+    const mc = g.groups.filter((x) => x.itemForm === 'multiple_choice')
+    expect(mc.length).toBeGreaterThan(0)
+    expect(mc.every((x) => x.ungrouped)).toBe(true)
+    // 三个 note 号码全归到了 multiple_choice，所以 note 行两侧都是空的：空数组和「没这个键」
+    // 在记录里不是一回事，面板也不该把前者显示成矛盾。
+    const note = g.rows.find((r) => r.itemForm === 'note')!
+    expect(note.coverageNumbers).toEqual([])
+    expect(note.itemFormNumbers).toEqual([])
+    expect(note.agrees).toBe(true)
+  })
+
+  /**
+   * 未知版本必须什么都不报，而不是把十个点全报成缺失。
+   *
+   * 改之前 `layoutCoverage()` 对未知版本会顺着「碰巧有哪个字段名」去读，或者读出空 map 之后让
+   * 一致性面板照常算——于是 `missingNumbers` 是 1…10，页面告诉命题人这份明明声明了十个点的材料
+   * 全都没着落。那是拿「本页面太旧」去指控材料。
+   */
+  it('reports nothing at all for an unrecognised blueprint version', () => {
+    const bp = structuredClone(balanced.blueprint) as unknown as Record<string, unknown>
+    bp.blueprint_schema_version = 3
+    const g = analyseFormGroups(viewWith(bp as unknown as Blueprint), T)
+    expect(g.consistency.known).toBe(false)
+    // 关键断言：不是 [1..10]。
+    expect(g.consistency.missingNumbers).toEqual([])
+    expect(g.consistency.disagreeingNumbers).toEqual([])
+    expect(g.consistency.duplicateNumbers).toEqual([])
+    expect(g.consistency.extraNumbers).toEqual([])
+    // 什么都没核对过，所以也不能声称一致。
+    expect(g.consistency.consistent).toBe(false)
+    expect(g.consistency.coversAllTen).toBe(false)
+    // 题组分析照常给：它只看 items，不依赖 coverage，未知版本下仍是可读的事实。
+    expect(g.groups.length).toBeGreaterThan(0)
+  })
 })
 
 describe('compare', () => {

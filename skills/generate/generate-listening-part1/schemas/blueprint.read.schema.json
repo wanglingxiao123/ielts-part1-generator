@@ -1,0 +1,326 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "blueprint.read.schema.json",
+  "title": "IELTS Listening Part 1 Information-Point Blueprint",
+  "description": "READ-side contract: every blueprint a reader may be handed, v1 or v2. The title is deliberately the bare artefact name and carries no 'read-side' qualifier, because json-schema-to-typescript derives the exported interface name from it: this is the shape the frontend's `Blueprint` type means. Ten information points with turn anchors and completion-layout grouping. Delivered alongside material.json for reviewer annotation display. MUST NOT be given to the audit step, which builds its own map blind.\n\nTHE WRITE-SIDE CONTRACT IS blueprint.schema.json, which layers v2-only strictness on top of this document. The two answer different questions and the answers genuinely differ:\n  - 'may we emit this?' -> blueprint.schema.json. No to a missing version field, no to question_type_coverage, no to item_form: multiple_choice, no to a null form_group.\n  - 'must we be able to display this?' -> this file. Yes to all four, because archived records carry them and are neither rewritten nor migrated -- measured in this repo: 3 captured blueprints plus backend/docs/sample/blueprint.json, 9 multiple_choice points between them, every one with form_group null.\nA v1 record validating HERE and failing blueprint.schema.json is the designed outcome, not a defect in either document. This split replaced a single schema whose description called itself the write-side contract while an `else` branch quietly required v1's coverage name -- doc and behaviour in direct conflict.\n\nOnly this file feeds frontend codegen (frontend/scripts/gen-contracts.mjs), because the frontend RECEIVES records rather than emitting them: `Blueprint` must admit a null form_group and the v1 coverage name or the reader cannot type its own inputs. Version-conditional rules live in `if/then/else` on purpose -- json-schema-to-typescript IGNORES if/then (measured), so the generated type keeps the tolerant top-level shape while Python's jsonschema, which does honour it, enforces the per-version rules. `item_form` carries all FOUR values at the item level and is narrowed to three inside the v2 branch -- that direction, and not the reverse. Measured: a four-value enum placed in the v1 `else` branch does NOT widen the three-value enum it inherits, because JSON Schema branches only ever intersect, and the real v1 fixture failed on exactly its three multiple_choice items. The cost is that the generated TypeScript union has four values, since json-schema-to-typescript ignores if/then; `CurrentLayout` in frontend/src/domain/blueprintVersion.ts is the three-value type the UI renders, and the write schema is where 'the generator may not emit MC' is enforced.\n\nVersion is decided by the presence and value of blueprint_schema_version ALONE, never inferred from whether the v2 fields happen to be present: a v2 record that forgot response_form must fail, not silently downgrade to v1. An unrecognised version (3, say) fails this schema too -- 'readable' means v1 or v2, and a record this build cannot interpret is a thing to surface, not to render through whichever field name it happens to carry.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "narration_mode",
+    "split_after",
+    "items",
+    "correction"
+  ],
+  "properties": {
+    "blueprint_schema_version": {
+      "const": 2,
+      "description": "Present and equal to 2 for v2 records; absent for v1. Deliberately NOT in this file's required list -- its absence is what marks a v1 record, and the branches below key off exactly that. blueprint.schema.json DOES require it, which is the single line that turns this read contract into a v2 write contract. Any other value is rejected rather than treated as v1."
+    },
+    "narration_mode": {
+      "enum": [
+        "full",
+        "short"
+      ]
+    },
+    "split_after": {
+      "enum": [
+        5,
+        6
+      ],
+      "description": "Last item number of the first question group; must match the narrator's stated ranges."
+    },
+    "completion_layout_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "description": "v2 name. Item numbers grouped by completion layout. Flattened, must equal exactly 1..10 with no repeats. Redundant with items[].item_form by design: this view supports auditing overall layout distribution, the per-item field supports rendering each annotation. Renamed from question_type_coverage because it never held IELTS question types -- Part 1 has exactly one question type (completion) and these three values are its layouts.",
+      "properties": {
+        "form": {
+          "$ref": "#/definitions/itemNumberList"
+        },
+        "table": {
+          "$ref": "#/definitions/itemNumberList"
+        },
+        "note": {
+          "$ref": "#/definitions/itemNumberList"
+        }
+      }
+    },
+    "question_type_coverage": {
+      "type": "object",
+      "minProperties": 1,
+      "description": "v1 ONLY. Readable, never writable: blueprint.schema.json forbids this name outright, and the v2 branch below does too, so a record cannot hedge by writing both. Declared here because the top level is additionalProperties: false, so omitting it would make every archived v1 record fail the read contract. additionalProperties is deliberately NOT false: v1 records legitimately carry a multiple_choice key. An empty layout array is real data -- the captured batch in frontend/src/api/__fixtures__/real-batch.sse.txt has note: [] -- and readers must preserve it, since a declared-but-empty layout is different information from an absent one.",
+      "properties": {
+        "form": {
+          "$ref": "#/definitions/itemNumberList"
+        },
+        "table": {
+          "$ref": "#/definitions/itemNumberList"
+        },
+        "note": {
+          "$ref": "#/definitions/itemNumberList"
+        },
+        "multiple_choice": {
+          "$ref": "#/definitions/itemNumberList"
+        }
+      }
+    },
+    "items": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 10,
+      "items": {
+        "$ref": "#/definitions/item"
+      }
+    },
+    "correction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "earlier",
+        "final",
+        "marker"
+      ],
+      "description": "One self-correction where a final value cancels an earlier value. Order in script must be earlier -> marker -> final.",
+      "properties": {
+        "earlier": {
+          "type": "string",
+          "minLength": 1
+        },
+        "final": {
+          "type": "string",
+          "minLength": 1
+        },
+        "marker": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "indirect_confirmation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "answer_term",
+        "reference_phrase"
+      ],
+      "description": "Optional. The paraphrase/indirect-reference cycle, when the material uses one. Measured over the 27 usable archived papers: only 4 contain an indirect reference, while 24 use 先说后改 and 21 use a qualifier. The spec asks for 2-3 distraction cycles chosen from five mechanisms (§4B-4), not for this specific one, so requiring it made the generator chase a convention the real papers rarely follow.",
+      "properties": {
+        "answer_term": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reference_phrase": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  },
+  "if": {
+    "required": [
+      "blueprint_schema_version"
+    ]
+  },
+  "then": {
+    "$comment": "A record that DECLARES v2 is held to the full v2 contract, here in the read schema as well. Read leniency exists for records that predate the contract, not for records that claim it and then break it: a v2 record carrying multiple_choice is a generator defect, and tolerating it on the read side would mean nothing but the write schema ever rejects it -- and the write schema never sees an archived record.",
+    "required": [
+      "completion_layout_coverage"
+    ],
+    "not": {
+      "required": [
+        "question_type_coverage"
+      ]
+    },
+    "properties": {
+      "items": {
+        "items": {
+          "required": [
+            "response_form",
+            "answer_category",
+            "narrator_window_id"
+          ],
+          "properties": {
+            "form_group": {
+              "type": "string",
+              "minLength": 1
+            },
+            "item_form": {
+              "enum": [
+                "form",
+                "table",
+                "note"
+              ],
+              "$comment": "v2 narrows the item definition's four values to three. This is the direction that works: a branch can only ever intersect with what it narrows, which is why the fourth value is declared at the item level and removed here rather than the reverse."
+            }
+          }
+        }
+      }
+    }
+  },
+  "else": {
+    "$comment": "v1: no version field. Each tolerance below is measured against the archived records in this repo, not granted defensively.",
+    "required": [
+      "question_type_coverage"
+    ],
+    "not": {
+      "required": [
+        "completion_layout_coverage"
+      ]
+    },
+    "properties": {
+      "items": {
+        "items": {
+          "$comment": "No item_form enum here on purpose. The four-value set lives in definitions/item and the v2 branch narrows it; restating it in this branch would be dead weight, and stating THREE values here would be actively wrong -- branches intersect, so it would reject the archived multiple_choice records this branch exists for.",
+          "not": {
+            "$comment": "A v1 record must not carry the v2 item fields. One that does is a v2 that lost its version field -- a real failure mode, since the version field is the newest thing in the record -- and reading it as a lenient v1 would skip every v2 recomputation on it. Mirrors V2_ITEM_KEYS being kept out of ITEM_KEYS in validate_part1.py.",
+            "anyOf": [
+              {
+                "required": [
+                  "response_form"
+                ]
+              },
+              {
+                "required": [
+                  "answer_category"
+                ]
+              },
+              {
+                "required": [
+                  "narrator_window_id"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "itemNumberList": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 10
+      }
+    },
+    "item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "number",
+        "group",
+        "type",
+        "target",
+        "evidence",
+        "turn_index",
+        "item_form",
+        "form_group",
+        "distractor",
+        "confirmed"
+      ],
+      "properties": {
+        "number": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "group": {
+          "enum": [
+            1,
+            2
+          ],
+          "description": "Question group; derived from split_after."
+        },
+        "type": {
+          "enum": [
+            "name",
+            "number",
+            "address",
+            "price",
+            "datetime",
+            "quantity",
+            "condition",
+            "option"
+          ],
+          "description": "Detail type per spec 4B-3. At least four distinct types required across the ten items."
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The recordable value. Must occur inside evidence."
+        },
+        "evidence": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Shortest sufficient quote from the dialogue turn carrying this point."
+        },
+        "turn_index": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Index into material.json turns array. Anchors the annotation for marginal display. Must point at a non-speaker1 turn whose text contains evidence. Revision MUST keep this in sync -- a stale anchor shows reviewers an annotation beside the wrong sentence, which is very hard to detect downstream."
+        },
+        "item_form": {
+          "enum": [
+            "form",
+            "table",
+            "note",
+            "multiple_choice"
+          ],
+          "description": "Completion layout this point declares. Part 1 delivers Form / Note / Table completion only; multiple_choice was removed when the client narrowed the brief. Not to be confused with type: \"option\", which names the kind of detail and is still a valid completion answer.\n\nFOUR values here, three in the v2 branch above and in blueprint.schema.json. All four are listed at this level because JSON Schema branches INTERSECT rather than override: a three-value enum here could not be widened by a four-value enum inside the v1 branch, so an archived multiple_choice record would fail the very contract that exists to admit it. Measured -- that was this file's first shape, and the real v1 fixture failed it on exactly these three items. Narrowing works, widening does not, so the wide set lives here and the narrow one in the branches.\n\nThis is also what the generated TypeScript union contains, and deliberately so: the frontend receives archived records, so a three-value union would be a type that lies about its own inputs and force a cast at every read. The three layouts the UI actually RENDERS are named by CURRENT_LAYOUTS in frontend/src/domain/blueprintVersion.ts, whose `CurrentLayout` type is what the glyph and label maps are keyed on -- see also itemLayout() there and the coverage flattening in formGroups.ts, which key off the data's own declared values.\n\nMeasured over every archived blueprint and captured batch reachable in this repo: 9 multiple_choice points exist and every one of them has form_group: null, so no real record needs a mixed-layout group tolerated as well -- validate_part1.py's homogeneity check stays strict for that reason."
+        },
+        "form_group": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "description": "Points sharing a form_group combine into one table/form question. Nullable HERE because null is real v1 data meaning a standalone gap-fill; the v2 branch above and blueprint.schema.json both narrow it to a non-empty string. At least one group of >=3 points is required so the material can actually support a table or form question. v2 adds four more relational constraints, checked in validate_part1.py because JSON Schema cannot express them: contiguous item numbers, contiguity in the ordered evidence sequence, and no group spanning a narrator window."
+        },
+        "response_form": {
+          "enum": [
+            "numeric",
+            "word",
+            "phrase"
+          ],
+          "description": "v2 required (optional here only so v1 records validate; the v2 branch above requires it). Shape of the recordable answer, by TOKEN COUNT: numeric = every token is a pure number/time/date form; word = a single non-numeric token; phrase = multiple tokens. Serves the word_limit decision, so hyphenated compounds count as ONE word (two-bedroom is word, not phrase). Declared here but independently recomputed from target by validate_part1.py and compared -- a mismatch is an error. Derive from the actual target text, never from type: address lives in NUMERIC_TYPES yet 118 Fordyce is a phrase."
+        },
+        "answer_category": {
+          "enum": [
+            "person_name",
+            "contact",
+            "location",
+            "date",
+            "time",
+            "duration",
+            "price",
+            "quantity",
+            "service",
+            "facility",
+            "requirement",
+            "preference",
+            "document"
+          ],
+          "description": "v2 required (optional here only so v1 records validate; the v2 branch above requires it). Micro-category of the answer, used to check QR-027 (no micro-category tested by 3+ of the ten items). This is an INTERNAL closed taxonomy of this system, NOT a client-supplied enum: the client rule only asks for an answer category per item and offers location / price / service as examples. If the client ever supplies its own category list, this enum gives way to it. There is deliberately no 'other' fallback -- a catch-all bucket would make unrelated points collide and misfire the same-category count, and would give the model a 'when unsure, pick other' escape hatch that destroys the field's only value. A point that fits none of the 13 is an error, not a degradation: it belongs back in the material stage. Boundaries: contact = how to reach a person (extension number), location = where a thing is (postcode); price = currency only; date/time/duration never merge; service = a purchasable offering, facility = a physical place or equipment being described; requirement = a condition asked for, preference = the one chosen after weighing two alternatives. Judge the nature of the answer, not the wording of the sentence. Python checks the enum, the ten-item completeness and the counts; semantic accuracy is the audit agent's job."
+        },
+        "narrator_window_id": {
+          "enum": [
+            1,
+            2
+          ],
+          "description": "v2 required (optional here only so v1 records validate; the v2 branch above requires it). Which narrator window this item falls in (SC-019). Its ONLY purpose is cross-checking: validate_part1.py reparses the narrator's stated ranges and recomputes the window from the item number, then compares. Implementing this as 'read the field, check it is 1 or 2' would hand window attribution back to the model's own say-so and make the field worthless. Redundant with group by construction; both are kept so the declaration can be contradicted and caught."
+        },
+        "distractor": {
+          "type": "boolean",
+          "description": "Part of a deliberate distractor cycle. Must be a complete census, not selected examples: 2-3 true across the ten items."
+        },
+        "confirmed": {
+          "type": "boolean",
+          "description": "Repeated or confirmed in dialogue. >=3 required; spelling and numeric points must be confirmed since they are the easiest to mishear under once-only listening."
+        }
+      }
+    }
+  }
+}
