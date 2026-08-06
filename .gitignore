@@ -29,6 +29,10 @@ material/归档/
 material/归档.zip
 material/*.html
 
+# Zips are the delivery envelope, not the source. `material/listening/` holds the seven client rule
+# files unpacked and IS committed -- the archive is the same bytes with no diff and no blame.
+material/*.zip
+
 # Generated audio probes: real Polly output, reproducible from the scripts, and 780KB of binary
 # that git cannot diff. The measurements they produced are recorded in
 # audio_storage/assumptions.py, which is what actually matters.
