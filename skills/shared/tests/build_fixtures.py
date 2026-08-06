@@ -15,8 +15,19 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[4]
+# parents[3], not [4]. This file was born at skills/ielts-listening-skills/shared/tests/, where
+# [4] was the repo root; a3bf922 moved it one level shallower to skills/shared/tests/ and left the
+# index alone, so the script has been unrunnable since 2026-07-31 -- it resolved SOURCE to
+# ~/Documents/material/归档/, outside the repo. Nothing caught it because run_tests.py reads the
+# committed fixture JSONs and never invokes the builder. Hence the assertion below: a path this
+# fragile must fail with its own name on it, not with a FileNotFoundError four frames deep.
+ROOT = Path(__file__).resolve().parents[3]
 SOURCE = ROOT / "material" / "归档" / "snap_010_scripts_topic3640.json"
+if not SOURCE.is_file():
+    raise SystemExit(
+        f"archived source script not found at {SOURCE}\n"
+        f"(ROOT resolved to {ROOT}; if this file moved, fix the parents[] index)"
+    )
 OUT = Path(__file__).resolve().parent / "fixtures"
 
 OPENING = (
@@ -124,8 +135,11 @@ ITEM_SPECS = [
     ("number", "BT14 9BJ", "It's BT14 9BJ.", "form", "A", False, True),
     ("number", "07840051963", "It's 07840051963.", "form", "A", False, True),
     ("option", "primary school", "still in primary school", "note", None, True, False),
-    ("option", "park", "he'd love a park nearby", "multiple_choice", None, False, False),
-    ("option", "house", "always lived in a house", "multiple_choice", None, True, False),
+    # `type` stays "option" -- it names the KIND of detail (a preference or chosen alternative),
+    # which is still a perfectly good completion answer ("Property type: ______"). Only the
+    # dropped item_form was about the multiple-choice question type. Two dimensions, one deleted.
+    ("option", "park", "he'd love a park nearby", "note", None, False, False),
+    ("option", "house", "always lived in a house", "note", None, True, False),
     ("quantity", "two-bedroom", "you definitely need a two-bedroom property", "table", "B", False, True),
     ("condition", "guest room", "how about having a guest room", "table", "B", True, False),
     ("condition", "office", "it'd be handy to have an office", "table", "B", False, False),

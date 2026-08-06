@@ -85,14 +85,12 @@ export interface ViewMaterial {
 export const ITEM_FORM_GLYPH: Record<ItemForm, string> = {
   form: '▤',
   table: '▦',
-  multiple_choice: '◉',
   note: '▭',
 }
 
 export const ITEM_FORM_LABEL: Record<ItemForm, string> = {
   form: '表单',
   table: '表格',
-  multiple_choice: '多选',
   note: '填空',
 }
 

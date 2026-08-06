@@ -217,9 +217,7 @@ export const BLUEPRINT_VALID: Blueprint = {
       4
     ],
     "note": [
-      5
-    ],
-    "multiple_choice": [
+      5,
       6,
       7
     ],
@@ -297,7 +295,7 @@ export const BLUEPRINT_VALID: Blueprint = {
       "target": "park",
       "evidence": "he'd love a park nearby",
       "turn_index": 29,
-      "item_form": "multiple_choice",
+      "item_form": "note",
       "form_group": null,
       "distractor": false,
       "confirmed": false
@@ -309,7 +307,7 @@ export const BLUEPRINT_VALID: Blueprint = {
       "target": "house",
       "evidence": "always lived in a house",
       "turn_index": 32,
-      "item_form": "multiple_choice",
+      "item_form": "note",
       "form_group": null,
       "distractor": true,
       "confirmed": false
@@ -373,9 +371,7 @@ export const BLUEPRINT_BAD_ANCHOR: Blueprint = {
       4
     ],
     "note": [
-      5
-    ],
-    "multiple_choice": [
+      5,
       6,
       7
     ],
@@ -453,7 +449,7 @@ export const BLUEPRINT_BAD_ANCHOR: Blueprint = {
       "target": "park",
       "evidence": "he'd love a park nearby",
       "turn_index": 29,
-      "item_form": "multiple_choice",
+      "item_form": "note",
       "form_group": null,
       "distractor": false,
       "confirmed": false
@@ -465,7 +461,7 @@ export const BLUEPRINT_BAD_ANCHOR: Blueprint = {
       "target": "house",
       "evidence": "always lived in a house",
       "turn_index": 32,
-      "item_form": "multiple_choice",
+      "item_form": "note",
       "form_group": null,
       "distractor": true,
       "confirmed": false

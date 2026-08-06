@@ -11,6 +11,19 @@ Samples in `docs/sample/` are real output from a live run, not hand-written:
 | `events-sse-raw.txt` | raw `text/event-stream` bytes from `POST /invocations` |
 | `events-batch3.jsonl` | a 3-material concurrent batch, one line per event, including a real failure |
 
+> **These captures predate the removal of multiple choice.** `blueprint.json` and
+> `events-batch3.jsonl` still carry `item_form: "multiple_choice"` and a
+> `question_type_coverage.multiple_choice` list. Part 1 now delivers Form / Note / Table
+> completion only, and `multiple_choice` is no longer a legal `item_form` — read these samples
+> for the event shape and field semantics, and take the current
+> `skills/generate/generate-listening-part1/schemas/blueprint.schema.json` as authoritative for
+> which values are allowed. They are left as captured on purpose: a sample edited to match a
+> later schema is no longer evidence of what the system actually emitted.
+>
+> Note the same applies to `frontend/src/api/__fixtures__/real-batch.sse.txt`. Do not confuse
+> `item_form: "multiple_choice"` (removed) with `type: "option"` (kept) — the latter names a kind
+> of detail, not a question layout, and is still a valid completion answer.
+
 ## Endpoint
 
 One endpoint, two behaviours, selected by `action`:

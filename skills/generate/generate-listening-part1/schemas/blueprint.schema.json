@@ -38,9 +38,6 @@
         "table": {
           "$ref": "#/definitions/itemNumberList"
         },
-        "multiple_choice": {
-          "$ref": "#/definitions/itemNumberList"
-        },
         "note": {
           "$ref": "#/definitions/itemNumberList"
         }
@@ -168,10 +165,9 @@
           "enum": [
             "form",
             "table",
-            "multiple_choice",
             "note"
           ],
-          "description": "Question type this point can support."
+          "description": "Completion layout this point can support. Part 1 delivers Form / Note / Table completion only; multiple choice is out of scope. Not to be confused with type: \"option\", which names the kind of detail and is still a valid completion answer."
         },
         "form_group": {
           "type": [

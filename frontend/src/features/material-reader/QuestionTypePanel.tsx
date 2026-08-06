@@ -91,16 +91,6 @@ export function QuestionTypePanel({ analysis }: { analysis: FormGroupAnalysis })
             <span className="flag flag-bad">出不了，同类信息点凑不满 3 个</span>
           )}
         </span>
-        <span>
-          多选题：
-          {analysis.multipleChoiceCount >= 2 ? (
-            <span className="flag flag-good">可以出（{analysis.multipleChoiceCount} 个点）</span>
-          ) : (
-            <span className="flag flag-warn">
-              出不了，可选择的点只有 {analysis.multipleChoiceCount} 个
-            </span>
-          )}
-        </span>
       </div>
     </div>
   )

@@ -22,7 +22,6 @@ export interface IELTSListeningPart1InformationPointBlueprint {
   question_type_coverage: {
     form?: ItemNumberList
     table?: ItemNumberList
-    multiple_choice?: ItemNumberList
     note?: ItemNumberList
   }
   /**
@@ -69,9 +68,9 @@ export interface Item {
    */
   turn_index: number
   /**
-   * Question type this point can support.
+   * Completion layout this point can support. Part 1 delivers Form / Note / Table completion only; multiple choice is out of scope. Not to be confused with type: "option", which names the kind of detail and is still a valid completion answer.
    */
-  item_form: 'form' | 'table' | 'multiple_choice' | 'note'
+  item_form: 'form' | 'table' | 'note'
   /**
    * Points sharing a form_group can combine into one table/form question. null means a standalone gap-fill. At least one group of >=3 points is required so the material can actually support a table or form question.
    */

@@ -23,14 +23,17 @@ BLUEPRINT_KEYS = {"narration_mode", "split_after", "question_type_coverage", "it
 # distraction cycles chosen from five mechanisms rather than for this one specifically.
 BLUEPRINT_OPTIONAL_KEYS = {"indirect_confirmation"}
 ITEM_KEYS = {"number", "group", "type", "target", "evidence", "turn_index", "item_form", "form_group", "distractor", "confirmed"}
-ITEM_FORMS = {"form", "table", "multiple_choice", "note"}
+# Part 1 delivers Form / Note / Table completion only. `multiple_choice` was removed when the
+# client narrowed the brief; `type: "option"` in DETAIL_TYPES below is a different dimension --
+# it names the KIND of detail (a preference or chosen alternative) and remains a fine completion
+# answer, so it stays.
+ITEM_FORMS = {"form", "table", "note"}
 TABLE_FORMS = {"form", "table"}
 DETAIL_TYPES = {"name", "number", "address", "price", "datetime", "quantity", "condition", "option"}
 SPELLED_TYPES = {"name"}
 NUMERIC_TYPES = {"number", "price", "datetime", "quantity", "address"}
 MIN_CONFIRMED = 3
 MIN_GROUPED_ITEMS = 3
-MIN_CHOICE_ITEMS = 2
 MAX_GROUP_SPAN = 14
 SPELLING_RE = re.compile(r"\b(?:[A-Z]\s*[-,]\s*){2,}[A-Z]\b|\b[A-Z](?:-[A-Z]){2,}\b|\bdouble\s+[A-Z]\b", re.I)
 # `\b\d+\b` misses a digit glued to a suffix, which is how real transcripts write ordinals and
@@ -131,24 +134,21 @@ def anchor_ok(turns: list[dict], index: object, phrase: str) -> bool:
 
 
 def validate_grouping(items: list[dict], coverage: object, errors: list[str], warnings: list[str]) -> None:
-    """Check the material can actually support table/form and multiple-choice items.
+    """Check the material can actually support a table or form layout.
 
     Ten scattered gap-fills pass every other check but leave item writers unable to
     build a table question, which is what the spec's 题型适配 requirement is about.
     """
     # Key groups by (item_form, form_group), not form_group alone. Counting a shared group label
-    # says nothing about whether a table can be built from it: ten multiple_choice points that
-    # happen to share a label, or a "group" mixing form/table/note, would otherwise pass while
-    # leaving an item writer unable to lay out a single table.
+    # says nothing about whether a table can be built from it: ten note points that happen to
+    # share a label, or a "group" mixing form/table/note, would otherwise pass while leaving an
+    # item writer unable to lay out a single table.
     groups: dict[tuple, list[int]] = {}
     labels: dict[str, set] = {}
-    choice_count = 0
     for item in items:
         form, group = item.get("item_form"), item.get("form_group")
         if form not in ITEM_FORMS:
             errors.append(f"blueprint.items[{item.get('number')}].item_form must be one of {sorted(ITEM_FORMS)}")
-        if form == "multiple_choice":
-            choice_count += 1
         if isinstance(group, str) and group.strip():
             groups.setdefault((form, group), []).append(item.get("number"))
             labels.setdefault(group, set()).add(form)
@@ -179,8 +179,6 @@ def validate_grouping(items: list[dict], coverage: object, errors: list[str], wa
                 f"form_group {group!r} ({form}) spans turns {min(spans)}-{max(spans)}; "
                 "points in one table question sit far apart"
             )
-    if choice_count < MIN_CHOICE_ITEMS:
-        errors.append(f"blueprint needs at least {MIN_CHOICE_ITEMS} multiple_choice items; found {choice_count}")
 
     if not isinstance(coverage, dict) or not coverage:
         errors.append("blueprint.question_type_coverage must be a non-empty object")

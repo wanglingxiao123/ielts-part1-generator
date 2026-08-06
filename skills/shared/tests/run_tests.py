@@ -464,39 +464,46 @@ def test_grouping_cannot_be_faked() -> None:
     base = json.loads((FIXTURES / "blueprint_valid.json").read_text(encoding="utf-8"))
     scratch = Path(tempfile.mkdtemp())
 
-    all_choice = copy.deepcopy(base)
-    for item in all_choice["items"]:
-        item["item_form"], item["form_group"] = "multiple_choice", None
-    for item in all_choice["items"][:3]:
-        item["form_group"] = "A"
-    all_choice["question_type_coverage"] = {"multiple_choice": list(range(1, 11))}
+    def recover(payload: dict) -> dict:
+        """Rebuild question_type_coverage so it agrees with the mutated item_forms.
+
+        Without this the coverage/item_form cross-check fires and the blueprint is rejected for
+        a reason the case is not about -- which is exactly how a grouping test goes vacuous.
+        """
+        coverage: dict = {}
+        for item in payload["items"]:
+            coverage.setdefault(item["item_form"], []).append(item["number"])
+        payload["question_type_coverage"] = coverage
+        return payload
+
+    # `note` is now the only non-table item_form, so "a shared label on points that cannot become
+    # a table" and "the group is made of notes" are the same case -- they were two only while
+    # multiple_choice existed. Merged rather than kept as synonyms.
+    notes_only = copy.deepcopy(base)
+    for item in notes_only["items"]:
+        item["item_form"] = "note"
+    recover(notes_only)
 
     mixed = copy.deepcopy(base)
     for item, form in zip(mixed["items"][:3], ("form", "table", "note")):
         item["item_form"], item["form_group"] = form, "A"
-    coverage: dict = {}
-    for item in mixed["items"]:
-        coverage.setdefault(item["item_form"], []).append(item["number"])
-    mixed["question_type_coverage"] = coverage
+    recover(mixed)
 
-    notes_only = copy.deepcopy(base)
-    for item in notes_only["items"]:
-        if item["form_group"] is not None:
-            item["item_form"] = "note"
-    coverage = {}
-    for item in notes_only["items"]:
-        coverage.setdefault(item["item_form"], []).append(item["number"])
-    notes_only["question_type_coverage"] = coverage
-
-    for label, payload in (
-        ("no form/table item exists at all", all_choice),
-        ("form_group mixes item_form values", mixed),
-        ("group is made of standalone notes", notes_only),
+    # Assert on the REASON, not just returncode 1. Every mutation here also happens to be
+    # rejectable on other grounds, so a bare exit-code check would keep passing even if
+    # validate_grouping stopped working -- this test was already passing vacuously once, when
+    # multiple_choice was deleted from ITEM_FORMS and the enum check began doing its job for it.
+    for label, payload, expected in (
+        ("no form/table group exists, only labelled notes", notes_only,
+         "needs one homogeneous form/table form_group"),
+        ("form_group mixes item_form values", mixed,
+         "mixes item_form values"),
     ):
         path = scratch / "blueprint.json"
         path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         result = run(VALIDATE, str(FIXTURES / "material_valid.json"), "--blueprint", str(path))
-        check(f"rejected: {label}", result.returncode == 1, result.stdout)
+        check(f"rejected: {label}",
+              result.returncode == 1 and expected in result.stdout, result.stdout)
 
 
 def test_spelled_name_rule_not_vacuous() -> None:

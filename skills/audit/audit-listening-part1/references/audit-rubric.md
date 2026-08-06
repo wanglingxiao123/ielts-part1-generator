@@ -43,7 +43,9 @@ A meaningful audit requires a readable, non-empty listening script whose narrato
 - Nonessential metadata style inconsistency that does not break the contract.
 - Fewer than three confirmed details, or no confirmation on a spelled name or numeric value.
 - Details cannot be organised into varied question types: no set of comparable details able to
-  support a table or form, or no mutually exclusive options able to support multiple choice.
+  support a table or form.
+- A detail is not answerable by writing a word, number or short phrase into a gap. Part 1
+  delivers Form / Note / Table completion only.
 
 ### Not a finding
 

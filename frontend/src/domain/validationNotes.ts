@@ -126,10 +126,6 @@ const RULES: Array<{ match: RegExp; text: (m: RegExpMatchArray) => string }> = [
       '出题时看看哪几个点能并到一起。',
   },
   {
-    match: /blueprint needs at least \d+ multiple_choice items/,
-    text: () => '可做选择题的信息点偏少。有对比或偏好的地方（email 还是 post）可以改成选择题。',
-  },
-  {
     match: /blueprint must record at least one (\S+) item|at least one (\S+) item must be confirmed/,
     text: () => '姓名类或数字类的关键信息没有被确认过一次。这两类最容易听错，' +
       '出题时留意这几道的难度。',

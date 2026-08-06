@@ -506,7 +506,6 @@ describe('formGroups', () => {
     expect(gBal.consistency.disagreeingNumbers).toEqual([])
     expect(gBal.consistency.consistent).toBe(true)
     expect(gBal.hasViableQuestionGroup).toBe(true)
-    expect(gBal.multipleChoiceCount).toBe(2)
   })
 
   it('names the specific item numbers when the two views disagree', () => {
@@ -523,32 +522,43 @@ describe('formGroups', () => {
     const bp = structuredClone(balanced.blueprint) as Blueprint
     bp.question_type_coverage.note = []
     const g = analyseFormGroups(viewWith(bp), T)
-    expect(g.consistency.missingNumbers).toEqual([5])
+    // 5, 6 and 7 are the fixture's note points (the `option`-typed details).
+    expect(g.consistency.missingNumbers).toEqual([5, 6, 7])
     expect(g.consistency.coversAllTen).toBe(false)
   })
 
   /**
    * Regression from live output. Real blueprints leave `form_group: null` on
    * standalone points, so the null bucket collects points that were never
-   * claimed to belong together. Treating that bucket as a group flagged a
-   * turn-7 and a turn-20 multiple choice as "跨度过大 · 不足以单独成题" — a
-   * fabricated defect. Every fixture had at most one null-group point per
-   * item_form, so the bucket never held two and the bug stayed invisible.
+   * claimed to belong together. Treating that bucket as a group flagged two
+   * far-apart standalone points as "跨度过大 · 不足以单独成题" — a fabricated
+   * defect. Every fixture had at most one null-group point per item_form, so
+   * the bucket never held two and the bug stayed invisible.
+   *
+   * Since multiple_choice was dropped, the standalone points are the fixture's
+   * three `option`-typed `note`s. The turn indices are still set explicitly here:
+   * the fixture's natural spacing happens to land exactly ON GROUP_SPAN_WARN, and
+   * a regression test that depends on fixture spacing staying one side of a
+   * threshold is a test that breaks for reasons unrelated to the bug it guards.
    */
+  const LOOSE_TURNS = [7, 17, 27] // spread over a 20-turn span, all non-narrator turns
+  const looseNotes = (bp: Blueprint) => {
+    const loose = bp.items.filter((i) => i.item_form === 'note' && i.form_group === null)
+    // Every loose point gets an explicit turn: leaving even one at its fixture position
+    // silently widens the span and the assertion below stops measuring what it names.
+    expect(loose.length).toBe(LOOSE_TURNS.length)
+    loose.forEach((item, i) => {
+      item.turn_index = LOOSE_TURNS[i]!
+      item.evidence = balanced.turns[LOOSE_TURNS[i]!]!.text
+    })
+    return loose
+  }
+
   it('does not judge span or viability for form_group=null points', () => {
     const bp = structuredClone(balanced.blueprint) as Blueprint
-    // Two ungrouped multiple_choice points 20 turns apart, as real output has.
-    const mc = bp.items.filter((i) => i.item_form === 'multiple_choice')
-    expect(mc.length).toBeGreaterThanOrEqual(2)
-    for (const i of mc) i.form_group = null
-    mc[0]!.turn_index = 7
-    mc[0]!.evidence = balanced.turns[7]!.text
-    mc[1]!.turn_index = 27
-    mc[1]!.evidence = balanced.turns[27]!.text
-
+    looseNotes(bp)
     const g = analyseFormGroups(viewWith(bp), T)
-    const nullBucket = g.groups.find((x) => x.itemForm === 'multiple_choice')!
-    expect(nullBucket.ungrouped).toBe(true)
+    const nullBucket = g.groups.find((x) => x.itemForm === 'note' && x.ungrouped)!
     expect(nullBucket.turnSpan).toBe(20) // still reported as raw data
     expect(nullBucket.spanWarn).toBe(false) // but NOT flagged as a defect
     expect(nullBucket.canFormQuestion).toBe(false)
@@ -556,12 +566,8 @@ describe('formGroups', () => {
 
   it('still flags span on a DECLARED group of the same shape', () => {
     const bp = structuredClone(balanced.blueprint) as Blueprint
-    const mc = bp.items.filter((i) => i.item_form === 'multiple_choice')
-    for (const i of mc) i.form_group = 'C'
-    mc[0]!.turn_index = 7
-    mc[0]!.evidence = balanced.turns[7]!.text
-    mc[1]!.turn_index = 27
-    mc[1]!.evidence = balanced.turns[27]!.text
+    // Same points, same turns — the only change is that they now claim to belong together.
+    for (const i of looseNotes(bp)) i.form_group = 'C'
     const g = analyseFormGroups(viewWith(bp), T)
     const declared = g.groups.find((x) => x.name === 'C')!
     expect(declared.ungrouped).toBe(false)

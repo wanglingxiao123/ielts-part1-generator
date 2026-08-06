@@ -90,13 +90,16 @@ The material's only purpose is to support later item writing, so the ten points 
 organisable into real question types. Ten scattered gap-fills satisfy every other rule yet
 leave an item writer unable to build a table question.
 
-Assign each point an `item_form` (`form`, `table`, `multiple_choice`, or `note`) and, where
+Part 1 delivers **Form completion, Note completion, and Table completion only**. Multiple choice,
+matching, plan/map/diagram labelling and short-answer questions are out of scope, so every point
+must be answerable by writing a word, number or short phrase into a gap.
+
+Assign each point an `item_form` (`form`, `table`, or `note`) and, where
 points belong to one comparable set, a shared `form_group`. Requirements:
 
 - at least one `form_group` containing 3 or more points, **all sharing the same `item_form`**,
-  and that form must be `form` or `table` — a group of `note` or `multiple_choice` points
-  cannot become a table, and a group mixing forms cannot become one question;
-- at least 2 points marked `multiple_choice`;
+  and that form must be `form` or `table` — a group of `note` points cannot become a table,
+  and a group mixing forms cannot become one question;
 - points in one `form_group` should sit reasonably close together; a group spanning most of the
   script forces candidates to hold answers across half the recording. This one is reported as
   advice rather than enforced, since the spec sets no span limit.
@@ -112,6 +115,11 @@ speaker3: The latter, please. I would rather read it on paper.
 ```
 
 Use only 2-3 deliberate distractor-bearing cycles. Valid mechanisms are self-correction, option comparison, negation, and conditional limitation. Signal the final information clearly. Keep Part 1 accessible.
+
+Option comparison remains valid even though multiple choice does not. The mechanism is about the
+*dialogue* weighing two alternatives before one is settled on; the settled alternative is then
+written into a gap ("Property type: ______"). The rejected alternative is the distractor. What was
+dropped is the multiple-choice *question layout*, not this way of building difficulty.
 
 Before finalizing, scan every dialogue turn independently of the blueprint. Count all earlier values later replaced, rejected alternatives, selection-driving comparisons, exclusions, and applicability-changing conditions. The full-script census must equal the 2-3 items marked as distractors. If the script contains an additional unmarked trap, simplify or remove it.
 
@@ -196,8 +204,7 @@ trusting the generator's own labels. A point the auditor cannot recover is a rea
   "question_type_coverage": {
     "form": [1, 2, 3],
     "table": [4, 5, 6, 7],
-    "multiple_choice": [8, 9],
-    "note": [10]
+    "note": [8, 9, 10]
   },
   "items": [
     {
@@ -254,7 +261,8 @@ The `distractor` booleans must be a complete census, not merely selected example
 - [ ] Only 2-3 deliberate distractor cycles.
 - [ ] Dialogue is 450-750 words and 20-48 turns; each half has at least 8 turns.
 - [ ] Every `turn_index` points at the turn that actually carries its evidence.
-- [ ] One `form_group` holds 3+ points, and at least 2 points are `multiple_choice`.
+- [ ] One `form_group` holds 3+ points, all sharing `item_form` `form` or `table`.
+- [ ] Every `item_form` is `form`, `table` or `note` — no non-completion layouts.
 - [ ] `question_type_coverage` flattens to 1-10 exactly once and agrees with each `item_form`.
 - [ ] Spoken English is natural and appropriate for Part 1.
 - [ ] JSON parses and matches the contract.

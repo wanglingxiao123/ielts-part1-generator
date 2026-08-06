@@ -213,10 +213,29 @@ describe('form groups on real output', () => {
     }
   })
 
-  it('agrees with the real question_type_coverage', () => {
+  /**
+   * This capture is a v1 blueprint: items 2 and 6 are `multiple_choice`, the question type Part 1
+   * no longer generates. Narrowing the `item_form` union means `multiple_choice` is not among the
+   * forms the analysis iterates, so those two numbers drop out of the coverage flattening and the
+   * blueprint reads as self-inconsistent.
+   *
+   * That is a REAL regression for reviewing historical candidates, not a test artefact — the panel
+   * would tell a reviewer that a material generated last week contradicts itself. It is recorded
+   * here rather than hidden because the capture is a record of a real response and must not be
+   * edited, and because compatibility reading for v1 blueprints is deliberately out of scope for
+   * the multiple-choice removal (it needs `blueprint_schema_version` and a v1/v2 union).
+   *
+   * When that lands, this test flips back to asserting `consistent === true`.
+   */
+  it('reports a v1 blueprint containing multiple_choice as inconsistent, pending v1 compat', () => {
     const analysis = analyseFormGroups(view, FALLBACK_CONFIG.thresholds)
-    expect(analysis.consistency.consistent).toBe(true)
-    expect(analysis.consistency.coversAllTen).toBe(true)
+    const legacy = view.blueprint.items
+      .filter((i) => !(['form', 'table', 'note'] as string[]).includes(i.item_form))
+      .map((i) => i.number)
+    expect(legacy).toEqual([2, 6])
+    expect(analysis.consistency.missingNumbers).toEqual(legacy)
+    expect(analysis.consistency.coversAllTen).toBe(false)
+    expect(analysis.consistency.consistent).toBe(false)
   })
 })
 
