@@ -1233,6 +1233,11 @@ def _feasible() -> dict:
     return {"feasible": True, "reasons": [], "category_semantics_ok": True}
 
 
+# A sentinel for "delete this key", which `None` cannot express: `errors: null` and "no errors key at
+# all" are different malformed inputs and the aggregator reports them differently.
+_ABSENT = object()
+
+
 def test_preflight_three_exits() -> None:
     """AC1 / AC2 / AC3 / AC4 / AC5 / AC6: the six outcomes and the QR-027 boundaries."""
     print("preflight verdicts")
@@ -1249,17 +1254,37 @@ def test_preflight_three_exits() -> None:
           repr(verdict.qr027))
 
     def with_metrics(**changes) -> dict:
+        """A metrics variant that keeps numeric + spelled == 10.
+
+        Set `qr027_numeric_answers` and let `qr027_spelled_answers` follow, because the counts are
+        not independent: the three QR-027 classes partition all ten items, so the aggregator now
+        rejects any pair that does not sum to ten as VALIDATION_INCOMPLETE. Pinning one and deriving
+        the other keeps these boundary cases *arithmetically reachable* -- a test that had to
+        violate the invariant to reach a threshold would be testing an input the system can never
+        actually receive.
+        """
         payload = copy.deepcopy(valid)
+        if "qr027_numeric_answers" in changes and "qr027_spelled_answers" not in changes:
+            changes["qr027_spelled_answers"] = 10 - changes["qr027_numeric_answers"]
         payload["metrics"].update(changes)
         return payload
 
     # AC2: both sides of every threshold. The passing side must assert PASS, not merely "this rule
     # was not reported" -- otherwise the boundary is only half tested.
+    #
+    # Note what is NOT here: an independent `spelled 4 pass / spelled 3 breach` pair. Under
+    # numeric + spelled == 10, `spelled == 3` forces `numeric == 7`, which already breaches the
+    # numeric rule -- so "spelled below the minimum" is not independently reachable, and a test
+    # constructing it would be asserting on an input the validator cannot emit. The spelled rule is
+    # instead covered where it IS reachable: `numeric 6 / spelled 4` is the last pair satisfying it
+    # and `numeric 7 / spelled 3` the first violating it, both listed below. This is a real
+    # consequence of the invariant, not a gap being papered over.
     for label, changes, want_pass in (
-        ("numeric 4", {"qr027_numeric_answers": 4}, True),
-        ("numeric 5", {"qr027_numeric_answers": 5}, False),
-        ("spelled 4", {"qr027_spelled_answers": 4}, True),
-        ("spelled 3", {"qr027_spelled_answers": 3}, False),
+        ("numeric 4 (spelled 6)", {"qr027_numeric_answers": 4}, True),
+        ("numeric 5 (spelled 5)", {"qr027_numeric_answers": 5}, False),
+        ("numeric 0 (spelled 10)", {"qr027_numeric_answers": 0}, True),
+        ("numeric 6 / spelled 4 -- spelled still satisfied", {"qr027_numeric_answers": 6}, False),
+        ("numeric 7 / spelled 3 -- both rules breached", {"qr027_numeric_answers": 7}, False),
         ("largest category 2", {"qr027_largest_category": 2}, True),
         ("largest category 3", {"qr027_largest_category": 3}, False),
     ):
@@ -1267,6 +1292,13 @@ def test_preflight_three_exits() -> None:
         want = pf.PASS if want_pass else pf.REGENERATE_MATERIAL
         check(f"QR-027 boundary: {label} -> {want}", got.outcome == want,
               f"{got.outcome}: {got.reasons}")
+
+    # The spelled rule must still fire on its own terms when it is violated, rather than the
+    # numeric breach masking it. Both reasons are expected at numeric 7 / spelled 3.
+    both = pf.preflight(with_metrics(qr027_numeric_answers=7), _feasible())
+    check("numeric 7 / spelled 3 reports BOTH broken rules, not just the first",
+          any("numeric" in r for r in both.reasons) and any("spelled" in r for r in both.reasons),
+          repr(both.reasons))
 
     # `largest_category 3 -> breach` is what proves the rule is `< 3` and not `<= 3`: three items
     # sharing one category already violates QR-027's wording.
@@ -1434,9 +1466,12 @@ def test_preflight_incomplete_validation() -> None:
               any("missing" in reason or "invalid" in reason for reason in got.reasons),
               repr(got.reasons))
 
-    # A deterministic error is a different matter: that IS a material defect.
+    # A deterministic error is a different matter: that IS a material defect. `ok` has to move with
+    # it -- the validator derives one from the other, so setting only `errors` would now (correctly)
+    # be caught as a contradiction rather than reaching the deterministic gate.
     payload = copy.deepcopy(valid)
     payload["errors"] = ["blueprint.items[3].target is empty"]
+    payload["ok"] = False
     got = pf.preflight(payload, _feasible())
     check("deterministic errors -> REGENERATE_MATERIAL", got.outcome == pf.REGENERATE_MATERIAL,
           f"{got.outcome}: {got.reasons}")
@@ -1497,7 +1532,7 @@ def test_preflight_missing_semantics() -> None:
     # nothing is simply no request, so it falls through to "no justification recorded". The three
     # required keys are *conclusions*: an unusable conclusion means the verdict cannot be reached.
     breach = copy.deepcopy(valid)
-    breach["metrics"]["qr027_numeric_answers"] = 99
+    breach["metrics"].update(qr027_numeric_answers=9, qr027_spelled_answers=1)
     got = pf.preflight(breach, dict(_feasible(), qr027_exception="please"))
     check("a malformed qr027_exception falls through to REGENERATE_MATERIAL, not SEMANTICS_MISSING",
           got.outcome == pf.REGENERATE_MATERIAL, f"{got.outcome}: {got.reasons}")
@@ -1516,7 +1551,9 @@ def test_preflight_thresholds_have_one_source() -> None:
     vp = __import__("validate_part1")
     valid = _validation_of("blueprint_valid.json")
     payload = copy.deepcopy(valid)
-    payload["metrics"]["qr027_numeric_answers"] = 5
+    # spelled follows numeric: numeric + spelled == 10 is enforced ahead of the threshold gate, so a
+    # 5/9 pair would be rejected as VALIDATION_INCOMPLETE and never reach the comparison under test.
+    payload["metrics"].update(qr027_numeric_answers=5, qr027_spelled_answers=5)
 
     # Three points, not two. "Patch it wider and it passes" alone would still be satisfied by an
     # implementation that hardcodes a number which happens to equal the patched value; patching
@@ -1543,7 +1580,9 @@ def test_preflight_thresholds_have_one_source() -> None:
     # how much, and a PASS_WITH_JUSTIFICATION report needs exactly that. But the two must agree at
     # the real thresholds; asserting this while a threshold is patched would be wrong, since
     # divergence is then the expected behaviour.
-    for numeric, spelled, largest in ((1, 9, 2), (4, 4, 2), (5, 9, 2), (1, 3, 2), (1, 9, 3)):
+    # Every pair sums to ten, for the same reason as above -- and that is also why (1, 3, x) is
+    # absent: it is not a state the validator can produce.
+    for numeric, spelled, largest in ((1, 9, 2), (4, 6, 2), (5, 5, 2), (7, 3, 2), (1, 9, 3)):
         probe = copy.deepcopy(valid)
         probe["metrics"].update(qr027_numeric_answers=numeric, qr027_spelled_answers=spelled,
                                 qr027_largest_category=largest)
@@ -1554,6 +1593,196 @@ def test_preflight_thresholds_have_one_source() -> None:
         agrees = (got.outcome == pf.PASS) == probe["metrics"]["qr027_within_limits"]
         check(f"rule-by-rule verdict agrees with qr027_within_limits at ({numeric},{spelled},{largest})",
               agrees, f"{got.outcome} vs within_limits={probe['metrics']['qr027_within_limits']}")
+
+
+def test_preflight_ok_and_errors_must_agree() -> None:
+    """`ok` and `errors` are shape-checked AND cross-checked, because the validator derives one from
+    the other (`"ok": not errors`, validate_part1.py:638).
+
+    Before this gate existed, `ok: false` with an empty `errors` list reached PASS, and so did
+    `errors: None`, `errors: "boom"`, and either key being absent -- all measured. The dangerous
+    direction is that one: a payload whose `errors` list was emptied in transit would be reported as
+    ready for question generation.
+    """
+    print("preflight ok/errors consistency")
+    pf = _preflight()
+    valid = _validation_of("blueprint_valid.json")
+
+    def variant(**changes) -> dict:
+        payload = copy.deepcopy(valid)
+        for key, value in changes.items():
+            if value is _ABSENT:
+                payload.pop(key, None)
+            else:
+                payload[key] = value
+        return payload
+
+    # POSITIVE: the two agreeing, in both directions.
+    check("ok: true + errors: [] -> PASS", pf.preflight(valid, _feasible()).outcome == pf.PASS)
+    agreeing = variant(ok=False, errors=["blueprint.items[3].target is empty"])
+    got = pf.preflight(agreeing, _feasible())
+    check("ok: false + a real error -> REGENERATE_MATERIAL", got.outcome == pf.REGENERATE_MATERIAL,
+          f"{got.outcome}: {got.reasons}")
+
+    # NEGATIVE: contradictions and malformed shapes. None of these may reach PASS.
+    for label, payload in (
+        ("ok: false but errors is empty", variant(ok=False)),
+        ("ok: true but errors is non-empty", variant(ok=True, errors=["boom"])),
+        ("ok absent", variant(ok=_ABSENT)),
+        ("errors absent", variant(errors=_ABSENT)),
+        ("errors is None", variant(errors=None)),
+        ("errors is a string", variant(errors="boom")),
+        ("errors is a dict", variant(errors={"0": "boom"})),
+        ("ok is None", variant(ok=None)),
+        # Same trap as `feasible`: "false" is a non-empty string and therefore truthy, so a
+        # truthiness test here would read a failed validation as a passing one.
+        ('ok is the string "false"', variant(ok="false")),
+        ("ok is 0", variant(ok=0)),
+        ("ok is 1 with errors present", variant(ok=1, errors=["boom"])),
+        # These three exist because the consistency check alone cannot catch them, so they are the
+        # only cases that hold the *type* checks in place. `1 == True` and `{} `/`None` are falsy, so
+        # each of these agrees with its partner under coercion and then sails past `if errors:` --
+        # measured: with the isinstance checks removed all three reach PASS.
+        ("ok is 1 with errors empty (agrees under coercion)", variant(ok=1)),
+        ("ok is 0 with errors present (agrees under coercion)", variant(ok=0, errors=["boom"])),
+        ("errors is an empty dict (falsy non-list)", variant(errors={})),
+    ):
+        try:
+            got = pf.preflight(payload, _feasible())
+        except Exception as exc:  # noqa: BLE001 - any raise is the failure being tested for
+            check(f"{label} -> VALIDATION_INCOMPLETE", False, f"raised {type(exc).__name__}: {exc}")
+            continue
+        check(f"{label} -> VALIDATION_INCOMPLETE", got.outcome == pf.VALIDATION_INCOMPLETE,
+              f"{got.outcome}: {got.reasons}")
+        check(f"{label} never reaches PASS",
+              got.outcome not in (pf.PASS, pf.PASS_WITH_JUSTIFICATION), got.outcome)
+
+    # The contradiction has to be reported as a contradiction, not as one of the two readings.
+    got = pf.preflight(variant(ok=False), _feasible())
+    check("the contradiction reason mentions both ok and errors",
+          any("ok" in reason and "errors" in reason for reason in got.reasons), repr(got.reasons))
+
+
+def test_preflight_counts_are_range_and_sum_checked() -> None:
+    """The QR-027 counts must lie in 0..10 and numeric + spelled must be exactly 10.
+
+    Both follow from measured upstream behaviour rather than from taste: a blueprint carries exactly
+    ten items (validate_part1.py:504), and `derive_qr027_class` returns numeric | mixed | lexical for
+    every possible target -- including the empty string and bare punctuation, probed -- so the three
+    classes partition the items totally and `spelled` (lexical + mixed) plus `numeric` must account
+    for all ten. A pair that does not sum to ten therefore does not describe ten items, and
+    comparing it against the thresholds would be arithmetic on numbers measuring something else.
+
+    Before this gate, `numeric: -1` and `numeric: 0, spelled: 10`-with-a-broken-partner both reached
+    PASS.
+    """
+    print("preflight count range and sum")
+    pf = _preflight()
+    valid = _validation_of("blueprint_valid.json")
+
+    def counts(numeric, spelled, largest=2) -> dict:
+        payload = copy.deepcopy(valid)
+        payload["metrics"].update(qr027_numeric_answers=numeric, qr027_spelled_answers=spelled,
+                                  qr027_largest_category=largest)
+        return payload
+
+    # POSITIVE: every pair that sums to ten and is inside range must get past this gate. The two
+    # ends (0/10 and 10/0) are included because an off-by-one in the range check would reject them.
+    for numeric in range(0, 11):
+        got = pf.preflight(counts(numeric, 10 - numeric), _feasible())
+        check(f"numeric {numeric} / spelled {10 - numeric} is accepted as measurable",
+              got.outcome != pf.VALIDATION_INCOMPLETE, f"{got.outcome}: {got.reasons}")
+    for largest in (0, 1, 10):
+        got = pf.preflight(counts(1, 9, largest), _feasible())
+        check(f"largest_category {largest} is in range", got.outcome != pf.VALIDATION_INCOMPLETE,
+              f"{got.outcome}: {got.reasons}")
+
+    # NEGATIVE: out of range. Note -1 and 11 are the just-outside values, not absurd ones -- an
+    # off-by-one in the bound is the realistic mistake.
+    for label, payload in (
+        ("numeric -1", counts(-1, 11)),
+        ("numeric 11", counts(11, -1)),
+        ("spelled -1", counts(11, -1)),
+        ("largest_category -1", counts(1, 9, -1)),
+        ("largest_category 11", counts(1, 9, 11)),
+        ("largest_category 99", counts(1, 9, 99)),
+    ):
+        got = pf.preflight(payload, _feasible())
+        check(f"{label} -> VALIDATION_INCOMPLETE", got.outcome == pf.VALIDATION_INCOMPLETE,
+              f"{got.outcome}: {got.reasons}")
+        check(f"{label} never reaches PASS",
+              got.outcome not in (pf.PASS, pf.PASS_WITH_JUSTIFICATION), got.outcome)
+
+    # NEGATIVE: in range individually, but the pair cannot describe ten items.
+    for numeric, spelled in ((1, 2), (0, 0), (5, 4), (4, 5), (10, 10), (0, 9), (2, 9)):
+        got = pf.preflight(counts(numeric, spelled), _feasible())
+        check(f"numeric {numeric} + spelled {spelled} = {numeric + spelled} -> VALIDATION_INCOMPLETE",
+              got.outcome == pf.VALIDATION_INCOMPLETE, f"{got.outcome}: {got.reasons}")
+        check(f"the sum {numeric + spelled} is never read as a material defect",
+              got.outcome != pf.REGENERATE_MATERIAL, got.outcome)
+
+    got = pf.preflight(counts(1, 2), _feasible())
+    check("the sum reason states both counts and the expected total",
+          any("1" in r and "2" in r and "10" in r for r in got.reasons), repr(got.reasons))
+
+    # The invariant really does hold on live validator output -- the whole gate rests on this.
+    metrics = valid["metrics"]
+    check("the live validator satisfies numeric + spelled == 10",
+          metrics["qr027_numeric_answers"] + metrics["qr027_spelled_answers"] == 10,
+          f"{metrics['qr027_numeric_answers']} + {metrics['qr027_spelled_answers']}")
+
+
+def test_preflight_rejection_must_be_explained() -> None:
+    """A false verdict with no usable reason is SEMANTICS_MISSING, not REGENERATE_MATERIAL.
+
+    REGENERATE_MATERIAL spends an outer-quota candidate swap and a full material regeneration, and
+    the material stage is then meant to act on the reasons. With none recorded there is nothing to
+    act on, so the replacement is as likely to repeat the same fault. An unexplained rejection is
+    also indistinguishable from an audit that crashed and defaulted its output to false -- which is
+    exactly the case that must not consume a regeneration.
+    """
+    print("preflight rejections carry a reason")
+    pf = _preflight()
+    valid = _validation_of("blueprint_valid.json")
+
+    # POSITIVE: a rejection with a real reason still regenerates, and the reason survives.
+    for key in ("feasible", "category_semantics_ok"):
+        semantics = dict(_feasible(), reasons=["items 3, 4 and 5 share one turn"])
+        semantics[key] = False
+        got = pf.preflight(valid, semantics)
+        check(f"{key}: false with a real reason -> REGENERATE_MATERIAL",
+              got.outcome == pf.REGENERATE_MATERIAL, f"{got.outcome}: {got.reasons}")
+        check(f"{key}: false keeps the reason text",
+              any("share one turn" in reason for reason in got.reasons), repr(got.reasons))
+
+    # POSITIVE: a mixed list counts as explained as long as one entry is a usable string.
+    got = pf.preflight(valid, dict(_feasible(), feasible=False, reasons=[None, "", "the real reason"]))
+    check("one usable string among junk entries still counts as explained",
+          got.outcome == pf.REGENERATE_MATERIAL, f"{got.outcome}: {got.reasons}")
+
+    # POSITIVE: an empty reasons list is fine when nothing is being rejected. The rule must not
+    # turn into "reasons may never be empty" -- a clean PASS has nothing to explain.
+    check("feasible: true with empty reasons -> PASS",
+          pf.preflight(valid, _feasible()).outcome == pf.PASS)
+
+    # NEGATIVE: nothing in the list carries information. [""] and ["   "] are non-empty lists, which
+    # is why the check strips rather than merely testing the list's length.
+    for key in ("feasible", "category_semantics_ok"):
+        for label, reasons in (("empty list", []), ("empty string", [""]),
+                               ("whitespace only", ["   \n\t "]), ("None entry", [None]),
+                               ("all junk", [None, "", "  ", 0]), ("numeric entry", [42]),
+                               ("nested list", [["reason"]])):
+            semantics = dict(_feasible(), reasons=reasons)
+            semantics[key] = False
+            got = pf.preflight(valid, semantics)
+            check(f"{key}: false with {label} -> SEMANTICS_MISSING",
+                  got.outcome == pf.SEMANTICS_MISSING, f"{got.outcome}: {got.reasons}")
+            check(f"{key}: false with {label} does not spend a regeneration",
+                  got.outcome != pf.REGENERATE_MATERIAL, got.outcome)
+
+    got = pf.preflight(valid, dict(_feasible(), feasible=False))
+    check("the unexplained-rejection reason names the field and says a reason is required",
+          any("feasible" in r and "reason" in r for r in got.reasons), repr(got.reasons))
 
 
 def test_preflight_outcome_names_are_pinned() -> None:
@@ -1612,6 +1841,9 @@ def main() -> int:
         test_preflight_version_gate,
         test_preflight_incomplete_validation,
         test_preflight_missing_semantics,
+        test_preflight_ok_and_errors_must_agree,
+        test_preflight_counts_are_range_and_sum_checked,
+        test_preflight_rejection_must_be_explained,
         test_preflight_thresholds_have_one_source,
         test_preflight_outcome_names_are_pinned,
     ):

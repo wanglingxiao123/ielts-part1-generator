@@ -767,6 +767,26 @@ Python 负责字段、数量、顺序、window、分组和 QR-027 统计；“�
 > `UNSUPPORTED_VERSION`，会把一份**写坏了版本号的新记录**报成「这是历史归档记录」，
 > 于是没人去修那个坏版本号。
 
+> `[2026-08-06 Stage 3A 第二轮]` **判决前还要复核输入的取值，不只是形状。**
+> 第一轮只校验「键在不在、类型对不对」，实测发现三类**形状全对但取值不可能**的输入
+> 全部被放行到 `PASS`。这不是防御性编程，三条各有上游依据：
+>
+> | 复核 | 上游依据（先实测再实现） | 不查的后果（实测） |
+> |---|---|---|
+> | `ok` 与 `errors` 的类型 + 一致性 | `validate_part1.py:638` 写的是 `"ok": not errors`，两者一个派生另一个，互检零成本 | `ok: false` + `errors: []` → **PASS**；`errors` 为字符串/`None`/缺失 → **PASS**。即一份传输中被清空了 `errors` 的载荷会被报成「可以出题」 |
+> | 三个计数在 `0..10`，且 `numeric + spelled == 10` | 一份 blueprint 恰十个 item（`:504`）；`derive_qr027_class` 对任何 target 都归入 numeric/mixed/lexical 三类之一（探针实测九种刁钻取值），三类**完全划分**十个 item，而 `spelled = lexical + mixed` | `numeric: -1` → **PASS**；和不为 10 时仍拿这两个数去比门槛，等于拿量错的数做算术 |
+> | 否决时 `reasons` 至少一条非空字符串 | 材料阶段本应依据 reasons 行动 | `feasible: false` + `reasons: []`/`[""]` → `REGENERATE_MATERIAL`，花掉一次外层配额却没说要修什么 |
+>
+> 第三条的状态选择值得单记：一次**无理由的否决**，与一个**崩掉后把输出默认成 false 的审核**，
+> 从外部完全无法区分——而后者恰恰最不该消耗一次重生成。所以它是 `SEMANTICS_MISSING`
+> （结论不可用），不是「细节不足的 `REGENERATE_MATERIAL`」。
+>
+> 和不变量还带来一个必须如实记下的后果：**`spelled >= 4` 无法被单独触发。**
+> `spelled < 4` 要求 `numeric > 6`，而那已越过 `numeric <= 4`。所以 QR-027 的 spelled 规则
+> 只能在它真正可达的地方取证（`numeric 6 / spelled 4` 对 `numeric 7 / spelled 3`）。
+> 这是不变量的真实后果，不是覆盖缺口——构造一个「spelled 3 + numeric 1」去测，
+> 测的是 validator 永远产不出的输入。
+
 ## 5.5 `[第三轮]` 题型与 layout 的层次划分（已定案）
 
 这一节取代了此前把 form/note/table 当作三种「题型」的说法。正确的层次是两层：
@@ -813,7 +833,7 @@ question_type = completion          ← 顶层，Part 1 只有这一种
 | **0** | **时限叙述修正 + read timeout / hard limit 方案定案**（§7），含一次长 invoke 实测 | 一次 >900s 的 invoke 能正常返回 | 中。**必须最先做**：后面每一步的时间预算都建立在它上面 |
 | **1** | **删 multiple choice**：validator 5 处 + schema 3 处 + SKILL 1 处 + spec 5 处 + 审核侧 2 处 + 测试 fixtures + 前端 6 文件。**`option` 不动**（§2.3） | `run_tests.py` + 一次真实材料生成 | 低。纯收窄，且删的是一条 error |
 | **2** | **Blueprint v2 合同与题组关系化**（§5.5）：`form_group` 必填；新增 `response_form` / `answer_category` / `narrator_window_id`；`MIN_GROUPED_ITEMS` 改为完整覆盖、组内同质、考点序列连续、不跨 window；`MAX_GROUP_SPAN` 保持 warning | v1/v2 兼容单测 + v2 fixtures | 中。新生成严格写 v2，历史 v1 兼容读取 |
-| **3A** | `[2026-08-06 已完成]` **可行性预检聚合器 `question_feasibility_preflight.py`**（§5.4）：组合 Python 结构/统计结果与语义可行性结论；输出 `PASS` / `PASS_WITH_JUSTIFICATION` / `REGENERATE_MATERIAL`，另有三个「判不了」状态（见 §5.4 的 2026-08-06 补注）。语义结论本阶段只定契约与注入点 | 离线单测（+139 checks）+ 十一轮变异测试 | 中。确定性部分可离线测，语义结论不能伪装成纯 Python 推导 |
+| **3A** | `[2026-08-06 已完成]` **可行性预检聚合器 `question_feasibility_preflight.py`**（§5.4）：组合 Python 结构/统计结果与语义可行性结论；输出 `PASS` / `PASS_WITH_JUSTIFICATION` / `REGENERATE_MATERIAL`，另有三个「判不了」状态（见 §5.4 的 2026-08-06 补注）。语义结论本阶段只定契约与注入点 | 离线单测（+249 checks，九个套件）+ 二十轮变异测试（每轮均致死） | 中。确定性部分可离线测，语义结论不能伪装成纯 Python 推导 |
 | **3B** | `[2026-08-06 新增]` **非盲可行性审核 Agent + Skill + Schema + 编排接入**：真实产出 `feasibility` 语义结论。盲审守卫（`assert_blind` / `BLUEPRINT_ONLY_KEYS`）一字不动，不复用 `build_audit_payload` | 真实材料端到端跑通，且材料盲审行为逐字不变 | 中偏高。主要风险是这个 Agent 属于哪个 skill 池——放 `audit` 池会破坏「audit 池不含 plan schema」并直接撞上 ci_gates gate 1 |
 | **4** | **槽位持久化 `_slots/` + 两级尝试上限 + checkpoint**（§8.1–8.2）。这一步决定「必须交付 N 套」能不能成立 | 单测：耗尽上限 → 建 replacement slot；杀掉进程 → 下次 invoke 从 checkpoint 续 | **高。本方案最实质的结构改动**，且与 `batch.py` 现有三处「少交付优于 504」直接冲突 |
 | **5** | `question_package.schema.json` + `validate_questions_part1.py`（§5.3 全部 16 项）。**Runtime-local 纯 Python，可离线用手写 fixture 测**（§4.5） | 单测 + fixtures | 低 |
@@ -1087,7 +1107,7 @@ checkpoint_at
 用 `from validate_part1 import QR027_...` 会在 import 时把值拷成局部名，此后 monkeypatch 源模块毫无影响，
 使「单一事实来源」的测试假绿通过——已实测）。签名 `preflight(validation, feasibility)` **不接 blueprint**：
 拿不到 blueprint，聚合器就没有能力自己数 target 或判自然度，§5.4 的职责边界因此落在签名上而非注释里。
-测试在 `skills/shared/tests/run_tests.py`（六个套件，+139 checks，由 ci_gates gate 6 覆盖）。
+测试在 `skills/shared/tests/run_tests.py`（九个套件，+249 checks，由 ci_gates gate 6 覆盖）。
 
 **D. 编排（结构改动最大）**
 `backend/orchestration/batch.py` —— 推翻 :42–43 / :102–103 / :263–271 / :296–299 的少交付设计；`Budget` docstring 重写；`P95_PER_MATERIAL` 重测。

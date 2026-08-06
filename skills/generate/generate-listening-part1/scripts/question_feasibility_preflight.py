@@ -37,6 +37,9 @@ LARGEST_KEY = "qr027_largest_category"
 COUNT_KEYS = (NUMERIC_KEY, SPELLED_KEY, LARGEST_KEY)
 
 SUPPORTED_VERSION = 2
+# A Part 1 blueprint carries exactly ten items (validate_part1.py:504 errors otherwise), and the
+# QR-027 classes partition them, so every count lives in 0..10 and numeric + spelled == 10.
+ITEM_COUNT = 10
 REQUIRED_SEMANTICS = ("feasible", "reasons", "category_semantics_ok")
 
 
@@ -82,6 +85,35 @@ def _qr027_snapshot(metrics: object) -> dict:
     return {key: value for key, value in metrics.items() if str(key).startswith("qr027_")}
 
 
+def _errors_problem(validation: dict) -> str | None:
+    """Return a reason string when `ok`/`errors` are unusable or disagree, else None.
+
+    The two are not independent inputs: `validate_part1.py:638` emits `"ok": not errors`. Checking
+    them against each other therefore costs nothing and catches the case where something between
+    the validator and here rewrote one of them -- a mutated payload, a partial merge, a hand-edited
+    report. When they disagree there is no basis for picking a winner, and both ways of guessing
+    are bad: believe `errors` and a real defect can still slip through if `errors` was the field
+    that got emptied; believe `ok` and a clean set gets regenerated. Undecidable, so undecided.
+    """
+    if "ok" not in validation:
+        return "validation missing: ok"
+    if "errors" not in validation:
+        return "validation missing: errors"
+    ok = validation["ok"]
+    errors = validation["errors"]
+    # `isinstance(ok, bool)` rather than truthiness, for the same reason as `feasible`: the string
+    # "false" is truthy, so an upstream that serialises booleans as strings would invert this.
+    if not isinstance(ok, bool):
+        return f"validation invalid: ok is {type(ok).__name__}, expected boolean"
+    if not isinstance(errors, list):
+        return f"validation invalid: errors is {type(errors).__name__}, expected array"
+    if ok != (not errors):
+        return (f"validation invalid: ok is {ok} but errors holds {len(errors)} entr"
+                f"{'y' if len(errors) == 1 else 'ies'} -- the validator derives ok from errors, so "
+                f"a disagreement means one of them was rewritten and neither can be trusted")
+    return None
+
+
 def _semantics_problem(feasibility: object) -> str | None:
     """Return a reason string when the semantic conclusion is unusable, else None.
 
@@ -106,6 +138,18 @@ def _semantics_problem(feasibility: object) -> str | None:
     if not isinstance(feasibility["reasons"], list):
         return (f"semantics invalid: feasibility.reasons is "
                 f"{type(feasibility['reasons']).__name__}, expected array")
+    # A negative verdict has to say why. REGENERATE_MATERIAL spends an outer-quota candidate swap
+    # and a whole material regeneration, and the material stage is then supposed to act on the
+    # reasons -- with none recorded there is nothing to act on, so the next generation is as likely
+    # to repeat the same fault. An unexplained rejection is also indistinguishable from an audit
+    # that crashed and defaulted its output to false, which is why this is SEMANTICS_MISSING (the
+    # conclusion is unusable) rather than a REGENERATE_MATERIAL that happens to lack detail.
+    # `strip()` matters: [""] and ["   "] are non-empty lists carrying no information at all.
+    for key in ("feasible", "category_semantics_ok"):
+        if feasibility[key] is False and not any(
+                isinstance(reason, str) and reason.strip() for reason in feasibility["reasons"]):
+            return (f"semantics invalid: feasibility.{key} is false but reasons holds no non-empty "
+                    f"string -- a rejection that spends a regeneration must say what to fix")
     return None
 
 
@@ -186,10 +230,19 @@ def preflight(validation: object, feasibility: object) -> Verdict:
     # Gate 2 -- deterministic errors. After the version gate, not before: an archived record
     # carries the "version is missing" error, and checking errors first would hand every archived
     # record a REGENERATE_MATERIAL instead of UNSUPPORTED_VERSION.
-    errors = validation.get("errors")
-    if isinstance(errors, list) and errors:
+    #
+    # `ok` and `errors` are checked for shape AND for agreement, because the validator derives one
+    # from the other (`"ok": not errors`, validate_part1.py:638). If they disagree, one of them was
+    # rewritten somewhere between the validator and here, and neither can be trusted: reading the
+    # wrong one either regenerates a clean material set or -- far worse -- reports PASS on a set
+    # with real errors. That is not a decidable situation, so it is not decided.
+    problem = _errors_problem(validation)
+    if problem is not None:
+        return Verdict(VALIDATION_INCOMPLETE, [problem], qr027=qr027)
+    if validation["errors"]:
         return Verdict(REGENERATE_MATERIAL,
-                       [f"deterministic validation failed: {error}" for error in errors],
+                       [f"deterministic validation failed: {error}"
+                        for error in validation["errors"]],
                        qr027=qr027)
 
     # Gate 3 -- completeness of what this function is about to read. `qr027_metrics` always runs
@@ -197,6 +250,15 @@ def preflight(validation: object, feasibility: object) -> Verdict:
     # finish: a system-side problem, not unfit material. Absent metrics mean "not measured", not
     # zero -- the same rule as deterministic/validate.py:65. Treating them as zero would read
     # "spelled 0 < 4" and regenerate a material set that was never measured.
+    #
+    # The counts are also range- and sum-checked here rather than compared straight against the
+    # thresholds. A count outside 0..10 is arithmetically impossible for a ten-item blueprint, and
+    # `numeric + spelled` must come to exactly ITEM_COUNT because the three QR-027 classes
+    # partition the items totally (`derive_qr027_class` returns numeric | mixed | lexical for every
+    # target, including the empty string -- measured) and `spelled` is defined as lexical + mixed.
+    # So a sum that is not ITEM_COUNT means the counts do not describe ten items, and comparing
+    # them against the thresholds would be arithmetic on numbers that measure something else.
+    # Without this, `numeric=-1` and `numeric=0, spelled=10` both reached PASS.
     incomplete = []
     for key in COUNT_KEYS:
         if key not in metrics:
@@ -204,8 +266,19 @@ def preflight(validation: object, feasibility: object) -> Verdict:
         elif isinstance(metrics[key], bool) or not isinstance(metrics[key], int):
             incomplete.append(f"validation invalid: metrics.{key} is "
                               f"{type(metrics[key]).__name__}, expected integer")
+        elif not 0 <= metrics[key] <= ITEM_COUNT:
+            incomplete.append(f"validation invalid: metrics.{key} is {metrics[key]}, outside the "
+                              f"only arithmetically possible range 0..{ITEM_COUNT}")
     if incomplete:
         return Verdict(VALIDATION_INCOMPLETE, incomplete, qr027=qr027)
+    counted = metrics[NUMERIC_KEY] + metrics[SPELLED_KEY]
+    if counted != ITEM_COUNT:
+        return Verdict(VALIDATION_INCOMPLETE,
+                       [f"validation invalid: metrics.{NUMERIC_KEY} ({metrics[NUMERIC_KEY]}) + "
+                        f"metrics.{SPELLED_KEY} ({metrics[SPELLED_KEY]}) is {counted}, not "
+                        f"{ITEM_COUNT} -- the QR-027 classes partition every item, so these two "
+                        f"must account for all {ITEM_COUNT} of them"],
+                       qr027=qr027)
 
     # Gate 4 -- semantics. Before QR-027 (AC4): otherwise a set that clears all three QR-027
     # thresholds but cannot carry ten questions would collect a PASS. Deterministic-all-green is
