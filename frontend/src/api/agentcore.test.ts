@@ -16,6 +16,12 @@ import RAW from './__fixtures__/real-batch.sse.txt?raw'
 import { decodeWireFrame, mapStage } from './agentcore'
 import { advancePhase, PHASE_LABEL, phaseOfStage } from '@/domain/progressStages'
 import { analyseFormGroups } from '@/domain/formGroups'
+import {
+  blueprintVersion,
+  isLegacyLayout,
+  itemLayout,
+  layoutCoverage,
+} from '@/domain/blueprintVersion'
 import { FALLBACK_CONFIG } from '@/config/runtimeConfig'
 import { joinArtifacts } from '@/domain/joinArtifacts'
 import type { Audit, Blueprint, Material } from '@/contracts'
@@ -214,28 +220,53 @@ describe('form groups on real output', () => {
   })
 
   /**
-   * This capture is a v1 blueprint: items 2 and 6 are `multiple_choice`, the question type Part 1
-   * no longer generates. Narrowing the `item_form` union means `multiple_choice` is not among the
-   * forms the analysis iterates, so those two numbers drop out of the coverage flattening and the
-   * blueprint reads as self-inconsistent.
+   * This capture is a v1 blueprint: items 2 and 6 are `multiple_choice`, the layout Part 1 no longer
+   * generates. Narrowing the `item_form` union made `multiple_choice` one of the keys the coverage
+   * flattening skipped, so those two numbers dropped out and the blueprint read as
+   * self-inconsistent — the panel told reviewers a material generated last week contradicted itself.
    *
-   * That is a REAL regression for reviewing historical candidates, not a test artefact — the panel
-   * would tell a reviewer that a material generated last week contradicts itself. It is recorded
-   * here rather than hidden because the capture is a record of a real response and must not be
-   * edited, and because compatibility reading for v1 blueprints is deliberately out of scope for
-   * the multiple-choice removal (it needs `blueprint_schema_version` and a v1/v2 union).
+   * The fix is in `layoutCoverage()` + flattening over `Object.values(coverage)`: consistency asks
+   * whether the artefact's two views of itself agree, not whether its values are still in the
+   * current union. That second question belongs to the write-side schema.
    *
-   * When that lands, this test flips back to asserting `consistent === true`.
+   * The capture itself is untouched. It is a record of a real response, and it is the only v1 input
+   * this compatibility layer can be tested against.
    */
-  it('reports a v1 blueprint containing multiple_choice as inconsistent, pending v1 compat', () => {
+  it('reads a v1 blueprint containing multiple_choice as internally consistent', () => {
     const analysis = analyseFormGroups(view, FALLBACK_CONFIG.thresholds)
     const legacy = view.blueprint.items
-      .filter((i) => !(['form', 'table', 'note'] as string[]).includes(i.item_form))
+      .filter((i) => isLegacyLayout(itemLayout(i)))
       .map((i) => i.number)
+    // Still present in the data — the fix tolerates the value rather than rewriting it.
     expect(legacy).toEqual([2, 6])
-    expect(analysis.consistency.missingNumbers).toEqual(legacy)
-    expect(analysis.consistency.coversAllTen).toBe(false)
-    expect(analysis.consistency.consistent).toBe(false)
+    expect(blueprintVersion(view.blueprint)).toBe(1)
+    expect(analysis.consistency.missingNumbers).toEqual([])
+    expect(analysis.consistency.coversAllTen).toBe(true)
+    expect(analysis.consistency.disagreeingNumbers).toEqual([])
+    expect(analysis.consistency.consistent).toBe(true)
+  })
+
+  /**
+   * The MC numbers must be counted, not merely not-missing. Asserting `consistent === true` alone
+   * would also pass if `layoutCoverage()` dropped both the coverage entry AND the items, so this
+   * pins the coverage map itself.
+   */
+  it('keeps the v1-only layout key in the coverage map', () => {
+    const coverage = layoutCoverage(view.blueprint)
+    expect(coverage.multiple_choice).toEqual([2, 6])
+    expect(Object.values(coverage).flat().sort((a, b) => a - b)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+    ])
+  })
+
+  /**
+   * The coverage TABLE still lists exactly three rows. Tolerating a v1 value in the consistency
+   * calculation is not the same as adding UI for a layout the brief dropped, and conflating the two
+   * would put a 选择题 row back in front of reviewers.
+   */
+  it('does not add a UI row for the v1-only layout', () => {
+    const analysis = analyseFormGroups(view, FALLBACK_CONFIG.thresholds)
+    expect(analysis.rows.map((r) => r.itemForm)).toEqual(['form', 'table', 'note'])
   })
 })
 

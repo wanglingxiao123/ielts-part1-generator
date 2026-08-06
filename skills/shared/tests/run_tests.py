@@ -7,10 +7,12 @@ cross-check, and that the archived samples do not crash the deterministic metric
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -66,6 +68,20 @@ def run(script: Path, *args: str) -> subprocess.CompletedProcess:
 
 def validate(blueprint: str, *extra: str) -> subprocess.CompletedProcess:
     return run(VALIDATE, str(FIXTURES / "material_valid.json"), "--blueprint", str(FIXTURES / blueprint), *extra)
+
+
+def validate_mutated(mutate, *extra: str, base: str = "blueprint_valid.json") -> subprocess.CompletedProcess:
+    """Validate a one-off variant of a fixture, built in memory and written to a temp file.
+
+    For cases that do not deserve a committed fixture: `build_fixtures.py` owns fixtures/ entirely,
+    so a hand-placed file there disappears on the next rebuild, and a builder variant only earns its
+    place if more than one test reads it.
+    """
+    payload = copy.deepcopy(json.loads((FIXTURES / base).read_text(encoding="utf-8")))
+    mutate(payload)
+    path = Path(tempfile.mkdtemp()) / base
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return run(VALIDATE, str(FIXTURES / "material_valid.json"), "--blueprint", str(path), *extra)
 
 
 def test_schemas_are_valid() -> None:
@@ -381,6 +397,10 @@ def test_remaining_rules_do_not_reject_real_papers() -> None:
     shifted_bp["split_after"] = 4
     for item in shifted_bp["items"]:
         item["group"] = 1 if item["number"] <= 4 else 2
+        # v2: narrator_window_id is derived from the same split, so moving the split moves it too.
+        # Leaving it stale would make this test fail on a window mismatch it did not mean to create
+        # -- which is the check doing its job, since a stale window is exactly what it hunts for.
+        item["narrator_window_id"] = 1 if item["number"] <= 4 else 2
     got = verdict(shifted, shifted_bp)
     check("a consistent 1-4/5-10 split is accepted by BOTH the narration and blueprint rules",
           not [e for e in (got.get("errors") or []) if "split" in e.lower()],
@@ -465,7 +485,7 @@ def test_grouping_cannot_be_faked() -> None:
     scratch = Path(tempfile.mkdtemp())
 
     def recover(payload: dict) -> dict:
-        """Rebuild question_type_coverage so it agrees with the mutated item_forms.
+        """Rebuild completion_layout_coverage so it agrees with the mutated item_forms.
 
         Without this the coverage/item_form cross-check fires and the blueprint is rejected for
         a reason the case is not about -- which is exactly how a grouping test goes vacuous.
@@ -473,7 +493,7 @@ def test_grouping_cannot_be_faked() -> None:
         coverage: dict = {}
         for item in payload["items"]:
             coverage.setdefault(item["item_form"], []).append(item["number"])
-        payload["question_type_coverage"] = coverage
+        payload["completion_layout_coverage"] = coverage
         return payload
 
     # `note` is now the only non-table item_form, so "a shared label on points that cannot become
@@ -504,6 +524,217 @@ def test_grouping_cannot_be_faked() -> None:
         result = run(VALIDATE, str(FIXTURES / "material_valid.json"), "--blueprint", str(path))
         check(f"rejected: {label}",
               result.returncode == 1 and expected in result.stdout, result.stdout)
+
+
+def test_blueprint_version_is_read_not_guessed() -> None:
+    """Version comes from the version field alone, never from which fields happen to be present.
+
+    Guessing "no response_form, so probably v1" would let a v2 that simply forgot the field pass as
+    a v1, and the v2 checks would then never run on the records they exist for. An unrecognised
+    version is an error for the same reason: falling back to v1 turns a typo into a silent downgrade.
+    """
+    print("blueprint version detection")
+    for label, fixture, extra, want_pass, expected in (
+        ("v2 fixture passes with no flag", "blueprint_valid.json", (), True, ""),
+        ("v1 archive passes with --allow-v1", "blueprint_v1_legacy.json", ("--allow-v1",), True, ""),
+        ("v1 archive is rejected by default", "blueprint_v1_legacy.json", (), False,
+         "blueprint_schema_version is missing"),
+        ("an unknown version is an error, not a fallback to v1", "blueprint_bad_version.json", (),
+         False, "only 2 is supported"),
+    ):
+        result = validate(fixture, *extra)
+        passed = result.returncode == 0
+        check(f"{label}", passed == want_pass and (expected in result.stdout),
+              result.stdout)
+
+    # A v2 missing one required field must FAIL rather than be read as a v1 that never had it.
+    # Built in memory rather than committed as a fixture: `build_fixtures.py` is the only writer of
+    # fixtures/, so a hand-placed file there would be deleted on the next rebuild.
+    def strip_response_form(bp: dict) -> None:
+        for item in bp["items"]:
+            item.pop("response_form")
+    result = validate_mutated(strip_response_form)
+    check("a v2 missing response_form fails instead of degrading to v1",
+          result.returncode == 1 and "response_form" in result.stdout, result.stdout)
+
+
+def test_response_form_derivation() -> None:
+    """Table-driven, because the derivation is where this field can quietly go wrong.
+
+    Two rules are easy to get backwards and both are covered here: hyphens are NOT split (word_limit
+    counts a hyphenated compound as one word, and serving word_limit is the field's whole purpose),
+    and `numeric` requires every token to be a pure number form rather than merely to contain a
+    digit. The second is the same trap as `address` sitting in NUMERIC_TYPES: under "contains a
+    digit" the postcode BT14 9BJ reads as numeric when it is plainly something to spell.
+    """
+    print("response_form / qr027_class derivation")
+    sys.path.insert(0, str(VALIDATE.parent))
+    import validate_part1 as vp
+
+    for target, want_form, want_class in (
+        ("Room 4B", "phrase", "mixed"),            # §6.4 Q14's own example
+        ("3 Oakwood Lane", "phrase", "mixed"),     # a `type: "address"` mixed case
+        ("118 Fordyce", "phrase", "mixed"),        # the fixture's address point
+        ("BT14 9BJ", "phrase", "mixed"),           # postcode: NOT numeric
+        ("9.30", "numeric", "numeric"),
+        ("07840051963", "numeric", "numeric"),
+        ("£38", "numeric", "numeric"),
+        ("two-thirty", "word", "lexical"),         # hyphen not split
+        ("two-bedroom", "word", "lexical"),        # hyphen not split
+        ("Anna Woods", "phrase", "lexical"),
+        ("park", "word", "lexical"),
+        ("Tuesdays at 6 p.m.", "phrase", "mixed"),
+    ):
+        got_form = vp.derive_response_form(target)
+        got_class = vp.derive_qr027_class(target)
+        check(f"{target!r} -> {want_form}/{want_class}",
+              (got_form, got_class) == (want_form, want_class),
+              f"got {got_form}/{got_class}")
+
+    # The two axes are not the same axis. If someone merges the functions, this fails.
+    check("response_form and qr027_class split on different axes",
+          vp.derive_response_form("Room 4B") == "phrase" and vp.derive_qr027_class("Room 4B") == "mixed",
+          "Room 4B must be phrase (two tokens) but mixed (digits among letters)")
+
+
+def test_v2_declarations_are_recomputed() -> None:
+    """The three v2 fields are only worth having if a wrong declaration is caught.
+
+    §9.2 names the likely failure directly: implementing narrator_window_id as "read the field,
+    check it is 1 or 2" hands SC-019's window attribution back to the model's own say-so. Each case
+    below asserts the SPECIFIC message, so the test cannot pass on some unrelated rejection.
+    """
+    print("v2 declarations are recomputed, not trusted")
+    for label, fixture, expected in (
+        ("response_form contradicted by its target", "blueprint_bad_response_form.json",
+         "response_form declares 'numeric' but '118 Fordyce' derives 'phrase'"),
+        ("narrator_window_id contradicted by the narration", "blueprint_bad_window.json",
+         "narrator_window_id declares 2 but item 1 falls in window 1"),
+        ("answer_category outside the taxonomy", "blueprint_bad_answer_category.json",
+         "is not in the taxonomy"),
+    ):
+        result = validate(fixture)
+        check(f"rejected: {label}", result.returncode == 1 and expected in result.stdout,
+              result.stdout)
+
+    # Naming the item is part of the requirement: an error that says only "response_form is wrong"
+    # leaves a ten-point blueprint with no indication of which point to fix.
+    result = validate("blueprint_bad_response_form.json")
+    check("the error names the offending item",
+          "items[1]" in result.stdout, result.stdout)
+
+
+def test_group_constraints_are_distinguishable() -> None:
+    """Five constraints, five distinct messages. Asserting text, not returncode.
+
+    A single error covering all five would let this test pass while four of them were broken, which
+    is how stage 1's grouping test managed to be vacuous. Note constraints 3 and 4 are asserted on
+    ONE fixture: they cannot be separated, because evidence turns are already required to be
+    strictly increasing, so a group with non-contiguous item numbers is always also interrupted in
+    the evidence sequence. Measured over every single- and double-point regrouping of the fixture
+    (50 and 1125 cases): constraint 3 never fires alone. See design.md D10.
+    """
+    print("v2 group constraints are distinguishable")
+    for label, fixture, expected in (
+        ("1. every item must belong to a group", "blueprint_bad_group_missing.json",
+         "form_group must be a non-empty string in v2"),
+        ("2. a group must be homogeneous", "blueprint_bad_group_mixed.json",
+         "mixes item_form values"),
+        ("3. a group's item numbers must be contiguous", "blueprint_bad_group_split.json",
+         "covers non-contiguous item numbers [1, 3, 4]"),
+        ("4. a group must not be interrupted in the evidence sequence",
+         "blueprint_bad_group_split.json", "are interrupted in the evidence sequence"),
+        ("5. a group must not cross a narrator window", "blueprint_bad_group_window.json",
+         "spans narrator windows [1, 2]"),
+    ):
+        result = validate(fixture)
+        check(f"rejected: {label}", result.returncode == 1 and expected in result.stdout,
+              result.stdout)
+
+    # The five messages must actually differ. Reusing one message for two constraints would make
+    # the assertions above pass while telling a reviewer nothing about which property broke.
+    messages = set()
+    for fixture in ("blueprint_bad_group_missing.json", "blueprint_bad_group_mixed.json",
+                    "blueprint_bad_group_split.json", "blueprint_bad_group_window.json"):
+        for line in validate(fixture).stdout.splitlines():
+            if line.startswith("ERROR:") and ("form_group" in line or "narrator windows" in line
+                                              or "evidence sequence" in line):
+                messages.add(line.split("ERROR: ")[1][:40])
+    check("the group constraints report at least five distinct messages",
+          len(messages) >= 5, f"got {len(messages)}: {sorted(messages)}")
+
+
+def test_item_labels_are_zero_based_indices() -> None:
+    """`blueprint.items[N]` must mean the array index, in every message that uses it.
+
+    The reader parses the bracket and renders `N + 1` as the item number
+    (`frontend/src/domain/validationNotes.ts`), so a 1-based label points the reviewer's jump button
+    at the next point -- and item 10's label `[10]` is discarded entirely, since the parser only
+    accepts 0-9. `validate_grouping` had three messages built from `item["number"]` instead of the
+    enumeration index; two of them predate v2. Asserting the message text alone (as the tests above
+    do) cannot see this, because both conventions contain the substring being matched.
+    """
+    print("item labels are 0-based array indices")
+
+    # Two errors on the LAST item: [9] under the shared convention, [10] under the broken one --
+    # and [10] is the case the frontend silently drops rather than mis-renders.
+    def break_last_item(bp: dict) -> None:
+        bp["items"][9]["form_group"] = ""
+        bp["items"][9]["item_form"] = "multiple_choice"
+    result = validate_mutated(break_last_item)
+    lines = [ln for ln in result.stdout.splitlines()
+             if "form_group must be a non-empty string in v2" in ln or "item_form must be one" in ln]
+    check("both grouping errors label item 10 as index 9",
+          len(lines) == 2 and all("blueprint.items[9]" in ln for ln in lines),
+          "\n".join(lines) or result.stdout[:400])
+
+    # Asserted on THIS result, not the item-5 one below: `[10]` is only reachable from the last item,
+    # so checking it against a mid-blueprint failure would pass under either convention.
+    check("no message emits an index the reader cannot parse",
+          "blueprint.items[10]" not in result.stdout, result.stdout[:400])
+
+    # The convention has to be ONE convention: the same item, broken two ways, must produce the same
+    # label from `validate_grouping` and from `validate_blueprint`'s per-item loop.
+    def break_item_five(bp: dict) -> None:
+        bp["items"][4]["form_group"] = ""
+        del bp["items"][4]["response_form"]
+    result = validate_mutated(break_item_five)
+    check("validate_grouping and validate_blueprint agree on the label for one item",
+          "blueprint.items[4].form_group must be a non-empty string in v2" in result.stdout
+          and "blueprint.items[4] missing fields: ['response_form']" in result.stdout,
+          result.stdout[:600])
+
+
+def test_qr027_counts_are_reported_not_enforced() -> None:
+    """Stage 2 measures QR-027; stage 3 gates on it. Both halves of that are asserted here.
+
+    The counting axis is qr027_class, not the persisted response_form: they split on token count vs
+    character composition, so `Room 4B` is a phrase whose class is mixed. The same-category limit is
+    <3, not <=3 -- the client's wording is "三题或以上不得...", so three already violates.
+    """
+    print("QR-027 counts are metrics, not a gate")
+    parsed = json.loads(validate("blueprint_valid.json", "--json").stdout)
+    metrics = parsed["metrics"]
+    check("the counts are emitted", "qr027_largest_category" in metrics, str(metrics.keys()))
+    check("the reference fixture satisfies QR-027", metrics.get("qr027_within_limits") is True,
+          str({k: v for k, v in metrics.items() if k.startswith("qr027")}))
+    check("no category is tested by 3+ items (<3, not <=3)",
+          metrics["qr027_largest_category"] < 3, str(metrics.get("qr027_category_counts")))
+    check("numeric answers stay within 4", metrics["qr027_numeric_answers"] <= 4, str(metrics))
+    check("at least 4 answers require spelling", metrics["qr027_spelled_answers"] >= 4, str(metrics))
+
+    # Not a gate yet: a blueprint that breaks QR-027 must still pass stage 2, because the exit
+    # decision and its recorded justification belong to stage 3's aggregator.
+    def all_one_category(bp: dict) -> None:
+        for item in bp["items"]:
+            item["answer_category"] = "location"
+    result = validate_mutated(all_one_category, "--json")
+    parsed = json.loads(result.stdout)
+    check("a QR-027 violation is measured but not blocked in stage 2",
+          result.returncode == 0
+          and parsed["metrics"]["qr027_largest_category"] == 10
+          and parsed["metrics"]["qr027_within_limits"] is False,
+          result.stdout[:400])
 
 
 def test_spelled_name_rule_not_vacuous() -> None:
@@ -774,6 +1005,12 @@ def main() -> int:
         test_indirect_confirmation_is_optional,
         test_remaining_rules_do_not_reject_real_papers,
         test_grouping_cannot_be_faked,
+        test_blueprint_version_is_read_not_guessed,
+        test_response_form_derivation,
+        test_v2_declarations_are_recomputed,
+        test_group_constraints_are_distinguishable,
+        test_item_labels_are_zero_based_indices,
+        test_qr027_counts_are_reported_not_enforced,
         test_spelled_name_rule_not_vacuous,
         test_metrics_absent_when_unmeasured,
         test_typical_band_is_not_a_finding,

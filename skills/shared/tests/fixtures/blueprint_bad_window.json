@@ -34,7 +34,7 @@
       "confirmed": true,
       "response_form": "phrase",
       "answer_category": "person_name",
-      "narrator_window_id": 1
+      "narrator_window_id": 2
     },
     {
       "number": 2,
@@ -57,7 +57,7 @@
       "type": "number",
       "target": "BT14 9BJ",
       "evidence": "It's BT14 9BJ.",
-      "turn_index": 14,
+      "turn_index": 10,
       "item_form": "form",
       "form_group": "A",
       "distractor": false,

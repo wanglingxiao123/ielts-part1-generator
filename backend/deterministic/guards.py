@@ -52,14 +52,25 @@ class BlindnessViolation(RuntimeError):
 # `confirmed` was in the design's draft list but is NOT usable: audit.schema.json uses it as a
 # `clarity` enum value, so it appears in the audit skill's own rubric and in legitimate audit
 # output. Including it would fire on every call.
+#
+# The v2 additions below are only ever added, never swapped in: `question_type_coverage` stays
+# because archived prompts and records still carry it, so dropping it would stop catching the leak
+# it was added for. Each of the four was counted against material.schema.json, audit.schema.json and
+# the whole audit pool before being added -- 0 occurrences each, so none can repeat `confirmed`'s
+# false-positive problem. All four are snake_case identifiers that cannot occur in English prose,
+# which is why they need no quoting the way `target` and `distractor` do.
 BLUEPRINT_ONLY_KEYS = (
     "blueprint",
     "form_group",
     "question_type_coverage",
+    "completion_layout_coverage",
     "item_form",
     "indirect_confirmation",
     "narration_mode",
     "split_after",
+    "response_form",
+    "answer_category",
+    "narrator_window_id",
     '"target"',
     '"distractor"',
 )
@@ -70,10 +81,14 @@ BLUEPRINT_JSON_FIELDS = (
     '"blueprint"',
     '"form_group"',
     '"question_type_coverage"',
+    '"completion_layout_coverage"',
     '"item_form"',
     '"indirect_confirmation"',
     '"narration_mode"',
     '"split_after"',
+    '"response_form"',
+    '"answer_category"',
+    '"narrator_window_id"',
     '"target"',
     '"distractor"',
 )

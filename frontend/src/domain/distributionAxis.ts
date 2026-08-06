@@ -12,7 +12,7 @@
  */
 import type { DistributionMetrics, PointPosition } from './distribution'
 import type { FormGroupAnalysis } from './formGroups'
-import { ITEM_FORM_LABEL, circled, type ViewMaterial } from './types'
+import { layoutLabel, circled, type ViewMaterial } from './types'
 
 /** 刻度间隔（轮）。客户要的是 0 / 8 / 16 / 24 / 32 这几个位置有标注。 */
 export const TICK_STEP = 8
@@ -85,7 +85,7 @@ export function declaredGroupBrackets(
         left: axisPercent(startOrd, span),
         widthPercent: axisWidthPercent(startOrd, endOrd, span),
         label:
-          `${ITEM_FORM_LABEL[g.itemForm]}${g.name ? ` ${g.name}` : ''}：` +
+          `${layoutLabel(g.itemForm)}${g.name ? ` ${g.name}` : ''}：` +
           `${g.numbers.map((n) => circled(n)).join('')}` +
           (g.spanWarn ? ' ⚠ 跨度太宽，考生要跨半篇回忆' : ''),
         warn: g.spanWarn,

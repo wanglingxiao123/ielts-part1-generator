@@ -95,6 +95,17 @@ export const ITEM_FORM_LABEL: Record<ItemForm, string> = {
 }
 
 /**
+ * 标签查找必须走这里，不要直接索引 `ITEM_FORM_LABEL`。
+ *
+ * v1 记录里的 `item_form` 可能是 `multiple_choice`——已不在 union 内，但真实数据里就有。直接索引
+ * 会渲染出 `undefined：①②`。回退用原字符串而不是「未知」：读的人需要知道这份历史记录声明的到底
+ * 是什么，才判断得出面板说的对不对。
+ */
+export function layoutLabel(layout: string): string {
+  return ITEM_FORM_LABEL[layout as ItemForm] ?? layout
+}
+
+/**
  * 八类可考信息点，措辞取自《Part1 选材命制规范》§4B-3 的表格，让 UI 和客户团队自己
  * 的说法对得上。contract 里的 `name`/`number`/… 是内部枚举，命题人不认。
  */

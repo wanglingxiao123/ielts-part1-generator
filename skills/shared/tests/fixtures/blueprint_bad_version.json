@@ -1,5 +1,5 @@
 {
-  "blueprint_schema_version": 2,
+  "blueprint_schema_version": 3,
   "narration_mode": "full",
   "split_after": 5,
   "completion_layout_coverage": {
@@ -57,7 +57,7 @@
       "type": "number",
       "target": "BT14 9BJ",
       "evidence": "It's BT14 9BJ.",
-      "turn_index": 14,
+      "turn_index": 10,
       "item_form": "form",
       "form_group": "A",
       "distractor": false,

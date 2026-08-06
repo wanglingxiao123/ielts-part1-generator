@@ -127,28 +127,48 @@ def find_anchor(turns: list[dict], phrase: str) -> int:
     return hits[0]
 
 
-# Ordered by first occurrence in the script; the narration split falls between items 6 and 7.
+# Ordered by first occurrence in the script; the narration split falls between items 5 and 6.
+#
+# v2 grouping. Every item belongs to a group, groups are homogeneous, their item numbers are
+# contiguous, they are not interleaved in the evidence sequence, and none crosses the narrator
+# window (split_after=5, so window 1 is Q1-5 and window 2 is Q6-10). The three note points cannot
+# form ONE group for that last reason: Q5 sits in window 1 and Q6/Q7 in window 2, so they split
+# into C and D. Turning Q5 into a `form` and folding it into A was the alternative, and it was
+# rejected -- A's turn span would become 4..20 = 16, over MAX_GROUP_SPAN, so the fixture that is
+# supposed to be the valid example would start emitting a span warning.
+#
+# `answer_category` classifies the nature of the ANSWER, not the wording of the sentence:
+#   - BT14 9BJ is a postcode, i.e. a locator, so `location` rather than `contact`.
+#   - guest room / office are conditions asked OF the property, so `requirement`; `facility` is for
+#     a place being described (park, primary school). Reading them as facilities would give
+#     facility x4 and make this "valid" fixture violate QR-027's same-category limit of <3.
+#   - house is chosen after weighing house against flat (distractor=True), hence `preference`.
+#   - two-bedroom is a spec, so `quantity`, even though its evidence says "definitely need".
+#
+# `response_form` counts TOKENS, splitting on whitespace only: two-bedroom is one word because
+# word_limit counts a hyphenated compound as one. `numeric` needs every token to be a pure number
+# form, which is why BT14 9BJ is a phrase.
 ITEM_SPECS = [
-    # (type, target, evidence, item_form, form_group, distractor, confirmed)
-    ("name", "Anna Woods", "It's Anna Woods.", "form", "A", False, True),
-    ("address", "118 Fordyce", "It's 118 Fordyce.", "form", "A", False, True),
-    ("number", "BT14 9BJ", "It's BT14 9BJ.", "form", "A", False, True),
-    ("number", "07840051963", "It's 07840051963.", "form", "A", False, True),
-    ("option", "primary school", "still in primary school", "note", None, True, False),
+    # (type, target, evidence, item_form, form_group, distractor, confirmed, category, response_form)
+    ("name", "Anna Woods", "It's Anna Woods.", "form", "A", False, True, "person_name", "phrase"),
+    ("address", "118 Fordyce", "It's 118 Fordyce.", "form", "A", False, True, "location", "phrase"),
+    ("number", "BT14 9BJ", "It's BT14 9BJ.", "form", "A", False, True, "location", "phrase"),
+    ("number", "07840051963", "It's 07840051963.", "form", "A", False, True, "contact", "numeric"),
+    ("option", "primary school", "still in primary school", "note", "C", True, False, "facility", "phrase"),
     # `type` stays "option" -- it names the KIND of detail (a preference or chosen alternative),
     # which is still a perfectly good completion answer ("Property type: ______"). Only the
     # dropped item_form was about the multiple-choice question type. Two dimensions, one deleted.
-    ("option", "park", "he'd love a park nearby", "note", None, False, False),
-    ("option", "house", "always lived in a house", "note", None, True, False),
-    ("quantity", "two-bedroom", "you definitely need a two-bedroom property", "table", "B", False, True),
-    ("condition", "guest room", "how about having a guest room", "table", "B", True, False),
-    ("condition", "office", "it'd be handy to have an office", "table", "B", False, False),
+    ("option", "park", "he'd love a park nearby", "note", "D", False, False, "facility", "word"),
+    ("option", "house", "always lived in a house", "note", "D", True, False, "preference", "word"),
+    ("quantity", "two-bedroom", "you definitely need a two-bedroom property", "table", "B", False, True, "quantity", "word"),
+    ("condition", "guest room", "how about having a guest room", "table", "B", True, False, "requirement", "phrase"),
+    ("condition", "office", "it'd be handy to have an office", "table", "B", False, False, "requirement", "word"),
 ]
 
 
 def build_blueprint(turns: list[dict], split_after: int) -> dict:
     items, coverage = [], {}
-    for number, (kind, target, evidence, form, group, distractor, confirmed) in enumerate(ITEM_SPECS, 1):
+    for number, (kind, target, evidence, form, group, distractor, confirmed, category, response_form) in enumerate(ITEM_SPECS, 1):
         items.append({
             "number": number,
             "group": 1 if number <= split_after else 2,
@@ -160,12 +180,19 @@ def build_blueprint(turns: list[dict], split_after: int) -> dict:
             "form_group": group,
             "distractor": distractor,
             "confirmed": confirmed,
+            "response_form": response_form,
+            "answer_category": category,
+            # Derived from split_after rather than written into ITEM_SPECS as a constant. A
+            # hand-written window would make this fixture unable to demonstrate the thing the
+            # field exists for: that the declared value and the recomputed one agree.
+            "narrator_window_id": 1 if number <= split_after else 2,
         })
         coverage.setdefault(form, []).append(number)
     return {
+        "blueprint_schema_version": 2,
         "narration_mode": "full",
         "split_after": split_after,
-        "question_type_coverage": coverage,
+        "completion_layout_coverage": coverage,
         "items": items,
         "correction": {
             "earlier": "I said secondary",
@@ -307,6 +334,54 @@ def main() -> None:
     for item in thin["items"][1:]:
         item["confirmed"] = False
     write("blueprint_thin_confirmation.json", thin)
+
+    # --- v2 negatives. Each varies ONE thing so a test can assert the specific message rather than
+    # a bare returncode. Built from the same builder as every other fixture, never hand-written.
+    def variant(name: str, mutate) -> None:
+        copy = json.loads(json.dumps(blueprint))
+        mutate(copy)
+        write(name, copy)
+
+    # A v1 record: no version field, the v1 coverage name, and the nullable form_group v1 allowed.
+    # This is the read-compatibility input, not a defect -- it must PASS with --allow-v1.
+    def downgrade(bp: dict) -> None:
+        bp.pop("blueprint_schema_version")
+        bp["question_type_coverage"] = bp.pop("completion_layout_coverage")
+        for item in bp["items"]:
+            for key in ("response_form", "answer_category", "narrator_window_id"):
+                item.pop(key)
+            if item["item_form"] == "note":
+                item["form_group"] = None
+    variant("blueprint_v1_legacy.json", downgrade)
+
+    # Version detection: an unrecognised version must be reported, never read as v1.
+    variant("blueprint_bad_version.json",
+            lambda bp: bp.update(blueprint_schema_version=3))
+
+    # Declared-vs-derived, three fields. Item 2's target is "118 Fordyce", a phrase.
+    variant("blueprint_bad_response_form.json",
+            lambda bp: bp["items"][1].update(response_form="numeric"))
+    variant("blueprint_bad_answer_category.json",
+            lambda bp: bp["items"][0].update(answer_category="other"))
+    # Item 1 is in window 1; declaring 2 must be caught by recomputation, not merely by range.
+    variant("blueprint_bad_window.json",
+            lambda bp: bp["items"][0].update(narrator_window_id=2))
+
+    # Group constraint 1: v2 forbids the null that v1 allowed.
+    variant("blueprint_bad_group_missing.json",
+            lambda bp: bp["items"][4].update(form_group=None))
+    # Group constraint 2: group A would hold both a form and a note point.
+    variant("blueprint_bad_group_mixed.json",
+            lambda bp: bp["items"][4].update(form_group="A"))
+    # Group constraints 3 and 4 together: A becomes {1,3,4}, so its numbers are non-contiguous AND
+    # it is interrupted by E in the evidence sequence. These two cannot be separated -- evidence
+    # order is already required to be strictly increasing, so non-contiguous numbers always imply
+    # interruption. See design.md D10.
+    variant("blueprint_bad_group_split.json",
+            lambda bp: bp["items"][1].update(form_group="E"))
+    # Group constraint 5: group D would hold Q5 (window 1) and Q6/Q7 (window 2).
+    variant("blueprint_bad_group_window.json",
+            lambda bp: bp["items"][4].update(form_group="D"))
 
 
 if __name__ == "__main__":

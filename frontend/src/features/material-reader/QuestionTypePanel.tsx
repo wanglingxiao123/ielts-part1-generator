@@ -1,7 +1,7 @@
 /**
  * Question-type fit panel (design.md §3.6) — answers spec §6「题型适配」.
  *
- * item_form and question_type_coverage are redundant by contract. This panel
+ * item_form and the layout coverage map are redundant by contract. This panel
  * shows WHETHER THEY AGREE rather than picking one: a disagreement means the
  * artefact contradicts itself, which is what the reviewer needs to know.
  */

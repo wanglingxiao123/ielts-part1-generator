@@ -207,9 +207,10 @@ export const MATERIAL_VALID: Material = {
 }
 
 export const BLUEPRINT_VALID: Blueprint = {
+  "blueprint_schema_version": 2,
   "narration_mode": "full",
   "split_after": 5,
-  "question_type_coverage": {
+  "completion_layout_coverage": {
     "form": [
       1,
       2,
@@ -238,7 +239,10 @@ export const BLUEPRINT_VALID: Blueprint = {
       "item_form": "form",
       "form_group": "A",
       "distractor": false,
-      "confirmed": true
+      "confirmed": true,
+      "response_form": "phrase",
+      "answer_category": "person_name",
+      "narrator_window_id": 1
     },
     {
       "number": 2,
@@ -250,7 +254,10 @@ export const BLUEPRINT_VALID: Blueprint = {
       "item_form": "form",
       "form_group": "A",
       "distractor": false,
-      "confirmed": true
+      "confirmed": true,
+      "response_form": "phrase",
+      "answer_category": "location",
+      "narrator_window_id": 1
     },
     {
       "number": 3,
@@ -262,7 +269,10 @@ export const BLUEPRINT_VALID: Blueprint = {
       "item_form": "form",
       "form_group": "A",
       "distractor": false,
-      "confirmed": true
+      "confirmed": true,
+      "response_form": "phrase",
+      "answer_category": "location",
+      "narrator_window_id": 1
     },
     {
       "number": 4,
@@ -274,7 +284,10 @@ export const BLUEPRINT_VALID: Blueprint = {
       "item_form": "form",
       "form_group": "A",
       "distractor": false,
-      "confirmed": true
+      "confirmed": true,
+      "response_form": "numeric",
+      "answer_category": "contact",
+      "narrator_window_id": 1
     },
     {
       "number": 5,
@@ -284,9 +297,12 @@ export const BLUEPRINT_VALID: Blueprint = {
       "evidence": "still in primary school",
       "turn_index": 20,
       "item_form": "note",
-      "form_group": null,
+      "form_group": "C",
       "distractor": true,
-      "confirmed": false
+      "confirmed": false,
+      "response_form": "phrase",
+      "answer_category": "facility",
+      "narrator_window_id": 1
     },
     {
       "number": 6,
@@ -296,9 +312,12 @@ export const BLUEPRINT_VALID: Blueprint = {
       "evidence": "he'd love a park nearby",
       "turn_index": 29,
       "item_form": "note",
-      "form_group": null,
+      "form_group": "D",
       "distractor": false,
-      "confirmed": false
+      "confirmed": false,
+      "response_form": "word",
+      "answer_category": "facility",
+      "narrator_window_id": 2
     },
     {
       "number": 7,
@@ -308,9 +327,12 @@ export const BLUEPRINT_VALID: Blueprint = {
       "evidence": "always lived in a house",
       "turn_index": 32,
       "item_form": "note",
-      "form_group": null,
+      "form_group": "D",
       "distractor": true,
-      "confirmed": false
+      "confirmed": false,
+      "response_form": "word",
+      "answer_category": "preference",
+      "narrator_window_id": 2
     },
     {
       "number": 8,
@@ -322,7 +344,10 @@ export const BLUEPRINT_VALID: Blueprint = {
       "item_form": "table",
       "form_group": "B",
       "distractor": false,
-      "confirmed": true
+      "confirmed": true,
+      "response_form": "word",
+      "answer_category": "quantity",
+      "narrator_window_id": 2
     },
     {
       "number": 9,
@@ -334,7 +359,10 @@ export const BLUEPRINT_VALID: Blueprint = {
       "item_form": "table",
       "form_group": "B",
       "distractor": true,
-      "confirmed": false
+      "confirmed": false,
+      "response_form": "phrase",
+      "answer_category": "requirement",
+      "narrator_window_id": 2
     },
     {
       "number": 10,
@@ -346,7 +374,10 @@ export const BLUEPRINT_VALID: Blueprint = {
       "item_form": "table",
       "form_group": "B",
       "distractor": false,
-      "confirmed": false
+      "confirmed": false,
+      "response_form": "word",
+      "answer_category": "requirement",
+      "narrator_window_id": 2
     }
   ],
   "correction": {
@@ -361,9 +392,10 @@ export const BLUEPRINT_VALID: Blueprint = {
 }
 
 export const BLUEPRINT_BAD_ANCHOR: Blueprint = {
+  "blueprint_schema_version": 2,
   "narration_mode": "full",
   "split_after": 5,
-  "question_type_coverage": {
+  "completion_layout_coverage": {
     "form": [
       1,
       2,
@@ -392,7 +424,10 @@ export const BLUEPRINT_BAD_ANCHOR: Blueprint = {
       "item_form": "form",
       "form_group": "A",
       "distractor": false,
-      "confirmed": true
+      "confirmed": true,
+      "response_form": "phrase",
+      "answer_category": "person_name",
+      "narrator_window_id": 1
     },
     {
       "number": 2,
@@ -404,7 +439,10 @@ export const BLUEPRINT_BAD_ANCHOR: Blueprint = {
       "item_form": "form",
       "form_group": "A",
       "distractor": false,
-      "confirmed": true
+      "confirmed": true,
+      "response_form": "phrase",
+      "answer_category": "location",
+      "narrator_window_id": 1
     },
     {
       "number": 3,
@@ -416,7 +454,10 @@ export const BLUEPRINT_BAD_ANCHOR: Blueprint = {
       "item_form": "form",
       "form_group": "A",
       "distractor": false,
-      "confirmed": true
+      "confirmed": true,
+      "response_form": "phrase",
+      "answer_category": "location",
+      "narrator_window_id": 1
     },
     {
       "number": 4,
@@ -428,7 +469,10 @@ export const BLUEPRINT_BAD_ANCHOR: Blueprint = {
       "item_form": "form",
       "form_group": "A",
       "distractor": false,
-      "confirmed": true
+      "confirmed": true,
+      "response_form": "numeric",
+      "answer_category": "contact",
+      "narrator_window_id": 1
     },
     {
       "number": 5,
@@ -438,9 +482,12 @@ export const BLUEPRINT_BAD_ANCHOR: Blueprint = {
       "evidence": "still in primary school",
       "turn_index": 20,
       "item_form": "note",
-      "form_group": null,
+      "form_group": "C",
       "distractor": true,
-      "confirmed": false
+      "confirmed": false,
+      "response_form": "phrase",
+      "answer_category": "facility",
+      "narrator_window_id": 1
     },
     {
       "number": 6,
@@ -450,9 +497,12 @@ export const BLUEPRINT_BAD_ANCHOR: Blueprint = {
       "evidence": "he'd love a park nearby",
       "turn_index": 29,
       "item_form": "note",
-      "form_group": null,
+      "form_group": "D",
       "distractor": false,
-      "confirmed": false
+      "confirmed": false,
+      "response_form": "word",
+      "answer_category": "facility",
+      "narrator_window_id": 2
     },
     {
       "number": 7,
@@ -462,9 +512,12 @@ export const BLUEPRINT_BAD_ANCHOR: Blueprint = {
       "evidence": "always lived in a house",
       "turn_index": 32,
       "item_form": "note",
-      "form_group": null,
+      "form_group": "D",
       "distractor": true,
-      "confirmed": false
+      "confirmed": false,
+      "response_form": "word",
+      "answer_category": "preference",
+      "narrator_window_id": 2
     },
     {
       "number": 8,
@@ -476,7 +529,10 @@ export const BLUEPRINT_BAD_ANCHOR: Blueprint = {
       "item_form": "table",
       "form_group": "B",
       "distractor": false,
-      "confirmed": true
+      "confirmed": true,
+      "response_form": "word",
+      "answer_category": "quantity",
+      "narrator_window_id": 2
     },
     {
       "number": 9,
@@ -488,7 +544,10 @@ export const BLUEPRINT_BAD_ANCHOR: Blueprint = {
       "item_form": "table",
       "form_group": "B",
       "distractor": true,
-      "confirmed": false
+      "confirmed": false,
+      "response_form": "phrase",
+      "answer_category": "requirement",
+      "narrator_window_id": 2
     },
     {
       "number": 10,
@@ -500,7 +559,10 @@ export const BLUEPRINT_BAD_ANCHOR: Blueprint = {
       "item_form": "table",
       "form_group": "B",
       "distractor": false,
-      "confirmed": false
+      "confirmed": false,
+      "response_form": "word",
+      "answer_category": "requirement",
+      "narrator_window_id": 2
     }
   ],
   "correction": {

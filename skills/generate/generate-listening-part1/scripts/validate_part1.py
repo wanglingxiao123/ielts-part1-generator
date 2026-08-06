@@ -18,11 +18,45 @@ TOP_KEYS = {"model", "extracted_at", "test_package", "content_kind", "source_htm
 PART_KEYS = {"reference", "test_package", "scenario", "script", "source_htmls"}
 SCRIPT_KEYS = {"reference", "test_package", "turns", "speaker_count"}
 FORBIDDEN_KEYS = {"candidate_questions", "questions", "answer_key", "answers", "item_evidence", "analysis", "quality_check"}
-BLUEPRINT_KEYS = {"narration_mode", "split_after", "question_type_coverage", "items", "correction"}
+BLUEPRINT_KEYS = {"narration_mode", "split_after", "items", "correction"}
 # Present in only 4 of the 27 usable archived papers, while the spec (§4B-4) asks for 2-3
 # distraction cycles chosen from five mechanisms rather than for this one specifically.
-BLUEPRINT_OPTIONAL_KEYS = {"indirect_confirmation"}
+# `blueprint_schema_version` is optional because its ABSENCE is what marks a v1 record; the two
+# coverage names are optional here for the same reason and are then required one-per-version by
+# `validate_coverage_name` -- `exact_keys` can only demand a fixed set, so version-conditional
+# requirements have to live outside it.
+BLUEPRINT_OPTIONAL_KEYS = {"indirect_confirmation", "blueprint_schema_version",
+                           "question_type_coverage", "completion_layout_coverage"}
+V1_COVERAGE_KEY = "question_type_coverage"
+V2_COVERAGE_KEY = "completion_layout_coverage"
+V_KEY = "blueprint_schema_version"
+BLUEPRINT_SCHEMA_VERSION = 2
 ITEM_KEYS = {"number", "group", "type", "target", "evidence", "turn_index", "item_form", "form_group", "distractor", "confirmed"}
+# v2 only. Kept separate from ITEM_KEYS so the v1 read path keeps rejecting them as unknown keys:
+# a v1 record carrying `response_form` is not a lenient v1, it is a v2 that lost its version field.
+V2_ITEM_KEYS = {"response_form", "answer_category", "narrator_window_id"}
+RESPONSE_FORMS = {"numeric", "word", "phrase"}
+# Internal closed taxonomy, NOT a client-supplied enum. QR-027 only asks for an answer category per
+# item and offers location / price / service as examples; these 13 values exist so the "no
+# micro-category tested by 3+ items" rule can be counted deterministically. There is deliberately no
+# `other`: a catch-all would collide unrelated points into one bucket and misfire that count, and it
+# would hand the model a "when unsure, pick other" escape hatch that removes the field's only value.
+ANSWER_CATEGORIES = {
+    "person_name", "contact", "location", "date", "time", "duration", "price",
+    "quantity", "service", "facility", "requirement", "preference", "document",
+}
+# QR-027 thresholds. Counting uses `derive_qr027_class`, not the persisted `response_form`: the two
+# split on different axes (token count vs character composition), so `Room 4B` is a `phrase` whose
+# QR-027 class is `mixed`. Reported as metrics only in this stage; the gate is stage 3's business.
+QR027_MAX_NUMERIC = 4
+QR027_MIN_SPELLED = 4
+# "不得在十题内无理由地用三题或以上反复测试同一微型答案类别" -- three already violates, so the
+# admissible count is strictly below 3, not at most 3.
+QR027_MAX_SAME_CATEGORY = 3
+# A token counts as numeric only when the WHOLE token is a number/time/date form. "Contains a digit"
+# is the trap: it makes the postcode `BT14 9BJ` read as numeric when it is plainly something the
+# candidate must spell. Same class of error as `address` sitting in NUMERIC_TYPES below.
+NUMERIC_TOKEN_RE = re.compile(r"^[£$€]?\d+(?:[.,:/]\d+)*(?:st|nd|rd|th|am|pm|a\.m\.|p\.m\.)?$", re.I)
 # Part 1 delivers Form / Note / Table completion only. `multiple_choice` was removed when the
 # client narrowed the brief; `type: "option"` in DETAIL_TYPES below is a different dimension --
 # it names the KIND of detail (a preference or chosen alternative) and remains a fine completion
@@ -133,11 +167,178 @@ def anchor_ok(turns: list[dict], index: object, phrase: str) -> bool:
     return False
 
 
-def validate_grouping(items: list[dict], coverage: object, errors: list[str], warnings: list[str]) -> None:
+def blueprint_version(blueprint: dict, errors: list[str]) -> int:
+    """Decide the version from the version field ALONE, never from which fields are present.
+
+    Inferring "no response_form, so probably v1" would silently downgrade a v2 record that simply
+    forgot the field, and the v2 checks would then never run on it -- the fields would be pure
+    added trust surface. An unrecognised value is an error rather than a fallback to v1 for the
+    same reason.
+    """
+    if V_KEY not in blueprint:
+        return 1
+    declared = blueprint.get(V_KEY)
+    if declared == BLUEPRINT_SCHEMA_VERSION:
+        return 2
+    errors.append(
+        f"blueprint.{V_KEY} is {declared!r}; only {BLUEPRINT_SCHEMA_VERSION} is supported "
+        "(omit the field entirely for a v1 record -- an unknown version is not read as v1)"
+    )
+    return 0
+
+
+def answer_tokens(target: str) -> list[str]:
+    """Split on whitespace only.
+
+    Hyphens are deliberately NOT split: IELTS counts a hyphenated compound as one word for
+    word_limit, and serving the word_limit decision is the whole purpose of `response_form`.
+    `two-bedroom` is therefore one token -- a `word`, not a `phrase`.
+    """
+    return [token for token in re.split(r"\s+", target.strip()) if token]
+
+
+def derive_response_form(target: str) -> str:
+    """Persisted field, by TOKEN COUNT. Compared against the declaration; a mismatch is an error."""
+    tokens = answer_tokens(target)
+    if tokens and all(NUMERIC_TOKEN_RE.match(token) for token in tokens):
+        return "numeric"
+    return "word" if len(tokens) == 1 else "phrase"
+
+
+def derive_qr027_class(target: str) -> str:
+    """Internal quantity, by CHARACTER COMPOSITION. Feeds the QR-027 counts and is never persisted.
+
+    Separate from `derive_response_form` on purpose: the two split on different axes, and merging
+    them into one function returning a pair would teach the next reader that they are one thing.
+    `Room 4B` is `phrase` here but `mixed` there.
+    """
+    tokens = answer_tokens(target)
+    if tokens and all(NUMERIC_TOKEN_RE.match(token) for token in tokens):
+        return "numeric"
+    if any(re.search(r"\d", token) for token in tokens):
+        return "mixed"
+    return "lexical"
+
+
+def window_of(number: int, first_end: int) -> int:
+    """Recompute the narrator window from the parsed narration, not from the declared field."""
+    return 1 if number <= first_end else 2
+
+
+def validate_v2_item_fields(item: dict, label: str, first_end: int, errors: list[str]) -> None:
+    """Recompute all three declared values and compare. Recomputation IS the value of these fields.
+
+    Checking only that `narrator_window_id` is 1 or 2 would hand SC-019's window attribution back to
+    the model's own say-so, which is the mistake §9.2 names explicitly. Every message below reports
+    field, item number, declared value and computed value, so a failure says which rule caught it.
+    """
+    target = item.get("target")
+    declared_form = item.get("response_form")
+    if declared_form not in RESPONSE_FORMS:
+        errors.append(f"{label}.response_form must be one of {sorted(RESPONSE_FORMS)}; found {declared_form!r}")
+    elif isinstance(target, str) and target.strip():
+        computed = derive_response_form(target)
+        if declared_form != computed:
+            errors.append(
+                f"{label}.response_form declares {declared_form!r} but {target!r} derives {computed!r}"
+            )
+
+    category = item.get("answer_category")
+    if category not in ANSWER_CATEGORIES:
+        errors.append(
+            f"{label}.answer_category {category!r} is not in the taxonomy {sorted(ANSWER_CATEGORIES)}; "
+            "there is no catch-all value -- a point that fits none of these belongs back in the "
+            "material stage"
+        )
+
+    declared_window = item.get("narrator_window_id")
+    number = item.get("number")
+    if declared_window not in {1, 2}:
+        errors.append(f"{label}.narrator_window_id must be 1 or 2; found {declared_window!r}")
+    elif isinstance(number, int):
+        computed_window = window_of(number, first_end)
+        if declared_window != computed_window:
+            errors.append(
+                f"{label}.narrator_window_id declares {declared_window!r} but item {number} falls in "
+                f"window {computed_window} (narration splits at 1-{first_end}/{first_end + 1}-10)"
+            )
+
+
+def qr027_metrics(items: list[dict]) -> dict:
+    """QR-027 counts. Metrics only in this stage -- the gate and its justification are stage 3."""
+    classes = [derive_qr027_class(str(item.get("target", ""))) for item in items]
+    categories: dict[str, int] = {}
+    for item in items:
+        category = item.get("answer_category")
+        if isinstance(category, str):
+            categories[category] = categories.get(category, 0) + 1
+    numeric = sum(1 for cls in classes if cls == "numeric")
+    spelled = sum(1 for cls in classes if cls in {"lexical", "mixed"})
+    worst = max(categories.values(), default=0)
+    return {
+        "qr027_numeric_answers": numeric,
+        "qr027_spelled_answers": spelled,
+        "qr027_largest_category": worst,
+        "qr027_category_counts": categories,
+        "qr027_within_limits": (numeric <= QR027_MAX_NUMERIC
+                                and spelled >= QR027_MIN_SPELLED
+                                and worst < QR027_MAX_SAME_CATEGORY),
+    }
+
+
+def validate_group_relations(items: list[dict], groups: dict, first_end: int, errors: list[str]) -> None:
+    """v2 constraints 3, 4 and 5 (§5.5). One distinct message each, by design -- see AC5.
+
+    Constraint 4 needs no turn-span threshold of its own: once item numbers are contiguous, the ten
+    evidence turns are strictly increasing (already an error elsewhere) and no group crosses a
+    window, "the group's points are not interleaved with another group's" is decidable from the
+    ordered sequence alone.
+    """
+    for (form, group), numbers in sorted(groups.items(), key=lambda kv: str(kv[0])):
+        present = sorted(n for n in numbers if isinstance(n, int))
+        # Constraint 3.
+        if present and present != list(range(present[0], present[0] + len(present))):
+            errors.append(
+                f"form_group {group!r} ({form}) covers non-contiguous item numbers {present}; "
+                "one question's rows have to be consecutive items"
+            )
+        # Constraint 5.
+        windows = sorted({window_of(n, first_end) for n in present})
+        if len(windows) > 1:
+            errors.append(
+                f"form_group {group!r} ({form}) spans narrator windows {windows} (items {present}, "
+                f"narration splits at 1-{first_end}/{first_end + 1}-10); one question cannot "
+                "straddle the point where candidates are told to move on"
+            )
+
+    # Constraint 4: walk the items in evidence order and check each group occupies one unbroken run.
+    ordered = [item for item in items if isinstance(item.get("turn_index"), int)]
+    ordered.sort(key=lambda item: item["turn_index"])
+    sequence = [item.get("form_group") for item in ordered
+                if isinstance(item.get("form_group"), str) and item.get("form_group").strip()]
+    runs: list[str] = []
+    for label in sequence:
+        if not runs or runs[-1] != label:
+            runs.append(label)
+    repeated = sorted({label for label in runs if runs.count(label) > 1})
+    if repeated:
+        errors.append(
+            f"form_group(s) {repeated} are interrupted in the evidence sequence {runs}; a group's "
+            "points must sit together in the dialogue, with no other group's point between them"
+        )
+
+
+def validate_grouping(items: list[dict], coverage: object, errors: list[str], warnings: list[str],
+                      version: int = 1, first_end: int = 0, coverage_key: str = V1_COVERAGE_KEY) -> None:
     """Check the material can actually support a table or form layout.
 
     Ten scattered gap-fills pass every other check but leave item writers unable to
     build a table question, which is what the spec's 题型适配 requirement is about.
+
+    v2 raises this from one threshold to five relational constraints (§5.5). Each has its own
+    distinct message: a single error covering all five could not tell a reviewer which property
+    the blueprint actually broke, and a test asserting only "returncode == 1" against it would be
+    vacuous -- that is exactly how stage 1's grouping test managed to pass while testing nothing.
     """
     # Key groups by (item_form, form_group), not form_group alone. Counting a shared group label
     # says nothing about whether a table can be built from it: ten note points that happen to
@@ -145,22 +346,42 @@ def validate_grouping(items: list[dict], coverage: object, errors: list[str], wa
     # item writer unable to lay out a single table.
     groups: dict[tuple, list[int]] = {}
     labels: dict[str, set] = {}
-    for item in items:
+    # `blueprint.items[N]` is a **0-based array index** everywhere else in this validator
+    # (`validate_blueprint` builds `label = f"blueprint.items[{number - 1}]"`), and the reader parses
+    # it that way: `validationNotes.ts` reads the bracket and renders `index + 1` as the item number.
+    # These three messages used `item.get("number")`, which is 1-based, so every one of them sent the
+    # reviewer's jump button one point too far -- and item 10 fell out of the pattern entirely, since
+    # the parser only accepts 0-9. Enumerating rather than reading the field also keeps the label
+    # right for an item whose own `number` is wrong or missing, which is a case these very errors
+    # co-occur with.
+    for index, item in enumerate(items):
         form, group = item.get("item_form"), item.get("form_group")
         if form not in ITEM_FORMS:
-            errors.append(f"blueprint.items[{item.get('number')}].item_form must be one of {sorted(ITEM_FORMS)}")
+            errors.append(f"blueprint.items[{index}].item_form must be one of {sorted(ITEM_FORMS)}")
         if isinstance(group, str) and group.strip():
             groups.setdefault((form, group), []).append(item.get("number"))
             labels.setdefault(group, set()).add(form)
+        elif version == 2:
+            # Constraint 1. v1 allowed null to mean "standalone gap-fill"; v2 requires every point
+            # to belong to a group, so null is no longer a valid answer, only a missing one.
+            errors.append(
+                f"blueprint.items[{index}].form_group must be a non-empty string in v2; "
+                f"found {group!r} (v2 requires every item to belong to a group)"
+            )
         elif group is not None:
-            errors.append(f"blueprint.items[{item.get('number')}].form_group must be a non-empty string or null")
+            errors.append(f"blueprint.items[{index}].form_group must be a non-empty string or null")
 
+    # Constraint 2.
     for group, forms in labels.items():
         if len(forms) > 1:
             errors.append(
                 f"form_group {group!r} mixes item_form values {sorted(map(str, forms))}; "
                 "a group must be homogeneous to become one table or form question"
             )
+
+    if version == 2:
+        validate_group_relations(items, groups, first_end, errors)
+
     largest = max((len(v) for (form, _), v in groups.items() if form in TABLE_FORMS), default=0)
     if largest < MIN_GROUPED_ITEMS:
         errors.append(
@@ -181,33 +402,61 @@ def validate_grouping(items: list[dict], coverage: object, errors: list[str], wa
             )
 
     if not isinstance(coverage, dict) or not coverage:
-        errors.append("blueprint.question_type_coverage must be a non-empty object")
+        errors.append(f"blueprint.{coverage_key} must be a non-empty object")
         return
     declared: list[int] = []
     for form, numbers in coverage.items():
-        if form not in ITEM_FORMS:
-            errors.append(f"question_type_coverage has unknown type {form!r}")
+        # v1 data legitimately carries a `multiple_choice` key: it was a valid layout before the
+        # client narrowed the brief. Reporting it as an unknown type on the v1 read path would make
+        # every archived record look malformed, so only v2 is held to the three-value set.
+        if form not in ITEM_FORMS and not (version == 1 and form == "multiple_choice"):
+            errors.append(f"{coverage_key} has unknown layout {form!r}")
         if not isinstance(numbers, list):
-            errors.append(f"question_type_coverage[{form!r}] must be a list")
+            errors.append(f"{coverage_key}[{form!r}] must be a list")
             continue
         declared.extend(n for n in numbers if isinstance(n, int) and not isinstance(n, bool))
         for number in numbers:
             match = next((i for i in items if i.get("number") == number), None)
             if match is None:
-                errors.append(f"question_type_coverage[{form!r}] references unknown item {number}")
+                errors.append(f"{coverage_key}[{form!r}] references unknown item {number}")
             elif match.get("item_form") != form:
                 errors.append(
-                    f"question_type_coverage[{form!r}] lists item {number} but its item_form is {match.get('item_form')!r}"
+                    f"{coverage_key}[{form!r}] lists item {number} but its item_form is {match.get('item_form')!r}"
                 )
     if sorted(declared) != list(range(1, 11)):
-        errors.append(f"question_type_coverage must cover items 1-10 exactly once; flattened to {sorted(declared)}")
+        errors.append(f"{coverage_key} must cover items 1-10 exactly once; flattened to {sorted(declared)}")
 
 
-def validate_blueprint(blueprint: object, turns: list[dict], midpoint: int, first_end: int, second_start: int, errors: list[str], warnings: list[str]) -> str:
+def validate_blueprint(blueprint: object, turns: list[dict], midpoint: int, first_end: int,
+                       second_start: int, errors: list[str], warnings: list[str],
+                       metrics: dict | None = None, allow_v1: bool = False) -> str:
     if not isinstance(blueprint, dict):
         errors.append("blueprint must be an object")
         return "full"
-    exact_keys(blueprint, BLUEPRINT_KEYS, "blueprint", errors, BLUEPRINT_OPTIONAL_KEYS)
+    version = blueprint_version(blueprint, errors)
+    if version == 0:
+        # Stop here. Every check below is version-conditional, so continuing would emit a page of
+        # consequential errors -- ten "unexpected fields" lines for the v2 fields it cannot know are
+        # legal -- and bury the one error that actually explains the failure.
+        if metrics is not None:
+            metrics["blueprint_schema_version"] = None
+        return str(blueprint.get("narration_mode") or "full")
+    if version == 1 and not allow_v1:
+        errors.append(
+            f"blueprint.{V_KEY} is missing; new generation must write "
+            f"{BLUEPRINT_SCHEMA_VERSION} (pass --allow-v1 to read an archived record)"
+        )
+    if metrics is not None:
+        metrics["blueprint_schema_version"] = version or None
+    coverage_key = V2_COVERAGE_KEY if version == 2 else V1_COVERAGE_KEY
+    item_keys = ITEM_KEYS | V2_ITEM_KEYS if version == 2 else ITEM_KEYS
+    exact_keys(blueprint, BLUEPRINT_KEYS | {coverage_key}, "blueprint", errors,
+               BLUEPRINT_OPTIONAL_KEYS - {coverage_key})
+    if version == 2 and V1_COVERAGE_KEY in blueprint:
+        errors.append(
+            f"blueprint must not carry both coverage names; v2 writes {V2_COVERAGE_KEY} only "
+            f"(found {V1_COVERAGE_KEY} as well, which leaves readers no way to know which to trust)"
+        )
     mode = blueprint.get("narration_mode")
     if mode not in {"full", "short"}:
         errors.append("blueprint.narration_mode must be full or short")
@@ -238,7 +487,9 @@ def validate_blueprint(blueprint: object, turns: list[dict], midpoint: int, firs
         if not isinstance(item, dict):
             errors.append(f"{label} must be an object")
             continue
-        exact_keys(item, ITEM_KEYS, label, errors)
+        exact_keys(item, item_keys, label, errors)
+        if version == 2:
+            validate_v2_item_fields(item, label, first_end, errors)
         if item.get("number") != number:
             errors.append(f"{label}.number must be {number}")
         expected_group = 1 if number <= split_after else 2
@@ -308,7 +559,12 @@ def validate_blueprint(blueprint: object, turns: list[dict], midpoint: int, firs
                 "these are the easiest to mishear under once-only listening"
             )
     if checked:
-        validate_grouping(checked, blueprint.get("question_type_coverage"), errors, warnings)
+        validate_grouping(checked, blueprint.get(coverage_key), errors, warnings,
+                          version=version, first_end=first_end, coverage_key=coverage_key)
+        if version == 2 and metrics is not None:
+            # QR-027 counts are reported, not enforced: the gate and its recorded justification are
+            # stage 3's aggregator. Emitting them now means stage 3 inherits measured numbers.
+            metrics.update(qr027_metrics(checked))
     correction = blueprint.get("correction")
     if not isinstance(correction, dict):
         errors.append("blueprint.correction must be an object")
@@ -377,6 +633,11 @@ def main() -> int:
     parser.add_argument("material", type=Path)
     parser.add_argument("--blueprint", required=True, type=Path)
     parser.add_argument("--json", action="store_true", help="emit machine-readable results")
+    # Default strict, because the write side must only ever produce v2. Reading an archived record
+    # is the exception and has to be asked for, so a generation run cannot quietly emit a
+    # version-less blueprint and still pass.
+    parser.add_argument("--allow-v1", action="store_true",
+                        help="accept an archived blueprint with no blueprint_schema_version")
     args = parser.parse_args()
     try:
         data, blueprint = read_json(args.material, "material"), read_json(args.blueprint, "blueprint")
@@ -489,7 +750,8 @@ def main() -> int:
         if not NEXT_PART_RE.search(closing):
             warnings.append("closing does not direct candidates to Part/Section 2 (optional: "
                             "12/30 real closings omit it)")
-        mode = validate_blueprint(blueprint, turns, narrator[1], first_end, second_start, errors, warnings)
+        mode = validate_blueprint(blueprint, turns, narrator[1], first_end, second_start, errors,
+                                  warnings, metrics, allow_v1=args.allow_v1)
         narration = " ".join(turns[i]["text"] for i in narrator)
         if mode == "full":
             for label, pattern in (("the set of recordings", RECORDINGS_RE), ("the test's parts", PARTS_RE)):

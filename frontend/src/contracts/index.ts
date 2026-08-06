@@ -20,7 +20,13 @@ export type Blueprint = IELTSListeningPart1InformationPointBlueprint
 export type BlueprintItem = Item
 export type ItemForm = Item['item_form']
 export type ItemType = Item['type']
-export type QuestionTypeCoverage = Blueprint['question_type_coverage']
+/**
+ * v2's coverage shape. The v1 name (`question_type_coverage`) is deliberately NOT aliased here:
+ * codegen emits it as `{}` because v1 data may key layouts outside the union, and `{}` accepts
+ * everything but null/undefined. Read coverage through `domain/blueprintVersion.ts`'s
+ * `layoutCoverage()`, which handles both names and returns one shape.
+ */
+export type CompletionLayoutCoverage = Blueprint['completion_layout_coverage']
 
 export type Audit = IELTSListeningPart1AuditResult
 export type Verdict = Audit['verdict']

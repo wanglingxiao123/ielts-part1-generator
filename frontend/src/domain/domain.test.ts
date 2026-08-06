@@ -501,7 +501,7 @@ describe('formGroups', () => {
     expect(b.spanWarn).toBe(true)
   })
 
-  it('confirms question_type_coverage covers 1..10 and agrees with item_form', () => {
+  it('confirms the layout coverage covers 1..10 and agrees with item_form', () => {
     expect(gBal.consistency.coversAllTen).toBe(true)
     expect(gBal.consistency.disagreeingNumbers).toEqual([])
     expect(gBal.consistency.consistent).toBe(true)
@@ -518,9 +518,11 @@ describe('formGroups', () => {
     expect(g.consistency.coversAllTen).toBe(true)
   })
 
-  it('detects a missing number in question_type_coverage', () => {
+  it('detects a missing number in the layout coverage', () => {
     const bp = structuredClone(balanced.blueprint) as Blueprint
-    bp.question_type_coverage.note = []
+    // The v2 name: the fixture is a v2 record. `!` rather than `?.` on purpose — if the field ever
+    // goes missing, this test should fail loudly rather than silently assert against a no-op.
+    bp.completion_layout_coverage!.note = []
     const g = analyseFormGroups(viewWith(bp), T)
     // 5, 6 and 7 are the fixture's note points (the `option`-typed details).
     expect(g.consistency.missingNumbers).toEqual([5, 6, 7])
@@ -528,26 +530,38 @@ describe('formGroups', () => {
   })
 
   /**
-   * Regression from live output. Real blueprints leave `form_group: null` on
+   * Regression from live output. Real v1 blueprints leave `form_group: null` on
    * standalone points, so the null bucket collects points that were never
    * claimed to belong together. Treating that bucket as a group flagged two
    * far-apart standalone points as "跨度过大 · 不足以单独成题" — a fabricated
    * defect. Every fixture had at most one null-group point per item_form, so
    * the bucket never held two and the bug stayed invisible.
    *
-   * Since multiple_choice was dropped, the standalone points are the fixture's
-   * three `option`-typed `note`s. The turn indices are still set explicitly here:
-   * the fixture's natural spacing happens to land exactly ON GROUP_SPAN_WARN, and
-   * a regression test that depends on fixture spacing staying one side of a
-   * threshold is a test that breaks for reasons unrelated to the bug it guards.
+   * **The null group is now a v1-only shape, and the helper has to build it.**
+   * v2 requires a non-empty `form_group` on every item, so the fixture — a v2
+   * record since the blueprint contract was versioned — no longer has a single
+   * null-group point to select. The old helper filtered for them and found three;
+   * the same filter now finds zero, which would have made both tests below assert
+   * against an empty selection and pass vacuously. Nulling the three note points
+   * here is not weakening the test: what it guards is how the DISPLAY layer treats
+   * undeclared groups in archived records, and archived records are exactly where
+   * `form_group: null` still lives. The three note points are chosen because they
+   * are the ones the real generator left ungrouped.
+   *
+   * The turn indices are set explicitly: the fixture's natural spacing happens to
+   * land exactly ON GROUP_SPAN_WARN, and a regression test that depends on fixture
+   * spacing staying one side of a threshold breaks for reasons unrelated to the
+   * bug it guards.
    */
   const LOOSE_TURNS = [7, 17, 27] // spread over a 20-turn span, all non-narrator turns
   const looseNotes = (bp: Blueprint) => {
-    const loose = bp.items.filter((i) => i.item_form === 'note' && i.form_group === null)
-    // Every loose point gets an explicit turn: leaving even one at its fixture position
-    // silently widens the span and the assertion below stops measuring what it names.
+    const loose = bp.items.filter((i) => i.item_form === 'note')
+    // Three note points, one per LOOSE_TURNS entry. Asserted rather than sliced so a fixture
+    // regrouping surfaces here instead of silently shrinking what the tests below measure.
     expect(loose.length).toBe(LOOSE_TURNS.length)
     loose.forEach((item, i) => {
+      // Back to the v1 shape this regression came from.
+      item.form_group = null
       item.turn_index = LOOSE_TURNS[i]!
       item.evidence = balanced.turns[LOOSE_TURNS[i]!]!.text
     })

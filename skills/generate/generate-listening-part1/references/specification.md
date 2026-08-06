@@ -94,12 +94,22 @@ Part 1 delivers **Form completion, Note completion, and Table completion only**.
 matching, plan/map/diagram labelling and short-answer questions are out of scope, so every point
 must be answerable by writing a word, number or short phrase into a gap.
 
-Assign each point an `item_form` (`form`, `table`, or `note`) and, where
-points belong to one comparable set, a shared `form_group`. Requirements:
+Assign each point an `item_form` (`form`, `table`, or `note`). `item_form` names the **completion
+layout**, not the IELTS question type — Part 1 has exactly one question type (completion) and these
+three are its layouts. **Every point must also carry a non-empty `form_group`**: a point that
+belongs to no group is a scattered gap-fill, which is the shape this whole section exists to
+prevent. A single-point group is legal; an absent group is not. Requirements:
 
 - at least one `form_group` containing 3 or more points, **all sharing the same `item_form`**,
   and that form must be `form` or `table` — a group of `note` points cannot become a table,
   and a group mixing forms cannot become one question;
+- a group's **item numbers must be contiguous** (`5, 6, 7`, never `5, 7, 9`);
+- a group's points must be **contiguous in the ordered evidence sequence** — no other group's point
+  may fall between them. Since evidence positions strictly increase, this means one group's points
+  are heard together rather than interleaved with another's;
+- a group **must not cross the narrator window boundary**. Candidates read questions 1-N during the
+  first pause and the rest during the second, so a group split across the boundary is a question
+  whose halves are read at different times. One window may hold several groups;
 - points in one `form_group` should sit reasonably close together; a group spanning most of the
   script forces candidates to hold answers across half the recording. This one is reported as
   advice rather than enforced, since the spec sets no span limit.
@@ -199,9 +209,10 @@ trusting the generator's own labels. A point the auditor cannot recover is a rea
 
 ```json
 {
+  "blueprint_schema_version": 2,
   "narration_mode": "full",
   "split_after": 5,
-  "question_type_coverage": {
+  "completion_layout_coverage": {
     "form": [1, 2, 3],
     "table": [4, 5, 6, 7],
     "note": [8, 9, 10]
@@ -216,6 +227,9 @@ trusting the generator's own labels. A point the auditor cannot recover is a rea
       "turn_index": 7,
       "item_form": "form",
       "form_group": "A",
+      "response_form": "word",
+      "answer_category": "person_name",
+      "narrator_window_id": 1,
       "distractor": false,
       "confirmed": true
     }
@@ -239,10 +253,51 @@ evidence. It anchors the reviewer's annotation. If the script is later revised, 
 must be revised with it — a stale anchor puts an annotation beside the wrong sentence, and that
 error is almost impossible to notice downstream.
 
-`question_type_coverage` restates each item's `item_form` grouped by type. Flattened it must
+`completion_layout_coverage` restates each item's `item_form` grouped by layout. Flattened it must
 equal 1-10 exactly once, and each listed number's `item_form` must match. The redundancy is
 deliberate: the per-item field drives annotation rendering, the grouped view makes the overall
-type balance reviewable at a glance.
+layout balance reviewable at a glance.
+
+### Blueprint version 2
+
+**Always write `blueprint_schema_version: 2`.** Records with no version field are v1 — roughly 400
+archived blueprints predate this contract, and they are read as v1 rather than rewritten. The version
+is decided by that field alone, never by whether the fields below happen to be present: a v2 record
+missing one of them is an error, not a v1.
+
+Two names changed with v2. Write `completion_layout_coverage`; `question_type_coverage` is the v1
+name and must not be written. Never write both — a record carrying both leaves a reader no way to
+know which to trust, and it is rejected outright.
+
+Three fields are required on every item in v2:
+
+- **`response_form`** — `numeric | word | phrase`, the shape of the recordable answer **by token
+  count**. `numeric` when every token is a pure number/time/date form, `word` for a single
+  non-numeric token, `phrase` for several. It serves the word-limit decision, so a hyphenated
+  compound counts as **one** word: `two-bedroom` is `word`, not `phrase`. Derive it from the actual
+  `target` text and nothing else — `118 Fordyce` is a `phrase` even though its `type` is `address`,
+  and `BT14 9BJ` is a `phrase` because "contains a digit" is not the same as "is a number".
+- **`answer_category`** — which micro-category of information the answer is. Used to check that the
+  ten items do not test the same micro-category three or more times. The 13 values are
+  `person_name`, `contact`, `location`, `date`, `time`, `duration`, `price`, `quantity`, `service`,
+  `facility`, `requirement`, `preference`, `document`. **There is no catch-all.** A point that fits
+  none of them is not a categorisation problem, it is a material problem — take it back to the
+  script rather than forcing a label. Boundaries worth stating: `contact` is how to reach a person
+  (an extension number) while `location` is where a thing is (a postcode); `price` is currency only,
+  so `10 lessons` is `quantity`; `date`, `time` and `duration` never merge; `service` is a
+  purchasable offering while `facility` is a physical place or piece of equipment **being
+  described**; `requirement` is a condition **asked for** (a `guest room` the caller wants) while
+  `facility` covers what already exists in the setting (a `park` nearby); `preference` is the one
+  chosen after the dialogue weighs two alternatives. Judge the nature of the **answer**, not the
+  wording of the sentence — an answer reached through "we definitely need a two-bedroom property" is
+  still a `quantity`, because `two-bedroom` is a specification.
+- **`narrator_window_id`** — `1` or `2`, which narrator window the item falls in. Redundant with
+  `group` by construction, and deliberately so: the window is recomputed from the narration and
+  compared against this declaration, so a wrong value is caught rather than believed.
+
+Answer variety follows from these two fields: keep purely numeric answers to **4 or fewer** of the
+ten, ensure **at least 4** require spelling out a word or phrase, and never test one micro-category
+in three or more items.
 
 The `distractor` booleans must be a complete census, not merely selected examples. Recheck the entire script for unmarked alternatives, corrections, negations, and qualifiers.
 
@@ -261,9 +316,18 @@ The `distractor` booleans must be a complete census, not merely selected example
 - [ ] Only 2-3 deliberate distractor cycles.
 - [ ] Dialogue is 450-750 words and 20-48 turns; each half has at least 8 turns.
 - [ ] Every `turn_index` points at the turn that actually carries its evidence.
-- [ ] One `form_group` holds 3+ points, all sharing `item_form` `form` or `table`.
+- [ ] Every point carries a non-empty `form_group`; one group holds 3+ points, all sharing
+      `item_form` `form` or `table`.
+- [ ] Each group's item numbers are contiguous, its points are not interleaved with another
+      group's, and no group crosses the narrator window boundary.
 - [ ] Every `item_form` is `form`, `table` or `note` — no non-completion layouts.
-- [ ] `question_type_coverage` flattens to 1-10 exactly once and agrees with each `item_form`.
+- [ ] `completion_layout_coverage` flattens to 1-10 exactly once and agrees with each `item_form`;
+      the v1 name `question_type_coverage` is absent.
+- [ ] `blueprint_schema_version` is `2`.
+- [ ] Every item has `response_form`, `answer_category` and `narrator_window_id`, each derived from
+      the item itself rather than guessed.
+- [ ] At most 4 purely numeric answers, at least 4 that must be spelled out, and no micro-category
+      used by 3 or more items.
 - [ ] Spoken English is natural and appropriate for Part 1.
 - [ ] JSON parses and matches the contract.
 - [ ] Blueprint passes deterministic order, split, evidence, anchor, grouping, correction,

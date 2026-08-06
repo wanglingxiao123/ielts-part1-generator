@@ -1,7 +1,8 @@
 {
+  "blueprint_schema_version": 2,
   "narration_mode": "full",
   "split_after": 5,
-  "question_type_coverage": {
+  "completion_layout_coverage": {
     "form": [
       1,
       2,
@@ -30,7 +31,10 @@
       "item_form": "form",
       "form_group": null,
       "distractor": false,
-      "confirmed": true
+      "confirmed": true,
+      "response_form": "phrase",
+      "answer_category": "person_name",
+      "narrator_window_id": 1
     },
     {
       "number": 2,
@@ -42,7 +46,10 @@
       "item_form": "form",
       "form_group": null,
       "distractor": false,
-      "confirmed": true
+      "confirmed": true,
+      "response_form": "phrase",
+      "answer_category": "location",
+      "narrator_window_id": 1
     },
     {
       "number": 3,
@@ -54,7 +61,10 @@
       "item_form": "form",
       "form_group": null,
       "distractor": false,
-      "confirmed": true
+      "confirmed": true,
+      "response_form": "phrase",
+      "answer_category": "location",
+      "narrator_window_id": 1
     },
     {
       "number": 4,
@@ -66,7 +76,10 @@
       "item_form": "form",
       "form_group": null,
       "distractor": false,
-      "confirmed": true
+      "confirmed": true,
+      "response_form": "numeric",
+      "answer_category": "contact",
+      "narrator_window_id": 1
     },
     {
       "number": 5,
@@ -78,7 +91,10 @@
       "item_form": "note",
       "form_group": null,
       "distractor": true,
-      "confirmed": false
+      "confirmed": false,
+      "response_form": "phrase",
+      "answer_category": "facility",
+      "narrator_window_id": 1
     },
     {
       "number": 6,
@@ -90,7 +106,10 @@
       "item_form": "note",
       "form_group": null,
       "distractor": false,
-      "confirmed": false
+      "confirmed": false,
+      "response_form": "word",
+      "answer_category": "facility",
+      "narrator_window_id": 2
     },
     {
       "number": 7,
@@ -102,7 +121,10 @@
       "item_form": "note",
       "form_group": null,
       "distractor": true,
-      "confirmed": false
+      "confirmed": false,
+      "response_form": "word",
+      "answer_category": "preference",
+      "narrator_window_id": 2
     },
     {
       "number": 8,
@@ -114,7 +136,10 @@
       "item_form": "table",
       "form_group": null,
       "distractor": false,
-      "confirmed": true
+      "confirmed": true,
+      "response_form": "word",
+      "answer_category": "quantity",
+      "narrator_window_id": 2
     },
     {
       "number": 9,
@@ -126,7 +151,10 @@
       "item_form": "table",
       "form_group": null,
       "distractor": true,
-      "confirmed": false
+      "confirmed": false,
+      "response_form": "phrase",
+      "answer_category": "requirement",
+      "narrator_window_id": 2
     },
     {
       "number": 10,
@@ -138,7 +166,10 @@
       "item_form": "table",
       "form_group": null,
       "distractor": false,
-      "confirmed": false
+      "confirmed": false,
+      "response_form": "word",
+      "answer_category": "requirement",
+      "narrator_window_id": 2
     }
   ],
   "correction": {
