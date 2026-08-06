@@ -1200,6 +1200,386 @@ def test_archive_samples_do_not_crash() -> None:
         check(f"{name} flagged ({why})", bool(flagged))
 
 
+def _preflight():
+    """The stage 3A aggregator, imported the same way validate_part1 is (see above)."""
+    sys.path.insert(0, str(VALIDATE.parent))
+    import question_feasibility_preflight as pf
+
+    return pf
+
+
+def _validation_of(blueprint: str, *extra: str) -> dict:
+    """A real `validate_part1.py --json` payload, parsed.
+
+    Two construction methods are used across the preflight suites, and the split is deliberate:
+
+    * END-TO-END (this helper) for anything whose point is that the aggregator reads the keys the
+      validator actually writes. A hand-built dict cannot catch "metrics calls it something else",
+      which is the single most likely way this module breaks.
+    * HAND-BUILT dicts for threshold boundaries and malformed shapes. Building a real blueprint
+      whose numeric answers come to exactly 5 means satisfying a dozen unrelated v2 constraints at
+      the same time, and what is under test there is the aggregator's comparison, not the
+      validator's counting -- which stage 2 already covers. Malformed input cannot be produced by a
+      working validator at all, so constructing it is the only route.
+
+    Neither is a shortcut for the other. Do not "tidy" one into the other.
+    """
+    result = validate(blueprint, "--json", *extra)
+    return json.loads(result.stdout)
+
+
+def _feasible() -> dict:
+    """A minimal usable semantic conclusion: the three required keys, all well-typed."""
+    return {"feasible": True, "reasons": [], "category_semantics_ok": True}
+
+
+def test_preflight_three_exits() -> None:
+    """AC1 / AC2 / AC3 / AC4 / AC5 / AC6: the six outcomes and the QR-027 boundaries."""
+    print("preflight verdicts")
+    pf = _preflight()
+    valid = _validation_of("blueprint_valid.json")
+
+    # AC1, end-to-end: blueprint_valid.json measures numeric=1, spelled=9, largest=2 -- all three
+    # thresholds clear, so it is the natural PASS baseline and needs no new fixture.
+    verdict = pf.preflight(valid, _feasible())
+    check("clean v2 + feasible semantics -> PASS", verdict.outcome == pf.PASS,
+          f"{verdict.outcome}: {verdict.reasons}")
+    check("PASS carries the qr027 snapshot for the delivery report",
+          verdict.qr027.get("qr027_numeric_answers") == 1 and verdict.qr027.get("qr027_spelled_answers") == 9,
+          repr(verdict.qr027))
+
+    def with_metrics(**changes) -> dict:
+        payload = copy.deepcopy(valid)
+        payload["metrics"].update(changes)
+        return payload
+
+    # AC2: both sides of every threshold. The passing side must assert PASS, not merely "this rule
+    # was not reported" -- otherwise the boundary is only half tested.
+    for label, changes, want_pass in (
+        ("numeric 4", {"qr027_numeric_answers": 4}, True),
+        ("numeric 5", {"qr027_numeric_answers": 5}, False),
+        ("spelled 4", {"qr027_spelled_answers": 4}, True),
+        ("spelled 3", {"qr027_spelled_answers": 3}, False),
+        ("largest category 2", {"qr027_largest_category": 2}, True),
+        ("largest category 3", {"qr027_largest_category": 3}, False),
+    ):
+        got = pf.preflight(with_metrics(**changes), _feasible())
+        want = pf.PASS if want_pass else pf.REGENERATE_MATERIAL
+        check(f"QR-027 boundary: {label} -> {want}", got.outcome == want,
+              f"{got.outcome}: {got.reasons}")
+
+    # `largest_category 3 -> breach` is what proves the rule is `< 3` and not `<= 3`: three items
+    # sharing one category already violates QR-027's wording.
+    breach = with_metrics(qr027_numeric_answers=5)
+    check("breach reason names the rule, the measured value and the threshold",
+          any("5" in reason and "4" in reason for reason in pf.preflight(breach, _feasible()).reasons),
+          repr(pf.preflight(breach, _feasible()).reasons))
+
+    # AC3: PASS_WITH_JUSTIFICATION requires a specific recorded reason. Structure only -- whether
+    # the reason holds is reviewed at the question-audit stage.
+    with_reason = dict(_feasible(),
+                       qr027_exception={"requested": True, "justification": "Script offers no alternative evidence"})
+    got = pf.preflight(breach, with_reason)
+    check("QR-027 breach + recorded justification -> PASS_WITH_JUSTIFICATION",
+          got.outcome == pf.PASS_WITH_JUSTIFICATION, f"{got.outcome}: {got.reasons}")
+    check("the justification text is carried through",
+          got.justification == "Script offers no alternative evidence", repr(got.justification))
+
+    for label, exception in (
+        ("absent", None),
+        ("requested without text", {"requested": True}),
+        ("empty text", {"requested": True, "justification": ""}),
+        ("whitespace only", {"requested": True, "justification": "   \n "}),
+        ("not requested", {"requested": False, "justification": "reason"}),
+        ("not an object", "yes please"),
+    ):
+        semantics = _feasible() if exception is None else dict(_feasible(), qr027_exception=exception)
+        got = pf.preflight(breach, semantics)
+        check(f"QR-027 exception {label} -> REGENERATE_MATERIAL",
+              got.outcome == pf.REGENERATE_MATERIAL, f"{got.outcome}: {got.reasons}")
+
+    # AC4: the semantic layer can veto even when every deterministic check is green. This is what
+    # stops "Python is all green, so generate".
+    for label, semantics in (
+        ("feasible: false", dict(_feasible(), feasible=False, reasons=["four points share one turn"])),
+        ("category_semantics_ok: false", dict(_feasible(), category_semantics_ok=False,
+                                              reasons=["item 3 is a facility, not a location"])),
+    ):
+        got = pf.preflight(valid, semantics)
+        check(f"clean deterministic + {label} -> REGENERATE_MATERIAL",
+              got.outcome == pf.REGENERATE_MATERIAL, f"{got.outcome}: {got.reasons}")
+        check(f"{label} keeps the audit's own reasons",
+              any("share one turn" in r or "facility" in r for r in got.reasons), repr(got.reasons))
+
+    # AC6: an absent semantic conclusion may not be read as approval. §8.2(5) -- incomplete must
+    # not be dressed up as delivered.
+    got = pf.preflight(valid, None)
+    check("semantics absent -> SEMANTICS_MISSING, not PASS", got.outcome == pf.SEMANTICS_MISSING,
+          f"{got.outcome}: {got.reasons}")
+
+
+def test_preflight_version_gate() -> None:
+    """AC5 + AC11's version half. End-to-end, because the landing of the version value is upstream
+    behaviour, not something this suite should restate from memory."""
+    print("preflight version gate")
+    pf = _preflight()
+
+    # A v1 record read WITH --allow-v1 comes back ok:true, zero errors, zero qr027_* keys
+    # (measured 2026-08-06). So the deterministic gate has nothing to say about it and the QR-027
+    # gate has nothing to read: the version gate is the only thing that can stop it, with no second
+    # line of defence behind it. Without --allow-v1 the record carries a "version is missing" error
+    # and would be caught one gate later, which would test the wrong gate.
+    v1 = _validation_of("blueprint_v1_legacy.json", "--allow-v1")
+    check("the v1 path this test relies on really is error-free",
+          v1["ok"] and not v1["errors"] and not [k for k in v1["metrics"] if k.startswith("qr027_")],
+          json.dumps(v1["metrics"], sort_keys=True)[:300])
+    got = pf.preflight(v1, _feasible())
+    check("v1 (version read as 1) -> UNSUPPORTED_VERSION", got.outcome == pf.UNSUPPORTED_VERSION,
+          f"{got.outcome}: {got.reasons}")
+    check("v1 is NOT reported as REGENERATE_MATERIAL", got.outcome != pf.REGENERATE_MATERIAL)
+
+    # An unrecognisable version is a different thing from an unsupported one. validate_part1.py
+    # writes metrics.blueprint_schema_version = None when it could not read the value, so None
+    # means "I failed to determine the version". Calling that UNSUPPORTED_VERSION would file a NEW
+    # record with a corrupt version number as "this is a historical archive" -- and then nobody
+    # goes and fixes the corrupt version number.
+    unreadable = _validation_of("blueprint_bad_version.json")
+    check("an unrecognisable version really does land as null upstream",
+          unreadable["metrics"].get("blueprint_schema_version") is None,
+          repr(unreadable["metrics"].get("blueprint_schema_version")))
+    got = pf.preflight(unreadable, _feasible())
+    check("version 3 (unreadable -> null) -> VALIDATION_INCOMPLETE",
+          got.outcome == pf.VALIDATION_INCOMPLETE, f"{got.outcome}: {got.reasons}")
+    check("an unreadable version is NOT UNSUPPORTED_VERSION", got.outcome != pf.UNSUPPORTED_VERSION)
+
+    # Same for a version that is the right number but the wrong type.
+    def stringify(blueprint: dict) -> None:
+        blueprint["blueprint_schema_version"] = "2"
+
+    payload = json.loads(validate_mutated(stringify, "--json").stdout)
+    check('version "2" lands as null upstream too',
+          payload["metrics"].get("blueprint_schema_version") is None,
+          repr(payload["metrics"].get("blueprint_schema_version")))
+    got = pf.preflight(payload, _feasible())
+    check('version "2" -> VALIDATION_INCOMPLETE', got.outcome == pf.VALIDATION_INCOMPLETE,
+          f"{got.outcome}: {got.reasons}")
+
+
+def test_preflight_incomplete_validation() -> None:
+    """AC10 + AC11: everything malformed on the validation side is VALIDATION_INCOMPLETE, and
+    nothing raises. Hand-built dicts, because a working validator cannot emit these."""
+    print("preflight malformed validation input")
+    pf = _preflight()
+    valid = _validation_of("blueprint_valid.json")
+
+    # AC10: qr027_metrics always runs for version 2 (validate_part1.py:588), so a missing key means
+    # the validation flow did not finish -- a system-side problem. REGENERATE_MATERIAL asserts the
+    # material is unfit: it spends one outer-quota candidate swap and a whole regeneration, so
+    # using it here burns a generation AND hides the real fault. Absent metrics mean "not
+    # measured", not zero (deterministic/validate.py:65); read as zero, "spelled 0 < 4" would
+    # condemn a material set nobody ever measured.
+    for key in ("qr027_numeric_answers", "qr027_spelled_answers", "qr027_largest_category"):
+        payload = copy.deepcopy(valid)
+        del payload["metrics"][key]
+        got = pf.preflight(payload, _feasible())
+        check(f"metrics.{key} missing -> VALIDATION_INCOMPLETE",
+              got.outcome == pf.VALIDATION_INCOMPLETE, f"{got.outcome}: {got.reasons}")
+        check(f"metrics.{key} missing is not REGENERATE_MATERIAL",
+              got.outcome != pf.REGENERATE_MATERIAL)
+        check(f"the reason names {key}", any(key in reason for reason in got.reasons),
+              repr(got.reasons))
+
+    # AC11, the seven shapes. Each asserts the outcome AND that the call returned at all: raising
+    # would push the decision onto a caller who can only guess from a traceback whether to
+    # regenerate or to page someone.
+    def metrics_with(**changes) -> dict:
+        payload = copy.deepcopy(valid)
+        payload["metrics"].update(changes)
+        return payload
+
+    def metrics_without(key: str) -> dict:
+        payload = copy.deepcopy(valid)
+        del payload["metrics"][key]
+        return payload
+
+    cases = [
+        ("validation is None", None),
+        ("validation is a string", "not a result"),
+        ("validation is a list", [1, 2, 3]),
+        ("metrics absent", {"ok": True, "errors": [], "warnings": []}),
+        ("metrics is a string", {"ok": True, "errors": [], "warnings": [], "metrics": "none"}),
+        ("metrics is a list", {"ok": True, "errors": [], "warnings": [], "metrics": []}),
+        ("version key absent", metrics_without("blueprint_schema_version")),
+        ("version is None", metrics_with(blueprint_schema_version=None)),
+        ("numeric count is a string", metrics_with(qr027_numeric_answers="1")),
+        ("numeric count is a float", metrics_with(qr027_numeric_answers=1.5)),
+        ("numeric count is None", metrics_with(qr027_numeric_answers=None)),
+        # A bool IS an int in Python, so `True` would silently compare as 1 against the threshold.
+        # A validator that hands over a boolean where a count belongs has not counted anything.
+        ("numeric count is a bool", metrics_with(qr027_numeric_answers=True)),
+        ("spelled count is a dict", metrics_with(qr027_spelled_answers={})),
+        ("largest category is a list", metrics_with(qr027_largest_category=[2])),
+    ]
+    for label, payload in cases:
+        try:
+            got = pf.preflight(payload, _feasible())
+        except Exception as exc:  # noqa: BLE001 - any raise is the failure being tested for
+            check(f"{label} -> VALIDATION_INCOMPLETE", False, f"raised {type(exc).__name__}: {exc}")
+            continue
+        check(f"{label} -> VALIDATION_INCOMPLETE", got.outcome == pf.VALIDATION_INCOMPLETE,
+              f"{got.outcome}: {got.reasons}")
+        check(f"{label} is neither UNSUPPORTED_VERSION nor REGENERATE_MATERIAL",
+              got.outcome not in (pf.UNSUPPORTED_VERSION, pf.REGENERATE_MATERIAL), got.outcome)
+        check(f"{label} says missing or invalid",
+              any("missing" in reason or "invalid" in reason for reason in got.reasons),
+              repr(got.reasons))
+
+    # A deterministic error is a different matter: that IS a material defect.
+    payload = copy.deepcopy(valid)
+    payload["errors"] = ["blueprint.items[3].target is empty"]
+    got = pf.preflight(payload, _feasible())
+    check("deterministic errors -> REGENERATE_MATERIAL", got.outcome == pf.REGENERATE_MATERIAL,
+          f"{got.outcome}: {got.reasons}")
+    check("the deterministic error text is carried into the reasons",
+          any("items[3].target" in reason for reason in got.reasons), repr(got.reasons))
+
+
+def test_preflight_missing_semantics() -> None:
+    """AC12: everything malformed on the feasibility side is SEMANTICS_MISSING -- never an
+    exception, never REGENERATE_MATERIAL, and the reason keeps missing apart from invalid."""
+    print("preflight malformed semantics input")
+    pf = _preflight()
+    valid = _validation_of("blueprint_valid.json")
+
+    def without(key: str) -> dict:
+        payload = _feasible()
+        del payload[key]
+        return payload
+
+    # "missing" (the key is absent -> upstream produced nothing) and "invalid" (the key is there
+    # with the wrong type -> upstream produced the wrong thing) send an investigator to different
+    # places. One outcome drives control flow; the reasons carry the diagnosis.
+    missing_cases = [
+        ("feasibility is None", None),
+        ("feasible absent", without("feasible")),
+        ("reasons absent", without("reasons")),
+        ("category_semantics_ok absent", without("category_semantics_ok")),
+    ]
+    invalid_cases = [
+        ("feasibility is a string", "looks fine to me"),
+        ("feasibility is a list", [{"feasible": True}]),
+        ("feasibility is a bool", True),
+        # The trap this rules out: "false" is a non-empty string and therefore truthy, so a
+        # truthiness test would read an unfeasible verdict as feasible -- the verdict inverts.
+        ('feasible is the string "false"', dict(_feasible(), feasible="false")),
+        ("feasible is 0", dict(_feasible(), feasible=0)),
+        ("feasible is None", dict(_feasible(), feasible=None)),
+        ("category_semantics_ok is a string", dict(_feasible(), category_semantics_ok="false")),
+        ("reasons is a string", dict(_feasible(), reasons="one big reason")),
+        ("reasons is None", dict(_feasible(), reasons=None)),
+    ]
+    for label, semantics, marker in ([(a, b, "missing") for a, b in missing_cases]
+                                     + [(a, b, "invalid") for a, b in invalid_cases]):
+        try:
+            got = pf.preflight(valid, semantics)
+        except Exception as exc:  # noqa: BLE001 - any raise is the failure being tested for
+            check(f"{label} -> SEMANTICS_MISSING", False, f"raised {type(exc).__name__}: {exc}")
+            continue
+        check(f"{label} -> SEMANTICS_MISSING", got.outcome == pf.SEMANTICS_MISSING,
+              f"{got.outcome}: {got.reasons}")
+        check(f"{label} is neither PASS nor REGENERATE_MATERIAL",
+              got.outcome not in (pf.PASS, pf.PASS_WITH_JUSTIFICATION, pf.REGENERATE_MATERIAL),
+              got.outcome)
+        check(f"{label} reason is marked {marker}",
+              any(marker in reason for reason in got.reasons), repr(got.reasons))
+
+    # A malformed qr027_exception is NOT one of these. It is a *request*, and a request that says
+    # nothing is simply no request, so it falls through to "no justification recorded". The three
+    # required keys are *conclusions*: an unusable conclusion means the verdict cannot be reached.
+    breach = copy.deepcopy(valid)
+    breach["metrics"]["qr027_numeric_answers"] = 99
+    got = pf.preflight(breach, dict(_feasible(), qr027_exception="please"))
+    check("a malformed qr027_exception falls through to REGENERATE_MATERIAL, not SEMANTICS_MISSING",
+          got.outcome == pf.REGENERATE_MATERIAL, f"{got.outcome}: {got.reasons}")
+
+
+def test_preflight_thresholds_have_one_source() -> None:
+    """AC7: the thresholds live in validate_part1 and are read at call time.
+
+    `from validate_part1 import QR027_MAX_NUMERIC` binds the value into the importing module at
+    import time, after which patching the source module does nothing -- measured. A test written
+    against that form PASSES while proving nothing, which is worse than no test: it hands out a
+    false guarantee about exactly the property it claims to check.
+    """
+    print("preflight threshold single source")
+    pf = _preflight()
+    vp = __import__("validate_part1")
+    valid = _validation_of("blueprint_valid.json")
+    payload = copy.deepcopy(valid)
+    payload["metrics"]["qr027_numeric_answers"] = 5
+
+    # Three points, not two. "Patch it wider and it passes" alone would still be satisfied by an
+    # implementation that hardcodes a number which happens to equal the patched value; patching
+    # narrower as well pins that down.
+    original = vp.QR027_MAX_NUMERIC
+    try:
+        check("unpatched (max 4): numeric 5 is a breach",
+              pf.preflight(payload, _feasible()).outcome == pf.REGENERATE_MATERIAL)
+        vp.QR027_MAX_NUMERIC = 5
+        check("patched to 5: numeric 5 now passes",
+              pf.preflight(payload, _feasible()).outcome == pf.PASS,
+              f"{pf.preflight(payload, _feasible()).outcome}")
+        vp.QR027_MAX_NUMERIC = 0
+        check("patched to 0: numeric 5 is a breach again",
+              pf.preflight(payload, _feasible()).outcome == pf.REGENERATE_MATERIAL)
+    finally:
+        # Restoring matters beyond tidiness: everything below runs in this same process, including
+        # the within_limits cross-check, which is only meaningful at the real thresholds.
+        vp.QR027_MAX_NUMERIC = original
+    check("threshold restored", vp.QR027_MAX_NUMERIC == original)
+
+    # Cross-check against the composite boolean the validator already computes. The aggregator
+    # deliberately does not read qr027_within_limits -- it could not then say which rule missed, by
+    # how much, and a PASS_WITH_JUSTIFICATION report needs exactly that. But the two must agree at
+    # the real thresholds; asserting this while a threshold is patched would be wrong, since
+    # divergence is then the expected behaviour.
+    for numeric, spelled, largest in ((1, 9, 2), (4, 4, 2), (5, 9, 2), (1, 3, 2), (1, 9, 3)):
+        probe = copy.deepcopy(valid)
+        probe["metrics"].update(qr027_numeric_answers=numeric, qr027_spelled_answers=spelled,
+                                qr027_largest_category=largest)
+        probe["metrics"]["qr027_within_limits"] = (numeric <= vp.QR027_MAX_NUMERIC
+                                                   and spelled >= vp.QR027_MIN_SPELLED
+                                                   and largest < vp.QR027_MAX_SAME_CATEGORY)
+        got = pf.preflight(probe, _feasible())
+        agrees = (got.outcome == pf.PASS) == probe["metrics"]["qr027_within_limits"]
+        check(f"rule-by-rule verdict agrees with qr027_within_limits at ({numeric},{spelled},{largest})",
+              agrees, f"{got.outcome} vs within_limits={probe['metrics']['qr027_within_limits']}")
+
+
+def test_preflight_outcome_names_are_pinned() -> None:
+    """The three client-named exits are matched verbatim downstream, so a rename must fail here.
+
+    The earlier round's PASS_WITH_RATIONALE / BLOCK were renamed by the client:. BLOCK read like a
+    terminal state, while REGENERATE_MATERIAL names the next action and which layer owns it.
+    """
+    print("preflight outcome names")
+    pf = _preflight()
+    for name, want in (("PASS", "PASS"),
+                       ("PASS_WITH_JUSTIFICATION", "PASS_WITH_JUSTIFICATION"),
+                       ("REGENERATE_MATERIAL", "REGENERATE_MATERIAL"),
+                       ("SEMANTICS_MISSING", "SEMANTICS_MISSING"),
+                       ("VALIDATION_INCOMPLETE", "VALIDATION_INCOMPLETE"),
+                       ("UNSUPPORTED_VERSION", "UNSUPPORTED_VERSION")):
+        check(f"{name} is spelled {want!r}", getattr(pf, name) == want, repr(getattr(pf, name)))
+
+    verdict = pf.preflight(_validation_of("blueprint_valid.json"), _feasible())
+    as_dict = verdict.as_dict()
+    check("Verdict.as_dict is JSON-serialisable with the four documented keys",
+          set(as_dict) == {"outcome", "reasons", "qr027", "justification"}
+          and json.loads(json.dumps(as_dict))["outcome"] == pf.PASS,
+          repr(sorted(as_dict)))
+
+
 def main() -> int:
     for suite in (
         test_schemas_are_valid,
@@ -1228,6 +1608,12 @@ def main() -> int:
         test_cross_check_pairs_on_evidence_text,
         test_render_report,
         test_archive_samples_do_not_crash,
+        test_preflight_three_exits,
+        test_preflight_version_gate,
+        test_preflight_incomplete_validation,
+        test_preflight_missing_semantics,
+        test_preflight_thresholds_have_one_source,
+        test_preflight_outcome_names_are_pinned,
     ):
         suite()
     print()

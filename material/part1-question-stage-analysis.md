@@ -696,6 +696,21 @@ QR-027 计数口径：
 **这个改动方向是对的，但三个字段的可复核程度不同，实施上要分开看：**
 
 - `answer_category` —— **声明有独立价值**。它比 `type` 细（`type` 只有 8 个值，QR-027 的「微型类别」要细得多，如 `location` / `price` / `service`），不能可靠地由 Python 从文本语义推导。Python 只能检查枚举、完整性和类别计数；类别语义是否准确必须由材料审核 Agent 复核。
+
+  > `[2026-08-06 Stage 3A]` **「由材料审核 Agent 复核」这句与现有代码硬冲突，已定案改为独立的非盲可行性审核。**
+  > 三条代码级证据：
+  > 1. `answer_category` 在 `backend/deterministic/guards.py:72` 的 `BLUEPRINT_ONLY_KEYS` 中；
+  > 2. 材料审核是盲审，`backend/steps/agent_steps.py:308` 在 payload 出网前调 `assert_blind(payload)`；
+  > 3. `guards.py:112` 的 `assert_blind` **raise 而不 strip**（其 docstring 说明 strip 会
+  >    「keep the batch running while quietly changing what was audited」）。
+  >
+  > 所以把 `answer_category` 送进材料审核不是「能跑但隔离变弱」，是**必然抛 `BlindnessViolation`**。
+  > 定案：**新开一个非盲的可行性审核，盲审守卫一个字不动**——本节下方「预检逻辑」的职责边界段
+  > 原本就写的是「材料审核**或专门的可行性审核**结果」，此处按后者执行。
+  > 依据也是正面的：盲审看不到 blueprint 是**对的**（它的价值来自独立重建信息点，
+  > `cross_check.py` 的全部意义建立在这上面），而可行性审核必须同时看 Script 和 blueprint，
+  > 两者需求相反，本就不该复用同一个 Agent。
+  > 该 Agent 本体属于 **Stage 3B**（`.trellis/tasks/08-06-stage3b-feasibility-agent`）。
 - `narrator_window_id` —— **可以完全推导，所以声明的作用是交叉校验**，不是数据来源。Python 必须用 §465 的窗口解析独立算一遍并比对；若只存不算，等于把 SC-019 的窗口归属交给模型自评。这一点在实现时容易做错成「读字段就算过」。
 
 `[定案覆盖]` 因此**本轮 blueprint item 新增三个字段**：`response_form`、`answer_category`、`narrator_window_id`，全部**必填**。其中 `response_form` 由 Python 复核形态、`narrator_window_id` 由 Python 独立解析窗口后复核，`answer_category` 由 Python 做结构/计数检查并由材料审核 Agent 复核语义。这把 §9.1 的 schema 合同变更从「一处」（`form_group` 必填）扩为「四处」，风险等级相应上调——见 §9.3 风险 1。
@@ -727,6 +742,30 @@ Python 负责字段、数量、顺序、window、分组和 QR-027 统计；“�
 等语义结论来自材料审核或专门的可行性审核结果。两者共同决定三出口。
 
 命名变更记录：第二轮我写的是 `PASS_WITH_RATIONALE` / `BLOCK`，第三轮客户定名为 `PASS_WITH_JUSTIFICATION` / `REGENERATE_MATERIAL`。后者不只是改名——`BLOCK` 读起来像终态，`REGENERATE_MATERIAL` 明确指出了下一步动作和它的归属层（slot 补位，不是 batch 失败）。
+
+> `[2026-08-06 Stage 3A]` **三出口之外还有三个「判不了」状态，它们不是新出口。**
+> 客户定名的三个出口表示「已判决」；下面三个表示「判不了」，混进出口就等于让客户的判决语义
+> 承载它没定义的情形。已实现并有测试钉住：
+>
+> | 状态 | 何时 | 为什么不能用 `REGENERATE_MATERIAL` 兜底 |
+> |---|---|---|
+> | `SEMANTICS_MISSING` | 语义结论缺失、形状不合或审核本身报错 | Stage 3B 完成前这是常态，兜底会让每套材料都重生成，链路根本跑不通 |
+> | `VALIDATION_INCOMPLETE` | `metrics` 形状不对、版本判不出、`qr027_*` 缺失或类型错 | **系统缺陷伪装成材料缺陷**：白烧一次生成，真正的故障被掩盖 |
+> | `UNSUPPORTED_VERSION` | **明确读到**一个不等于 2 的版本号（如 v1 归档记录） | 把「这是历史记录」报成「这份材料要重生成」 |
+>
+> 关键在于 `REGENERATE_MATERIAL` 是一个**有代价的断言**：它说「这套材料内容不合格」，
+> 于是消耗一次阶段 4 的外层配额（candidate 更换）并重跑一次完整材料生成。
+> 反向的错误同样要避免——把这三种当 `PASS`：那样语义层就从「共同决定」退化成「只能否决」，
+> 而它未接入时**永远**不否决。依据 §8.2(5)「不得把未完成伪装成完整交付」：
+> **确定性通过 ≠ 可以出题**，只是「还没判完」。
+>
+> 另有一条实测事实值得记录：**版本闸门没有第二道兜底。** 一份 v1 记录用 `--allow-v1` 读出来是
+> `ok: true`、零 error、零 `qr027_*` 键——于是确定性闸门放行、完整性闸门无话可说、
+> QR-027 闸门读不到数。若版本闸门不在最前，它会一路走到底。
+> 同理「版本无法识别」与「版本不受支持」是两件事：`validate_part1.py:466` 在读不出版本时显式写
+> `metrics["blueprint_schema_version"] = None`，表达的是「我没能判定版本」。把 `None` 当
+> `UNSUPPORTED_VERSION`，会把一份**写坏了版本号的新记录**报成「这是历史归档记录」，
+> 于是没人去修那个坏版本号。
 
 ## 5.5 `[第三轮]` 题型与 layout 的层次划分（已定案）
 
@@ -774,19 +813,26 @@ question_type = completion          ← 顶层，Part 1 只有这一种
 | **0** | **时限叙述修正 + read timeout / hard limit 方案定案**（§7），含一次长 invoke 实测 | 一次 >900s 的 invoke 能正常返回 | 中。**必须最先做**：后面每一步的时间预算都建立在它上面 |
 | **1** | **删 multiple choice**：validator 5 处 + schema 3 处 + SKILL 1 处 + spec 5 处 + 审核侧 2 处 + 测试 fixtures + 前端 6 文件。**`option` 不动**（§2.3） | `run_tests.py` + 一次真实材料生成 | 低。纯收窄，且删的是一条 error |
 | **2** | **Blueprint v2 合同与题组关系化**（§5.5）：`form_group` 必填；新增 `response_form` / `answer_category` / `narrator_window_id`；`MIN_GROUPED_ITEMS` 改为完整覆盖、组内同质、考点序列连续、不跨 window；`MAX_GROUP_SPAN` 保持 warning | v1/v2 兼容单测 + v2 fixtures | 中。新生成严格写 v2，历史 v1 兼容读取 |
-| **3** | **可行性预检聚合器 `question_feasibility_preflight.py`**（§5.4）：组合 Python 结构/统计结果与材料审核的语义可行性结论；输出 `PASS` / `PASS_WITH_JUSTIFICATION` / `REGENERATE_MATERIAL` | 单测：三种判定、字段推导边界、语义审核失败各一个 fixture | 中。确定性部分可离线测，语义结论不能伪装成纯 Python 推导 |
+| **3A** | `[2026-08-06 已完成]` **可行性预检聚合器 `question_feasibility_preflight.py`**（§5.4）：组合 Python 结构/统计结果与语义可行性结论；输出 `PASS` / `PASS_WITH_JUSTIFICATION` / `REGENERATE_MATERIAL`，另有三个「判不了」状态（见 §5.4 的 2026-08-06 补注）。语义结论本阶段只定契约与注入点 | 离线单测（+139 checks）+ 十一轮变异测试 | 中。确定性部分可离线测，语义结论不能伪装成纯 Python 推导 |
+| **3B** | `[2026-08-06 新增]` **非盲可行性审核 Agent + Skill + Schema + 编排接入**：真实产出 `feasibility` 语义结论。盲审守卫（`assert_blind` / `BLUEPRINT_ONLY_KEYS`）一字不动，不复用 `build_audit_payload` | 真实材料端到端跑通，且材料盲审行为逐字不变 | 中偏高。主要风险是这个 Agent 属于哪个 skill 池——放 `audit` 池会破坏「audit 池不含 plan schema」并直接撞上 ci_gates gate 1 |
 | **4** | **槽位持久化 `_slots/` + 两级尝试上限 + checkpoint**（§8.1–8.2）。这一步决定「必须交付 N 套」能不能成立 | 单测：耗尽上限 → 建 replacement slot；杀掉进程 → 下次 invoke 从 checkpoint 续 | **高。本方案最实质的结构改动**，且与 `batch.py` 现有三处「少交付优于 504」直接冲突 |
 | **5** | `question_package.schema.json` + `validate_questions_part1.py`（§5.3 全部 16 项）。**Runtime-local 纯 Python，可离线用手写 fixture 测**（§4.5） | 单测 + fixtures | 低 |
-| **6** | `skills/generate/generate-questions-part1/`（SKILL.md + specification.md + schema） | 拿线上已确定材料手动跑一次 | 中。前提是阶段 3 已到位，否则出题方只能靠猜 |
+| **6** | `skills/generate/generate-questions-part1/`（SKILL.md + specification.md + schema） | 拿线上已确定材料手动跑一次 | 中。前提是阶段 3A **与 3B** 都已到位，否则出题方只能靠猜 |
 | **7** | `audit_questions.schema.json` + `skills/audit/audit-questions-part1/` + `question_metrics.py`（**Runtime-local**；只有确实依赖 Agent 执行环境的步骤才走远程 Code Interpreter，见 §4.5） | 同一份题目手动跑审核 | 中。核心是盲读隔离要真的成立——靠的是输入裁剪，不是脚本位置 |
 | **8** | `cross_check_questions.py`（§4.4 分维度容差）+ `guards.ANSWER_ONLY_KEYS` + `BlindQuestionAuditInput` | 单测：构造「审核重建 ≠ key」「仅 turn index 相邻但答案不同」两类 fixture 验证都能被抓出 | 低 |
 | **9** | `orchestration/question_loop.py`：预检 → 题目生成 → 校验 → 审核 → 交叉检查 → 修题复评。复用 `_with_infra_retries` / `is_clean` 的**形状**；`pick_better` 的判据已定案，见 §8.3 | 端到端一次 | 中 |
 | **10** | `agents.py` 核验（§2.2(f) 五项清单）。**结论待核验后给出，不预设「无需修改」** | 新 Skill 能被正确加载 + 路由无歧义 | 中 |
 | **11** | 前端题目/answer key 展示 + Runtime action（**本阶段不做**，用户已说明不急） | — | — |
 
-阶段 1/2/3/5 之间可并行准备；阶段 6 依赖 2+3，阶段 7 依赖 5+6，阶段 8 依赖 5+7，
-阶段 9 依赖 3+6+7+8。**阶段 0 与阶段 4 是两个前置门槛**：0 定时间预算，4 定交付语义，
+阶段 1/2/3A/5 之间可并行准备；阶段 6 依赖 2+**3A+3B**，阶段 7 依赖 5+6，阶段 8 依赖 5+7，
+阶段 9 依赖 **3A+3B**+6+7+8。**阶段 0 与阶段 4 是两个前置门槛**：0 定时间预算，4 定交付语义，
 两者都不该在 Skill 落地后才补。分支：当前已在 `feat/listening-full-test`，`main` 未受影响。
+
+> `[2026-08-06]` **依赖写成 3A+3B 而不是「阶段 3」，是因为只有 3A 不足以支撑出题。**
+> 3A 单独上线时每套材料只能得到 `SEMANTICS_MISSING`——语义结论的真实来源就是 3B。
+> 而 §5.4 要求语义与确定性**共同**决定判决，只有确定性一半就放行题目生成，
+> 等于把「能否基于这 10 个点出题」这个判断整个跳过，那正是 §5.4 设立预检环节的理由。
+> **因此：Stage 3B 完成前不得进入题目生成主流程。**（用户 2026-08-06 明确）
 
 ## 6.2 两个需要现在就定下的架构判断（建议，非阻塞）
 
@@ -1036,6 +1082,12 @@ checkpoint_at
 `[第三轮]` 三个新字段的复核里，`narrator_window_id` **必须真的独立算一遍再比对**（用 `validate_part1.py`:465 的 `FIRST_RANGE_RE`/`SECOND_RANGE_RE`），不能读了字段就算过——否则 SC-019 的窗口归属就落回模型自评了。这是实现时最容易做错的一处。
 `skills/shared/cross_check.py` —— 核心算法**不动**（它只用 number/type/target/evidence/turn_index，不碰 `item_form`/`form_group`），anchor repair 保留。
 **新增**：`validate_questions_part1.py`、`cross_check_questions.py`。
+`[2026-08-06 Stage 3A 已落地]` `skills/generate/generate-listening-part1/scripts/question_feasibility_preflight.py`
+—— 与 `validate_part1.py` 同目录（它需要 `import validate_part1 as validator` 以在**运行时**读 QR-027 门槛；
+用 `from validate_part1 import QR027_...` 会在 import 时把值拷成局部名，此后 monkeypatch 源模块毫无影响，
+使「单一事实来源」的测试假绿通过——已实测）。签名 `preflight(validation, feasibility)` **不接 blueprint**：
+拿不到 blueprint，聚合器就没有能力自己数 target 或判自然度，§5.4 的职责边界因此落在签名上而非注释里。
+测试在 `skills/shared/tests/run_tests.py`（六个套件，+139 checks，由 ci_gates gate 6 覆盖）。
 
 **D. 编排（结构改动最大）**
 `backend/orchestration/batch.py` —— 推翻 :42–43 / :102–103 / :263–271 / :296–299 的少交付设计；`Budget` docstring 重写；`P95_PER_MATERIAL` 重测。
