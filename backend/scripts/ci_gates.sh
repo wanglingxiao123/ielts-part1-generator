@@ -116,7 +116,11 @@ echo "== gate 9: every path a Dockerfile or codegen script names still exists ==
 import pathlib, re, sys
 
 ok = True
-for dockerfile in ("backend/Dockerfile", "web/Dockerfile"):
+# `probe.Dockerfile` is here but NOT in gate 8: that gate compares a whole package's imports against
+# the COPY list, and the probe deliberately copies two files out of `backend/` rather than the
+# package, so gate 8 would report every module the rest of the backend imports as missing. This gate
+# asks a narrower question -- does each named path exist -- which applies to any Dockerfile.
+for dockerfile in ("backend/Dockerfile", "backend/probe.Dockerfile", "web/Dockerfile"):
     # `COPY --from=` reads an earlier build stage, not the build context, so its source is a path
     # inside another image and does not exist here.
     for source in re.findall(r"^COPY\s+(\S+)\s+\S+\s*$",

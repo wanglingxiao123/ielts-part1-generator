@@ -110,6 +110,116 @@ budget. No blocking call reaches the shared event loop — subprocesses go throu
   concurrency rather than adding retries — retries increase total elapsed time and make the
   15-minute wall more likely, not less.
 
+## 平台时限实测（2026-08-06，独立探针 Runtime）
+
+回答的问题：**一次 `InvokeAgentRuntime` 能挂多久不返回，同步和流式是否不同？**
+此前仓库里有三种互相矛盾的说法，其中 `material/part1-question-stage-analysis.md` §7.1
+断言「AgentCore 没有单次 invocation 15 分钟同步硬上限」。现在这是实测结论，不是推断。
+
+两条 quota（`aws service-quotas list-service-quotas --service-code bedrock-agentcore`，
+与官网 `bedrock-agentcore-limits.html` → Runtime → Invocation limits 一致，**两条都不可调**）：
+
+| Quota ID | 值 | 适用路径 | 实测结论 |
+|---|---:|---|---|
+| `L-3ED45A13` | 15 min = 900s | 同步（`application/json`） | **成立**。900.5s 后容器被杀 |
+| `L-C91AC63F` | 60 min = 3600s | 流式（SSE / WebSocket） | **成立**。1206s 正常收尾，未被 900s 切 |
+
+测法：独立探针 Runtime（`ielts_part1_probe`，`backend/probe_app.py` +
+`backend/probe.Dockerfile`，只 sleep 不调模型），客户端 `backend/scripts/probe_runtime_timing.py`
+（`read_timeout=3600`、**重试关闭**、直连 `bedrock-agentcore` endpoint 不经 ALB/CloudFront）。
+生产 Runtime 全程未被触碰，探针测完删除。
+
+### 同步路径：900s 到了**杀容器，但不通知客户端**
+
+这是本次最要紧的发现，也是三种说法都没说到的一点。1000s sleep 的探针，容器侧日志每 60s 一行：
+
+```
+probe_sync ENTERED, sleeping 1000.0s
+probe_sync alive at  60.0s of 1000.0s
+...                                      ← 60s 一行，节奏完整无缺口
+probe_sync alive at 900.5s of 1000.0s    ← 最后一行
+                                         ← 960.5s 那行再也没来，也没有 FINISHED
+```
+
+即容器在 **(900.5s, 960.5s]** 之间被杀死，与 900s 的 quota 吻合。**跑了两次，两次都断在
+`alive at 900.5s`**（不同 session、不同时间、同一镜像），所以这不是偶发：
+
+| | 最后一条容器日志 | 推断的杀死区间 |
+|---|---|---|
+| 第一次（10:05:51 进入） | `alive at 900.5s` | (900.5s, 960.5s] |
+| 第二次（10:39:51 进入） | `alive at 900.5s` | (900.5s, 960.5s] |
+
+区间上界是 60s 的日志间隔造成的分辨率，不是观测到的宽容度——真实的杀死时刻在 900s 之后不久。
+而平台**没有为此写任何日志**
+（没有 5xx、没有超时事件、没有终止记录），**也没有给客户端任何响应**。
+
+这一点用两个不同的 `read_timeout` 各测了一遍，**客户端的等待时长完全由它自己的 read timeout
+决定，与 900s 无关**：
+
+| 客户端 `read_timeout` | 客户端实际墙钟 | 容器实际死亡时刻 | 白等了 |
+|---:|---:|---:|---:|
+| 3600s | **3600.517s** | ~900s | ~2700s |
+| 3600s（复跑） | **3600.526s** | ~900s | ~2700s |
+| 1500s | **1500.7s** | ~900s | ~600s |
+
+三次的异常完全一致：
+
+```
+exception : botocore.exceptions.ReadTimeoutError      ← botocore 本地异常，不是服务端错误
+message   : Read timeout on endpoint URL: "https://bedrock-agentcore.us-east-1.amazonaws.com
+            /runtimes/arn%3Aaws%3Abedrock-agentcore%3Aus-east-1%3A907488872981%3Aruntime
+            %2Fielts_part1_probe-hAXrU75Hx4/invocations"
+RequestId : 无 —— ReadTimeoutError 不带 .response，无 RequestId 可对 CloudWatch
+```
+
+**结论：同步路径超限时，客户端唯一的止损是它自己的 `read_timeout`。** 平台不回 504、不回任何
+错误码、不断开连接。所以同步路径上 `read_timeout` 设多大，一次超限就白等多久——设成 3600s
+就是 3600s 的静默等待，而后端早在 900s 就死了。这是 §7.2 讨论提高 `READ_TIMEOUT_SECONDS`
+时必须并进去的一条：**同步路径的 read timeout 不该超过 900s**，因为超过的部分只会变成
+「后端已死但前端还在等」的时间，没有任何一秒是有用的。
+
+对照组（同一路径、同一镜像、120s sleep）证明这不是探针或路径本身坏了：
+
+| | 对照组（120s） |
+|---|---|
+| `ended_by` | `returned` |
+| `contentType` | `application/json`（确认走的是非 SSE 分支） |
+| 客户端墙钟 | 126.102s |
+| 容器自报 `slept_seconds` | 120.016s |
+| 容器日志 | `ENTERED` → 2 条 alive → `FINISHED` → SDK `completed successfully (120.017s)` |
+
+两个时钟一致，说明「900s 那次容器日志断在 900.5s」是被杀，不是没被调度到——
+这个区分需要容器侧的进度日志才能做，第一次跑因为只在 handler 返回时才有日志，
+数据无法区分「被杀」和「从未派发」，所以补了 `PROBE_PROGRESS_SECONDS` 才定案。
+
+### 流式路径：跨过 900s，跑到 1206s 正常收尾
+
+15s 心跳、计划 1200s 的 SSE 探针：
+
+| | 值 |
+|---|---|
+| `contentType` | `text/event-stream; charset=utf-8` |
+| 首字节 | 5.971s |
+| 总墙钟 | **1205.98s** |
+| data 帧 | 82，**含收尾帧** `{"type":"probe_completed","heartbeats":80,"elapsed_seconds":1200.015}` |
+| 最大心跳间隔 | 30.015s |
+
+收尾帧是关键：没有它，「跨过 900s 正常跑完」和「900s 被切、客户端只收到那之前的心跳」
+在客户端看起来都是「心跳停了」。收到 `probe_completed` 才排除了后者。
+
+最大间隔 30.0s（15s 的两倍，出现 4 次）说明**有心跳被合并投递**。这不影响本次结论——
+30s 仍远低于 ALB 120s / CloudFront 60s 的 idle 门槛——但意味着 15s 的心跳设置不能假定
+「客户端每 15s 必收到一次」。若日后把心跳间隔调到 60s 附近，实际间隔可能翻倍到 120s
+并撞上中间层 idle 超时。
+
+### 本轮不改任何数值
+
+`READ_TIMEOUT_SECONDS`、`IELTS_HARD_LIMIT`、`P95_PER_MATERIAL`、`REVISION_COST` 一个都没动。
+生产走 SSE，因此受 3600s 约束而非 900s——但真正的取值依赖题目阶段存在后重测 P95，
+现在改只是换一组猜测。另：`material/part1-question-stage-analysis.md` §7.3 列的约 40 处
+B 类叙述错误（把 900s 说成「平台同步上限」）本轮**未逐处修改**——改动面 §7.3 已列全，
+成本在逐处措辞而非判断，留给真正调整数值的那个任务一起改，免得改两遍。
+
 ## 容器内实测（2026-07-28，ARM64 镜像）
 
 镜像：`ielts-backend:dev`，`arm64/linux`，**77 MB**（AgentCore 上限 2048 MB）。
