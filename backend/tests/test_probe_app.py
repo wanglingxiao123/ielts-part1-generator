@@ -83,7 +83,7 @@ class TestTheSyncPathReportsFromInsideTheSleep:
     """What the first long run lacked, and why it could not be concluded from.
 
     Probe A hung until the client's own 3600s read timeout while the container log stayed empty --
-    yet an empty log was consistent with two opposite readings: the platform killed the handler at
+    yet an empty log was consistent with two opposite readings: the platform terminated the handler at
     ~900s, or the handler was never dispatched. ``BedrockAgentCoreApp`` logs only when a handler
     RETURNS, so neither reading could be ruled out. These two properties are what make the second
     round able to answer it.
@@ -106,7 +106,7 @@ class TestTheSyncPathReportsFromInsideTheSleep:
     async def test_the_sync_path_prints_before_it_finishes(self, monkeypatch, capfd) -> None:
         """Entry and liveness are logged DURING the sleep, not only at the end.
 
-        This is the property that separates "cancelled mid-sleep" from "never dispatched": a killed
+        This is the property that separates "terminated mid-sleep" from "never dispatched": a stopped
         handler still leaves the ENTERED line and the progress lines up to the moment it died. A test
         that only checked the final line would pass while the probe stayed unable to tell the two
         cases apart -- which is precisely the state the first run was in.
@@ -117,7 +117,7 @@ class TestTheSyncPathReportsFromInsideTheSleep:
 
         assert "probe_sync ENTERED" in out
         alive = [line for line in out.splitlines() if "alive at" in line]
-        assert alive, "no mid-sleep line: a handler killed at 900s would again log nothing"
+        assert alive, "no mid-sleep line: a handler stopped at 900s would again log nothing"
         # Ordering is the point: a progress line must precede the finish line, or it is not evidence
         # about a handler that never reached the finish.
         assert out.index("ENTERED") < out.index("alive at") < out.index("FINISHED")

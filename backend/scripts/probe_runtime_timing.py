@@ -26,13 +26,15 @@ Results are written as JSON (``--out``) as well as printed: each run costs 15-20
 closed terminal should not mean measuring it again.
 
 **What the 2026-08-06 runs found, since it changes how to read a result here.** The synchronous
-quota is real: the container is killed just after 900s. But the platform sends the client *nothing*
--- no 504, no error code, no closed socket -- so this script's wall-clock number on the synchronous
-path is its OWN ``read_timeout``, not the platform's limit. Measured: 3600s of read timeout produced
-3600.5s of waiting, 1500s produced 1500.7s, and the container died at ~900s in every case. Reading
-the platform limit off the client therefore does not work on this path; the container log does it
-(see ``PROBE_PROGRESS_SECONDS`` in ``backend/probe_app.py``). Full write-up in
-``backend/docs/timing.md``.
+quota is real: the platform terminates the synchronous invocation's handler just after 900s. (What
+was observed is the handler ceasing to make progress and never returning -- whether the microVM
+itself was destroyed is not something this probe can see, and it makes no difference to a caller.)
+But the platform sends the client *nothing* -- no 504, no error code, no closed socket -- so this
+script's wall-clock number on the synchronous path is its OWN ``read_timeout``, not the platform's
+limit. Measured: 3600s of read timeout produced 3600.5s of waiting, 1500s produced 1500.7s, and the
+handler stopped at ~900s in every case. Reading the platform limit off the client therefore does not
+work on this path; the container log does it (see ``PROBE_PROGRESS_SECONDS`` in
+``backend/probe_app.py``). Full write-up in ``backend/docs/timing.md``.
 """
 
 from __future__ import annotations

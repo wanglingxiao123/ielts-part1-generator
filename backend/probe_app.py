@@ -54,7 +54,8 @@ HEARTBEAT_SECONDS = float(os.environ.get("PROBE_HEARTBEAT_SECONDS", "15"))
 
 # How often the SYNCHRONOUS path prints that it is still alive. The synchronous path cannot send the
 # client anything mid-call by definition, so stdout is the only channel it has, and without it a
-# handler killed at 900s and a handler never dispatched produce the same evidence: nothing.
+# handler terminated by the platform at 900s and a handler never dispatched produce the same
+# evidence: nothing.
 PROGRESS_SECONDS = float(os.environ.get("PROBE_PROGRESS_SECONDS", "60"))
 
 
@@ -81,7 +82,7 @@ async def invoke(payload: Dict[str, Any]):
         seconds = float((payload or {}).get("seconds", SYNC_SECONDS))
         started = time.monotonic()
         # Logged before and during, not only on return. `BedrockAgentCoreApp` logs when the handler
-        # RETURNS, so a handler that is killed mid-sleep leaves an empty log -- indistinguishable from
+        # RETURNS, so a handler terminated mid-sleep leaves an empty log -- indistinguishable from
         # one that was never dispatched. These lines are what make those two cases different.
         print("probe_sync ENTERED, sleeping %.1fs" % seconds, flush=True)
         while True:

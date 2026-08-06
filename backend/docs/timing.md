@@ -121,7 +121,7 @@ budget. No blocking call reaches the shared event loop — subprocesses go throu
 
 | Quota ID | 值 | 适用路径 | 实测结论 |
 |---|---:|---|---|
-| `L-3ED45A13` | 15 min = 900s | 同步（`application/json`） | **成立**。900.5s 后容器被杀 |
+| `L-3ED45A13` | 15 min = 900s | 同步（`application/json`） | **成立**。900.5s 后 handler 被平台终止 |
 | `L-C91AC63F` | 60 min = 3600s | 流式（SSE / WebSocket） | **成立**。1206s 正常收尾，未被 900s 切 |
 
 测法：独立探针 Runtime（`ielts_part1_probe`，`backend/probe_app.py` +
@@ -129,7 +129,7 @@ budget. No blocking call reaches the shared event loop — subprocesses go throu
 （`read_timeout=3600`、**重试关闭**、直连 `bedrock-agentcore` endpoint 不经 ALB/CloudFront）。
 生产 Runtime 全程未被触碰，探针测完删除。
 
-### 同步路径：900s 到了**杀容器，但不通知客户端**
+### 同步路径：900s 到了**终止 invocation，但不通知客户端**
 
 这是本次最要紧的发现，也是三种说法都没说到的一点。1000s sleep 的探针，容器侧日志每 60s 一行：
 
@@ -141,22 +141,30 @@ probe_sync alive at 900.5s of 1000.0s    ← 最后一行
                                          ← 960.5s 那行再也没来，也没有 FINISHED
 ```
 
-即容器在 **(900.5s, 960.5s]** 之间被杀死，与 900s 的 quota 吻合。**跑了两次，两次都断在
-`alive at 900.5s`**（不同 session、不同时间、同一镜像），所以这不是偶发：
+即这次**同步 invocation 的 handler 在 (900.5s, 960.5s] 之间被平台终止**，与 900s 的 quota 吻合。
+**跑了两次，两次都断在 `alive at 900.5s`**（不同 session、不同时间、同一镜像），所以这不是偶发：
 
-| | 最后一条容器日志 | 推断的杀死区间 |
+| | 最后一条容器日志 | 推断的终止区间 |
 |---|---|---|
 | 第一次（10:05:51 进入） | `alive at 900.5s` | (900.5s, 960.5s] |
 | 第二次（10:39:51 进入） | `alive at 900.5s` | (900.5s, 960.5s] |
 
-区间上界是 60s 的日志间隔造成的分辨率，不是观测到的宽容度——真实的杀死时刻在 900s 之后不久。
-而平台**没有为此写任何日志**
-（没有 5xx、没有超时事件、没有终止记录），**也没有给客户端任何响应**。
+区间上界是 60s 的日志间隔造成的分辨率，不是观测到的宽容度——真实的终止时刻在 900s 之后不久。
+
+**措辞注意：观测到的是「handler 停止推进、且再也没有返回」，不是「microVM 被销毁」。**
+两者本次实测无法区分：探针只有 handler 内的日志，microVM 是否存活、是否被复用、
+`idleRuntimeSessionTimeout` 有没有参与，都没有证据。对使用方来说该区分也不影响结论——
+无论平台是取消了协程、杀了进程还是回收了实例，**这次 invocation 到此为止且不会再返回**。
+若日后需要区分（例如想判断同一 session 的下一次 invoke 是否落在同一实例上），
+要另设探针：同一 session 连发两次，在第二次里读进程启动时刻或某个进程内计数器。
+
+而平台**没有为此写任何日志**（没有 5xx、没有超时事件、没有终止记录），
+**也没有给客户端任何响应**。
 
 这一点用两个不同的 `read_timeout` 各测了一遍，**客户端的等待时长完全由它自己的 read timeout
 决定，与 900s 无关**：
 
-| 客户端 `read_timeout` | 客户端实际墙钟 | 容器实际死亡时刻 | 白等了 |
+| 客户端 `read_timeout` | 客户端实际墙钟 | handler 实际停止时刻 | 白等了 |
 |---:|---:|---:|---:|
 | 3600s | **3600.517s** | ~900s | ~2700s |
 | 3600s（复跑） | **3600.526s** | ~900s | ~2700s |
@@ -174,9 +182,9 @@ RequestId : 无 —— ReadTimeoutError 不带 .response，无 RequestId 可对 
 
 **结论：同步路径超限时，客户端唯一的止损是它自己的 `read_timeout`。** 平台不回 504、不回任何
 错误码、不断开连接。所以同步路径上 `read_timeout` 设多大，一次超限就白等多久——设成 3600s
-就是 3600s 的静默等待，而后端早在 900s 就死了。这是 §7.2 讨论提高 `READ_TIMEOUT_SECONDS`
-时必须并进去的一条：**同步路径的 read timeout 不该超过 900s**，因为超过的部分只会变成
-「后端已死但前端还在等」的时间，没有任何一秒是有用的。
+就是 3600s 的静默等待，而这次 invocation 早在 900s 就已经不可能返回了。这是 §7.2 讨论提高
+`READ_TIMEOUT_SECONDS` 时必须并进去的一条：**同步路径的 read timeout 不该超过 900s**，
+因为超过的部分只会变成「invocation 已终止但前端还在等」的时间，没有任何一秒是有用的。
 
 对照组（同一路径、同一镜像、120s sleep）证明这不是探针或路径本身坏了：
 
@@ -188,9 +196,10 @@ RequestId : 无 —— ReadTimeoutError 不带 .response，无 RequestId 可对 
 | 容器自报 `slept_seconds` | 120.016s |
 | 容器日志 | `ENTERED` → 2 条 alive → `FINISHED` → SDK `completed successfully (120.017s)` |
 
-两个时钟一致，说明「900s 那次容器日志断在 900.5s」是被杀，不是没被调度到——
-这个区分需要容器侧的进度日志才能做，第一次跑因为只在 handler 返回时才有日志，
-数据无法区分「被杀」和「从未派发」，所以补了 `PROBE_PROGRESS_SECONDS` 才定案。
+两个时钟一致，说明「900s 那次容器日志断在 900.5s」是 handler 跑到那里被终止，
+不是压根没被调度到——这个区分需要容器侧的进度日志才能做，第一次跑因为只在 handler
+返回时才有日志，数据无法区分「跑到 900s 被终止」和「从未派发」，
+所以补了 `PROBE_PROGRESS_SECONDS` 才定案。
 
 ### 流式路径：跨过 900s，跑到 1206s 正常收尾
 
