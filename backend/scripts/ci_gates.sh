@@ -182,6 +182,9 @@ DISTRIBUTION = {"strands": "strands-agents", "strands_tools": "strands-agents-to
 # First-party, including modules loaded off a runtime sys.path rather than as a package:
 # `cross_check` lives in skills/shared/ and is imported after that directory is appended, so it looks
 # like a third-party top-level import here. Gate 8 covers whether `skills/` reaches the image.
+# `cross_check_questions` is its question-stage sibling in the same directory, imported the same way by
+# `deterministic/question_crosscheck.py` -- which is the module that exists specifically so that
+# comparison is imported rather than reimplemented, so this entry is the price of that discipline.
 #
 # `question_feasibility_preflight` and `validate_part1` are the same case one pool over: both live in
 # skills/generate/generate-listening-part1/scripts/, and `deterministic/feasibility.py` imports the
@@ -194,7 +197,7 @@ DISTRIBUTION = {"strands": "strands-agents", "strands_tools": "strands-agents-to
 # instead of reimplemented. Listing it here is the whole fix -- gate 8 is what checks that the pool
 # reaches the image, and it does.
 FIRST_PARTY = {"audio_storage", "backend", "web", "skills", "config", "cross_check",
-               "question_feasibility_preflight", "validate_part1",
+               "cross_check_questions", "question_feasibility_preflight", "validate_part1",
                "validate_questions_part1"}
 
 dockerfile = pathlib.Path("backend/Dockerfile").read_text(encoding="utf-8")

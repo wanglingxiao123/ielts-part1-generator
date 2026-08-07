@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Iterable, List, Sequence
 
 __all__ = [
+    "ANSWER_JSON_FIELDS",
     "ANSWER_ONLY_KEYS",
     "BLUEPRINT_ONLY_KEYS",
     "BLUEPRINT_JSON_FIELDS",
@@ -32,13 +33,16 @@ __all__ = [
     "FEASIBILITY_PLAN_VERSION",
     "BlindnessViolation",
     "MissingPlanViolation",
+    "answer_files_on_disk",
     "assert_answer_blind",
     "assert_blind",
     "assert_carries_plan",
+    "assert_no_answers_on_disk",
     "assert_no_plan_on_disk",
     "assert_reference_text_blind",
     "blueprint_key_hits",
     "plan_files_on_disk",
+    "sweep_answer_files_on_disk",
     "sweep_plan_files_on_disk",
 ]
 
@@ -201,6 +205,33 @@ def assert_answer_blind(payload: str, label: str = "payload") -> None:
         )
 
 
+# The serialised-JSON forms of the answer-bearing fields, for the on-disk sweep. The counterpart of
+# BLUEPRINT_JSON_FIELDS, and a separate tuple for the same reason ANSWER_ONLY_KEYS is separate from
+# BLUEPRINT_ONLY_KEYS -- but the split matters more here, because the file this scans is not the wire.
+#
+# **Measured, and it is why this tuple exists rather than reusing the plan sweep.** A scratch file
+# holding only the answers -- `{"answer_key": [...]}`, which is exactly what a question generator
+# writes while checking its own work -- produces ZERO hits against BLUEPRINT_JSON_FIELDS. The plan
+# sweep looks for plan fields, and an answer key contains none of them; the whole package happens to
+# be caught only because `evidence` rows carry `narrator_window_id`. So before this tuple, the file
+# most dangerous to a question auditor was the one file no guard could see.
+#
+# Every entry is quoted, without exception, and that is the difference from ANSWER_ONLY_KEYS. That
+# tuple scans a payload we assembled and can therefore afford bare identifiers like `turn_index`; this
+# one scans arbitrary files under /tmp, including files belonging to other software, and the penalty
+# for a false positive is DELETION. `counting_rule` unquoted would match a prose file discussing
+# counting rules. Quoted forms only match JSON, which is what a leaked block is.
+ANSWER_JSON_FIELDS = (
+    '"answer_key"',
+    '"canonical"',
+    '"alternatives"',
+    '"counting_rule"',
+    '"evidence"',
+    '"quote"',
+    '"paraphrase_relation"',
+    '"proposition_alignment_result"',
+)
+
 # Where a generation agent's scratch files land. Same roots the purge covers; scanning the whole
 # filesystem would be slow and would match this repository's own fixtures.
 _SCRATCH_ROOTS = ("/tmp", "/var/tmp")
@@ -212,12 +243,13 @@ _SCRATCH_ROOTS = ("/tmp", "/var/tmp")
 _PROCESS_STARTED_AT = time.time()
 
 
-def plan_files_on_disk(since: float = None) -> List[str]:
-    """Scratch JSON files written since this process started that contain blueprint data.
+def _scratch_files_carrying(fields: Sequence[str], since: float = None) -> List[str]:
+    """Scratch JSON files written since ``since`` that contain any of ``fields``.
 
-    Content-based rather than name-based. The generator picks its own filenames, and a plan written
-    to ``draft2.json`` is exactly as readable as one written to ``blueprint.json`` -- an audit agent
-    listing a directory sees both.
+    Extracted from ``plan_files_on_disk`` when the answer sweep was added, and extracted rather than
+    copied deliberately: the two sweeps must agree on *which files they can see*. The three properties
+    below were each added to the plan sweep after a measured failure, and a second hand-written copy
+    would start without them and look correct.
 
     ``since`` is injectable so tests can pin the window rather than depend on wall-clock ordering.
     """
@@ -241,9 +273,36 @@ def plan_files_on_disk(since: float = None) -> List[str]:
                 text = path.read_text(encoding="utf-8", errors="ignore")
             except OSError:
                 continue
-            if blueprint_key_hits(text, BLUEPRINT_JSON_FIELDS):
+            if blueprint_key_hits(text, fields):
                 found.append(str(path))
     return found
+
+
+def plan_files_on_disk(since: float = None) -> List[str]:
+    """Scratch JSON files written since this process started that contain blueprint data.
+
+    Content-based rather than name-based. The generator picks its own filenames, and a plan written
+    to ``draft2.json`` is exactly as readable as one written to ``blueprint.json`` -- an audit agent
+    listing a directory sees both.
+    """
+    return _scratch_files_carrying(BLUEPRINT_JSON_FIELDS, since)
+
+
+def answer_files_on_disk(since: float = None) -> List[str]:
+    """Scratch JSON files written since this process started that contain a question answer key.
+
+    The question audit's equivalent of :func:`plan_files_on_disk`, and NOT a widening of it. Kept
+    apart because the two describe different accidents with different remedies, and because the plan
+    sweep provably cannot cover this one: an answer-key-only scratch file scores zero hits against
+    ``BLUEPRINT_JSON_FIELDS`` -- measured on the real package -- so anything relying on that sweep to
+    catch an answer leak is relying on a coincidence in the evidence block.
+
+    Why this file exists to be found at all: the question generator runs its own validator, which takes
+    the package as a *file path*, so a complete answer key is written to disk as a matter of course
+    moments before the auditor is built. The auditor has ``file_read``, which resolves absolute paths
+    against the process working directory and consults no sandbox.
+    """
+    return _scratch_files_carrying(ANSWER_JSON_FIELDS, since)
 
 
 def sweep_plan_files_on_disk(since: float = None) -> List[str]:
@@ -286,6 +345,53 @@ def assert_no_plan_on_disk() -> None:
         raise BlindnessViolation(
             "generator plan data is on disk, could not be removed, and the audit agent could read "
             "it: %s" % ", ".join(stale[:5])
+        )
+
+
+def sweep_answer_files_on_disk(since: float = None) -> List[str]:
+    """Delete scratch answer-key files and return what was removed. Called before a question audit.
+
+    Deletes rather than raises, following the plan sweep exactly, and the reason carries over intact:
+    the cutoff is the *process* start and Runtime instances are long-lived, so one survivor file would
+    otherwise poison every subsequent question set in that instance. That failure was measured on the
+    material side as one leftover file costing a whole batch -- three slots, nine generation attempts,
+    zero materials -- and a guard whose false-positive cost is the entire batch gets switched off.
+
+    The reason it is *safe* to delete here is specific, and worth stating because deleting other
+    people's files usually is not: every file this can reach is a JSON file under /tmp or /var/tmp,
+    modified after this process started, containing a quoted IELTS answer-key field. The question
+    generator's own scratch tree is already removed by ``GenerationWorkspace``, so anything left is
+    something written outside the directory the agent was told to use.
+    """
+    swept: List[str] = []
+    for path in answer_files_on_disk(since):
+        try:
+            Path(path).unlink()
+        except OSError:
+            continue
+        swept.append(path)
+    return swept
+
+
+def assert_no_answers_on_disk() -> None:
+    """Sweep answer keys, then fail only if one survived deletion.
+
+    **A separate call from :func:`assert_no_plan_on_disk`, and the question audit needs both.** The
+    plan is one route to the answers (``items[].target`` IS the answer) and the answer key is the
+    other, and neither sweep sees the other's files: an answer-key-only scratch file is invisible to
+    the plan sweep, measured. Calling only one of them protects against half the accident while
+    reading, at the call site, like protection against all of it.
+
+    Reaching the raise means a readable answer key is on disk and could not be removed -- a
+    permissions or filesystem problem rather than a stale file -- and continuing would hand the
+    auditor the one thing its entire product is defined by not having seen.
+    """
+    sweep_answer_files_on_disk()
+    stale = answer_files_on_disk()
+    if stale:
+        raise BlindnessViolation(
+            "question answer data is on disk, could not be removed, and the question audit agent "
+            "could read it: %s" % ", ".join(stale[:5])
         )
 
 

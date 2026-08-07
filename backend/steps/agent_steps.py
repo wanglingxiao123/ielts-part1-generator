@@ -40,8 +40,10 @@ from ..deterministic.guards import (
     assert_answer_blind,
     assert_blind,
     assert_carries_plan,
+    assert_no_answers_on_disk,
     assert_no_plan_on_disk,
 )
+from ..deterministic.question_crosscheck import review_consistency
 from ..model import provider
 from .call import ModelCallError, extract_json
 
@@ -50,6 +52,7 @@ __all__ = [
     "BlindQuestionAuditInput",
     "FeasibilityInput",
     "GenOutput",
+    "QUESTION_COUNT",
     "audit_blind",
     "audit_questions_blind",
     "build_audit_message",
@@ -59,11 +62,20 @@ __all__ = [
     "build_question_audit_message",
     "build_question_audit_payload",
     "build_revise_message",
+    "build_revise_questions_message",
     "feasibility_audit",
     "generate",
+    "generate_questions",
     "GenerationWorkspace",
     "revise",
+    "revise_questions",
 ]
+
+# Part 1 is ten items. Named here because the question envelope enforces it, and duplicated from
+# `guards.FEASIBILITY_ITEM_COUNT` rather than imported from it on purpose: that constant is about the
+# plan a feasibility judge must be handed, and one name serving both would make a change to either
+# meaning look like a change to both.
+QUESTION_COUNT = 10
 
 
 class GenOutput(object):
@@ -444,6 +456,28 @@ def _question_audit_envelope(reply: str, label: str) -> Dict[str, Any]:
     envelopes have no equivalent of. It is the one field that is *worthless when well-formed but
     empty*: ``[]`` passes any key check, satisfies the schema's array type, and leaves the deterministic
     cross-check with nothing to compare -- which it then reports as agreement.
+
+    Then two things the schema cannot check, both of which produce a review that *reads clean*:
+
+    **Exactly Q1-Q10, and the two lists must agree.** The schema permits a partial review with a
+    stated reason, deliberately: an auditor that could only settle nine items should say so rather than
+    invent the tenth. This caller's requirement is stricter -- ten items were sent, so nine is a failed
+    call to retry, not a result to deliver -- and the schema is the wrong place to encode it, because
+    tightening it there would push an honest auditor into fabrication. Worse than either: nine rebuilt
+    answers under a ``reviewed_question_ids`` of ten satisfies every rule in the schema, and the item
+    with no rebuilt answer is then indistinguishable from an item with nothing wrong with it. Only a
+    comparison of the two lists catches that, and only a caller can make it.
+
+    **The counts and the status must follow from the findings.** ``review_consistency`` recomputes them
+    from the open findings using the algorithm in the audit skill's own rules file, so this checks the
+    auditor against its stated instructions rather than against a second standard invented here. The
+    failure it catches is the one with no other symptom: two MAJOR findings above a ``counts`` block of
+    zeros and a ``question_qc_status`` of ``PASS``. Every field is well-typed, the schema is satisfied,
+    and the orchestrator routes on the status -- so it would ship the material.
+
+    Both raise ``ModelCallError`` rather than returning a flag, which puts the call back on the
+    infrastructure retry budget with a fresh agent. That is the right remedy: an arithmetic slip in a
+    long structured reply is exactly the kind of thing a second attempt does not repeat.
     """
     audit = extract_json(reply)
     missing = [key for key in _QUESTION_AUDIT_REQUIRED_KEYS if key not in audit]
@@ -458,6 +492,12 @@ def _question_audit_envelope(reply: str, label: str) -> Dict[str, Any]:
             "%s reply carries no reconstructed answers (%r); an empty reconstruction leaves the "
             "cross-check nothing to compare and reads as agreement"
             % (label, type(rebuilt).__name__)
+        )
+    consistency = review_consistency(audit)
+    if not consistency["ok"]:
+        raise ModelCallError(
+            "%s reply disagrees with itself: %s"
+            % (label, "; ".join(consistency["errors"]))
         )
     return audit
 
@@ -476,14 +516,193 @@ async def audit_questions_blind(
     work at this point in the run: the generator has just written this material's questions, so a
     scratch file left behind holds this set's actual answers rather than an earlier material's plan.
     ``file_read`` resolves against the process working directory and consults no sandbox.
+
+    **Both sweeps, because either one alone misses half the accident.** They look for different text and
+    that difference was measured, not assumed: a scratch file holding only ``{"answer_key": [...]}``
+    scores *zero* hits against ``BLUEPRINT_JSON_FIELDS``. The full question package is caught by the plan
+    sweep only incidentally, because its ``evidence`` rows happen to carry ``narrator_window_id``. So an
+    answer key written on its own -- which is exactly what a partial write or a hand-run validator
+    leaves -- is invisible to ``assert_no_plan_on_disk``. Calling only one of these reads, at the call
+    site, like protection against all of it.
+
+    The two are separate because they must be able to disagree about what they delete.
     """
     payload = build_question_audit_payload(
         BlindQuestionAuditInput(material, question_face, question_metrics))
     assert_answer_blind(payload)
     assert_no_plan_on_disk()
+    assert_no_answers_on_disk()
     agent = build_question_audit_agent()
     return _question_audit_envelope(
         await _invoke(agent, payload, "question audit"), "question audit")
+
+
+# The question package's own required blocks, from question_package.schema.json. Checked in the
+# envelope for the same reason the audit keys are: nothing else validates the reply, and each absence
+# here is silently benign further down. A package with no `answer_key` is an unmarked test; with no
+# `evidence` it is a test nobody can check; with no `question_face` there is nothing to print. All
+# three would pass a bare "is it a JSON object" test.
+_QUESTION_PACKAGE_REQUIRED_KEYS = ("question_face", "answer_key", "evidence", "material_id")
+
+
+def _question_envelope(reply: str, label: str) -> Dict[str, Any]:
+    """Pull a complete question package out of an agent's reply.
+
+    The decoy problem again, and the question stage is where it is most likely: the skill's workflow
+    has the agent write the package to a file and run a validator over it, so its reply naturally
+    contains the validator's own ``{"ok": ..., "errors": [...]}`` report. ``extract_json`` returns the
+    first balanced object, so requiring the package's blocks is what keeps a validator report from
+    being delivered as a question set.
+
+    ``question_face`` is additionally required to hold ten questions. The count is not a schema detail
+    at this layer -- it is the difference between a Part 1 paper and a fragment -- and a short set
+    passes every structural check while failing silently downstream: the cross-check would compare the
+    items that exist, agree on all of them, and report a clean set.
+    """
+    payload = extract_json(reply)
+    missing = [key for key in _QUESTION_PACKAGE_REQUIRED_KEYS if key not in payload]
+    if missing:
+        raise ModelCallError(
+            "%s reply is missing required question-package blocks %s; keys present=%s"
+            % (label, missing, sorted(payload.keys())[:10])
+        )
+    face = payload.get("question_face")
+    questions = face.get("questions") if isinstance(face, dict) else None
+    if not isinstance(questions, list) or len(questions) != QUESTION_COUNT:
+        raise ModelCallError(
+            "%s reply carries %s questions, not %d; a short set passes every structural check and "
+            "then reads as a clean review of the items that happen to exist"
+            % (label, len(questions) if isinstance(questions, list) else "no",
+               QUESTION_COUNT)
+        )
+    return payload
+
+
+async def generate_questions(material: Dict[str, Any], blueprint: Dict[str, Any]) -> Dict[str, Any]:
+    """Write the ten questions for a finalised material. Returns the complete package.
+
+    The generate agent and the generate pool, not a fourth agent: writing questions is a generation
+    task over the same plan the script was written from, and it needs ``shell`` for the same reason the
+    material generation does -- the skill's workflow ends in running its own validator until it reports
+    no errors, which is what keeps deterministic defects out of the model's revision budget.
+
+    A fresh agent per call, so a revision cannot inherit the review it was asked to fix, and a second
+    material's questions cannot echo the first's.
+
+    The request names the artifacts and the working directory and nothing about question design. The
+    layouts, the word limits and the answer-variety rules live in the skill, which is what lets the
+    rules be edited without touching this function.
+    """
+    agent = build_generate_agent()
+    workspace = GenerationWorkspace()
+    try:
+        material_path = workspace.path / "material.json"
+        blueprint_path = workspace.path / "blueprint.json"
+        material_path.write_text(
+            json.dumps(material, ensure_ascii=False, indent=2), encoding="utf-8")
+        blueprint_path.write_text(
+            json.dumps(blueprint, ensure_ascii=False, indent=2), encoding="utf-8")
+        message = (
+            "Write the ten IELTS Listening Part 1 questions for the finalised material below.\n\n"
+            "The material is final and its blueprint's ten information points are fixed. Activate the "
+            "skill that covers question writing, follow its workflow completely including running its "
+            "validator until it reports no errors, and reply with the single question-package JSON "
+            "object that skill specifies.\n\n"
+            "material.json:  %s\nblueprint.json: %s"
+            % (material_path, blueprint_path)
+            + workspace.instructions()
+        )
+        reply = await _invoke(agent, message, "question generation")
+    finally:
+        # In `finally` for a reason sharper than the material side's: this tree holds a complete answer
+        # key, and the next step is a blind audit by an agent that can read any absolute path.
+        workspace.remove()
+    return _question_envelope(reply, "question generation")
+
+
+async def revise_questions(
+    material: Dict[str, Any],
+    blueprint: Dict[str, Any],
+    package: Dict[str, Any],
+    instruction: Any,
+) -> Dict[str, Any]:
+    """One question revision: a complete replacement package, not a patch.
+
+    Same argument as :func:`revise` -- re-emitting the whole package keeps the evidence anchors the
+    agent's own responsibility rather than making the orchestrator reconcile edited carriers against
+    turn indices by diffing.
+
+    The script is passed in and must come back untouched, which is the one hard constraint this step
+    has that no other revision does. It is stated in the prompt as a prohibition rather than left
+    implicit, because every plausible fix for the defects this loop finds -- a leaked answer, a second
+    defensible answer -- is *easier* to make in the script than in the question. The audio for this
+    material may already exist; a script edit does not fix the item, it silently invalidates the
+    recording (SR-021).
+    """
+    agent = build_generate_agent()
+    workspace = GenerationWorkspace()
+    try:
+        material_path = workspace.path / "material.json"
+        blueprint_path = workspace.path / "blueprint.json"
+        package_path = workspace.path / "questions.json"
+        material_path.write_text(
+            json.dumps(material, ensure_ascii=False, indent=2), encoding="utf-8")
+        blueprint_path.write_text(
+            json.dumps(blueprint, ensure_ascii=False, indent=2), encoding="utf-8")
+        package_path.write_text(
+            json.dumps(package, ensure_ascii=False, indent=2), encoding="utf-8")
+        reply = await _invoke(
+            agent,
+            build_revise_questions_message(
+                material_path, blueprint_path, package_path, instruction)
+            + workspace.instructions(),
+            "question revision")
+    finally:
+        workspace.remove()
+    return _question_envelope(reply, "question revision")
+
+
+def build_revise_questions_message(
+    material_path: Any, blueprint_path: Any, package_path: Any, instruction: Any
+) -> str:
+    """The question revision request.
+
+    A named function rather than inline in :func:`revise_questions`, like ``build_revise_message``, so
+    the must-fix / advisory split and the script prohibition are testable without a model call. Both
+    are load-bearing and both fail silently: an advisory item presented as an obligation provokes
+    rewrites of sound items, and a missing prohibition produces a package that validates perfectly
+    against a script the recording no longer matches.
+
+    Paths rather than inlined JSON, unlike the material revision. The three documents together are
+    large, the agent has ``shell`` and ``file_read`` and its skill's workflow already works from files,
+    and its validator takes paths -- so inlining them would spend the prompt budget on text the agent
+    then writes back to disk to use.
+    """
+    return "\n\n".join([
+        "Revise the ten questions below against the defect list. Return the COMPLETE revised "
+        "question package JSON -- every block -- not a patch or a diff.",
+        "## Files\n\nmaterial.json:  %s\nblueprint.json: %s\nquestions.json: %s"
+        % (material_path, blueprint_path, package_path),
+        "## The script is FIXED and must not change\n\n"
+        "Do not edit `material.json`. Not a word, not a turn, not the narration. The recording for "
+        "this script may already exist, so an edit there does not fix a question -- it invalidates the "
+        "audio while leaving the defect in place. Every fix below must be made in the question "
+        "carrier, the layout, the answer key or the evidence anchors. If a defect looks unfixable "
+        "without touching the script, target a different information point from the blueprint "
+        "instead.",
+        "## Must fix\n\n" + ("\n".join("- %s" % item for item in instruction.must_fix)
+                             if instruction.must_fix else "- (none)"),
+        "## Advisory only — do NOT rewrite compliant questions to satisfy these\n\n"
+        "These are notes and observed-typical deviations. The set already satisfies the hard limits. "
+        "Address them only where it costs nothing.\n\n"
+        + ("\n".join("- %s" % item for item in instruction.advisory)
+           if instruction.advisory else "- (none)"),
+        "Make the smallest change that resolves every must-fix item, then run the question validator "
+        "again until it reports no errors.\n"
+        "CRITICAL: re-check every evidence row's turn_index against the script's turns array. The "
+        "script has not moved, so an anchor that was right stays right -- but an item you retarget "
+        "needs its anchor, its narrator_window_id and its answer key entry moved with it.",
+    ])
 
 
 class FeasibilityInput(object):

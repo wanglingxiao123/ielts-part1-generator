@@ -378,19 +378,33 @@ class TestTheReviewEnvelopeRejectsAnEmptyReconstruction:
                 '{"reconstructed_answers": [{"number": 1}], "per_question_findings": [], ' \
                 '"coverage": {"reviewed_question_ids": [1], "unreviewed": []}, ' \
                 '"question_qc_status": "FAIL"}'
-        with pytest.raises(ModelCallError):
+        with pytest.raises(ModelCallError) as exc:
             _question_audit_envelope(reply, "question audit")
+        # Pinned to the decoy's own failure mode. Without this the test would keep passing if the
+        # decoy check were removed, because the second object is a nine-of-ten review that the
+        # coverage gate now rejects for an unrelated reason -- a green test asserting nothing.
+        assert "missing required keys" in str(exc.value)
 
     def test_a_real_review_passes(self):
+        """A COMPLETE review: ten rebuilt answers, ten reviewed ids, counts that match.
+
+        It was a single-item review here originally, which was enough to prove the envelope accepted a
+        well-formed reply and is not enough now -- the coverage gate rejects a partial review outright,
+        and the recompute rejects an absent ``summary.counts``. Both are the intended behaviour, so the
+        fixture becomes a real one rather than the gates being relaxed to admit a probe.
+        """
         from backend.steps.agent_steps import _question_audit_envelope
 
         reply = json.dumps({
-            "reconstructed_answers": [{"number": 1, "answer": "Anna Woods", "turn_index": 3,
-                                       "quote": "It's Anna Woods.", "confidence": "high",
-                                       "competing_candidates": [],
-                                       "derivable_without_recording": False}],
+            "reconstructed_answers": [
+                {"number": number, "answer": "answer %d" % number, "turn_index": number,
+                 "quote": "quote %d" % number, "confidence": "high",
+                 "competing_candidates": [], "derivable_without_recording": False}
+                for number in range(1, 11)],
             "per_question_findings": [],
-            "coverage": {"reviewed_question_ids": [1], "unreviewed": list(range(2, 11)),
-                         "reason": "single-item probe"},
+            "group_findings": [],
+            "coverage": {"reviewed_question_ids": list(range(1, 11)), "unreviewed": []},
+            "summary": {"counts": {"CRITICAL": 0, "MAJOR": 0, "MINOR": 0, "INFO": 0,
+                                   "ADVISORY_WARNING": 0}},
             "question_qc_status": "PASS"})
         assert _question_audit_envelope(reply, "question audit")["question_qc_status"] == "PASS"
