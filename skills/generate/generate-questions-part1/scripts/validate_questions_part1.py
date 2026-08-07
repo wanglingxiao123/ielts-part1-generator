@@ -90,6 +90,11 @@ FUNCTION_WORDS = {
 TOKEN_RE = re.compile(r"[\w'’-]+")
 PLACEHOLDER_RE = re.compile(r"^(?:tbd|todo|n/?a|xxx+|\?+|-+|\.+)$", re.I)
 
+# Maximal digit runs, so a blank's printed number is compared as a whole numeral. A substring test
+# would let `10 ....` satisfy Q1: with ten items, "1" is a substring of "10" and the two items whose
+# numbers overlap are exactly the pair a mislabelled form line confuses.
+DIGIT_RUN_RE = re.compile(r"\d+")
+
 
 def norm(value: object) -> str:
     return str(value or "").strip()
@@ -430,9 +435,10 @@ def validate_questions(numbers: list, questions: dict, answers: dict, errors: li
         question = questions[number]
         before, after = str(question.get("carrier_before") or ""), str(question.get("carrier_after") or "")
         blank = norm(question.get("blank"))
-        if str(number) not in blank:
-            errors.append("Q%d's blank %r does not carry its own question number; the number is "
-                          "how an answer sheet is matched to an item" % (number, blank))
+        if str(number) not in DIGIT_RUN_RE.findall(blank):
+            errors.append("Q%d's blank %r does not carry its own question number as a whole "
+                          "numeral; the number is how an answer sheet is matched to an item"
+                          % (number, blank))
         if not norm(before) and not norm(after):
             errors.append("Q%d has no carrier text on either side of the blank; an isolated blank "
                           "is answerable only by guessing" % number)

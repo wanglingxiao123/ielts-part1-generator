@@ -2333,6 +2333,50 @@ def test_question_ar003_tiers_follow_the_canonical() -> None:
           repr(ar003_errors(8, "two-bedroom")))
 
 
+def test_question_blank_number_is_matched_as_a_whole_numeral() -> None:
+    """A blank's printed number is compared as a whole numeral, not as a substring.
+
+    With ten items the numbering contains exactly one overlapping pair, and a substring test lets
+    the wrong half of it through: `"1" in "10 ................"` is true, so Q1 printed with Q10's
+    number passed silently. That is the one mislabelling that matters, because the number is how a
+    marker pairs an answer sheet row with an item -- a Q1 blank labelled 10 is marked against
+    Q10's key.
+
+    Both directions are asserted, and each is checked to name the item that is actually wrong. The
+    reverse case (Q10 printed as `1`) already failed before the fix, so asserting only that
+    direction would have left the bug in place.
+    """
+    print("question validator: blank numbering")
+    needle = "whole numeral"
+
+    def blank(number: int, printed: str):
+        def mutate(package: dict) -> None:
+            for question in package["question_face"]["questions"]:
+                if question["number"] == number:
+                    question["blank"] = printed
+        return mutate
+
+    def numbering_errors(number: int, printed: str) -> list:
+        report = _validate_questions(blank(number, printed))
+        return [error for error in report["errors"] if needle in error]
+
+    q1_as_ten = numbering_errors(1, "10 ................")
+    check("Q1 printed with Q10's number is rejected", q1_as_ten != [])
+    check("and the message names Q1, not Q10",
+          any(error.startswith("Q1's blank") for error in q1_as_ten), repr(q1_as_ten))
+
+    q10_as_one = numbering_errors(10, "1 ................")
+    check("Q10 printed with Q1's number is rejected", q10_as_one != [])
+    check("and that message names Q10",
+          any(error.startswith("Q10's blank") for error in q10_as_one), repr(q10_as_one))
+
+    # The anti-tightening direction: surrounding punctuation and dot leaders are ordinary Part 1
+    # blank styling (QR-015 puts visual form outside this gate), so they must not be read as part of
+    # the numeral.
+    check("Q10's own number still passes when styled", numbering_errors(10, "(10) .....") == [],
+          repr(numbering_errors(10, "(10) .....")))
+
+
 def main() -> int:
     for suite in (
         test_schemas_are_valid,
@@ -2375,6 +2419,7 @@ def main() -> int:
         test_question_package_schema_contract,
         test_question_validator_catches_the_stage_defects,
         test_question_ar003_tiers_follow_the_canonical,
+        test_question_blank_number_is_matched_as_a_whole_numeral,
     ):
         suite()
     print()
