@@ -880,23 +880,38 @@ bash deploy/rollback.sh --to prod-20260801
 - **S3**：不读不写任何对象，材料、批次、用户和音频原样保留；
 - **登录态**：`SESSION_SECRET` 来自 SSM，跨回退稳定，已登录用户不会掉线。
 
-实测（2026-08-05 演练）：Web 层回退约 3 分钟（`update-service` 到 `services-stable`）；Runtime
-层切 `DEFAULT` endpoint 的 liveVersion 通常 1 到 3 分钟。演练记录和耗时见
-`deploy/RELEASES.md`。
+实测：Web 层回退约 3 分钟（`update-service` 到 `services-stable`）；Runtime 层重推镜像到 READY
+约 1 分钟。演练记录和耗时见 `deploy/RELEASES.md`。
 
 回退**不能**解决的一种情况：如果被回退掉的那个版本已经按新结构写过数据（改了 `_candidates/`
 记录或 `material.json` 的形状），回退后旧代码会读到新格式。桶开了版本控制，但版本控制救不了结构
 不兼容。涉及数据结构的改动应换用新的 key 前缀发布。
 
-Runtime 层有两条路径，脚本默认用前者：
+**Runtime 层只有一条路径：重推镜像。** `update-agent-runtime-endpoint --agent-runtime-version`
+对 `DEFAULT` 端点是不可用的（AWS 直接回 `ConflictException: Default endpoints are managed through
+agent updates`，2026-08-07 回退途中实测），所以 `rollback.sh` 用 `update-agent-runtime` 把目标版本
+记录的镜像和整份配置重放回去。
 
-| 路径 | 命令 | 特点 |
-|---|---|---|
-| 切 endpoint 版本 | `rollback.sh --runtime-version 17` | 不产生新 version，版本列表保持真实历史 |
-| 重指镜像 | `runtime.sh <known-good-tag>` | 产生新 version；endpoint 切换失败时的后备 |
+代价是**版本号必然只增**：回退到 v17 的镜像会产生 v19，于是「v19 装的是 v17 的镜像」。因此
+**版本号不能反推代码版本**，要知道线上跑的是哪一版只能查 `containerUri`：
 
-多个 version 指向同一镜像标签时，它们彼此不可区分，切换等于没切。`rollback.sh` 会在这种情况下
-打印 WARNING 而不是假装成功。
+```bash
+aws bedrock-agentcore-control get-agent-runtime \
+  --agent-runtime-id <id> --agent-runtime-version <n> \
+  --query 'agentRuntimeArtifact.containerConfiguration.containerUri' --output text
+```
+
+| 命令 | 含义 |
+|---|---|
+| `rollback.sh --runtime-version 17` | 回到 **v17 记录的镜像和配置**，不是让 v17 重新 live |
+| `rollback.sh --runtime-image <tag>` | 直接按 ECR 镜像标签回退，配置沿用当前版本 |
+| `runtime.sh <tag>` | 正常发布路径；回退不必用它，但它做的是同一件事 |
+
+脚本按这条现实设计了三件事：**先 Runtime 后 web**（Runtime 是会失败的那一步，让它失败在什么都没动
+的时候），web 步失败则把 Runtime **补偿**回原样，以及动手前**预检**两层镜像是否还在 ECR、taskdef
+是否 `ACTIVE`。目标镜像与当前一致时，脚本直接跳过而不是产生一个换不动代码的新版本号。回退结果以
+`containerUri` 和 taskdef 核对，不一致就非零退出；`/healthz` 200 只说明有东西在应答，分不清
+「回退成功」和「什么都没发生」。
 
 ### 5.4 拆除
 

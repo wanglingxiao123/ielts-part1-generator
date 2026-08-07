@@ -2592,6 +2592,108 @@ def test_question_audit_coverage_must_account_for_all_ten() -> None:
           claimed - rebuilt == {10})
 
 
+def test_answer_category_decision_table() -> None:
+    """The `answer_category` tie-break, pinned as data.
+
+    Production had prose boundaries and no ranking, so the feasibility reviewer invented a ranking
+    per call and contradicted itself inside one run: it rejected an included `breakfast` for being
+    "a service, not a physical facility" and then rejected a named restaurant for being "a physical
+    venue, so a facility rather than a purchasable service". Both verdicts were right. The axis they
+    were argued from -- purchasable versus described -- cannot produce both, which is what made them
+    read as contradictory and cost a material each.
+
+    So the fix is an ORDER, and an order is only worth having if a later edit cannot quietly break
+    it. Three things are asserted: the table decides every case it carries by the rule it names, the
+    ranking is a total order over the 13 values with no value orphaned or claimed twice, and the two
+    prose surfaces state the same seven rules in the same sequence. The last one is the real
+    regression guard -- the reviewer reads the prose, not this JSON, so prose that drifts out of
+    order reinstates exactly the defect above while every other check here still passes.
+    """
+    print("answer_category decision table")
+    table = json.loads((FEASIBILITY_SCHEMAS.parent / "references"
+                        / "answer-category-decisions.json").read_text(encoding="utf-8"))
+    categories = table["categories"]
+    procedure = table["procedure"]
+
+    # The taxonomy is the schema's, not a second copy of it. A value added to one and not the other
+    # would leave the new value with no rule to decide it -- and no test would say so.
+    enum = json.loads(_schema("blueprint.read.schema.json").read_text(
+        encoding="utf-8"))["definitions"]["item"]["properties"]["answer_category"]["enum"]
+    check("the table's 13 values are the schema's enum, in the same order",
+          categories == enum, "%r vs %r" % (categories, enum))
+    check("there is no catch-all value", "other" not in categories)
+
+    check("the procedure is numbered 1..N in file order",
+          [rule["order"] for rule in procedure] == list(range(1, len(procedure) + 1)),
+          repr([rule["order"] for rule in procedure]))
+
+    # Every category is decided by exactly one rule. Two rules claiming one value is the ambiguity
+    # this table exists to remove; zero rules claiming it leaves the reviewer back on intuition.
+    claimed: dict[str, list[str]] = {}
+    for rule in procedure:
+        for name in rule["decides"]:
+            claimed.setdefault(name, []).append(rule["rule"])
+    check("no category is claimed by two rules",
+          all(len(owners) == 1 for owners in claimed.values()),
+          repr({k: v for k, v in claimed.items() if len(v) > 1}))
+    unclaimed = [name for name in categories if name not in claimed]
+    # person_name..quantity fall to rule 1, the rest are named explicitly; nothing may be left over.
+    check("every category is decided by some rule", unclaimed == [], repr(unclaimed))
+
+    order = {rule["rule"]: rule["order"] for rule in procedure}
+    for case in table["cases"]:
+        answer, want, rejected = case["answer"], case["category"], case["not"]
+        deciding = case["rule"]
+        check("%r -> %s (rule %d, not %s)" % (answer, want, order[deciding], rejected),
+              want in categories and rejected in categories and want != rejected
+              and want in dict((r["rule"], r["decides"]) for r in procedure)[deciding],
+              "case cites rule %s, which decides %r" % (deciding, claimed.get(want)))
+
+    # The pair that broke production, asserted as a pair. Either one alone is satisfiable by a table
+    # that has simply moved the contradiction somewhere else; together they pin the axis.
+    by_answer = {case["answer"]: case for case in table["cases"]}
+    breakfast, venue = by_answer["breakfast"], by_answer["Riverside Brasserie"]
+    check("an included breakfast is a service and a named venue is a facility",
+          (breakfast["category"], venue["category"]) == ("service", "facility"))
+    check("and both are decided by the same rule, so the two cannot be argued apart",
+          breakfast["rule"] == venue["rule"] == "performed_or_merely_present",
+          "%s vs %s" % (breakfast["rule"], venue["rule"]))
+    check("a reference code is a document rather than a contact",
+          (by_answer["KJ47"]["category"], by_answer["KJ47"]["not"]) == ("document", "contact"))
+    check("an attribute with no alternative offered is a requirement rather than a preference",
+          (by_answer["furnished"]["category"], by_answer["furnished"]["not"])
+          == ("requirement", "preference"))
+
+    # Both prose surfaces, in order. The reviewer is bound by the rubric; the specification is
+    # authoritative over both it and the JSON, so a rule missing from either is a live divergence.
+    phrases = [rule["doc_phrase"] for rule in procedure]
+    for label, path in (
+        ("rubric", FEASIBILITY_SCHEMAS.parent / "references" / "feasibility-rubric.md"),
+        ("specification", VALIDATE.parents[1] / "references" / "specification.md"),
+    ):
+        text = path.read_text(encoding="utf-8")
+        positions = [text.find(phrase) for phrase in phrases]
+        missing = [phrase for phrase, at in zip(phrases, positions) if at < 0]
+        check("%s states all seven rules" % label, missing == [], repr(missing))
+        check("%s states them in the table's order" % label,
+              missing == [] and positions == sorted(positions),
+              repr(list(zip(phrases, positions))))
+
+    # The rubric must bind the reviewer, not merely inform it: a reviewer free to reject on an
+    # unrankable objection is the reviewer that produced the contradictory pair.
+    rubric = (FEASIBILITY_SCHEMAS.parent / "references" / "feasibility-rubric.md").read_text(
+        encoding="utf-8")
+    check("the rubric forbids opposite conclusions on inputs one rule decides",
+          "may not reach opposite conclusions" in rubric)
+    check("the rubric requires a rejection to name its rule",
+          "name the rule number" in rubric)
+    check("the rubric points at the decision table by name",
+          "answer-category-decisions.json" in rubric)
+    skill = (FEASIBILITY_SCHEMAS.parent / "SKILL.md").read_text(encoding="utf-8")
+    check("and the skill tells the reviewer to read it",
+          "answer-category-decisions.json" in skill)
+
+
 def main() -> int:
     for suite in (
         test_schemas_are_valid,
@@ -2631,6 +2733,7 @@ def main() -> int:
         test_preflight_outcome_names_are_pinned,
         test_feasibility_schema_contract,
         test_feasibility_schema_qr027_exception,
+        test_answer_category_decision_table,
         test_question_package_schema_contract,
         test_question_validator_catches_the_stage_defects,
         test_question_ar003_tiers_follow_the_canonical,

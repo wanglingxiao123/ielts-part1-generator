@@ -24,6 +24,9 @@ Read both of these before judging:
 
 - `references/feasibility-rubric.md` — the criteria: what makes a point item-writable, and what the
   three v2 blueprint fields mean.
+- `references/answer-category-decisions.json` — the ordered decision procedure for
+  `answer_category` and its worked cases. Binding: a label matching a case there is settled, and an
+  objection you cannot trace to a numbered rule is not a defect you may reject on.
 - `schemas/feasibility.schema.json` — the output contract. Your reply must validate against it.
 
 Read nothing else. Everything you need is in this skill's own directory and in the request.
@@ -50,7 +53,7 @@ Read nothing else. Everything you need is in this skill's own directory and in t
 
 ## Workflow
 
-1. Read the rubric and the schema.
+1. Read the rubric, the decision table, and the schema.
 
 2. Read the script, then read the plan's ten items against it. For each item check the three things
    that decide item-writability: the answer is recoverable from the script by a listener hearing it
@@ -62,6 +65,14 @@ Read nothing else. Everything you need is in this skill's own directory and in t
    answer*. That is your job, and it is the reason this step exists at all. Judge the nature of the
    answer, not the wording of the sentence that carries it. There is **no catch-all category**: a
    point that fits none of the 13 is a material problem, not a labelling problem — report it.
+
+   **Where two values both look defensible, do not weigh them — run the rubric's seven ordered
+   rules and stop at the first that fires.** Then hold yourself to two checks before rejecting:
+   the label is not in the decision table's worked cases (if it is, that case is the answer), and
+   your objection names the rule number it rests on. State that rule number in the `reasons` entry.
+   An objection you cannot rank is not a semantics defect: it is how this step came to reject
+   `breakfast` for being a service and a named restaurant for being a facility in the same run,
+   burning a material each time on two verdicts that were both correct.
 
 4. Take the three answer-variety counts as given and consider whether the set is within limits.
    The caller applies the thresholds; you do not. If — and only if — the set exceeds a limit for a
@@ -82,7 +93,10 @@ Read nothing else. Everything you need is in this skill's own directory and in t
 - **Every `false` needs a non-empty reason.** Both `feasible: false` and
   `category_semantics_ok: false` require at least one specific entry in `reasons`, naming the item
   number and the concrete problem. `"not feasible"` is not a reason; `"item 6's target `park`
-  appears twice in the script with different referents, so the answer is not unique"` is.
+  appears twice in the script with different referents, so the answer is not unique"` is. A
+  `category_semantics_ok: false` reason must additionally name the decision rule it rests on, as in
+  `"item 8: rule 5 (performed or merely present) makes Riverside Brasserie a facility, not a
+  service — the venue exists with nobody serving in it"`.
 - When everything is fine, say so plainly: `feasible: true`, `category_semantics_ok: true`, and
   `reasons` may be empty. A clean pass is a result. Inventing a problem to look thorough costs a
   full regeneration of a perfectly usable material.

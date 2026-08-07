@@ -17,15 +17,30 @@ script before and after -- not because the generator is expected to disobey, but
 fix for a leaked answer or a second defensible answer is easier to make in the script than in the
 question, and a script edit here does not fail: it silently invalidates audio that already exists.
 
-**This stage does not deliver its best effort, and that is the difference from the material loop.**
-There, a material that still carries findings after revision is delivered with them attached, because
-withholding it makes the defect unappealable while delivering it makes the finding a note a reviewer
-can weigh. A question set has no equivalent reading. Its defects are not editorial opinions -- an
-answer available on the printed page, a second equally-supported answer, a rebuilt answer the key
-would mark wrong -- and every one of them is a candidate being graded against something the paper does
-not support. There is no reviewer downstream who benefits from seeing that in a delivered set; the
-grading has already happened by then. So the exits are: clear every gate and deliver, or return
-:data:`REGENERATE_MATERIAL` and let the replacement slot draw a different material.
+**Two classes of defect, and only one of them withholds the set.** The paragraph that used to stand
+here argued that a question set has no deliverable-with-findings reading, and applied that to every
+finding at every severity. The first half is right and the generalisation was wrong, and production
+measured the difference: five real invocations, two scenarios, **zero** delivered sets, and the
+best-diagnosed candidate of the whole run was one MINOR finding away from the gate with 10/10
+cross-check agreement, no hard defect, no leakage and no rival.
+
+The distinction that matters is whether the finding establishes that the set is *unfair*:
+
+* :func:`hard_blockers` -- an answer available on the printed page, a second equally-supported
+  answer, a rebuilt answer the key would mark wrong, a CRITICAL or MAJOR finding, a validator error,
+  an audit that did not cover ten items, a cross-check that does not agree. Each of these means a
+  candidate can be marked wrong for reading the paper correctly. No number of them is deliverable and
+  no reviewer downstream benefits from seeing them, because the grading has already happened.
+* :func:`advisory_notes` -- a MINOR finding, and nothing else. The rules file's own algorithm grades
+  the set ``WARNING`` for these rather than ``FAIL``, which is the audit saying the set is usable and
+  improvable. Withholding it makes the note unappealable; delivering it with the note attached is
+  exactly the material loop's rationale, and it applies here for the same reason.
+
+So the exits are: deliver (``PASS`` when nothing at all is open, ``WARNING`` when only advisories
+are), or return :data:`REGENERATE_MATERIAL` because a **hard** blocker survived two revisions.
+
+**A set with no hard blocker is never regenerated.** That is the invariant this module now owes its
+caller, and it holds at both decision points -- before the first revision and after the last.
 
 **Up to two targeted revisions, each judged on its own full evidence.** Every round runs the whole
 deterministic chain -- validator, blind audit, cross-check -- so a round is never accepted on the
@@ -39,11 +54,12 @@ material, and the measured cost of a round is ~100-120s of model time. Where the
 leaves a hard defect, the honest answer is that this material's questions are hard to make fair, which
 is what :data:`REGENERATE_MATERIAL` says.
 
-**``pick_better_questions`` no longer chooses what to ship.** It survives to keep the best-diagnosed
-candidate for the failure report, and nothing more. Ranking says which of two defective sets is less
-defective; it has never said either is deliverable, and on the failure path the winner is reachable
-only through ``rejected_candidate`` -- never through ``candidate``, which is the attribute a caller
-reads to ship.
+**Revision can make a set worse, and measured, it usually did.** On the production run the initial
+candidate carried one MINOR; round one turned that into a MAJOR plus two ``answer_divergence`` items
+plus a rival; round two into two MAJORs plus leakage. So the ranking's winner is not a consolation
+prize to put in a report -- it is what gets delivered when it is deliverable. :func:`pick_better_questions`
+chooses among *candidates*; :func:`hard_blockers` decides whether the winner may ship. Ranking still
+never authorises delivery on its own, which is the property that made the old split worth having.
 """
 
 from __future__ import annotations
@@ -61,6 +77,7 @@ from .question_revision_plan import build_question_revise_instruction
 
 __all__ = [
     "AT_CEILING_WARNINGS",
+    "BLOCKING_SEVERITIES",
     "MAX_QUESTION_REVISIONS",
     "QUESTION_NUMBERS",
     "QUESTIONS_NOT_DELIVERABLE",
@@ -68,14 +85,34 @@ __all__ = [
     "QuestionResult",
     "SEVERITY_ORDER",
     "ScriptWasEdited",
+    "WARNING_STATUS",
+    "advisory_notes",
     "delivery_blockers",
+    "hard_blockers",
     "is_clean_questions",
+    "is_deliverable",
     "pick_better_questions",
     "run_questions",
 ]
 
 # Most severe first. The order IS the ranking, which is why it is a tuple and not a set.
 SEVERITY_ORDER = ("CRITICAL", "MAJOR", "MINOR")
+
+# The severities that withhold a question set. MINOR is deliberately absent, and it is the only one.
+#
+# Read this against the rules file's own status algorithm rather than as a policy choice: it grades a
+# set FAIL for CRITICAL or MAJOR, and WARNING for MINOR alone. So a MINOR-only set is one the audit
+# itself calls usable. Blocking on it asserted the opposite of what the auditor concluded, and the
+# production cost of that assertion is recorded in this module's header.
+#
+# Why a MAJOR can never join it: a MAJOR here means a candidate can be marked wrong for reading the
+# paper correctly. That is not an improvable note, it is an unfair item.
+BLOCKING_SEVERITIES = ("CRITICAL", "MAJOR")
+
+# The status a set carries when it ships with advisory notes attached. Not a fourth outcome -- the
+# rules file already computes exactly this value from the counts, so this constant names what the
+# audit said rather than inventing a delivery state.
+WARNING_STATUS = "WARNING"
 
 # Part 1 is exactly ten items, and the delivery gate requires the audit to have covered all ten.
 # Duplicated from the shared cross-check's own ``NUMBERS`` rather than imported, for the reason
@@ -220,46 +257,41 @@ class QuestionCandidate(object):
         return "QuestionCandidate(%s, status=%s, key=%s)" % (self.label, self.status, self.key())
 
 
-def delivery_blockers(candidate: QuestionCandidate) -> List[str]:
-    """Every reason this set may not be delivered, as prose. Empty means deliverable.
+def hard_blockers(candidate: QuestionCandidate) -> List[str]:
+    """Every reason this set may **not** be delivered at all, as prose. Empty means deliverable.
 
-    **A list rather than a bool, because this is now the gate and not a hint.** Under the old
-    always-deliver loop the answer only chose whether to spend a revision call, so "not clean" needed
-    no explanation. It now decides between shipping and :data:`REGENERATE_MATERIAL`, and a material
-    rejected with no stated reason is a material nobody can argue with -- the reasons go into the
-    failure detail, and each one names the check that produced it.
+    **This is the gate.** A non-empty return is the only thing that can produce
+    :data:`REGENERATE_MATERIAL`, and every entry names the check that produced it -- a material
+    rejected with no stated reason is a material nobody can argue with, and a rejection costs a full
+    regeneration.
 
-    The four conditions, all required together:
+    What blocks, and why each one is unfairness rather than an improvable note:
 
-    * **the validator reports no hard error.** Warnings do not clear the gate either; see below.
-    * **the audit covered exactly Q1-Q10.** Read from the cross-check's own recompute, not from the
-      review's claim about itself.
-    * **the cross-check agrees on all ten items.** Not merely "no hard defect": ``agreed`` counts only
-      ``agree``, so an item parked in ``anchor_adjacent`` -- answers matching, anchors one turn apart --
-      leaves the total at nine and blocks. That is the stricter reading of the instruction and it is
-      the right one here, because adjacency is explicitly *not* agreement (the neighbouring turn has to
-      confirm the same fact, which no integer comparison establishes) and this gate is the last place
-      anyone looks.
-    * **no graded finding, no hard defect, no leakage, no rival.**
+    * **a CRITICAL or MAJOR finding** (:data:`BLOCKING_SEVERITIES`). MINOR is not here; see
+      :func:`advisory_notes`.
+    * **a validator error.** Warnings do not block; see :func:`advisory_notes` and
+      :data:`AT_CEILING_WARNINGS`.
+    * **the audit did not cover exactly Q1-Q10.** Read from the cross-check's own recompute, not from
+      the review's claim about itself.
+    * **the cross-check does not agree on all ten items.** Not merely "no hard defect": ``agreed``
+      counts only ``agree``, so an item parked in ``anchor_adjacent`` -- answers matching, anchors one
+      turn apart -- leaves the total at nine and blocks. Adjacency is explicitly *not* agreement (the
+      neighbouring turn has to confirm the same fact, which no integer comparison establishes) and
+      this gate is the last place anyone looks.
+    * **a hard defect, leakage, or an equally-supported rival.**
+    * **a review that disagrees with itself.**
 
     Leakage and rivals are checked separately from the findings rather than assumed to imply one. They
     are produced by Python from the auditor's own reconstruction, so they hold even when the auditor
     reported nothing -- which is exactly the case where reading only the findings would call a broken
-    set clean.
-
-    **Validator warnings block, except the ones that only say a legal limit was reached.** A warning
-    normally describes something a reviser could improve, so it blocks for the reason MINOR findings do:
-    a revision costs one call and a worse result is discarded. :data:`AT_CEILING_WARNINGS` is the
-    exception, and it is a narrow one -- those warnings fire when a set is *at* a cap rather than over
-    it, so the validator has already decided the set is legal and there is nothing to fix. Measured: the
-    QR-026 end-of-line warning is emitted on the ``counts["final"] == MAX_FINAL_BLANKS`` branch, the
-    branch above it being the error, and the real material this loop was built against carries it in
-    every round. Blocking on it burned two revision rounds and then discarded a compliant material.
+    set clean. That is why relaxing the *findings* threshold to MINOR does not weaken this gate: the
+    deterministic signals are independent of the auditor's severity grading, and every one of them
+    still blocks unconditionally.
     """
     blockers: List[str] = []
     counts = candidate.counts
-    graded = [(name, int(counts.get(name, 0) or 0)) for name in SEVERITY_ORDER]
-    for name, count in graded:
+    for name in BLOCKING_SEVERITIES:
+        count = int(counts.get(name, 0) or 0)
         if count:
             blockers.append("%d open %s finding(s) in the blind audit" % (count, name))
 
@@ -287,23 +319,71 @@ def delivery_blockers(candidate: QuestionCandidate) -> List[str]:
 
     for error in getattr(candidate.validation, "errors", None) or []:
         blockers.append("validator error: %s" % error)
-    for warning in getattr(candidate.validation, "warnings", None) or []:
-        if _is_at_ceiling_warning(warning):
-            continue
-        blockers.append("validator warning: %s" % warning)
 
     return blockers
 
 
-def is_clean_questions(candidate: QuestionCandidate) -> bool:
-    """Is this set deliverable? True exactly when :func:`delivery_blockers` is empty.
+def advisory_notes(candidate: QuestionCandidate) -> List[str]:
+    """Improvable-but-shippable observations. Non-empty means deliver as ``WARNING``, not withhold.
 
-    Kept as the name the loop and the tests read, and reduced to one line over ``delivery_blockers`` so
-    the predicate and the explanation can never disagree about what blocks. Two independent copies of
-    this rule is the failure mode worth designing out: the version that decides whether to ship and the
-    version that lists why it did not must be the same code.
+    Two sources, and the boundary of each is narrow on purpose:
+
+    * **MINOR findings.** The rules file grades a MINOR-only set ``WARNING``, which is the audit
+      calling it usable. Nothing at MAJOR or above is ever an advisory -- see
+      :data:`BLOCKING_SEVERITIES`.
+    * **validator warnings**, except :data:`AT_CEILING_WARNINGS`, which report a legal limit was
+      *reached* and describe nothing to fix. Those are not advisories either; they are silence.
+
+    **These still drive revision.** An advisory buys a revision round while the budget lasts, because
+    a round that clears it is a better set. What changed is the consequence of the budget running out:
+    the set ships with the note attached instead of being destroyed along with the material. Measured
+    on the production run, spending rounds on advisories was actively harmful -- both rounds made the
+    set worse -- which is why the ranking keeps the best version rather than the last.
+    """
+    notes: List[str] = []
+    count = int(candidate.counts.get("MINOR", 0) or 0)
+    if count:
+        notes.append("%d open MINOR finding(s) in the blind audit" % count)
+    for warning in getattr(candidate.validation, "warnings", None) or []:
+        if _is_at_ceiling_warning(warning):
+            continue
+        notes.append("validator warning: %s" % warning)
+    return notes
+
+
+def delivery_blockers(candidate: QuestionCandidate) -> List[str]:
+    """Everything open against this set: hard blockers first, then advisories.
+
+    **Reading this as the gate is the bug this signature now prevents someone from writing.** It was
+    the gate, and every entry withheld the set; that is what produced zero deliveries in production.
+    It survives as the *reporting* view -- the revision instruction and the failure detail both want
+    the complete list -- and the gate is :func:`hard_blockers`.
+
+    Order is hard-first so a truncated log line (``blockers[:3]``, used on the failure path) shows the
+    reasons that actually withheld the set rather than three cosmetic notes.
+    """
+    return hard_blockers(candidate) + advisory_notes(candidate)
+
+
+def is_clean_questions(candidate: QuestionCandidate) -> bool:
+    """Is this set completely clean -- nothing open at all, not even an advisory?
+
+    **Not the delivery gate.** ``is_clean_questions`` is False for a set that ships as ``WARNING``,
+    which is the whole point of the distinction: "clean" and "deliverable" were the same question
+    under the old contract and are not under this one. The gate is ``not hard_blockers(candidate)``,
+    and :func:`is_deliverable` spells it so no caller has to remember which of the two to negate.
     """
     return not delivery_blockers(candidate)
+
+
+def is_deliverable(candidate: QuestionCandidate) -> bool:
+    """May this set ship? True exactly when :func:`hard_blockers` is empty.
+
+    One line over ``hard_blockers`` so the predicate and the explanation can never disagree about what
+    blocks: the version that decides whether to ship and the version that lists why it did not must be
+    the same code.
+    """
+    return not hard_blockers(candidate)
 
 
 def pick_better_questions(
@@ -416,7 +496,8 @@ class QuestionResult(object):
     """
 
     __slots__ = ("ok", "candidate", "selected_version", "reason", "detail", "timings",
-                 "script_unchanged", "outcome", "rejected_candidate", "blockers", "rounds")
+                 "script_unchanged", "outcome", "rejected_candidate", "blockers", "rounds",
+                 "advisories")
 
     def __init__(
         self,
@@ -431,6 +512,7 @@ class QuestionResult(object):
         rejected_candidate: Optional[QuestionCandidate] = None,
         blockers: Optional[List[str]] = None,
         rounds: int = 0,
+        advisories: Optional[List[str]] = None,
     ) -> None:
         if ok and candidate is None:
             raise ValueError("a successful QuestionResult must carry a candidate")
@@ -454,6 +536,11 @@ class QuestionResult(object):
         self.rejected_candidate = rejected_candidate
         self.blockers = blockers or []
         self.rounds = rounds
+        # Open advisories on a DELIVERED set. Empty on the clean path and on every failure, so a reader
+        # never has to correlate this with `ok` to know what it means: non-empty says "shipped, and
+        # these are still open". A delivered set that carried notes nobody recorded would be the same
+        # defect as withholding it -- one level quieter.
+        self.advisories = advisories or []
 
     def as_dict(self) -> Dict[str, Any]:
         if not self.ok or self.candidate is None:
@@ -481,6 +568,9 @@ class QuestionResult(object):
             "script_unchanged": self.script_unchanged,
             "rounds": self.rounds,
             "timings": self.timings,
+            # Always written, `[]` on the clean path, for the same reason as `script_unchanged`: an
+            # absent key cannot be distinguished from a set that was never checked for advisories.
+            "advisories": list(self.advisories),
         })
         return payload
 
@@ -492,10 +582,18 @@ async def run_questions(
 ) -> QuestionResult:
     """Produce one deliverable question set for a finalised material, or refuse to deliver one.
 
-    Returns ``ok=True`` only for a set that cleared every condition in :func:`delivery_blockers`. When
-    the initial set and both revision rounds are blocked, returns ``ok=False`` with
-    ``outcome=REGENERATE_MATERIAL`` and the best-diagnosed version under ``rejected_candidate``. There
-    is no third exit: this function never returns a set it knows to be defective.
+    Returns ``ok=True`` for any set with no entry in :func:`hard_blockers` -- immediately when nothing
+    at all is open, and after the revision budget when only advisories remain (``advisories`` on the
+    result says which, and the candidate's own ``status`` is the auditor's ``WARNING``). Returns
+    ``ok=False`` with ``outcome=REGENERATE_MATERIAL`` only when a **hard** blocker survived every
+    round, with the best-diagnosed version under ``rejected_candidate``.
+
+    **The invariant, and the reason this function was rewritten:** a candidate with no hard blocker is
+    never regenerated. Under the previous contract any MINOR finding withheld the set, which in
+    production meant five invocations, two scenarios and zero delivered question sets.
+
+    This function still never returns a set it knows to be *unfair*. What it no longer does is treat
+    "improvable" and "unfair" as one category.
 
     ``emit`` is optional and defaults to a no-op, matching ``run_one``: a caller that wants progress
     events passes one, and a test that does not need them is not obliged to invent one.
@@ -525,19 +623,21 @@ async def run_questions(
     rounds = 0
 
     while True:
-        blockers = delivery_blockers(current)
-        if not blockers:
-            # Deliver on the first round that clears every gate, without a further revision. A revision
-            # from here could only make it worse, and `pick_better_questions` discarding the result
-            # would not refund the call.
+        hard = hard_blockers(current)
+        advisories = advisory_notes(current)
+        if not hard and not advisories:
+            # Nothing open at all. Deliver without a further revision: a revision from here could only
+            # make it worse, and `pick_better_questions` discarding the result would not refund the call.
             await emit("question_set_clean", {"version": current.label, "status": current.status,
                                               "rounds": rounds})
             return QuestionResult(True, current, current.label, timings=timings, rounds=rounds)
 
         best = pick_better_questions(best, current)
         await emit("question_set_blocked", {"version": current.label, "rounds": rounds,
-                                            "blockers": blockers[:8],
-                                            "blocker_count": len(blockers)})
+                                            "blockers": (hard + advisories)[:8],
+                                            "blocker_count": len(hard) + len(advisories),
+                                            "hard_blockers": len(hard),
+                                            "advisory_notes": len(advisories)})
 
         if rounds >= MAX_QUESTION_REVISIONS:
             break
@@ -545,14 +645,17 @@ async def run_questions(
         instruction = build_question_revise_instruction(
             current.review, current.cross_check, current.validation.warnings)
         if instruction.empty:
-            # Blocked with nothing to instruct. Possible when the only blocker is one the instruction
-            # builder does not translate into prose -- a validator error, or a coverage shortfall the
-            # generator cannot act on. Revising against an empty defect list would spend a call asking
-            # for an unspecified change, so the loop stops here.
+            # Open findings with nothing to instruct. Possible when the only entry is one the
+            # instruction builder does not translate into prose -- a validator error, or a coverage
+            # shortfall the generator cannot act on. Revising against an empty defect list would spend
+            # a call asking for an unspecified change, so the loop stops here and the exit below
+            # decides on the evidence.
             #
-            # Under the old contract this path DELIVERED the set. It must not: "we could not describe
-            # the defect" is not evidence the defect is absent, and it is the one blocked state where a
-            # deliver-anyway would look most reasonable in a log.
+            # This must not deliver unconditionally: "we could not describe the defect" is not evidence
+            # the defect is absent, and it is the one state where a deliver-anyway would look most
+            # reasonable in a log. It also must not regenerate unconditionally -- that is what the
+            # `hard`/advisory split at the exit is for, and an undescribable *advisory* is precisely a
+            # note to attach rather than a reason to destroy a fair set.
             await emit("question_revision_skipped", {"reason": "no actionable defects",
                                                      "rounds": rounds})
             break
@@ -595,10 +698,37 @@ async def run_questions(
         current = QuestionCandidate(
             revised, revised_review, revised_cross, revised_validation, label)
 
-    # Every round was blocked. The best-diagnosed version goes into the report and nowhere near the
-    # deliverable slot; the verdict is REGENERATE_MATERIAL, which the replacement slot answers with a
-    # different material rather than a third attempt at this blueprint.
-    blockers = delivery_blockers(best)
+    # The revision budget is spent (or there was nothing to instruct). Judge the BEST version, not the
+    # last one: measured on the production run, both rounds made the set strictly worse, so deciding on
+    # `current` here would grade a material by the worst thing the reviser did to it.
+    best_hard = hard_blockers(best)
+    best_advisories = advisory_notes(best)
+
+    if not best_hard:
+        # Deliverable with notes attached. This is the branch whose absence produced five invocations
+        # and zero delivered sets: the best candidate was one MINOR from the old gate with 10/10
+        # agreement, no hard defect, no leakage and no rival, and it was destroyed along with a
+        # perfectly fair material.
+        #
+        # `status` is the auditor's own computed value, not one asserted here -- for a MINOR-only set
+        # the rules file already computes WARNING (:data:`WARNING_STATUS`), so there is nothing to
+        # decide. The advisories travel on the result so the delivered record says what is open;
+        # delivering them silently would be the same defect as withholding them, one level quieter.
+        await emit("question_set_clean", {
+            "version": best.label,
+            "status": best.status,
+            "rounds": rounds,
+            "advisory_notes": best_advisories[:8],
+            "advisory_count": len(best_advisories),
+        })
+        return QuestionResult(True, best, best.label, timings=timings, rounds=rounds,
+                              advisories=best_advisories)
+
+    # A hard blocker survived every round. THIS is what REGENERATE_MATERIAL is for: the best version of
+    # this blueprint's questions can still mark a candidate wrong for reading the paper correctly, and
+    # no further round against the same fixed ten points changes that. The replacement slot answers it
+    # with a different material.
+    blockers = best_hard + best_advisories
     await emit("questions_rejected", {
         "outcome": REGENERATE_MATERIAL,
         "rounds": rounds,
@@ -606,14 +736,15 @@ async def run_questions(
         "best_key": list(best.key()),
         "blockers": blockers[:8],
         "blocker_count": len(blockers),
+        "hard_blockers": len(best_hard),
     })
     return QuestionResult(
         False,
         reason=QUESTIONS_NOT_DELIVERABLE,
         outcome=REGENERATE_MATERIAL,
         detail=("%d revision round(s) did not produce a deliverable question set; best version %r "
-                "still carries %d blocker(s): %s"
-                % (rounds, best.label, len(blockers), "; ".join(blockers[:3]))),
+                "still carries %d hard blocker(s): %s"
+                % (rounds, best.label, len(best_hard), "; ".join(best_hard[:3]))),
         rejected_candidate=best,
         blockers=blockers,
         timings=timings,

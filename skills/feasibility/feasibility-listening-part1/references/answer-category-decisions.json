@@ -1,0 +1,206 @@
+{
+  "$comment": "Canonical answer_category decisions. Read by the feasibility skill when a label is arguable, and by skills/shared/tests/run_tests.py, which asserts this table is internally consistent and that every rule it cites exists. One file rather than a table in each of the rubric and the specification, because the production defect this exists to fix WAS a drift defect: nothing stated the tie-break, so the agent invented one per call and contradicted itself between calls. `doc_phrase` is the phrase each rule is stated under in the prose surfaces; the test asserts the prose states all seven in this order, so a reordering edit to either document fails here rather than silently giving the reviewer two different rankings.",
+  "version": 1,
+  "categories": [
+    "person_name",
+    "contact",
+    "location",
+    "date",
+    "time",
+    "duration",
+    "price",
+    "quantity",
+    "service",
+    "facility",
+    "requirement",
+    "preference",
+    "document"
+  ],
+  "procedure": [
+    {
+      "rule": "form_first",
+      "order": 1,
+      "doc_phrase": "Form first",
+      "test": "The answer is a person's name, a date, a clock time, a span of time, a currency amount, or a count/measure.",
+      "decides": [
+        "person_name",
+        "date",
+        "time",
+        "duration",
+        "price",
+        "quantity"
+      ],
+      "note": "Decided by what the answer IS, before any judgement about the setting. date/time/duration never merge; price is currency only, so '10 lessons' is quantity."
+    },
+    {
+      "rule": "artefact_beats_the_thing_it_governs",
+      "order": 2,
+      "doc_phrase": "artefact beats the thing it governs",
+      "test": "The answer names an official artefact or record identifier that is issued, carried, shown, signed, quoted or presented.",
+      "decides": [
+        "document"
+      ],
+      "note": "Ranked above facility and service on purpose. A 'parking permit' is a document even though parking is a facility and issuing it is a service: the answer is the artefact, and the rule is to judge the answer rather than what surrounds it."
+    },
+    {
+      "rule": "contact_is_a_route_to_a_person",
+      "order": 3,
+      "doc_phrase": "is a route to a person",
+      "test": "The answer is a token used to REACH a person or organisation: a phone number, an extension, an email address.",
+      "decides": [
+        "contact"
+      ],
+      "note": "A reference, booking or property code is NOT contact. It identifies a record, and nobody is reached by quoting it. Such a code is a document under the rule above."
+    },
+    {
+      "rule": "location_is_a_position",
+      "order": 4,
+      "doc_phrase": "is a position",
+      "test": "The answer says WHERE something is: an address, a postcode, a place name used as a position.",
+      "decides": [
+        "location"
+      ],
+      "note": "Ranked above facility: a named place given as an answer to 'where' is a location, and the same name given as an answer to 'what is there' is a facility. The item decides which was asked."
+    },
+    {
+      "rule": "performed_or_merely_present",
+      "order": 5,
+      "doc_phrase": "Performed, or merely present",
+      "test": "Would the answer still exist with nobody performing it? Yes -> facility. No, it needs someone to do something -> service.",
+      "decides": [
+        "service",
+        "facility"
+      ],
+      "note": "This is the tie-break whose absence produced two directly opposed production rejections in one run: 'breakfast is an included service, not a physical facility' and 'Riverside Brasserie is a physical restaurant venue, so it is a facility rather than a purchasable service'. Both conclusions are correct under this rule, and neither is reachable from 'purchasable versus described' alone -- included breakfast is not purchased, and a named venue is not described. Charged-or-included is NOT the axis; performed-or-present is."
+    },
+    {
+      "rule": "preference_needs_named_alternatives",
+      "order": 6,
+      "doc_phrase": "requires named alternatives",
+      "test": "Did the dialogue name two or more alternatives and settle on this one? Only then is it preference. A condition the caller asks for, or must satisfy, is requirement.",
+      "decides": [
+        "requirement",
+        "preference"
+      ],
+      "note": "The alternatives must be NAMED IN THE SCRIPT. Without them there is no weighing and so no preference -- 'furnished' states a property's existing attribute, and labelling it preference was the third distinct production rejection of this class."
+    },
+    {
+      "rule": "no_catch_all",
+      "order": 7,
+      "doc_phrase": "No catch-all",
+      "test": "The answer fits none of the 13.",
+      "decides": [],
+      "note": "Not a categorisation problem: a material problem. Report it in reasons rather than forcing the closest label."
+    }
+  ],
+  "cases": [
+    {
+      "answer": "breakfast",
+      "context": "A hotel receptionist lists what the nightly rate includes.",
+      "category": "service",
+      "rule": "performed_or_merely_present",
+      "not": "facility",
+      "why": "Someone has to serve it. Included rather than charged, which is why the purchasable/described wording could not settle it.",
+      "source": "production 2026-08-07, booking-hotel, item 6 rejection"
+    },
+    {
+      "answer": "Riverside Brasserie",
+      "context": "The name of the hotel restaurant where breakfast is served.",
+      "category": "facility",
+      "rule": "performed_or_merely_present",
+      "not": "service",
+      "why": "The venue exists whether or not anyone is working in it. A named place is not made a service by the service happening inside it.",
+      "source": "production 2026-08-07, booking-hotel, item 8 rejection"
+    },
+    {
+      "answer": "KJ47",
+      "context": "The letting agent reads back the property reference for the caller to quote later.",
+      "category": "document",
+      "rule": "artefact_beats_the_thing_it_governs",
+      "not": "contact",
+      "why": "Rule 3 excludes contact -- quoting a code reaches no person -- and rule 2 is what assigns the label: a record identifier is quoted the way an artefact is presented. The two rules do different jobs, and only the one that assigns is cited here.",
+      "source": "production 2026-08-07, accommodation-rental, item 7 rejection"
+    },
+    {
+      "answer": "furnished",
+      "context": "The agent states the flat's condition. No unfurnished option is offered.",
+      "category": "requirement",
+      "rule": "preference_needs_named_alternatives",
+      "not": "preference",
+      "why": "Nothing was weighed against anything. An attribute the caller asks about or accepts is a requirement.",
+      "source": "production 2026-08-07, accommodation-rental, item 7 rejection"
+    },
+    {
+      "answer": "parking permit",
+      "context": "The tenant must display one; the agent explains how it is issued.",
+      "category": "document",
+      "rule": "artefact_beats_the_thing_it_governs",
+      "not": "facility",
+      "why": "The answer is the permit, not the parking. Displaying it is the point.",
+      "source": "production 2026-08-07, accommodation-rental, item 10 rejection"
+    },
+    {
+      "answer": "Oakfield Station",
+      "context": "Asked how far the flat is from transport; the agent names the nearest station.",
+      "category": "location",
+      "rule": "location_is_a_position",
+      "not": "preference",
+      "why": "The item asks where, so the named place is a position. Had the item asked what is nearby, the same name would be a facility -- never a preference, since nothing was weighed.",
+      "source": "production 2026-08-07, accommodation-rental, item 9 rejection"
+    },
+    {
+      "answer": "two-bedroom",
+      "context": "'We definitely need a two-bedroom property.'",
+      "category": "quantity",
+      "rule": "form_first",
+      "not": "preference",
+      "why": "A specification, and form_first settles it before the surrounding sentence gets a vote. The specification's own worked example.",
+      "source": "specification.md, Blueprint version 2"
+    },
+    {
+      "answer": "extension 4412",
+      "context": "The receptionist gives the direct extension for the bookings desk.",
+      "category": "contact",
+      "rule": "contact_is_a_route_to_a_person",
+      "not": "location",
+      "why": "It reaches a person. The specification's own contact-versus-location pair.",
+      "source": "specification.md, Blueprint version 2"
+    },
+    {
+      "answer": "BT14 9BJ",
+      "context": "The caller reads out the postcode of the property.",
+      "category": "location",
+      "rule": "location_is_a_position",
+      "not": "contact",
+      "why": "Where a thing is, not how to reach a person. The other half of the same specification pair.",
+      "source": "specification.md, Blueprint version 2"
+    },
+    {
+      "answer": "guest room",
+      "context": "The caller asks for a room the visiting family can use.",
+      "category": "requirement",
+      "rule": "preference_needs_named_alternatives",
+      "not": "facility",
+      "why": "Asked for rather than already present. The specification's own requirement-versus-facility pair.",
+      "source": "specification.md, Blueprint version 2"
+    },
+    {
+      "answer": "park",
+      "context": "The agent mentions a park already next to the flat.",
+      "category": "facility",
+      "rule": "performed_or_merely_present",
+      "not": "requirement",
+      "why": "It exists in the setting and nobody performs it. The other half of the same specification pair.",
+      "source": "specification.md, Blueprint version 2"
+    },
+    {
+      "answer": "10 lessons",
+      "context": "The course fee covers a block of lessons.",
+      "category": "quantity",
+      "rule": "form_first",
+      "not": "price",
+      "why": "price is currency only. The specification's own price boundary.",
+      "source": "specification.md, Blueprint version 2"
+    }
+  ]
+}

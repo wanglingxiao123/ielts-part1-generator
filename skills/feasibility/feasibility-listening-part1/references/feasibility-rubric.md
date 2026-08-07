@@ -64,7 +64,8 @@ with no organisable structure produces a worse test than the same ten facts arra
 ## 3. The Three v2 Blueprint Fields
 
 Source: `skills/generate/generate-listening-part1/references/specification.md` §"Blueprint version
-2", lines 261–301. Summarised here because your pool does not contain that file. **That file is
+2" (including its "Deciding `answer_category`" subsection). Summarised here because your pool does
+not contain that file. **That file is
 authoritative**; where this summary disagrees with it, it is this summary that is wrong. Two copies
 of the same rule drift, so the points below are deliberately kept to what you need for judging.
 
@@ -93,22 +94,49 @@ value is *true of this answer* — that is what you add.
 material problem: report it in `reasons` rather than forcing a label. Do not invent a fourteenth
 value, and do not pick the closest fit as a way of avoiding the report.
 
-Boundaries worth stating (from the specification, verbatim in substance):
-
-- `contact` is **how to reach a person** (an extension number); `location` is **where a thing is**
-  (a postcode).
-- `price` is **currency only** — `10 lessons` is `quantity`, not `price`.
-- `date`, `time` and `duration` **never merge**.
-- `service` is a **purchasable offering**; `facility` is a **physical place or piece of equipment
-  being described**.
-- `requirement` is a condition **asked for** (a `guest room` the caller wants); `facility` covers
-  what **already exists** in the setting (a `park` nearby).
-- `preference` is the one **chosen after the dialogue weighs two alternatives**.
-
 **Judge the nature of the answer, not the wording of the sentence.** An answer reached through "we
 definitely need a two-bedroom property" is still a `quantity`, because `two-bedroom` is a
 specification. This is the single most common way a semantically wrong label passes the validator: a
 label chosen from the surrounding sentence rather than from the answer itself.
+
+### The decision procedure is binding
+
+Where two values both look defensible, **apply these rules in order and stop at the first that
+fires.** You are not weighing them. This ordering exists because you contradicted yourself in
+production: within one run you rejected `breakfast` as "an included service, not a physical facility"
+and then rejected a named restaurant as "a physical venue, so a facility rather than a purchasable
+service". Both conclusions were right, but the axis you reasoned from ("purchasable" versus
+"described") could not produce both, so each call picked its own axis and the two calls disagreed.
+
+1. **Form first** — the answer *is* a person's name, date, clock time, span, currency amount, or
+   count/measure → `person_name`, `date`, `time`, `duration`, `price`, `quantity`. Nothing about the
+   setting overrides this. `date`/`time`/`duration` never merge; `price` is currency only, so
+   `10 lessons` is `quantity`.
+2. **An artefact beats the thing it governs** — an artefact or record identifier that is issued,
+   carried, shown, signed, quoted or presented → `document`. A `parking permit` is a `document`, not the `facility` it admits you to.
+3. **`contact` is a route to a person** — a phone number, extension, email address. A reference,
+   booking or property code is **not** `contact`; `KJ47` identifies a record and reaches nobody, so
+   rule 2 makes it a `document`.
+4. **`location` is a position** — an address, postcode, or place name given as *where* something is.
+   Outranks `facility`: one name is a `location` when the item asks where, a `facility` when the item
+   asks what is there.
+5. **Performed, or merely present?** — the `service`/`facility` axis. Would it still exist with nobody
+   performing it? Yes → `facility`; no → `service`. `breakfast` is a `service` charged or included; a
+   named restaurant is a `facility` even with a service running inside it. Charged-versus-included is
+   **not** the axis.
+6. **`preference` requires named alternatives** — the script must name two or more and settle on one.
+   Otherwise a condition asked for or satisfied is a `requirement`: `furnished` states an existing
+   attribute against no stated alternative, so `requirement`. `requirement` is also what is *asked
+   for* (a `guest room`) where `facility` is what already exists (a `park` nearby).
+7. **No catch-all** — report it, per the paragraph above.
+
+**You may not reach opposite conclusions on inputs that the same rule decides.** Before you set
+`category_semantics_ok: false`, name the rule number your objection rests on and check the worked
+cases in `references/answer-category-decisions.json`. If the label under review matches a case there,
+that case is the answer and you do not re-litigate it. If your objection cannot be traced to a
+numbered rule, it is not a semantics defect and you must not reject on it — an unrankable objection is
+exactly what produced the contradictory pair above. Where the JSON and
+`generate-listening-part1/references/specification.md` disagree, the specification wins.
 
 ## 5. Answer Variety and the Exception
 

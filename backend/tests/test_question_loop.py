@@ -37,9 +37,13 @@ from backend.orchestration.question_loop import (  # noqa: E402
     QuestionResult,
     ScriptWasEdited,
     SEVERITY_ORDER,
+    WARNING_STATUS,
     _assert_script_untouched,
+    advisory_notes,
     delivery_blockers,
+    hard_blockers,
     is_clean_questions,
+    is_deliverable,
     pick_better_questions,
 )
 from backend.orchestration.question_revision_plan import (  # noqa: E402
@@ -682,10 +686,13 @@ class TestTheInstructionNeverOffersTheAnswerKeyAsAnEscape:
 
 
 class TestTheDeliveryGate:
-    """``question_qc_status`` is not a delivery gate. All four conditions are required together.
+    """``question_qc_status`` is not a delivery gate, and neither is "anything is open".
 
-    The class exists because the dangerous case is a review that says PASS. Every test here builds a
-    set the status alone would wave through, and asserts that the gate does not.
+    The dangerous case in one direction is a review that says PASS: every test that perturbs one
+    deterministic signal builds a set the status alone would wave through, and asserts the gate does
+    not. The dangerous case in the *other* direction is the one production found -- a fair set held back
+    over a cosmetic note -- so the tests here assert both, and the pairs are deliberately adjacent so a
+    change that satisfies one by breaking the other cannot pass.
     """
 
     @staticmethod
@@ -701,6 +708,8 @@ class TestTheDeliveryGate:
         candidate = self._candidate(question_package, material, _review(question_package))
         assert delivery_blockers(candidate) == []
         assert is_clean_questions(candidate)
+        assert is_deliverable(candidate)
+        assert advisory_notes(candidate) == []
 
     def test_a_pass_status_does_not_clear_a_cross_check_divergence(
             self, question_package, material):
@@ -794,6 +803,118 @@ class TestTheDeliveryGate:
         with pytest.raises(ValueError) as exc:
             QuestionResult(False, candidate=candidate)
         assert "rejected_candidate" in str(exc.value)
+
+
+class TestMinorFindingsShipAsWarning:
+    """The production regression: a fair set must not be withheld over an improvable note.
+
+    Fixture taken from the real 2026-08-07 acceptance run, invocation 4 of request
+    ``web-1786110313583-1-slot-1`` (scenario ``accommodation-rental``, material
+    ``20260807-accommodation-rental-f6e76f11``). Its ``initial`` candidate reported, on the wire::
+
+        {"version": "initial", "agreed": 10, "by_outcome": {"agree": [1..10]},
+         "hard_defects": 0, "leakage": 0, "rivals": 0, "status": "WARNING"}
+
+    and was blocked by exactly ``["1 open MINOR finding(s) in the blind audit"]``. Both revision rounds
+    then made it strictly worse (round 1: a MAJOR, two ``answer_divergence``, one rival; round 2: two
+    MAJORs and leakage), so the run ended ``REGENERATE_MATERIAL`` -- and across five invocations on two
+    scenarios nothing was ever delivered.
+
+    The numbers above are what these tests reconstruct: everything deterministic clean, one MINOR open.
+    """
+
+    @staticmethod
+    def _candidate(package, material, review, errors=(), warnings=(), label="initial"):
+        from backend.deterministic.question_crosscheck import crosscheck_questions
+        from backend.deterministic.validate import ValidationResult
+        cross = crosscheck_questions(package, review, material)
+        return QuestionCandidate(package, review, cross,
+                                 ValidationResult(list(errors), list(warnings), {}), label)
+
+    @pytest.fixture
+    def production_initial(self, question_package, material):
+        """The measured candidate: 10/10 agreed, 0 hard defects, 0 leakage, 0 rivals, one MINOR."""
+        return self._candidate(question_package, material,
+                               _review(question_package, [_finding(7, "MINOR")]))
+
+    def test_the_measured_candidate_matches_the_wire(self, production_initial):
+        """Pin the fixture against the recorded frame before asserting anything about the gate.
+
+        Without this the class could drift into testing a set that never existed, and the whole point of
+        the fixture is that this exact shape reached production.
+        """
+        cross = production_initial.cross_check
+        assert cross.agreed == 10 and cross.compared == 10
+        assert cross.hard_defects == [] and cross.leakage == []
+        assert cross.equally_supported_rivals == [] and cross.needs_review == []
+        assert production_initial.status == WARNING_STATUS
+        assert production_initial.counts["MINOR"] == 1
+
+    def test_it_is_deliverable(self, production_initial):
+        """The one assertion the whole change exists for."""
+        assert hard_blockers(production_initial) == []
+        assert is_deliverable(production_initial)
+
+    def test_the_minor_is_reported_as_an_advisory_not_a_blocker(self, production_initial):
+        assert advisory_notes(production_initial) == ["1 open MINOR finding(s) in the blind audit"]
+        # The exact string the production run printed as its blocker is now an advisory, and
+        # `delivery_blockers` still reports it -- it moved category, it did not disappear.
+        assert delivery_blockers(production_initial) == [
+            "1 open MINOR finding(s) in the blind audit"]
+
+    def test_it_is_not_called_clean(self, production_initial):
+        """Deliverable and clean are now different questions, and the weaker one must not claim both."""
+        assert not is_clean_questions(production_initial)
+
+    @pytest.mark.parametrize("severity", ("CRITICAL", "MAJOR"))
+    def test_the_same_finding_at_a_blocking_severity_still_blocks(
+            self, question_package, material, severity):
+        """The boundary, from the same fixture: only the severity changes and the verdict flips."""
+        candidate = self._candidate(question_package, material,
+                                    _review(question_package, [_finding(7, severity)]))
+        assert hard_blockers(candidate) == ["1 open %s finding(s) in the blind audit" % severity]
+        assert not is_deliverable(candidate)
+        assert advisory_notes(candidate) == []
+
+    def test_a_minor_does_not_rescue_a_set_with_a_hard_defect(self, question_package, material):
+        """A MINOR alone ships; a MINOR next to a deterministic defect does not.
+
+        The deterministic signals come from Python comparing the key against the blind reconstruction,
+        so they are independent of the auditor's severity grading -- which is exactly why relaxing the
+        findings threshold cannot weaken them.
+        """
+        review = _review(question_package, [_finding(7, "MINOR")])
+        review["reconstructed_answers"][0]["answer"] = "name"
+        candidate = self._candidate(question_package, material, review)
+        assert not is_deliverable(candidate)
+        assert any("answer_divergence" in line for line in hard_blockers(candidate))
+        # Both lists are populated, and the hard one comes first so a truncated log shows the real cause.
+        assert advisory_notes(candidate)
+        assert "answer_divergence" in delivery_blockers(candidate)[0]
+
+    @pytest.mark.parametrize("field,marker", [
+        ("derivable_without_recording", "printed page"),
+    ])
+    def test_a_minor_does_not_rescue_leakage(self, question_package, material, field, marker):
+        review = _review(question_package, [_finding(7, "MINOR")])
+        review["reconstructed_answers"][0][field] = True
+        candidate = self._candidate(question_package, material, review)
+        assert not is_deliverable(candidate)
+        assert any(marker in line for line in hard_blockers(candidate))
+
+    def test_many_minors_never_add_up_to_a_blocker(self, question_package, material):
+        """No threshold on advisory count, deliberately.
+
+        A count-based cutoff would reintroduce exactly the weighted-sum error that
+        ``TestTheRankingIsLexicographicNotWeighted`` exists to prevent: N cosmetic notes standing in for
+        one unfairness. Severity decides; volume does not.
+        """
+        findings = [_finding(n, "MINOR") for n in range(1, 8)]
+        candidate = self._candidate(question_package, material,
+                                    _review(question_package, findings))
+        assert candidate.counts["MINOR"] == 7
+        assert hard_blockers(candidate) == []
+        assert is_deliverable(candidate)
 
 
 class TestTheScriptCannotBeRevised:
@@ -943,17 +1064,48 @@ class TestTheLoopWiring:
     @pytest.mark.asyncio
     async def test_a_revision_that_makes_things_worse_does_not_become_the_verdict(
             self, harness, question_package):
-        """``pick_better_questions`` keeps the better DIAGNOSIS; neither version is delivered."""
+        """Both rounds get worse -> the best version is kept, and it SHIPS because it is fair.
+
+        This is the exact shape of the production failure, and it used to return
+        ``REGENERATE_MATERIAL``: initial carries one MINOR, both revisions turn it into a CRITICAL, and
+        a perfectly fair set was destroyed along with its material. The MINOR-only initial is the least
+        defective of the three, carries no hard blocker, and is therefore deliverable as ``WARNING``.
+        """
         from backend.orchestration.question_loop import run_questions
 
         harness.reviews = [_review(question_package, [_finding(1, "MINOR")]),
                            _review(question_package, [_finding(1, "CRITICAL")]),
                            _review(question_package, [_finding(1, "CRITICAL")])]
         result = await run_questions(harness.material, harness.blueprint)
+        assert result.ok
+        # Judged on the BEST version, not the last: deciding on `current` would grade the material by
+        # the worst thing the reviser did to it.
+        assert result.candidate.label == "initial"
+        assert result.selected_version == "initial"
+        assert result.candidate.status == "WARNING"
+        # The note it shipped with is recorded, not silently dropped.
+        assert result.advisories == ["1 open MINOR finding(s) in the blind audit"]
+        assert result.as_dict()["advisories"] == result.advisories
+        # And the budget really was spent trying to clear it first.
+        assert result.rounds == 2
+
+    @pytest.mark.asyncio
+    async def test_a_surviving_major_still_regenerates_the_material(
+            self, harness, question_package):
+        """The other side of the same rule. Relaxing MINOR must not relax MAJOR.
+
+        Paired with the test above deliberately: the two differ only in the severity of the finding on
+        the best candidate, and they must reach opposite verdicts. A change that made the test above
+        pass by delivering everything would fail here.
+        """
+        from backend.orchestration.question_loop import run_questions
+
+        harness.reviews = [_review(question_package, [_finding(1, "MAJOR")]) for _ in range(3)]
+        result = await run_questions(harness.material, harness.blueprint)
         assert not result.ok
-        # The initial WARNING set is the least defective of the three and is what the report carries.
-        assert result.rejected_candidate.label == "initial"
-        assert result.rejected_candidate.status == "WARNING"
+        assert result.outcome == "REGENERATE_MATERIAL"
+        assert result.candidate is None
+        assert any("MAJOR" in line for line in result.blockers)
 
     @pytest.mark.asyncio
     async def test_an_unactionable_blocker_stops_the_loop_without_delivering(
@@ -1010,17 +1162,19 @@ class TestTheLoopWiring:
         from backend.orchestration.question_loop import run_questions
 
         harness.validation = ValidationResult([], ["a band deviation"], {})
-        # Three reviews, not two: the warning itself blocks delivery, so both rounds run even though
-        # the audit comes back clean. That is the QR-026-ceiling behaviour pinned in
-        # TestTheDeliveryGate, seen here from the loop's side.
+        # Three reviews, not two: the warning is an advisory, which still buys a revision round while
+        # the budget lasts, so both rounds run even though the audit comes back clean after the first.
         harness.reviews = [_review(question_package, [_finding(1, "MAJOR")]),
                            _review(question_package),
                            _review(question_package)]
         result = await run_questions(harness.material, harness.blueprint)
         assert any("band deviation" in line for line in harness.instruction.advisory)
         assert not any("band deviation" in line for line in harness.instruction.must_fix)
-        assert not result.ok
-        assert result.blockers == ["validator warning: a band deviation"]
+        # A warning is improvable, not unfair: the rounds are spent trying to clear it, and when they
+        # do not, the set ships with the warning recorded rather than being destroyed.
+        assert result.ok
+        assert result.advisories == ["validator warning: a band deviation"]
+        assert result.rounds == 2
 
 
 class TestTheQuestionEnvelope:

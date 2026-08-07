@@ -22,12 +22,18 @@ aws bedrock-agentcore-control get-agent-runtime \
   --query 'agentRuntimeArtifact.containerConfiguration.containerUri' --output text
 ```
 
-回退命令见 [`rollback.sh`](rollback.sh)，但**它的 Runtime 分支目前是坏的**（同上）：
+回退命令见 [`rollback.sh`](rollback.sh)。**Runtime 分支已于 2026-08-07 修好**：改用
+`update-agent-runtime` 重放目标版本记录的整份配置（不再调对 DEFAULT 端点无效的
+`update-agent-runtime-endpoint`），顺序改成先 Runtime 后 web，且 web 步失败会把 Runtime 补偿回去。
 
 ```bash
-bash deploy/rollback.sh --to <tag> --dry-run   # 先看清，什么都不改
-bash deploy/rollback.sh --to <tag>             # web 层会成功，Runtime 层会 ConflictException
+bash deploy/rollback.sh --to <tag> --dry-run   # 先看清，什么都不改；顺带预检两层镜像是否还在 ECR
+bash deploy/rollback.sh --to <tag>
+bash deploy/rollback.sh --runtime-image two-states-20260801   # 直接按镜像标签回退，绕开版本号
 ```
+
+`--runtime-version 17` 现在读作「回到 v17 记录的那个镜像和配置」，**不是**「让 v17 重新 live」——
+后者 AWS 不允许。回退结果由 `containerUri` 和 ECS taskdef 判定，脚本不再用版本号推断代码版本。
 
 ## 台账
 
@@ -123,7 +129,7 @@ git push origin prod-<日期>
 | 6 | `/healthz`、旧 session cookie | 200 / 0.85s；`/api/auth/me` **200**，用户不掉线 |
 | 7 | S3 核对 | `_batches/` 285、`_candidates/` 363、`_slots/` 13 未被删改 |
 
-**`rollback.sh` 的 Runtime 分支不能用。** 第 163 行调
+**`rollback.sh` 的 Runtime 分支当时不能用**（已于同日修复，见下）。旧代码第 163 行调
 `update-agent-runtime-endpoint --agent-runtime-version`，AWS 直接拒绝：
 
 ```
@@ -139,3 +145,20 @@ Runtime 分支换成 `update-agent-runtime`（代价是版本号只增不减，�
 
 第 161 行的注释写着这样做是为了「版本列表保持真实历史，不积累 v19 = 旧 v17 的条目」——
 那个目标现在达不到了：唯一可用的回退手段必然产生新版本号，所以版本号不再能反推代码版本。
+
+**修复内容（同日完成）。** 四处，都对着上面这次失败的具体形状：
+
+1. **Runtime 分支换成 `update-agent-runtime`**，请求体由 `get-agent-runtime <目标版本>` 的整份配置
+   回放生成，而不是在脚本里重列 flag。手工回退那次是抄五个 flag 过去的，任何没想到要抄的字段都会
+   被静默重置成默认值；回放整份配置则连以后 API 新增的字段也一起带回去。
+2. **顺序改成先 Runtime 后 web。** Runtime 是会失败的那一步，让它先跑：失败时什么都还没动，脚本直接
+   退出并明说生产未变。web 步若失败，`compensate` 用开跑前录好的配置把 Runtime 推回原样——那份配置
+   在动手之前就写进临时目录了，故障当时不必再赌一次 API 调用能成功。
+3. **动手前预检两层。** Runtime 目标镜像和 ECS taskdef 的镜像都要求还在 ECR（被生命周期策略清掉的
+   镜像照样能读出版本记录、照样接受 update，然后拉不到镜像），taskdef 还要求是 `ACTIVE`——
+   `DEREGISTERED` 的 revision 读得出来也起不了任务，而 `update-service` 会先接受再几分钟后失败。
+4. **结果以 `containerUri` + ECS taskdef 判定**，不看 Runtime 版本号；不一致就以 MISMATCH 退出非零。
+   `/healthz` 仍然打印，但明确标注它分不清「回退成功」和「什么都没发生」。
+
+演练当天的六条失败路径都用 `--dry-run` 实测过（不存在的版本号、不在 ECR 的镜像标签、不存在的
+taskdef、两个后端选项同时给、什么都不给），每条都在改动任何东西之前拒绝退出。

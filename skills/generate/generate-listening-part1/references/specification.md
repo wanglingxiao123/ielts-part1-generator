@@ -282,18 +282,52 @@ Three fields are required on every item in v2:
   `person_name`, `contact`, `location`, `date`, `time`, `duration`, `price`, `quantity`, `service`,
   `facility`, `requirement`, `preference`, `document`. **There is no catch-all.** A point that fits
   none of them is not a categorisation problem, it is a material problem — take it back to the
-  script rather than forcing a label. Boundaries worth stating: `contact` is how to reach a person
-  (an extension number) while `location` is where a thing is (a postcode); `price` is currency only,
-  so `10 lessons` is `quantity`; `date`, `time` and `duration` never merge; `service` is a
-  purchasable offering while `facility` is a physical place or piece of equipment **being
-  described**; `requirement` is a condition **asked for** (a `guest room` the caller wants) while
-  `facility` covers what already exists in the setting (a `park` nearby); `preference` is the one
-  chosen after the dialogue weighs two alternatives. Judge the nature of the **answer**, not the
-  wording of the sentence — an answer reached through "we definitely need a two-bedroom property" is
-  still a `quantity`, because `two-bedroom` is a specification.
+  script rather than forcing a label. **Judge the nature of the answer, not the wording of the
+  sentence** — an answer reached through "we definitely need a two-bedroom property" is still a
+  `quantity`, because `two-bedroom` is a specification. Where two values both look defensible, the
+  ordered procedure below decides; it is not a list of hints to weigh but a sequence, and the first
+  rule that fires ends the decision.
 - **`narrator_window_id`** — `1` or `2`, which narrator window the item falls in. Redundant with
   `group` by construction, and deliberately so: the window is recomputed from the narration and
   compared against this declaration, so a wrong value is caught rather than believed.
+
+#### Deciding `answer_category`
+
+Apply these rules **in order** and stop at the first one that fires. The order is the contract: prose
+boundaries alone let two readings of the same answer both look correct, and in production they did —
+one run rejected `breakfast` as "an included service, not a physical facility" and the next rejected a
+named restaurant as "a physical venue, so a facility rather than a purchasable service". Both verdicts
+are right; the axis that made them look contradictory ("purchasable" versus "described") was the wrong
+axis. So the axis is now fixed and ranked.
+
+1. **Form first.** If the answer *is* a person's name, a date, a clock time, a span of time, a
+   currency amount, or a count/measure, that settles it — `person_name`, `date`, `time`, `duration`,
+   `price`, `quantity`. No judgement about the setting gets a vote. `date`, `time` and `duration`
+   never merge, and `price` is currency only, so `10 lessons` is `quantity`.
+2. **An artefact beats the thing it governs.** An answer naming an artefact or record identifier that is
+   issued, carried, shown, signed, quoted or presented is a `document` — a `parking permit` is a `document` even though parking is a
+   facility and issuing it is a service. The answer is the artefact.
+3. **`contact` is a route to a person.** Only a token by which someone is *reached* — a phone number,
+   an extension, an email address. A reference, booking or property code is **not** `contact`: quoting
+   `KJ47` reaches nobody, it identifies a record, so it is a `document` under rule 2.
+4. **`location` is a position.** An address, a postcode, or a place name given as *where* something
+   is. This outranks `facility`: the same name is a `location` when the item asks where and a
+   `facility` when the item asks what is there. The item decides which was asked.
+5. **Performed, or merely present?** This is the `service`/`facility` axis. Would the answer still
+   exist with nobody performing it? Yes → `facility`. No, it needs someone to do something →
+   `service`. So `breakfast` is a `service` (someone serves it) whether it is charged for or included
+   in the rate, and a named restaurant is a `facility` (the room is there regardless) even though a
+   service happens inside it. Charged-versus-included is not the axis.
+6. **`preference` requires named alternatives.** Only when the dialogue names two or more
+   alternatives and settles on one. Otherwise a condition asked for or satisfied is a `requirement` —
+   `furnished` states a flat's existing attribute against no stated alternative, so it is a
+   `requirement`, not a `preference`. `requirement` likewise covers what is *asked for* (a `guest
+   room` the caller wants) where `facility` covers what already exists (a `park` nearby).
+7. **No catch-all.** Report it, per the paragraph above.
+
+`skills/feasibility/feasibility-listening-part1/references/answer-category-decisions.json` carries
+this procedure in machine-readable form with the worked cases, and is what the feasibility reviewer
+is bound to. If the two ever disagree, this section is authoritative and the JSON is the defect.
 
 Answer variety follows from these two fields: keep purely numeric answers to **4 or fewer** of the
 ten, ensure **at least 4** require spelling out a word or phrase, and never test one micro-category
