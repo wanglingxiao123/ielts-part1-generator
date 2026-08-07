@@ -36,10 +36,15 @@ def _one(pool: str, pattern: str) -> Path:
 
 
 VALIDATE = _one("generate", "*/scripts/validate_part1.py")
+# The question stage is a SECOND skill in the same pool, so both globs above and here must keep
+# matching exactly one file: `validate_questions_part1.py` was named to stay outside
+# `*/scripts/validate_part1.py` rather than turning `_one`'s assertion into a two-match failure.
+QUESTION_VALIDATE = _one("generate", "*/scripts/validate_questions_part1.py")
 METRICS = _one("audit", "*/scripts/audit_metrics.py")
 CROSS_CHECK = SHARED / "cross_check.py"
 RENDER = SHARED / "render_audit_report.py"
 GENERATE_SCHEMAS = VALIDATE.parents[1] / "schemas"
+QUESTION_SCHEMAS = QUESTION_VALIDATE.parents[1] / "schemas"
 AUDIT_SCHEMAS = METRICS.parents[1] / "schemas"
 # The feasibility pool ships a schema and no script, so it is located by its schema rather than by a
 # scripts/ glob like the other two. `_one` doubles as the pool-membership assertion: a second skill
@@ -48,7 +53,12 @@ FEASIBILITY_SCHEMAS = _one("feasibility", "*/schemas/feasibility.schema.json").p
 
 # Every pool that carries schemas. Named once, because three places need the same list and the failure
 # mode of updating two of them is a schema that is never checked -- which reads as passing.
-SCHEMA_DIRS = (GENERATE_SCHEMAS, AUDIT_SCHEMAS, FEASIBILITY_SCHEMAS)
+#
+# `QUESTION_SCHEMAS` is a separate entry rather than being covered by `GENERATE_SCHEMAS`: the pool
+# holds two skills now and each carries its own schemas/ directory, so a directory derived from one
+# skill's validator does not reach the other's. Omitting it leaves question_package.schema.json
+# unresolvable by `_schema` and unvalidated by `test_schemas_are_valid` -- which reads as passing.
+SCHEMA_DIRS = (GENERATE_SCHEMAS, QUESTION_SCHEMAS, AUDIT_SCHEMAS, FEASIBILITY_SCHEMAS)
 
 
 def _schema(name: str) -> Path:
@@ -96,6 +106,7 @@ SCHEMA_NAMES = (
     "material.schema.json",
     "blueprint.schema.json",
     "blueprint.read.schema.json",
+    "question_package.schema.json",
     "audit.schema.json",
     "feasibility.schema.json",
 )
@@ -1940,6 +1951,388 @@ def test_feasibility_schema_qr027_exception() -> None:
           "not here (intended, see docstring)", errors(blank) == [], repr(errors(blank)))
 
 
+# --- the question stage ----------------------------------------------------------------------------
+#
+# Three tests, deliberately: the schema contract, the validator's error catalogue, and the one check
+# whose first implementation was wrong in a way no schema can express (AR-003 tiering). Everything
+# below builds its package IN MEMORY from the committed material and blueprint fixtures, for the same
+# reason `validate_mutated` does -- `build_fixtures.py` owns fixtures/ entirely, so a hand-placed
+# question package there disappears on the next rebuild.
+#
+# The carriers are hand-written because carrier prose cannot be derived, but every value that IS in
+# the blueprint (`canonical`, `answer_category`) is read from it rather than restated. A fixture
+# rebuild that changes item 6's target therefore breaks these tests loudly instead of leaving a
+# package that silently disagrees with the plan it claims to implement.
+
+# number -> (group_id, carrier_before, carrier_after, blank_position, response_form,
+#            turn_index, quote, paraphrase_relation, carrier_entity, evidence_entity)
+_QUESTION_ROWS = (
+    (1, "G1", "Full name:", "", "final", "phrase", 4, "It's Anna Woods.", "exact",
+     "the caller's full name", "the name she gives"),
+    (2, "G2", "Street:", ", Ballysillan", "initial", "phrase", 8, "It's 118 Fordyce.", "exact",
+     "her current street", "the street she states"),
+    (3, "G2", "Postcode:", "", "final", "phrase", 10, "It's BT14 9BJ.", "exact",
+     "her postcode", "the postcode she states"),
+    (4, "G2", "Mobile:", "", "final", "numeric", 12, "It's 07840051963.", "exact",
+     "her contact number", "the mobile number she gives"),
+    (5, "G3", "Son currently attends:", "", "final", "phrase", 20,
+     "He is still in primary school.", "paraphrase", "the son's current stage of education",
+     "the stage she confirms after correcting herself"),
+    (6, "G4", "Would like a", "nearby for son to play", "initial", "word", 29,
+     "he'd love a park nearby", "paraphrase", "the outdoor amenity the family wants",
+     "the amenity she says her son would love"),
+    (7, "G4", "Prefers a", "rather than a flat", "initial", "word", 32,
+     "we've always lived in a house", "paraphrase", "the property kind preferred",
+     "the kind she says they stick with"),
+    (8, "G5", "Property size required:", "property", "medial", "word", 35,
+     "you definitely need a two-bedroom property", "signpost", "the minimum size",
+     "the size the agent confirms"),
+    (9, "G5", "Extra space wanted:", "for visiting family", "medial", "phrase", 37,
+     "how about having a guest room", "paraphrase", "the additional space wanted",
+     "the space the agent proposes and she accepts"),
+    (10, "G5", "Other useful feature:", "for home working", "medial", "word", 40,
+     "it'd be handy to have an office", "paraphrase", "the non-essential extra",
+     "the room she calls handy"),
+)
+
+# group_id -> (window, layout, title or None, signposts, structure, question_range, word_limit)
+_QUESTION_GROUPS = (
+    ("G1", 1, "form", None, ["Personal details taken by phone"], {"row_labels": ["Full name"]},
+     "1", "NO MORE THAN TWO WORDS"),
+    ("G2", 1, "form", None, [], {"row_labels": ["Street", "Postcode", "Mobile"]},
+     "2-4", "NO MORE THAN TWO WORDS AND/OR A NUMBER"),
+    ("G3", 1, "note", "Family background", [], {"hierarchy": ["Child's education"]},
+     "5", "NO MORE THAN TWO WORDS"),
+    ("G4", 2, "note", "Property preferences", ["Requirements for the new home are discussed next"],
+     {"hierarchy": ["Location and lifestyle"]}, "6-7", "ONE WORD ONLY"),
+    ("G5", 2, "table", None, [], {"row_labels": ["Size", "Extra space", "Other"],
+                                  "column_labels": ["Requirement", "Notes"]},
+     "8-10", "NO MORE THAN TWO WORDS"),
+)
+
+
+def _question_package() -> dict:
+    """A package the validator passes clean, built from the two committed fixtures."""
+    material = json.loads((FIXTURES / "material_valid.json").read_text(encoding="utf-8"))
+    blueprint = json.loads((FIXTURES / "blueprint_valid.json").read_text(encoding="utf-8"))
+    items = {item["number"]: item for item in blueprint["items"]}
+
+    groups, instructions, limit_of = [], [], {}
+    for group_id, window, layout, title, signposts, structure, question_range, limit in _QUESTION_GROUPS:
+        group = {"group_id": group_id, "narrator_window_id": window, "layout": layout,
+                 "signposts": list(signposts), "structure": copy.deepcopy(structure)}
+        if title is not None:
+            group["title"] = title
+        groups.append(group)
+        limit_of[group_id] = limit
+        instructions.append({
+            "group_id": group_id, "question_range": question_range,
+            "instruction_text": "Complete the notes below. Write %s for each answer." % limit,
+            "word_limit": limit, "numeral_allowance": 1 if "NUMBER" in limit else 0})
+
+    questions, answer_key, evidence = [], [], []
+    for row in _QUESTION_ROWS:
+        (number, group_id, before, after, position, response_form, turn_index, quote,
+         relation, carrier_entity, evidence_entity) = row
+        item, limit = items[number], limit_of[group_id]
+        questions.append({
+            "number": number, "group_id": group_id, "carrier_before": before,
+            "blank": "%d ................" % number, "carrier_after": after,
+            "blank_position": position, "answer_category": item["answer_category"],
+            "response_form": response_form})
+        answer_key.append({
+            "number": number, "canonical": item["target"], "alternatives": [],
+            "word_limit": limit, "numeral_allowance": 1 if "NUMBER" in limit else 0,
+            "counting_rule": "whitespace splits tokens; a hyphenated compound counts as one word"})
+        evidence.append({
+            "number": number, "turn_index": turn_index, "quote": quote,
+            "narrator_window_id": item["narrator_window_id"], "paraphrase_relation": relation,
+            "carrier_entity": carrier_entity, "evidence_entity": evidence_entity,
+            "proposition_relation": "same subject, same request, same point in the call",
+            "proposition_alignment_result": "aligned"})
+
+    return {"reference": "Part 1", "test_package": material["test_package"],
+            "material_id": "mat-0001",
+            "question_face": {"instructions": instructions, "groups": groups,
+                              "questions": questions},
+            "answer_key": answer_key, "evidence": evidence}
+
+
+def _validate_questions(mutate=None) -> dict:
+    """Run the question validator over a (possibly mutated) package and return its JSON report."""
+    package = _question_package()
+    if mutate is not None:
+        mutate(package)
+    path = Path(tempfile.mkdtemp()) / "questions.json"
+    path.write_text(json.dumps(package, ensure_ascii=False), encoding="utf-8")
+    result = run(QUESTION_VALIDATE, str(FIXTURES / "material_valid.json"),
+                 "--blueprint", str(FIXTURES / "blueprint_valid.json"),
+                 "--questions", str(path), "--json")
+    try:
+        return json.loads(result.stdout)
+    except ValueError:
+        return {"ok": False, "errors": ["validator produced no JSON: %s%s"
+                                       % (result.stdout, result.stderr)],
+                "warnings": [], "metrics": {}}
+
+
+def test_question_package_schema_contract() -> None:
+    """The three-block separation and the two-layer split, as the schema enforces them.
+
+    The positives matter as much as the negatives here: an earlier draft of the schema could have
+    required `title` on every group, which rejects the entirely normal untitled form group -- and
+    every negative case below would still have passed against that broken version.
+    """
+    print("question package schema")
+    try:
+        import jsonschema  # noqa: F401 - availability probe
+    except ImportError:
+        print("  SKIP  jsonschema not installed")
+        return
+
+    def errors(data: object) -> list[str]:
+        return _schema_errors("question_package.schema.json", data)
+
+    base = _question_package()
+    check("the reference package validates", errors(base) == [], repr(errors(base))[:400])
+
+    def mutated(mutate) -> dict:
+        payload = copy.deepcopy(base)
+        mutate(payload)
+        return payload
+
+    def drop_title(payload: dict) -> None:
+        for group in payload["question_face"]["groups"]:
+            group.pop("title", None)
+
+    check("a form/table group with no title still validates (QR-031 is note-only, and it is the "
+          "validator that knows the layout)", errors(mutated(drop_title)) == [])
+
+    def leak_answer(payload: dict) -> None:
+        payload["question_face"]["questions"][0]["canonical"] = "Anna Woods"
+
+    def leak_quote(payload: dict) -> None:
+        payload["question_face"]["questions"][0]["quote"] = "It's Anna Woods."
+
+    def restate_layout(payload: dict) -> None:
+        payload["question_face"]["instructions"][0]["layout"] = "form"
+
+    def nine_items(payload: dict) -> None:
+        payload["question_face"]["questions"].pop()
+
+    def free_limit(payload: dict) -> None:
+        payload["question_face"]["instructions"][0]["word_limit"] = "UP TO 2 WORDS"
+
+    def other_category(payload: dict) -> None:
+        payload["question_face"]["questions"][0]["answer_category"] = "other"
+
+    for label, mutate in (
+        # The separation is what the schema is for: block A must be unable to carry block B or C.
+        ("an answer inside the question face", leak_answer),
+        ("a quote inside the question face", leak_quote),
+        # The two-layer rule, from the layer that must NOT own it.
+        ("layout restated on an instruction", restate_layout),
+        ("nine questions instead of ten", nine_items),
+        ("a free-text word limit", free_limit),
+        # There is no catch-all category, by decision. A string schema would have accepted this.
+        ("answer_category 'other'", other_category),
+        ("question_type declared at the top level",
+         lambda p: p.update({"question_type": "completion"})),
+        ("a fourth top-level block", lambda p: p.update({"quality_report": {}})),
+        ("reference is not Part 1", lambda p: p.update({"reference": "Part 2"})),
+        ("a layout outside form/note/table",
+         lambda p: p["question_face"]["groups"][0].update({"layout": "flowchart"})),
+        ("narrator_window_id 3", lambda p: p["question_face"]["groups"][0].update(
+            {"narrator_window_id": 3})),
+        ("blank_position outside the three classes",
+         lambda p: p["question_face"]["questions"][0].update({"blank_position": "end"})),
+        ("proposition_alignment_result as free text",
+         lambda p: p["evidence"][0].update({"proposition_alignment_result": "mostly"})),
+        ("an empty accepted alternative", lambda p: p["answer_key"][0].update({"alternatives": [""]})),
+        ("an unknown key inside a structure",
+         lambda p: p["question_face"]["groups"][0]["structure"].update({"cells": []})),
+    ):
+        check("schema rejects: %s" % label, errors(mutated(mutate)) != [])
+
+
+def test_question_validator_catches_the_stage_defects() -> None:
+    """The validator's error catalogue: one row per defect the schema cannot express.
+
+    Each row asserts on the SUBSTANCE of the message, not merely that some error appeared. A package
+    with a swapped answer also breaks AR-003, so `errors != []` would pass while the check that was
+    supposed to fire stayed silent -- which is how a rule ends up never having worked.
+    """
+    print("question validator")
+    clean = _validate_questions()
+    check("the reference package passes clean", clean["ok"] is True,
+          repr(clean["errors"])[:600])
+    check("metrics report the measured group and position counts",
+          clean["metrics"].get("groups") == 5
+          and clean["metrics"].get("blank_positions", {}).get("final") == 4,
+          repr(clean["metrics"]))
+    check("layouts are reported as the mix actually used",
+          clean["metrics"].get("layouts") == ["form", "note", "table"],
+          repr(clean["metrics"].get("layouts")))
+
+    def replace_point(package: dict) -> None:
+        package["answer_key"][5]["canonical"] = "playground"
+
+    def reorder_evidence(package: dict) -> None:
+        package["evidence"][5]["turn_index"] = 3
+
+    def cross_window(package: dict) -> None:
+        package["question_face"]["questions"][5]["group_id"] = "G3"
+
+    def loosen_limit(package: dict) -> None:
+        for instruction in package["question_face"]["instructions"]:
+            if instruction["group_id"] == "G4":
+                instruction["word_limit"] = "NO MORE THAN THREE WORDS"
+                instruction["instruction_text"] = (
+                    "Complete the notes below. Write NO MORE THAN THREE WORDS for each answer.")
+        for entry in package["answer_key"]:
+            if entry["number"] in (6, 7):
+                entry["word_limit"] = "NO MORE THAN THREE WORDS"
+
+    def leak_in_title(package: dict) -> None:
+        for group in package["question_face"]["groups"]:
+            if group["group_id"] == "G4":
+                group["title"] = "Park and house preferences"
+
+    def leak_inflected(package: dict) -> None:
+        """Q9's `guest room` as `Rooms for guests` -- pluralised AND reordered.
+
+        A bare plural would not exercise the inflection branch at all: `parks` contains `park`, so
+        the exact-phrase scan catches it first and the inflection code could be deleted with this
+        test still passing. Splitting and pluralising both words is what makes the phrase scan miss
+        and the per-word inflection scan the only thing left.
+        """
+        for group in package["question_face"]["groups"]:
+            if group["group_id"] == "G5":
+                group["structure"] = {"row_labels": ["Size", "Rooms for guests", "Other"],
+                                      "column_labels": ["Requirement", "Notes"]}
+
+    def drop_evidence(package: dict) -> None:
+        package["evidence"].pop()
+
+    def wrong_quote(package: dict) -> None:
+        package["evidence"][6]["quote"] = "we have always preferred a house"
+
+    def note_without_title(package: dict) -> None:
+        for group in package["question_face"]["groups"]:
+            if group["group_id"] == "G3":
+                group.pop("title")
+
+    def table_without_columns(package: dict) -> None:
+        for group in package["question_face"]["groups"]:
+            if group["group_id"] == "G5":
+                group["structure"] = {"row_labels": ["Size", "Extra space", "Other"]}
+
+    def no_signpost(package: dict) -> None:
+        for group in package["question_face"]["groups"]:
+            if group["group_id"] == "G4":
+                group["signposts"] = []
+
+    def self_reported_failure(package: dict) -> None:
+        package["evidence"][2]["proposition_alignment_result"] = "not_aligned"
+
+    def relabel_category(package: dict) -> None:
+        package["question_face"]["questions"][6]["answer_category"] = "service"
+
+    def mis_declare_position(package: dict) -> None:
+        package["question_face"]["questions"][0]["blank_position"] = "initial"
+
+    def mis_declare_form(package: dict) -> None:
+        package["question_face"]["questions"][7]["response_form"] = "phrase"
+
+    def numberless_blank(package: dict) -> None:
+        package["question_face"]["questions"][3]["blank"] = "................"
+
+    def placeholder_answer(package: dict) -> None:
+        package["answer_key"][4]["canonical"] = "TBD"
+
+    def wrong_material(package: dict) -> None:
+        package["test_package"] = "Test 9"
+
+    for label, mutate, needle in (
+        # §1.4: the ten points are given input.
+        ("a point replaced by a better-sounding one", replace_point, "may not be replaced"),
+        ("a point's category relabelled", relabel_category, "answer_category"),
+        # §5.5 constraints 4 and 5.
+        ("a group interrupted in the evidence sequence", reorder_evidence, "interrupted"),
+        ("a group straddling the narrator windows", cross_window, "spans narrator windows"),
+        # §6.4 #3: strictest fitting rubric, per group.
+        ("a rubric looser than the group's answers need", loosen_limit, "stricter"),
+        # QR-040, both the exact word and an inflection.
+        ("the answer printed in the group's title", leak_in_title, "without listening"),
+        ("the answer's words pluralised and reordered in a label", leak_inflected, "inflections"),
+        # AL-001 / AL-010 / AL-007.
+        ("an evidence entry missing", drop_evidence, "exactly once"),
+        ("a quote absent from the turn it names", wrong_quote, "proves nothing"),
+        # QR-031 / QR-015 / QR-026.
+        ("a note group with no title", note_without_title, "QR-031"),
+        ("a table group with no column labels", table_without_columns, "column_labels"),
+        ("a window with no blank-free signpost", no_signpost, "signpost"),
+        # A package that reports its own AL-018 failure.
+        ("a self-reported alignment failure", self_reported_failure, "not_aligned"),
+        # The recomputed declarations. These are the whole point of persisting them.
+        ("blank_position mis-declared", mis_declare_position, "blank_position"),
+        ("a hyphenated compound declared a phrase", mis_declare_form, "response_form"),
+        # AR-013 / QR-015 / material pairing.
+        ("a blank carrying no question number", numberless_blank, "question number"),
+        ("a placeholder answer", placeholder_answer, "placeholder"),
+        ("the package pointing at another material", wrong_material, "test_package"),
+    ):
+        report = _validate_questions(mutate)
+        matched = [error for error in report["errors"] if needle in error]
+        check("validator catches: %s" % label, report["ok"] is False and bool(matched),
+              "wanted %r among %r" % (needle, report["errors"][:4]))
+
+
+def test_question_ar003_tiers_follow_the_canonical() -> None:
+    """AR-003's tier is decided by tokenising the canonical, NEVER by the declared word_limit.
+
+    This is the one check whose first implementation was wrong in a way nothing else would have
+    caught. Reading the rubric instead sends every one-word answer inside a `NO MORE THAN TWO WORDS`
+    group down the loose multi-word path, where a derived form passes -- and Q10's group is exactly
+    that shape, so the bug is reachable with the reference package unmodified.
+
+    Both directions are asserted. The loose tier must stay loose: demanding that a multi-word answer
+    equal a single token, as the first draft of this rule did, fails every legitimate two-word answer
+    (`guest room` is two tokens and always will be).
+    """
+    print("question validator: AR-003 tiering")
+
+    def canonical(number: int, value: str):
+        def mutate(package: dict) -> None:
+            package["answer_key"][number - 1]["canonical"] = value
+            # Keep the blueprint-fidelity and response_form checks out of the way: this test is about
+            # AR-003 alone, and a message from another rule would satisfy a bare `errors != []`.
+            for item in package["question_face"]["questions"]:
+                if item["number"] == number:
+                    item["response_form"] = "word" if " " not in value else "phrase"
+        return mutate
+
+    def ar003_errors(number: int, value: str) -> list:
+        report = _validate_questions(canonical(number, value))
+        return [error for error in report["errors"] if "AR-003" in error]
+
+    # Q10's group prints NO MORE THAN TWO WORDS; its canonical `office` is one token, so the strict
+    # tier applies. `offices` satisfies the printed limit and is still wrong.
+    check("a derived plural fails inside a two-word group (strict tier chosen by the canonical, "
+          "not by the rubric)", ar003_errors(10, "offices") != [])
+    check("a synonym fails the same way", ar003_errors(6, "playground") != [])
+    # The AR-003 direction that reads backwards: a substring of an evidence token is not credit
+    # either. `hous` is inside `house` and is not a token of it.
+    check("a substring of an evidence token is refused", ar003_errors(7, "hous") != [])
+    # Q9's `guest room` is two tokens in the same evidence and must pass -- the anti-tightening case.
+    check("a legitimate two-token answer passes", ar003_errors(9, "guest room") == [],
+          repr(ar003_errors(9, "guest room")))
+    # AR-014: one word for the limit, whole token for the match. `bedroom` alone is not the token.
+    check("half a hyphenated compound is refused", ar003_errors(8, "bedroom") != [])
+    check("the whole hyphenated token passes", ar003_errors(8, "two-bedroom") == [],
+          repr(ar003_errors(8, "two-bedroom")))
+
+
 def main() -> int:
     for suite in (
         test_schemas_are_valid,
@@ -1979,6 +2372,9 @@ def main() -> int:
         test_preflight_outcome_names_are_pinned,
         test_feasibility_schema_contract,
         test_feasibility_schema_qr027_exception,
+        test_question_package_schema_contract,
+        test_question_validator_catches_the_stage_defects,
+        test_question_ar003_tiers_follow_the_canonical,
     ):
         suite()
     print()
