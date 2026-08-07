@@ -60,6 +60,7 @@ from .loop import _noop_emit, _with_infra_retries
 from .question_revision_plan import build_question_revise_instruction
 
 __all__ = [
+    "AT_CEILING_WARNINGS",
     "MAX_QUESTION_REVISIONS",
     "QUESTION_NUMBERS",
     "QUESTIONS_NOT_DELIVERABLE",
@@ -90,6 +91,26 @@ QUESTION_NUMBERS = tuple(range(1, 11))
 # would have cleared -- measured: the first real case cleared Q1 in round one and needed a second round
 # for Q8 -- into regenerated materials. Either change deserves the diff.
 MAX_QUESTION_REVISIONS = 2
+
+# Validator warnings that report a legal ceiling was REACHED, not exceeded. They do not block delivery.
+#
+# Matched on a substring of the validator's own message, which is the weak part of this and is why the
+# list is one entry long and the marker is the rule id plus the word "ceiling" rather than a loose
+# keyword. The validator emits warnings as free prose with no code, so there is nothing sturdier to
+# match on; a rule-id field on validator warnings would replace this, and until then a reworded message
+# fails safe -- the warning stops being recognised and starts blocking again, which is the old
+# behaviour rather than a silent pass.
+#
+# Why these must not block: the QR-026 warning is emitted on the `counts["final"] == MAX_FINAL_BLANKS`
+# branch, immediately after the `>` branch that is an error. The validator has already ruled the set
+# legal, so there is no defect to revise -- and measured on the real material, blocking here spent two
+# revision rounds and then discarded a compliant question set.
+AT_CEILING_WARNINGS = ("QR-026 ceiling",)
+
+
+def _is_at_ceiling_warning(warning: Any) -> bool:
+    return any(marker in str(warning) for marker in AT_CEILING_WARNINGS)
+
 
 # The failure reason this loop returns when no round produced a deliverable set. Named here rather than
 # spelled at the raise site so a caller can match on it without repeating the string.
@@ -226,16 +247,14 @@ def delivery_blockers(candidate: QuestionCandidate) -> List[str]:
     reported nothing -- which is exactly the case where reading only the findings would call a broken
     set clean.
 
-    **Validator warnings block, and this is the one condition worth arguing about.** MINOR findings
-    block for the material loop's reason -- a revision costs one call and a worse result is discarded.
-    Warnings are different: the question validator's ``end-of-line blanks are at the QR-026 ceiling
-    (7 of 10)`` fires when a set is *at* a legal limit rather than over it, and the real material this
-    loop was built against carries it permanently. So this condition can send a set with no other
-    defect to REGENERATE_MATERIAL. It is kept because the instruction's priority is explicit -- never
-    deliver a set with hard errors -- and because a warning-tolerant gate is one edit away if the
-    measured rate of benign-warning rejections turns out to be the larger cost. What must not happen is
-    that choice being made silently: the blocker line below names the warning verbatim, so a rejection
-    on this ground is legible in the failure detail rather than looking like a real defect.
+    **Validator warnings block, except the ones that only say a legal limit was reached.** A warning
+    normally describes something a reviser could improve, so it blocks for the reason MINOR findings do:
+    a revision costs one call and a worse result is discarded. :data:`AT_CEILING_WARNINGS` is the
+    exception, and it is a narrow one -- those warnings fire when a set is *at* a cap rather than over
+    it, so the validator has already decided the set is legal and there is nothing to fix. Measured: the
+    QR-026 end-of-line warning is emitted on the ``counts["final"] == MAX_FINAL_BLANKS`` branch, the
+    branch above it being the error, and the real material this loop was built against carries it in
+    every round. Blocking on it burned two revision rounds and then discarded a compliant material.
     """
     blockers: List[str] = []
     counts = candidate.counts
@@ -269,6 +288,8 @@ def delivery_blockers(candidate: QuestionCandidate) -> List[str]:
     for error in getattr(candidate.validation, "errors", None) or []:
         blockers.append("validator error: %s" % error)
     for warning in getattr(candidate.validation, "warnings", None) or []:
+        if _is_at_ceiling_warning(warning):
+            continue
         blockers.append("validator warning: %s" % warning)
 
     return blockers

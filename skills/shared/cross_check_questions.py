@@ -24,8 +24,16 @@ This is deterministic Python. No model, so it costs nothing per run and its verd
 **Adjacency is never agreement.** A turn index one away from the writer's is reported as
 ``anchor_adjacent`` and never as a match: the audit rules allow +-1 only when the neighbouring turn
 *confirms the same fact*, which is a reading of two sentences and not something an integer comparison
-can establish. What is checked deterministically instead is whether the auditor's quote is really in
-the turn it named, and whether both turns sit in the same narrator window.
+can establish. Three things are checked deterministically before that release is granted -- the answers
+match, both anchors sit in the same narration-derived window, and the writer's own evidence row is
+marked ``proposition_alignment_result == "aligned"`` -- and any of them unmet makes the one-turn gap a
+hard defect rather than a note. Every unknown falls to the hard side, because ``anchor_adjacent`` is a
+release and a release granted by silence is not a check.
+
+The auditor's quote is also resolved within +-1 of the turn it named rather than only in that exact
+turn, which is what makes the above reachable. Measured: a real re-audit counted a narration turn the
+writer had not, shifting every later ``turn_index`` by one; five items whose answers matched the key
+exactly were reported as ``quote_unverifiable`` and a sound set was rejected at 4/10 agreement.
 """
 
 from __future__ import annotations
@@ -134,14 +142,6 @@ def _accepted(entry: object) -> list:
     return [n for n in (normalise(v) for v in values) if n]
 
 
-def _window_of(entry: object):
-    if isinstance(entry, dict):
-        value = entry.get("narrator_window_id")
-        if isinstance(value, int) and not isinstance(value, bool):
-            return value
-    return None
-
-
 def _anchor_of(entry: object):
     """The turn index, or None when absent or malformed.
 
@@ -168,6 +168,47 @@ def _quote_is_in_turn(turns: list, index, quote: object) -> bool:
     if not needle:
         return False
     return needle in normalise(turns[index].get("text"))
+
+
+def _resolve_quote_nearby(turns: list, index, quote: object):
+    """The turn within +-1 of ``index`` that actually contains ``quote``, or None.
+
+    **Why this exists, measured.** A real re-audit counted the narration's "Before you hear the rest of
+    the conversation..." turn where the writer had not, so every ``turn_index`` after it was one too
+    high. Five items whose answers matched the key exactly came back as ``quote_unverifiable``, the
+    agreed count fell from ten to four, and a sound question set was rejected -- because
+    ``quote_unverifiable`` returned before the adjacency logic, so a one-off index could never reach the
+    ``anchor_adjacent`` branch that exists for precisely that situation.
+
+    Searching the declared turn first matters: when the same span appears in both neighbours, the
+    auditor's own claim wins and no shift is reported.
+    """
+    if index is None or not turns or not normalise(quote):
+        return None
+    for candidate in (index, index - ADJACENT, index + ADJACENT):
+        if 0 <= candidate < len(turns) and _quote_is_in_turn(turns, candidate, quote):
+            return candidate
+    return None
+
+
+def narrator_window_of(turns: list, index):
+    """Which narration-delimited window a turn index falls in, or None.
+
+    Derived from the script the same way the validator's ``narrator_windows`` derives it -- from the
+    positions of the three ``speaker1`` turns, never from a declared field -- because a window id the
+    auditor stated would be the auditor's own arithmetic about the numbering that is under suspicion
+    here. Returns None when the narration is not the expected three turns, and every caller then treats
+    the window as unknown rather than as matching.
+    """
+    if not turns:
+        return None
+    narrator = [i for i, turn in enumerate(turns)
+                if isinstance(turn, dict) and turn.get("speaker") == "speaker1"]
+    if len(narrator) != 3 or index is None or not (0 <= index < len(turns)):
+        return None
+    if index <= narrator[0]:
+        return None
+    return 1 if index <= narrator[1] else 2
 
 
 def review_consistency(review: object) -> dict:
@@ -343,36 +384,83 @@ def compare(package: dict, review: dict, material: object = None) -> dict:
             continue
 
         # From here the answers agree. What remains is whether the evidence agrees.
-        if turns and not _quote_is_in_turn(turns, auditor_turn, mine.get("quote")):
+        #
+        # The quote is resolved within +-1 of the turn the auditor named, not only in that exact turn.
+        # An auditor that counts a narration turn the writer did not shifts every later index by one
+        # while quoting the script perfectly, and that must reach the adjacency logic below rather than
+        # being cut off as unverifiable -- see `_resolve_quote_nearby`.
+        quote_turn = _resolve_quote_nearby(turns, auditor_turn, mine.get("quote")) if turns else None
+        if turns and quote_turn is None:
             row["outcome"] = "quote_unverifiable"
             row["quote"] = mine.get("quote")
-            row["reason"] = ("the quote is not in turn %s of the script, so the rebuilt answer cannot "
-                             "be checked against anything -- a right answer with an unverifiable "
-                             "anchor is not evidence that the item is sound" % auditor_turn)
+            row["reason"] = ("the quote is not in turn %s of the script nor in either neighbour, so the "
+                             "rebuilt answer cannot be checked against anything -- a right answer with "
+                             "an unverifiable anchor is not evidence that the item is sound"
+                             % auditor_turn)
             items.append(row)
             continue
 
-        gap = None if writer_turn is None or auditor_turn is None else abs(
-            writer_turn - auditor_turn)
-        same_window = _window_of(evidence.get(number)) == mine.get("narrator_window_id") \
-            if "narrator_window_id" in (mine or {}) else True
+        # Where the quote was actually found is the auditor's effective anchor. Comparing the *stated*
+        # index would re-import the off-by-one the resolution just identified.
+        effective_turn = auditor_turn if quote_turn is None else quote_turn
+        row["effective_auditor_turn"] = effective_turn
+        if quote_turn is not None and quote_turn != auditor_turn:
+            row["stated_turn_shift"] = quote_turn - auditor_turn
+
+        gap = None if writer_turn is None or effective_turn is None else abs(
+            writer_turn - effective_turn)
+
+        # All three conditions for waving a one-turn gap through, and each is checked against the
+        # script or the package rather than against anything the auditor asserted about itself:
+        #
+        # * the answers already agree -- established above, this branch is unreachable otherwise;
+        # * the two turns sit in the same narration window, derived from the three speaker1 turns;
+        # * the writer's evidence row says its quote and the carrier state the same fact
+        #   (`proposition_alignment_result == "aligned"`), which is the "confirms the same fact"
+        #   precondition the audit rules attach to +-1.
+        #
+        # A window that cannot be derived, or a writer row that never claimed alignment, is NOT treated
+        # as satisfying its condition. That is the whole point: `anchor_adjacent` is a release, so every
+        # unknown has to fall to the hard side or the release is granted by silence.
+        writer_window = narrator_window_of(turns, writer_turn)
+        auditor_window = narrator_window_of(turns, effective_turn)
+        same_window = (writer_window is not None and writer_window == auditor_window)
+        aligned = (evidence.get(number) or {}).get("proposition_alignment_result") == "aligned"
 
         if gap == 0:
             row["outcome"] = "agree"
-        elif gap == ADJACENT and same_window:
+        elif gap == ADJACENT and same_window and aligned:
             # Deliberately NOT `agree`. The audit rules permit +-1 only when the neighbouring turn
-            # confirms the same fact, and whether it does is a reading of two sentences.
+            # confirms the same fact; the three conditions above are the strongest evidence Python can
+            # gather that it does, and a reader is still told to confirm it.
             row["outcome"] = "anchor_adjacent"
-            row["reason"] = ("answers agree but the anchors are one turn apart (writer %s, auditor "
-                             "%s); adjacency alone is not agreement -- confirm the neighbouring turn "
-                             "really confirms the same fact" % (writer_turn, auditor_turn))
+            row["reason"] = ("answers agree, both anchors sit in narrator window %s and the writer's "
+                             "evidence is proposition-aligned, but the anchors are one turn apart "
+                             "(writer %s, auditor %s); adjacency alone is not agreement -- confirm the "
+                             "neighbouring turn really confirms the same fact"
+                             % (writer_window, writer_turn, effective_turn))
+        elif gap == ADJACENT:
+            # One turn apart with a condition unmet. Hard, not advisory: without the same window and an
+            # aligned proposition there is nothing supporting the claim that the neighbour confirms the
+            # same fact, and the permissive reading would let a wrong anchor through as a note.
+            missing = []
+            if not same_window:
+                missing.append("the anchors are in different narrator windows (writer %s, auditor %s)"
+                               % (writer_window, auditor_window))
+            if not aligned:
+                missing.append("the writer's evidence is not marked proposition-aligned (%r)"
+                               % (evidence.get(number) or {}).get("proposition_alignment_result"))
+            row["outcome"] = "anchor_divergence"
+            row["reason"] = ("answers agree and the anchors are one turn apart (writer %s, auditor %s), "
+                             "but the +-1 allowance does not apply: %s"
+                             % (writer_turn, effective_turn, "; ".join(missing)))
         else:
             row["outcome"] = "anchor_divergence"
             row["reason"] = ("answers agree but the anchors are %s apart (writer %s, auditor %s); the "
                              "recorded evidence turn does not carry the answer, so every later "
                              "reviewer reads the wrong sentence"
                              % ("unknown distance" if gap is None else "%d turns" % gap,
-                                writer_turn, auditor_turn))
+                                writer_turn, effective_turn))
         items.append(row)
 
     # Leakage and uniqueness come from the auditor's own reconstruction rather than from the

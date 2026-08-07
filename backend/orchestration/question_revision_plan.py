@@ -34,6 +34,25 @@ ADVISORY_SEVERITIES = ("MINOR", "ADVISORY_WARNING")
 # of a sound item.
 OPEN = "open"
 
+# What a two-fact conflict must be fixed with, and what it must NOT be fixed with. Written once and
+# attached to both the rival and the divergence instruction, because both defects invite the same wrong
+# fix and the wrong fix is undetectable afterwards.
+#
+# The prohibition is explicit rather than left to inference. `alternatives` is the cheapest edit that
+# silences either defect -- one array entry, and the cross-check's `_accepted()` stops reporting it --
+# and it is the one edit that converts a caught marking error into a permanent one: a key that accepts
+# both the minimum and the ideal marks a candidate correct for answering a question the carrier did not
+# ask. Measured on the real Q8: two revision rounds rewrote the carrier and neither tried this, but the
+# earlier version of this line offered it in as many words, so the loop was one compliant model away
+# from writing the defect into the answer key.
+_CARRIER_ONLY = (
+    "narrow the carrier so exactly one of these facts fits, and adjust the answer key only if the "
+    "recorded value itself changed. Do NOT add the rival to `alternatives`: alternatives are for the "
+    "SAME fact written differently (spelling, hyphenation, an accepted synonym), never for a second "
+    "fact the script also states -- accepting both would mark a candidate correct for answering a "
+    "question the carrier did not ask"
+)
+
 
 def _finding_line(finding: Dict[str, Any], scope: str) -> str:
     """One finding as an instruction line, in the material side's format.
@@ -111,10 +130,16 @@ def build_question_revise_instruction(
         # only the label. An earlier version prefixed a sentence of its own, and on the real Q1/Q8
         # defects the two said the same thing twice in every instruction -- a doubled sentence in a
         # defect list reads like two defects.
-        must_fix.append(
-            "[cross-check %s] Q%s — %s"
-            % (row.get("outcome"), row.get("number"), row.get("reason"))
-        )
+        line = "[cross-check %s] Q%s — %s" % (row.get("outcome"), row.get("number"),
+                                              row.get("reason"))
+        if row.get("outcome") == "answer_divergence":
+            # The prohibition belongs here too, and not only on the rival line. A divergence is where a
+            # two-fact conflict actually SURFACES once the carrier has been narrowed the wrong way --
+            # the real Q8 arrived here in both rounds, as `two-bedroom` against `two bedrooms` and then
+            # against `three-bedroom property` -- and "the auditor read it as X while the key accepts Y"
+            # reads like an invitation to accept X as well.
+            line = "%s. Fix: %s" % (line, _CARRIER_ONLY)
+        must_fix.append(line)
     for row in getattr(cross_check, "leakage", []) or []:
         must_fix.append(
             "[cross-check leakage] Q%s — a reader with no recording produced %r from the printed page "
@@ -127,9 +152,18 @@ def build_question_revise_instruction(
             # The reason is the auditor's own prose and arrives already punctuated, so it goes between
             # em-dashes rather than being spliced into a sentence -- on the real Q8 rival, appending
             # "." produced "...the ideal size.. Narrow the carrier".
+            #
+            # **This line used to end "or accept both in the answer key", and that was wrong.** Two
+            # rivals are equally supported precisely because they are two DIFFERENT facts the script
+            # states -- Q8's "two bedrooms" minimum and "three-bedroom" ideal -- and `alternatives`
+            # exists for the same fact spelled differently, not for a second fact. Accepting both would
+            # mark a candidate correct for reporting the minimum when the carrier asked for the ideal,
+            # which is the marking error this defect class exists to prevent, now written into the key
+            # where nothing downstream can detect it. Only the carrier can separate two facts.
             "[cross-check rival] Q%s — %r also fits this carrier and is equally supported — %s — "
-            "narrow the carrier so exactly one answer fits, or accept both in the answer key"
-            % (row.get("number"), row.get("text"), str(row.get("reason") or "").rstrip(". "))
+            "%s"
+            % (row.get("number"), row.get("text"), str(row.get("reason") or "").rstrip(". "),
+               _CARRIER_ONLY)
         )
     for row in getattr(cross_check, "needs_review", []) or []:
         advisory.append(

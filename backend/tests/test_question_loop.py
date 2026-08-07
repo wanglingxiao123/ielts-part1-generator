@@ -361,6 +361,87 @@ class TestTheCrossCheckFindsWhatTheAuditorMightNot:
         assert result.hard_defects == []
         assert 1 not in result.by_outcome.get("agree", [])
 
+    def test_an_off_by_one_index_with_a_real_quote_is_not_unverifiable(
+            self, question_package, material):
+        """The measured regression: an auditor that counts a narration turn shifts every later index.
+
+        On the real re-audit this produced five ``quote_unverifiable`` rows whose answers matched the key
+        exactly, dropped agreement to 4/10 and rejected a sound set -- because the unverifiable branch
+        returned before the adjacency logic could see a one-turn gap.
+
+        The quote here is verbatim from the writer's OWN anchor turn, so once it is resolved the two
+        anchors coincide and the row is agreement, not merely advisory: the only thing that ever differed
+        was the auditor's arithmetic. The shift is still recorded on the row, so a systematic mis-count
+        stays legible instead of vanishing into a clean result.
+        """
+        turns = material["listening_material_parts"][0]["script"]["turns"]
+        review = _review(question_package)
+        row = review["reconstructed_answers"][0]
+        writer_turn = row["turn_index"]
+        # Quote the turn the writer anchored, but claim the next index -- exactly the observed shift.
+        row["quote"] = turns[writer_turn]["text"][:15]
+        row["turn_index"] = writer_turn + 1
+        result = crosscheck_questions(question_package, review, material)
+        assert result.by_outcome.get("quote_unverifiable") is None
+        assert 1 in result.by_outcome["agree"]
+        row_out = next(r for r in result.items if r["number"] == 1)
+        assert row_out["stated_turn_shift"] == -1
+        assert row_out["effective_auditor_turn"] == writer_turn
+
+    def test_a_quote_in_neither_neighbour_is_still_unverifiable(
+            self, question_package, material):
+        """The window is +-1, not unbounded: a quote two turns away stays a hard defect."""
+        turns = material["listening_material_parts"][0]["script"]["turns"]
+        review = _review(question_package)
+        row = review["reconstructed_answers"][0]
+        row["quote"] = turns[row["turn_index"]]["text"][:15]
+        row["turn_index"] = row["turn_index"] + 2
+        result = crosscheck_questions(question_package, review, material)
+        assert [r["outcome"] for r in result.hard_defects] == ["quote_unverifiable"]
+
+    def test_a_one_turn_gap_across_a_narrator_window_is_a_hard_defect(
+            self, question_package, material):
+        """All three conditions are required. Different windows means no +-1 allowance.
+
+        Turn 21 is the middle narration turn, so 21 and 22 are one apart and in different windows -- the
+        case where "the neighbouring turn confirms the same fact" is least likely to hold, since a
+        narration turn sits between them.
+        """
+        turns = material["listening_material_parts"][0]["script"]["turns"]
+        review = _review(question_package)
+        package = copy.deepcopy(question_package)
+        evidence = next(e for e in package["evidence"] if e["number"] == 1)
+        evidence["turn_index"] = 21
+        row = review["reconstructed_answers"][0]
+        row["turn_index"] = 22
+        row["quote"] = turns[22]["text"][:15]
+        result = crosscheck_questions(package, review, material)
+        hard = [r for r in result.hard_defects if r["number"] == 1]
+        assert [r["outcome"] for r in hard] == ["anchor_divergence"]
+        assert "different narrator windows" in hard[0]["reason"]
+        assert result.needs_review == []
+
+    def test_a_one_turn_gap_without_proposition_alignment_is_a_hard_defect(
+            self, question_package, material):
+        """The third condition, and the one an auditor cannot grant itself.
+
+        ``proposition_alignment_result`` is the writer's own claim that the quote and the carrier state
+        the same fact. Without it there is nothing supporting the +-1 allowance's precondition, so the
+        gap is hard rather than advisory -- an unknown must not buy a release.
+        """
+        turns = material["listening_material_parts"][0]["script"]["turns"]
+        review = _review(question_package)
+        package = copy.deepcopy(question_package)
+        evidence = next(e for e in package["evidence"] if e["number"] == 1)
+        evidence["proposition_alignment_result"] = "derived"
+        row = review["reconstructed_answers"][0]
+        row["turn_index"] = row["turn_index"] + 1
+        row["quote"] = turns[row["turn_index"]]["text"][:15]
+        result = crosscheck_questions(package, review, material)
+        hard = [r for r in result.hard_defects if r["number"] == 1]
+        assert [r["outcome"] for r in hard] == ["anchor_divergence"]
+        assert "not marked proposition-aligned" in hard[0]["reason"]
+
     def test_a_quote_from_nowhere_is_a_hard_defect(self, question_package, material):
         """A right answer with an unverifiable anchor is not evidence the item is sound."""
         review = _review(question_package)
@@ -547,6 +628,59 @@ class TestTheRankingIsLexicographicNotWeighted:
         assert not is_clean_questions(candidate)
 
 
+class TestTheInstructionNeverOffersTheAnswerKeyAsAnEscape:
+    """A two-fact conflict must be fixed in the carrier. ``alternatives`` is for one fact, spelled twice.
+
+    The prohibition exists because the wrong fix is the cheap one and is undetectable afterwards: one
+    array entry silences the cross-check for good, and a key accepting both Q8's ``two bedrooms``
+    minimum and its ``three-bedroom`` ideal marks a candidate correct for answering a question the
+    carrier did not ask.
+    """
+
+    @staticmethod
+    def _cross(package, material, review):
+        return crosscheck_questions(package, review, material)
+
+    def test_a_rival_instruction_forbids_widening_the_key(self, question_package, material):
+        review = _review(question_package)
+        review["reconstructed_answers"][7]["competing_candidates"] = [
+            {"text": "three bedrooms", "equally_supported": True,
+             "reason": "the script also states a three-bedroom property would be ideal."}]
+        cross = self._cross(question_package, material, review)
+        instruction = build_question_revise_instruction(review, cross)
+        line = next(l for l in instruction.must_fix if "cross-check rival" in l)
+        assert "narrow the carrier" in line
+        assert "Do NOT add the rival to `alternatives`" in line
+        # And the old wording is gone: it invited exactly the edit now prohibited.
+        assert "accept both in the answer key" not in line
+
+    def test_a_divergence_instruction_carries_the_same_prohibition(
+            self, question_package, material):
+        """Where the real Q8 actually surfaced, in both rounds."""
+        review = _review(question_package)
+        review["reconstructed_answers"][7]["answer"] = "two bedrooms"
+        cross = self._cross(question_package, material, review)
+        instruction = build_question_revise_instruction(review, cross)
+        line = next(l for l in instruction.must_fix if "answer_divergence" in l)
+        assert "Do NOT add the rival to `alternatives`" in line
+        assert "SAME fact written differently" in line
+
+    def test_no_must_fix_line_anywhere_suggests_widening_the_key(
+            self, question_package, material):
+        """Asserted over the whole instruction, not one line, so a future addition cannot reintroduce it."""
+        review = _review(question_package, [_finding(8, "MAJOR")])
+        review["reconstructed_answers"][7]["answer"] = "two bedrooms"
+        review["reconstructed_answers"][7]["derivable_without_recording"] = True
+        review["reconstructed_answers"][7]["competing_candidates"] = [
+            {"text": "three bedrooms", "equally_supported": True, "reason": "also fits."}]
+        cross = self._cross(question_package, material, review)
+        instruction = build_question_revise_instruction(review, cross, ["a warning"])
+        blob = " ".join(instruction.must_fix + instruction.advisory)
+        assert "accept both" not in blob
+        for phrase in ("add both to the answer key", "widen the answer key"):
+            assert phrase not in blob
+
+
 class TestTheDeliveryGate:
     """``question_qc_status`` is not a delivery gate. All four conditions are required together.
 
@@ -608,19 +742,38 @@ class TestTheDeliveryGate:
         assert any("agrees on 9 of 10" in line for line in blockers)
         assert not is_clean_questions(candidate)
 
-    def test_a_validator_warning_blocks_and_says_so_verbatim(self, question_package, material):
-        """The deliberate strictness, pinned so a future relaxation is a visible decision.
+    def test_the_qr026_ceiling_warning_does_not_block(self, question_package, material):
+        """AT a legal cap is not a defect: the validator already ruled the set legal.
 
-        This is the condition that can send an otherwise clean set to REGENERATE_MATERIAL: the QR-026
-        ceiling warning fires when a set is AT a legal limit, and the real material carries it. The test
-        asserts the blocker quotes the warning, because the cost of this choice must be legible in the
-        failure detail rather than looking like a real defect.
+        This warning is emitted on the ``counts["final"] == MAX_FINAL_BLANKS`` branch, the branch above
+        it being the error. Blocking on it cost the real material two revision rounds and a discarded
+        compliant question set.
         """
         warning = "end-of-line blanks are at the QR-026 ceiling (7 of 10); one more would fail"
         candidate = self._candidate(question_package, material, _review(question_package),
                                     warnings=[warning])
-        blockers = delivery_blockers(candidate)
-        assert blockers == ["validator warning: %s" % warning]
+        assert delivery_blockers(candidate) == []
+        assert is_clean_questions(candidate)
+
+    def test_exceeding_the_ceiling_is_an_error_and_still_blocks(self, question_package, material):
+        """The other side of the same rule: over the cap is a validator ERROR, which blocks.
+
+        Pinned with the validator's own wording so the two branches cannot be confused: only the
+        at-ceiling *warning* is waved through, and nothing about this change touches the error path.
+        """
+        error = ("8 of 10 blanks sit at the end of their line; QR-026 caps end-of-line blanking at 7")
+        candidate = self._candidate(question_package, material, _review(question_package),
+                                    errors=[error])
+        assert any("validator error" in line for line in delivery_blockers(candidate))
+        assert not is_clean_questions(candidate)
+
+    def test_any_other_validator_warning_still_blocks(self, question_package, material):
+        """The exemption is narrow. A warning that describes something fixable keeps blocking."""
+        warning = ("part of Q9's answer 'guest room' appears in group 'D''s visible text (['guest']); "
+                   "check it does not narrow the answer to one candidate")
+        candidate = self._candidate(question_package, material, _review(question_package),
+                                    warnings=[warning])
+        assert delivery_blockers(candidate) == ["validator warning: %s" % warning]
         assert not is_clean_questions(candidate)
 
     def test_every_blocker_is_reported_not_just_the_first(self, question_package, material):
