@@ -14,6 +14,8 @@ import type {
   CreateBatchRequest,
   CreateBatchResponse,
   MaterialListResponse,
+  MaterialQuestionsResponse,
+  MaterialQuestionSlot,
   MaterialRecord,
   PreviewAudioResponse,
   SelectMaterialResponse,
@@ -23,7 +25,7 @@ import { ApiError, setTransport, type RequestSpec } from '@/api/http'
 import { estimateBatchSeconds } from '@/domain/batchEstimate'
 import { setSseFetch } from '@/api/sseClient'
 import { setAuthFetch } from '@/auth/authApi'
-import { buildRecord, mockManifest, type FixtureKind } from './fixtures'
+import { buildRecord, mockManifest, QUESTION_PACKAGE, type FixtureKind } from './fixtures'
 import { MockBatch } from './mockSse'
 import { syntheticClipUrl } from './silentAudio'
 import { SCENARIO_CATALOG } from '@/config/scenarios.generated'
@@ -415,6 +417,79 @@ function historyMaterial(materialId: string): MaterialRecord | undefined {
     return record
   }
   return undefined
+}
+
+/**
+ * 「题目预览」的 mock。
+ *
+ * 真实桶里 `_questions/` 目前是空的（还没有一套题清过全部关卡），所以打到真实后端时这个端点只能
+ * 走到「暂无题目」那一支。已交付的那一页只有在这里才看得到——这也是它必须把几种处境都演出来的
+ * 理由：页面对每一种说的话都不一样，只演其中一种等于只验了一种。
+ *
+ * 分派按 `record.index`——**同一场景下的第几张卡**（见 handlers 里建批时的 `index: i`），不按 id 里
+ * 的内容：序号是页面上看得见的东西，于是「同一场景要 5 套，逐张打开」就能把五种处境都看一遍，而
+ * 不用先去算一个 hash。反过来，5 个不同场景各 1 套时 index 全是 0，那时每一套都有题——这是这种
+ * 分派的已知代价，看别的状态就换成同场景多套。
+ *
+ * `batch_id` 缺席时 slot 与 request_status 都是 null，和后端一样（它那时根本不去读 slot），
+ * 于是那条最弱的「暂无题目」分支也能在 mock 里走到。
+ */
+function materialQuestions(
+  materialId: string,
+  batchId: string | null,
+): MaterialQuestionsResponse {
+  const record = findMaterial(materialId) ?? historyMaterial(materialId)
+  if (!record) throw new ApiError(404, 'MATERIAL_NOT_FOUND', '材料不存在')
+
+  const body: MaterialQuestionsResponse = {
+    material_id: materialId,
+    questions: null,
+    slot: null,
+    request_status: null,
+  }
+  // 第一张卡有题。真实后端也是这样：题目包按材料 id 从 `_questions/` 取，与 slot 无关。
+  if (record.index === 0) {
+    body.questions = QUESTION_PACKAGE
+    return body
+  }
+  if (!batchId) return body
+
+  const slot: MaterialQuestionSlot = {
+    slot_id: `slot-${record.index + 1}`,
+    scenario: record.scenario_key,
+    state: 'questions_pending',
+    material_id: materialId,
+    created_at: Date.now() / 1000,
+    resumable: true,
+    checkpointed: false,
+    system_fault: false,
+    last_failure: null,
+    attempts: { material: 1, questions: 1 },
+  }
+  switch (record.index) {
+    case 1:
+      // 还在出题：页面轮询、不给「重新查看」按钮。
+      body.request_status = 'running'
+      break
+    case 2:
+      body.request_status = 'incomplete'
+      slot.checkpointed = true
+      slot.last_failure = { stage: 'questions', reason: 'time_budget' }
+      break
+    case 3:
+      body.request_status = 'incomplete'
+      slot.state = 'exhausted'
+      slot.resumable = false
+      slot.last_failure = { stage: 'questions', reason: 'questions_not_deliverable' }
+      break
+    default:
+      body.request_status = 'system_failure'
+      slot.system_fault = true
+      slot.resumable = false
+      slot.last_failure = { stage: 'questions', reason: 'model_error' }
+  }
+  body.slot = slot
+  return body
 }
 
 /** Rehydrates a batch created before a reload, already finished. */
@@ -837,6 +912,10 @@ const mockTransport = async (spec: RequestSpec): Promise<unknown> => {
       manifest,
     }
     return response
+  }
+
+  if (spec.method === 'GET' && resource === 'material-questions' && id) {
+    return materialQuestions(id, new URLSearchParams(spec.path.split('?')[1] ?? '').get('batch_id'))
   }
 
   throw new ApiError(404, 'NOT_FOUND', `mock 未实现的端点：${spec.method} ${spec.path}`)

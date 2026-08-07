@@ -8,6 +8,7 @@ import type {
   CreateBatchRequest,
   CreateBatchResponse,
   MaterialListResponse,
+  MaterialQuestionsResponse,
   MaterialRecord,
   PreviewAudioResponse,
   SelectMaterialResponse,
@@ -108,4 +109,19 @@ export const api = {
 
   getAudio: (materialId: string) =>
     request<AudioStatusResponse>({ method: 'GET', path: `/materials/${materialId}/audio` }),
+
+  /**
+   * 这套材料已交付的题目包，给「题目预览」页签。served by the WEB TIER.
+   *
+   * `questions: null` 是 200，不是 404——「还没出题」是材料一生里的常态（出题在材料之后，随时可能
+   * 被时钟停在半路），把它做成错误会让浏览器的错误分支变成主路径。所以调用方判 `null`，不判异常。
+   *
+   * 带上 `batchId` 换到的是**为什么没有题**：后端只在题目缺席时才去读 slot 状态，所以有题的常见
+   * 路径一次多余的 S3 读都不付。不带也能用，只是「暂无题目」就只能说这四个字。
+   */
+  materialQuestions: (materialId: string, batchId?: string) =>
+    request<MaterialQuestionsResponse>({
+      method: 'GET',
+      path: `/material-questions/${materialId}${batchId ? `?batch_id=${encodeURIComponent(batchId)}` : ''}`,
+    }),
 }

@@ -665,3 +665,109 @@ def test_a_unary_action_is_still_relayed_unchanged(client, runtime):
                            json={"action": "select", "material_id": "mat-1"})
     assert response.status_code == 200
     assert len(runtime.calls) == 1
+
+
+# ── the 题目预览 tab's endpoint ───────────────────────────────────────────────
+
+
+class _Reader:
+    """A `SlotStateReader` stand-in. Only the two members the route touches."""
+
+    def __init__(self, packages=None, available=True, raises=None):
+        self._packages = packages or {}
+        self.available = available
+        self._raises = raises
+        self.asked = []
+
+    def load_questions(self, material_id):
+        self.asked.append(material_id)
+        if self._raises is not None:
+            raise self._raises
+        return self._packages.get(material_id)
+
+
+def _face(**overrides):
+    face = {"instructions": [], "groups": [], "questions": []}
+    face.update(overrides)
+    return face
+
+
+def _questions_client(reader, auth, runtime, static_dir):
+    from fastapi.testclient import TestClient
+
+    tier = WebTier(auth, runtime, str(static_dir), slot_state=reader)
+    return TestClient(tier.app)
+
+
+def test_a_delivered_question_set_is_served_unwrapped(auth, runtime, static_dir):
+    """The browser gets the schema's own shape, not `QuestionResult.as_dict()`'s envelope: `package`
+    is unwrapped here so no frontend needs to know a result envelope exists."""
+    reader = _Reader({"mat-1": {"ok": True, "label": "revised-1", "package": {
+        "reference": "Part 1", "material_id": "mat-1", "question_face": _face(),
+        "answer_key": [], "evidence": [],
+    }}})
+    with _questions_client(reader, auth, runtime, static_dir) as client:
+        register(client)
+        response = client.get("/api/material-questions/mat-1")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["material_id"] == "mat-1"
+    assert body["questions"]["reference"] == "Part 1"
+    # The envelope's own keys are gone; only the package survives.
+    assert "ok" not in body["questions"] and "label" not in body["questions"]
+    assert reader.asked == ["mat-1"]
+
+
+def test_no_delivered_set_is_a_200_with_null_not_a_404(auth, runtime, static_dir):
+    """"No questions yet" is the normal state for most of a material's life. A 404 would make the
+    browser's error path the usual path, and could not distinguish it from "no such material"."""
+    with _questions_client(_Reader(), auth, runtime, static_dir) as client:
+        register(client)
+        response = client.get("/api/material-questions/mat-1")
+    assert response.status_code == 200
+    assert response.json() == {"material_id": "mat-1", "questions": None,
+                               "slot": None, "request_status": None}
+
+
+def test_a_stored_failure_is_reported_as_no_questions(auth, runtime, static_dir):
+    """A failed `QuestionResult` carries `rejected_candidate`, never `package`. The route must not
+    surface the rejected set: it did not clear the gates, and drawing it would ship a defective
+    paper as a real one."""
+    reader = _Reader({"mat-1": {"ok": False, "reason": "audit", "rejected_candidate": {
+        "package": {"question_face": _face(questions=[{"number": 1}])},
+    }}})
+    with _questions_client(reader, auth, runtime, static_dir) as client:
+        register(client)
+        response = client.get("/api/material-questions/mat-1")
+    assert response.status_code == 200
+    assert response.json()["questions"] is None
+
+
+def test_an_unconfigured_store_says_it_cannot_know_rather_than_none(auth, runtime, static_dir):
+    """A local run with no bucket. 暂无题目 here would tell a developer their set was lost."""
+    reader = _Reader(available=False)
+    with _questions_client(reader, auth, runtime, static_dir) as client:
+        register(client)
+        response = client.get("/api/material-questions/mat-1")
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "QUESTIONS_UNAVAILABLE"
+    assert reader.asked == [], "an unavailable reader must not be read"
+
+
+def test_a_raising_reader_is_a_502_in_chinese_without_the_exception(auth, runtime, static_dir):
+    """The reader swallows its own failures; this is the backstop for the one it cannot. Same rule as
+    the history routes: `message` reaches a 命题人员's screen verbatim."""
+    reader = _Reader(raises=ModuleNotFoundError("No module named 'audio_storage'"))
+    with _questions_client(reader, auth, runtime, static_dir) as client:
+        register(client)
+        response = client.get("/api/material-questions/mat-1")
+    assert response.status_code == 502
+    error = response.json()["error"]
+    assert error["code"] == "QUESTIONS_UNAVAILABLE"
+    assert "ModuleNotFoundError" not in error["message"]
+
+
+def test_the_questions_route_needs_a_session(client):
+    """It serves the answer key. The /api/* gate covers it, and this pins that it was not added to
+    PUBLIC_API_PATHS."""
+    assert client.get("/api/material-questions/mat-1").status_code == 401

@@ -4,7 +4,7 @@
  * them by moving anchors / injecting findings, so the script text is always
  * real dialogue rather than invented prose.
  */
-import type { Audit, Blueprint, Material } from '@/contracts'
+import type { Audit, Blueprint, Material, QuestionPackage } from '@/contracts'
 import type { CrossCheck, MaterialRecord } from '@/contracts/api'
 import type { AudioManifest } from '@/contracts/manifest'
 import {
@@ -14,6 +14,7 @@ import {
   BLUEPRINT_V1_LEGACY,
   BLUEPRINT_VALID,
   MATERIAL_VALID,
+  QUESTION_PACKAGE_VALID,
 } from './generated'
 
 const clone = <T,>(x: T): T => structuredClone(x)
@@ -31,6 +32,16 @@ export const BASE_BLUEPRINT: Blueprint = BLUEPRINT_VALID
  * v1 的空 `note: []` 和 `multiple_choice` 都不在其中，兼容分支因此从未真正被测到。
  */
 export const BASE_BLUEPRINT_V1: Blueprint = BLUEPRINT_V1_LEGACY
+/**
+ * 题目包，与上面的材料/blueprint 同源，由出题校验器判定为 clean 的那一份。
+ *
+ * 它的五个题组刻意是混合版式（form ×2、note ×2、table ×1），因为「题目预览」要检验的正是三种真实
+ * 排版都画得出来——一个全是 form 的包会让 note 的层级和 table 的列标签从未被渲染过一次。
+ *
+ * `material_id` 是 `mat-0001`（骨架自己的值）。页面不读这个字段来配对，是端点按 URL 上的 id 取的包，
+ * 所以夹具不必假装自己属于某一套具体材料。
+ */
+export const QUESTION_PACKAGE: QuestionPackage = QUESTION_PACKAGE_VALID
 /** audit_valid has a genuine unrecoverable point (blind seq 5 sits at turn 16). */
 export const BASE_AUDIT_WITH_GAP: Audit = AUDIT_VALID
 /** audit_aligned matches the blueprint one-for-one. */

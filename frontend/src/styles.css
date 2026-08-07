@@ -2682,3 +2682,354 @@ h3 {
   align-items: center;
   flex-wrap: wrap;
 }
+
+/* ── 阅读页页签：[对话原文] [题目预览] ────────────────────────────────────── */
+
+/* 下边框贯通整行，选中的那个用一条粗线「顶开」它——这是页签最省颜色的表达方式，而这一页
+   已经把 accent 用在别处（返回批次、播放器），再加一种色只会让层级更难读。 */
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 12px;
+}
+
+.tab {
+  border: 0;
+  background: none;
+  padding: 7px 14px;
+  font-size: 13px;
+  color: var(--ink-2);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tab:hover {
+  color: var(--ink);
+}
+
+.tab-on {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 500;
+}
+
+/* ── 题目预览 ────────────────────────────────────────────────────────────── */
+
+.qp {
+  display: grid;
+  gap: 12px;
+}
+
+/* 顶栏。sticky 是因为「显示答案和证据」在往下翻十道题的时候仍然要能关掉——盲看这件事
+   通常是读到一半才想做的。 */
+.qp-bar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.qp-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.qp-bar-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+/* 盲看提示挤到自己一行，不跟标签抢：窄屏上它是这一栏里最长的一段文字。 */
+.qp-blind-note {
+  flex: 1 0 100%;
+  font-size: 12px;
+}
+
+.qp-group {
+  display: grid;
+  gap: 10px;
+}
+
+.qp-group-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+/* rubric 是印在纸上的那句话，所以用衬线、居中偏窄，读起来像试卷而不像界面文案。 */
+.qp-rubric {
+  margin: 0;
+  padding: 7px 10px;
+  background: var(--bg);
+  border-radius: var(--radius);
+  font-size: 12.5px;
+  color: var(--ink);
+}
+
+.qp-title {
+  margin: 2px 0 0;
+  font-size: 13.5px;
+}
+
+.qp-signposts {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--ink-2);
+  font-size: 12.5px;
+}
+
+/* 印刷行。`inline` 而不是 flex：题面是一句话，允许在空格前后自然换行，用 flex 会把
+   「空前文 / 空格 / 空后文」硬拆成三个不换行的块，窄屏上直接溢出。 */
+.qp-line {
+  line-height: 1.9;
+}
+
+.qp-blank {
+  font-family: var(--mono);
+  color: var(--ink-2);
+  margin: 0 2px;
+  white-space: nowrap;
+}
+
+/* 绿色正确答案，就印在空格后面——复核的人读的是「这一行填进去通不通」。 */
+.qp-inline-answer {
+  color: var(--good);
+  background: var(--good-bg);
+  border-radius: 3px;
+  padding: 0 5px;
+  margin-right: 3px;
+  font-weight: 500;
+}
+
+/* form：左标签右题面。标签列不设固定宽（不同组的标签长度差得远），靠 max-content 收紧。 */
+.qp-form {
+  display: grid;
+  gap: 2px;
+}
+
+.qp-form-row {
+  display: grid;
+  grid-template-columns: minmax(80px, max-content) 1fr;
+  gap: 10px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--line-2);
+}
+
+.qp-form-label {
+  color: var(--ink-2);
+}
+
+.qp-form-full {
+  grid-column: 1 / -1;
+}
+
+.qp-note-head {
+  font-weight: 500;
+  color: var(--ink);
+  margin-top: 2px;
+}
+
+.qp-note-list {
+  margin: 4px 0 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 2px;
+}
+
+.qp-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.qp-table th,
+.qp-table td {
+  border: 1px solid var(--line);
+  padding: 6px 9px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.qp-table thead th {
+  background: var(--bg);
+  color: var(--ink-2);
+  font-weight: 500;
+  font-size: 12px;
+}
+
+.qp-table tbody th {
+  color: var(--ink-2);
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.qp-table-corner {
+  background: var(--bg);
+}
+
+/* 答案区。与题面之间隔一条线：上面是考生看到的，下面是命题人看到的，两者不该看起来是一体。 */
+.qp-reveals {
+  display: grid;
+  gap: 6px;
+  border-top: 1px dashed var(--line);
+  padding-top: 9px;
+}
+
+.qp-reveal {
+  display: grid;
+  gap: 3px;
+}
+
+.qp-reveal-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+}
+
+.qp-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 4px;
+  border-radius: 10px;
+  background: var(--line-2);
+  color: var(--ink-2);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+
+.qp-answer {
+  color: var(--good);
+  font-weight: 500;
+}
+
+/* 「查看题解」推到行尾，这样十道题的按钮竖直对齐，扫起来是一列而不是参差的一堆。 */
+.qp-more {
+  margin-left: auto;
+}
+
+/* 灰色斜体原文 + 轮次。 */
+.qp-evidence {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  padding-left: 27px;
+  font-size: 12.5px;
+}
+
+.qp-quote {
+  color: var(--ink-3);
+  font-style: italic;
+}
+
+.qp-turn {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 10px;
+  padding: 0 8px;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--ink-2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.qp-turn:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.qp-turn-static {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* 题解。每条一个「标签 + 一句话」，标签列固定宽度，读的时候可以只扫左边一列。 */
+.qp-facts {
+  margin: 5px 0 2px;
+  padding: 8px 10px;
+  margin-left: 27px;
+  background: var(--bg);
+  border-radius: var(--radius);
+  display: grid;
+  gap: 5px;
+  font-size: 12.5px;
+}
+
+.qp-fact {
+  display: grid;
+  grid-template-columns: 68px 1fr;
+  gap: 8px;
+}
+
+.qp-fact dt {
+  color: var(--ink-3);
+  font-size: 11.5px;
+  line-height: 1.7;
+}
+
+.qp-fact dd {
+  margin: 0;
+}
+
+.qp-fact-good dd {
+  color: var(--good);
+}
+
+.qp-fact-warn dd {
+  color: var(--warn);
+}
+
+@media (max-width: 700px) {
+  /* 窄屏上 form 的两列会把标签压成一个字一行。退成上下两行，标签在上。 */
+  .qp-form-row {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+
+  /* 题解的标签列同理：68px 在窄屏上仍然够，但缩进要收掉，否则正文只剩半屏。 */
+  .qp-facts,
+  .qp-evidence {
+    margin-left: 0;
+    padding-left: 0;
+  }
+
+  .qp-facts {
+    padding: 8px 10px;
+  }
+
+  /* 「查看题解」不再顶到行尾：窄屏上行会折，顶到行尾就变成孤零零悬在下一行右边。 */
+  .qp-more {
+    margin-left: 0;
+  }
+
+  /* table 在窄屏上必须能横向滚，否则列一挤，题面就叠在一起了。 */
+  .qp-table {
+    display: block;
+    overflow-x: auto;
+    white-space: normal;
+  }
+}

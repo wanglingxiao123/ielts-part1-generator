@@ -14,6 +14,11 @@
  *
  * 加上的一样：**考点小结**（ExamPointPanel）。客户的要求是把「拼读、先说后改、同义替换」这些
  * 考点抽出来用高亮块标注，判据取自规范 §3 与 §4B-3/4B-4，复用 domain/examPoints.ts。
+ *
+ * 标题下的两个页签把这一页分成两件事：[对话原文] 是上面说的那一整套，行为一字未改；[题目预览]
+ * 是这套材料已交付的题目包。两者共用同一个 `record`，所以切页签不重新取材料，也不丢播放位置——
+ * 音频播放器在页签之上，理由是听音频与看题面是同时进行的动作，把播放器藏进某一个页签会让另一个
+ * 页签里的人失去它。
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
@@ -25,6 +30,7 @@ import { analyseFormGroups } from '@/domain/formGroups'
 import { joinFromRecord } from '@/domain/joinArtifacts'
 import type { Playlist } from '@/domain/playlist'
 import { buildPlaylist } from '@/domain/playlist'
+import { explainMissingQuestions } from '@/domain/questionStatus'
 import { circled } from '@/domain/types'
 import { summariseValidationNotes } from '@/domain/validationNotes'
 import { useAudioStore } from '@/stores/audioStore'
@@ -34,7 +40,12 @@ import { useAudioStatus } from '../audio/useAudioStatus'
 import { useAudioPool } from '../audio/useAudioPool'
 import { ExamPointPanel } from './ExamPointPanel'
 import { MaterialReader } from './MaterialReader'
+import { QuestionPreviewPanel } from './QuestionPreviewPanel'
 import { QuestionTypePanel } from './QuestionTypePanel'
+import { useMaterialQuestions } from './useMaterialQuestions'
+
+/** 标题下的两个页签。`script` 是进来时的默认，因为「阅读全文」是这一页原本的名字。 */
+type Tab = 'script' | 'questions'
 
 export function MaterialPage() {
   const { materialId } = useParams<{ materialId: string }>()
@@ -42,6 +53,7 @@ export function MaterialPage() {
   const [record, setRecord] = useState<MaterialRecord | null>(fromStore ?? null)
   const [error, setError] = useState<string | null>(null)
   const [jump, setJump] = useState<{ turnIndex: number; nonce: number } | null>(null)
+  const [tab, setTab] = useState<Tab>('script')
   /** 生成音频：已按下、还没等到第一次「合成中」状态的那一小段。 */
   const [generating, setGenerating] = useState(false)
   const [generateError, setGenerateError] = useState<string | null>(null)
@@ -104,6 +116,30 @@ export function MaterialPage() {
   const jumpTo = useCallback((turnIndex: number) => {
     setJump({ turnIndex, nonce: Date.now() })
   }, [])
+
+  /**
+   * 从题目预览跳到原文。先切回 [对话原文] 页签，否则跳转发生在一个没挂载的阅读器上——点了没反应，
+   * 而这个按钮的全部意义就是「让我看这句话在哪」。
+   */
+  const jumpToScript = useCallback(
+    (turnIndex: number) => {
+      setTab('script')
+      setJump({ turnIndex, nonce: Date.now() })
+    },
+    [],
+  )
+
+  /**
+   * 题目包。只在 [题目预览] 被打开过之后才去取：这一页最常见的用法是读原文，而题目在多数材料上
+   * 根本还不存在，进页面就发一次注定 `questions: null` 的请求只是给每次打开都加一次往返。
+   */
+  const [questionsRequested, setQuestionsRequested] = useState(false)
+  const questions = useMaterialQuestions(
+    materialId ?? '',
+    record?.batch_id,
+    questionsRequested && Boolean(record),
+  )
+  const missing = useMemo(() => explainMissingQuestions(questions.data), [questions.data])
 
   /**
    * 生成音频。走 `preview_audio`，不是 `select`。
@@ -222,67 +258,169 @@ export function MaterialPage() {
           />
         ))}
 
-      <MaterialReader
-        view={view}
-        height={640}
-        playingTurn={playingTurn}
-        onPlayTurn={playlist ? onPlayTurn : undefined}
-        unplayableTurns={playlist?.unplayableTurnIndexes}
-        jumpToTurn={jump}
-      />
+      {/* 页签。切换的是标题以下的主体，音频播放器和上面那两条横幅留在外面——它们说的是这套材料
+          本身，两个页签下都成立。 */}
+      <div className="tabs" role="tablist" aria-label="材料内容">
+        <button
+          type="button"
+          role="tab"
+          className={`tab${tab === 'script' ? ' tab-on' : ''}`}
+          aria-selected={tab === 'script'}
+          onClick={() => setTab('script')}
+        >
+          对话原文
+        </button>
+        <button
+          type="button"
+          role="tab"
+          className={`tab${tab === 'questions' ? ' tab-on' : ''}`}
+          aria-selected={tab === 'questions'}
+          onClick={() => {
+            setTab('questions')
+            setQuestionsRequested(true)
+          }}
+        >
+          题目预览
+        </button>
+      </div>
 
-      <div className="split-2" style={{ marginTop: 12 }}>
-        <ExamPointPanel summary={examPoints} onJump={jumpTo} />
-        <div className="panel-stack">
-          <QuestionTypePanel analysis={groups} />
+      {tab === 'questions' ? (
+        <QuestionsTab
+          state={questions}
+          missing={missing}
+          blueprint={record.blueprint}
+          view={view}
+          onJump={jumpToScript}
+        />
+      ) : (
+        <>
+          <MaterialReader
+            view={view}
+            height={640}
+            playingTurn={playingTurn}
+            onPlayTurn={playlist ? onPlayTurn : undefined}
+            unplayableTurns={playlist?.unplayableTurnIndexes}
+            jumpToTurn={jump}
+          />
 
-          {/* 校验意见。放在原文下面、题型面板旁边，因为它只有对着原文才有意义——
-              这也是客户把评价文字限制在阅读页的理由。
-              措辞是「看这里」而不是「这里坏了」：校验器自己会判错（本轮实测有 5 条规则
-              会判掉真题），所以它给的是线索，不是判决。 */}
-          {validationNotes.notes.length > 0 && (
-            <div className="panel panel-pad">
-              <h3>结构校验意见</h3>
-              <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
-                {validationNotes.headline}
+          <div className="split-2" style={{ marginTop: 12 }}>
+            <ExamPointPanel summary={examPoints} onJump={jumpTo} />
+            <div className="panel-stack">
+              <QuestionTypePanel analysis={groups} />
+
+              {/* 校验意见。放在原文下面、题型面板旁边，因为它只有对着原文才有意义——
+                  这也是客户把评价文字限制在阅读页的理由。
+                  措辞是「看这里」而不是「这里坏了」：校验器自己会判错（本轮实测有 5 条规则
+                  会判掉真题），所以它给的是线索，不是判决。 */}
+              {validationNotes.notes.length > 0 && (
+                <div className="panel panel-pad">
+                  <h3>结构校验意见</h3>
+                  <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
+                    {validationNotes.headline}
+                  </div>
+                  <ul className="vn-list">
+                    {validationNotes.notes.map((note) => (
+                      <li key={note.key}>
+                        {note.numbers.length > 0 && (
+                          <span className="vn-nums">
+                            {note.numbers.map((n) => (
+                              <button
+                                key={n}
+                                type="button"
+                                className="ep-num"
+                                title={`跳到第 ${n} 题的信息所在的那一句`}
+                                onClick={() => jumpTo(examPoints.turnOf[n] ?? 0)}
+                              >
+                                {circled(n)}
+                              </button>
+                            ))}
+                          </span>
+                        )}
+                        <span>{note.text}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <div className="panel panel-pad">
+                <h3>篇幅</h3>
+                <div className="row mono" style={{ fontSize: 12 }}>
+                  <span>对话 {view.audit.metrics.dialogue_words} 词</span>
+                  <span>{view.audit.metrics.dialogue_turns} 轮</span>
+                  <span>
+                    前 {view.audit.metrics.first_half_turns} / 后{' '}
+                    {view.audit.metrics.second_half_turns}
+                  </span>
+                  <span>旁白 {view.audit.metrics.narrator_words} 词</span>
+                </div>
               </div>
-              <ul className="vn-list">
-                {validationNotes.notes.map((note) => (
-                  <li key={note.key}>
-                    {note.numbers.length > 0 && (
-                      <span className="vn-nums">
-                        {note.numbers.map((n) => (
-                          <button
-                            key={n}
-                            type="button"
-                            className="ep-num"
-                            title={`跳到第 ${n} 题的信息所在的那一句`}
-                            onClick={() => jumpTo(examPoints.turnOf[n] ?? 0)}
-                          >
-                            {circled(n)}
-                          </button>
-                        ))}
-                      </span>
-                    )}
-                    <span>{note.text}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-          <div className="panel panel-pad">
-            <h3>篇幅</h3>
-            <div className="row mono" style={{ fontSize: 12 }}>
-              <span>对话 {view.audit.metrics.dialogue_words} 词</span>
-              <span>{view.audit.metrics.dialogue_turns} 轮</span>
-              <span>
-                前 {view.audit.metrics.first_half_turns} / 后{' '}
-                {view.audit.metrics.second_half_turns}
-              </span>
-              <span>旁白 {view.audit.metrics.narrator_words} 词</span>
             </div>
           </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+/**
+ * [题目预览] 的主体：题目包，或者一句说清「为什么现在没有」的话。
+ *
+ * 五种没有题的处境由 `domain/questionStatus.ts` 分辨（还在出题 / 停在 checkpoint / 名额用尽 /
+ * 系统故障 / 从没出过），这里只管把它画出来。读题目本身失败（存储没配、S3 拒绝）是第六种，
+ * 与前五种分开：那是这个页面读不到，不是这套材料没有题。
+ */
+function QuestionsTab({
+  state,
+  missing,
+  blueprint,
+  view,
+  onJump,
+}: {
+  state: ReturnType<typeof useMaterialQuestions>
+  missing: ReturnType<typeof explainMissingQuestions>
+  blueprint: MaterialRecord['blueprint']
+  view: ReturnType<typeof joinFromRecord> | null
+  onJump: (turnIndex: number) => void
+}) {
+  if (state.loading) {
+    return <div className="panel panel-pad">正在读取题目…</div>
+  }
+
+  if (state.error) {
+    return (
+      <div className="banner banner-bad">
+        <strong>题目读取失败</strong>
+        <div>
+          {state.error}
+          <button type="button" className="btn btn-sm" style={{ marginLeft: 8 }} onClick={state.reload}>
+            重试
+          </button>
         </div>
+      </div>
+    )
+  }
+
+  const pkg = state.data?.questions
+  if (pkg) {
+    return <QuestionPreviewPanel pkg={pkg} blueprint={blueprint} view={view} onJump={onJump} />
+  }
+
+  if (!missing) {
+    // 到不了：`explainMissingQuestions` 只在有题时返回 null，而有题走的是上面那一支。留着这一句
+    // 是为了让「两处对同一件事的判断分了岔」有个看得见的落点，而不是一个空白页面。
+    return <div className="panel panel-pad muted">暂无题目。</div>
+  }
+
+  return (
+    <div className={`banner banner-${missing.tone === 'neutral' ? 'info' : missing.tone}`}>
+      <strong>{missing.headline}</strong>
+      <div>
+        {missing.detail}
+        {!missing.willResolveItself && (
+          <button type="button" className="btn btn-sm" style={{ marginLeft: 8 }} onClick={state.reload}>
+            重新查看
+          </button>
+        )}
       </div>
     </div>
   )

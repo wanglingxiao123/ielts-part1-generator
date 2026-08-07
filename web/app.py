@@ -11,6 +11,7 @@ Route map:
     GET  /api/batch-history                  batch history, newest first (web/batch_history.py)
     GET  /api/batch-history/{id}             one historical batch, with its materials' artifacts
     GET  /api/batch-history-material/{id}    one material by id alone, for the reader page
+    GET  /api/material-questions/{id}        the delivered question set, for the 题目预览 tab
     POST /api/batch-history/{id}/submit      records the 已提交 status
     POST /api/batch-history/{id}/withdraw    undoes it, wholly or per material
     GET  /login                   a server-rendered form, because the SPA has no local login UI
@@ -93,6 +94,7 @@ from .runtime_client import (
     new_session_id,
     read_json,
 )
+from .slot_state import SlotStateReader, build_reader
 
 LOG = logging.getLogger(__name__)
 
@@ -193,11 +195,16 @@ class WebTier:
     def __init__(self, auth: AuthService, runtime: AgentCoreRuntimeClient,
                  static_dir: str, *, cookie_secure: bool = False,
                  fanout_concurrency: int = FANOUT_CONCURRENCY,
-                 history: Optional[BatchHistory] = None) -> None:
+                 history: Optional[BatchHistory] = None,
+                 slot_state: Optional[SlotStateReader] = None) -> None:
         self.auth = auth
         self.runtime = runtime
         self.static_dir = static_dir
         self.cookie_secure = cookie_secure
+        # The `_slots/` + `_questions/` reader, for the 题目预览 tab. Built once here rather than per
+        # request: `build_reader` constructs an S3 client, and a tab that polls while a set is being
+        # generated would otherwise build one per poll. Injectable for the same reason `history` is.
+        self.slot_state = slot_state if slot_state is not None else build_reader()
         # Batch history. Injectable so a test can hand in an in-memory store; the default builds
         # itself lazily on first use, so a tier that never sees a batch constructs no AWS client.
         self.history = history if history is not None else BatchHistory()
@@ -385,6 +392,71 @@ class WebTier:
                     status_code=404,
                 )
             return JSONResponse(found)
+
+        @app.get("/api/material-questions/{material_id}")
+        async def get_material_questions(material_id: str, batch_id: str = "") -> JSONResponse:
+            """The delivered question set for one material, for the 题目预览 tab.
+
+            **200 with `questions: null` rather than a 404 when there is no set.** "No questions yet"
+            is the normal state for most of a material's life -- the question stage runs after the
+            material and can be paused by the clock -- and a 404 makes the browser's error path the
+            usual path, which is how a routine empty state ends up drawn as a failure. A 404 here
+            would also be ambiguous in the one way that matters: it cannot distinguish "no such
+            material" from "this material has no questions", and the tab must say different things.
+
+            Read-only, and served from `_questions/` directly rather than from the batch record. The
+            Runtime writes that prefix when a set clears every gate, so what is there is deliverable
+            by construction; going through the batch record instead would mean the web tier had to
+            re-derive deliverability from stage events it only partially saw.
+
+            **`batch_id` is optional, and what it buys is the reason there are no questions.** With it
+            the slot row is found too, so the tab can say 生成被时钟停在断点、这一位已用尽、整批系统故障
+            rather than only 暂无题目. Optional because the reader page's URL carries no batch id in
+            every path (a material can be opened straight from the in-session cache), and a missing
+            explanation must not cost the questions themselves.
+            """
+            from starlette.concurrency import run_in_threadpool
+
+            if not self.slot_state.available:
+                # No bucket. Local dev, and the honest answer is "cannot know", not "none": drawing
+                # 暂无题目 here would tell a developer their generated set was lost.
+                return JSONResponse(
+                    _error_body("QUESTIONS_UNAVAILABLE",
+                                "题目存储未配置，读不到题目。", material_id=material_id),
+                    status_code=503,
+                )
+            try:
+                found = await run_in_threadpool(self.slot_state.load_questions, material_id)
+            except Exception as exc:  # noqa: BLE001 - the reader swallows its own; this is a backstop
+                return JSONResponse(
+                    _infra_error_body("QUESTIONS_UNAVAILABLE",
+                                      "题目暂时读取不到，请稍后重试。", exc),
+                    status_code=502,
+                )
+            # `package` is the deliverable set inside `QuestionResult.as_dict()`; a stored failure has
+            # no such key (slot_store.save_questions' docstring). Unwrapped here so the browser is
+            # handed the schema's own shape and needs no knowledge of the result envelope.
+            package = found.get("package") if isinstance(found, dict) else None
+            body: Dict[str, Any] = {
+                "material_id": material_id,
+                "questions": package if isinstance(package, dict) else None,
+                "slot": None,
+                "request_status": None,
+            }
+            # Only when the questions are absent. A delivered set needs no explanation, and the LIST
+            # this costs is not worth paying on the path that already has what it came for.
+            if body["questions"] is None and batch_id:
+                try:
+                    state = await run_in_threadpool(
+                        self.slot_state.find_slot, batch_id, material_id)
+                except Exception:  # noqa: BLE001 - an explanation is optional; the 200 is not
+                    LOG.warning("slot lookup failed for %s/%s", batch_id, material_id,
+                                exc_info=True)
+                    state = None
+                if state:
+                    body["slot"] = state.get("slot")
+                    body["request_status"] = state.get("request_status")
+            return JSONResponse(body)
 
         @app.post("/api/batch-history/{batch_id}/submit")
         async def submit_batch(batch_id: str, request: Request) -> JSONResponse:

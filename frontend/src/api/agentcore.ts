@@ -1201,7 +1201,14 @@ const agentCoreTransport: Transport = async (spec: RequestSpec): Promise<unknown
    * Routing history through `/invocations` would mean asking the Runtime about a grouping the
    * Runtime has never heard of — it is invoked once per material and never sees a batch.
    */
-  if (resource === 'batch-history' || resource === 'batch-history-material') {
+  if (
+    resource === 'batch-history' ||
+    resource === 'batch-history-material' ||
+    // Same reason, same tier: the delivered question set lives in S3 under `_questions/`
+    // (`web/slot_state.py`), which the Runtime writes and only the web tier reads back. Asking
+    // `/invocations` for it would be asking the process that generated it to remember it.
+    resource === 'material-questions'
+  ) {
     return realTransport(spec)
   }
 

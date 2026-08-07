@@ -5,7 +5,7 @@
  * confirm. `material` / `blueprint` / `audit` are inlined verbatim from the
  * generated schema types, so a rename on either side breaks compilation here.
  */
-import type { Audit, Blueprint, Material, Verdict } from './index'
+import type { Audit, Blueprint, Material, QuestionPackage, Verdict } from './index'
 import type { AudioManifest } from './manifest'
 
 /* ── shared envelope ─────────────────────────────────────────────────────── */
@@ -252,6 +252,56 @@ export interface MaterialListResponse {
   materials: MaterialRecord[]
   next_cursor?: string | null
 }
+
+/* ── GET /api/material-questions/{id} ────────────────────────────────────── */
+
+/**
+ * 这套材料已交付的题目包，或者 null。
+ *
+ * `questions: null` 走 200，不走 404：出题在材料之后，一次 invocation 常常在材料做完之后就被时钟
+ * 停住，所以「还没有题」是常态而不是错误。404 还有一个致命的含混——它分不清「没有这套材料」和
+ * 「这套材料还没出题」，而页面对这两件事要说不同的话。
+ *
+ * 只有过了全部门槛的题目包才会被写进 `_questions/`（backend/orchestration/slot_store.py），所以
+ * 这里拿到的包一定是可交付的；被判掉的那一版存在别的键下，端点不会把它当成题目送出来。
+ */
+export interface MaterialQuestionsResponse {
+  material_id: string
+  questions: QuestionPackage | null
+  /**
+   * 为什么没有题。只在 `questions` 为 null、且请求带上了 `batch_id` 时才有值。
+   *
+   * 「暂无题目」有好几种完全不同的处境——还在出题、被时钟停在半路（下一次 invocation 会接着做）、
+   * 名额用尽、整个请求是系统故障——而页面对它们要说不同的话。刷新之后 SSE 流已经不在了，这两个
+   * 字段是那个答案唯一还存在的地方（`web/slot_state.py` 的 `find_slot`）。
+   */
+  slot: MaterialQuestionSlot | null
+  /** 请求文档自己写下的状态，不是前端推的：Runtime 已经判过了，这里不出第二个意见。 */
+  request_status: RequestStatus | null
+}
+
+/**
+ * 一个 slot 在请求文档里的样子（`backend/orchestration/delivery._slot_row` 的投影）。
+ *
+ * `resumable` / `checkpointed` / `system_fault` 都是后端记下来的判断，不是从 `state` 名字反推的。
+ */
+export interface MaterialQuestionSlot {
+  slot_id: string
+  scenario: string
+  state: 'material_pending' | 'material_done' | 'questions_pending' | 'complete' | 'exhausted'
+  material_id: string | null
+  created_at: number
+  resumable: boolean
+  checkpointed: boolean
+  system_fault: boolean
+  last_failure: { stage: string; reason: string; detail?: unknown } | null
+  attempts: Record<string, number>
+  replaces?: string | null
+  replaced_by?: string | null
+}
+
+/** `backend/orchestration/slot_store.py` 的四个请求状态。 */
+export type RequestStatus = 'running' | 'succeeded' | 'incomplete' | 'system_failure'
 
 /* ── POST /api/materials/{id}/select ─────────────────────────────────────── */
 

@@ -9,7 +9,7 @@
  * The explicit type annotations make tsc verify them against the frozen
  * schema-generated contract types.
  */
-import type { Audit, Blueprint, Material } from '@/contracts'
+import type { Audit, Blueprint, Material, QuestionPackage } from '@/contracts'
 
 export const MATERIAL_VALID: Material = {
   "model": "fixture",
@@ -966,5 +966,417 @@ export const AUDIT_ALIGNED: Audit = {
   },
   "warnings": [
     "dialogue words outside preferred 600-650: 535"
+  ]
+}
+
+export const QUESTION_PACKAGE_VALID: QuestionPackage = {
+  "reference": "Part 1",
+  "test_package": "Test 1",
+  "material_id": "mat-0001",
+  "question_face": {
+    "instructions": [
+      {
+        "group_id": "G1",
+        "question_range": "1",
+        "instruction_text": "Complete the notes below. Write NO MORE THAN TWO WORDS for each answer.",
+        "word_limit": "NO MORE THAN TWO WORDS",
+        "numeral_allowance": 0
+      },
+      {
+        "group_id": "G2",
+        "question_range": "2-4",
+        "instruction_text": "Complete the notes below. Write NO MORE THAN TWO WORDS AND/OR A NUMBER for each answer.",
+        "word_limit": "NO MORE THAN TWO WORDS AND/OR A NUMBER",
+        "numeral_allowance": 1
+      },
+      {
+        "group_id": "G3",
+        "question_range": "5",
+        "instruction_text": "Complete the notes below. Write NO MORE THAN TWO WORDS for each answer.",
+        "word_limit": "NO MORE THAN TWO WORDS",
+        "numeral_allowance": 0
+      },
+      {
+        "group_id": "G4",
+        "question_range": "6-7",
+        "instruction_text": "Complete the notes below. Write ONE WORD ONLY for each answer.",
+        "word_limit": "ONE WORD ONLY",
+        "numeral_allowance": 0
+      },
+      {
+        "group_id": "G5",
+        "question_range": "8-10",
+        "instruction_text": "Complete the notes below. Write NO MORE THAN TWO WORDS for each answer.",
+        "word_limit": "NO MORE THAN TWO WORDS",
+        "numeral_allowance": 0
+      }
+    ],
+    "groups": [
+      {
+        "group_id": "G1",
+        "narrator_window_id": 1,
+        "layout": "form",
+        "signposts": [
+          "Personal details taken by phone"
+        ],
+        "structure": {
+          "row_labels": [
+            "Full name"
+          ]
+        }
+      },
+      {
+        "group_id": "G2",
+        "narrator_window_id": 1,
+        "layout": "form",
+        "signposts": [],
+        "structure": {
+          "row_labels": [
+            "Street",
+            "Postcode",
+            "Mobile"
+          ]
+        }
+      },
+      {
+        "group_id": "G3",
+        "narrator_window_id": 1,
+        "layout": "note",
+        "signposts": [],
+        "structure": {
+          "hierarchy": [
+            "Child's education"
+          ]
+        },
+        "title": "Family background"
+      },
+      {
+        "group_id": "G4",
+        "narrator_window_id": 2,
+        "layout": "note",
+        "signposts": [
+          "Requirements for the new home are discussed next"
+        ],
+        "structure": {
+          "hierarchy": [
+            "Location and lifestyle"
+          ]
+        },
+        "title": "Property preferences"
+      },
+      {
+        "group_id": "G5",
+        "narrator_window_id": 2,
+        "layout": "table",
+        "signposts": [],
+        "structure": {
+          "row_labels": [
+            "Size",
+            "Extra space",
+            "Other"
+          ],
+          "column_labels": [
+            "Requirement",
+            "Notes"
+          ]
+        }
+      }
+    ],
+    "questions": [
+      {
+        "number": 1,
+        "group_id": "G1",
+        "carrier_before": "Full name:",
+        "blank": "1 ................",
+        "carrier_after": "",
+        "blank_position": "final",
+        "answer_category": "person_name",
+        "response_form": "phrase"
+      },
+      {
+        "number": 2,
+        "group_id": "G2",
+        "carrier_before": "Street:",
+        "blank": "2 ................",
+        "carrier_after": ", Ballysillan",
+        "blank_position": "initial",
+        "answer_category": "location",
+        "response_form": "phrase"
+      },
+      {
+        "number": 3,
+        "group_id": "G2",
+        "carrier_before": "Postcode:",
+        "blank": "3 ................",
+        "carrier_after": "",
+        "blank_position": "final",
+        "answer_category": "location",
+        "response_form": "phrase"
+      },
+      {
+        "number": 4,
+        "group_id": "G2",
+        "carrier_before": "Mobile:",
+        "blank": "4 ................",
+        "carrier_after": "",
+        "blank_position": "final",
+        "answer_category": "contact",
+        "response_form": "numeric"
+      },
+      {
+        "number": 5,
+        "group_id": "G3",
+        "carrier_before": "Son currently attends:",
+        "blank": "5 ................",
+        "carrier_after": "",
+        "blank_position": "final",
+        "answer_category": "facility",
+        "response_form": "phrase"
+      },
+      {
+        "number": 6,
+        "group_id": "G4",
+        "carrier_before": "Would like a",
+        "blank": "6 ................",
+        "carrier_after": "nearby for son to play",
+        "blank_position": "initial",
+        "answer_category": "facility",
+        "response_form": "word"
+      },
+      {
+        "number": 7,
+        "group_id": "G4",
+        "carrier_before": "Prefers a",
+        "blank": "7 ................",
+        "carrier_after": "rather than a flat",
+        "blank_position": "initial",
+        "answer_category": "preference",
+        "response_form": "word"
+      },
+      {
+        "number": 8,
+        "group_id": "G5",
+        "carrier_before": "Property size required:",
+        "blank": "8 ................",
+        "carrier_after": "property",
+        "blank_position": "medial",
+        "answer_category": "quantity",
+        "response_form": "word"
+      },
+      {
+        "number": 9,
+        "group_id": "G5",
+        "carrier_before": "Extra space wanted:",
+        "blank": "9 ................",
+        "carrier_after": "for visiting family",
+        "blank_position": "medial",
+        "answer_category": "requirement",
+        "response_form": "phrase"
+      },
+      {
+        "number": 10,
+        "group_id": "G5",
+        "carrier_before": "Other useful feature:",
+        "blank": "10 ................",
+        "carrier_after": "for home working",
+        "blank_position": "medial",
+        "answer_category": "requirement",
+        "response_form": "word"
+      }
+    ]
+  },
+  "answer_key": [
+    {
+      "number": 1,
+      "canonical": "Anna Woods",
+      "alternatives": [],
+      "word_limit": "NO MORE THAN TWO WORDS",
+      "numeral_allowance": 0,
+      "counting_rule": "whitespace splits tokens; a hyphenated compound counts as one word"
+    },
+    {
+      "number": 2,
+      "canonical": "118 Fordyce",
+      "alternatives": [],
+      "word_limit": "NO MORE THAN TWO WORDS AND/OR A NUMBER",
+      "numeral_allowance": 1,
+      "counting_rule": "whitespace splits tokens; a hyphenated compound counts as one word"
+    },
+    {
+      "number": 3,
+      "canonical": "BT14 9BJ",
+      "alternatives": [],
+      "word_limit": "NO MORE THAN TWO WORDS AND/OR A NUMBER",
+      "numeral_allowance": 1,
+      "counting_rule": "whitespace splits tokens; a hyphenated compound counts as one word"
+    },
+    {
+      "number": 4,
+      "canonical": "07840051963",
+      "alternatives": [],
+      "word_limit": "NO MORE THAN TWO WORDS AND/OR A NUMBER",
+      "numeral_allowance": 1,
+      "counting_rule": "whitespace splits tokens; a hyphenated compound counts as one word"
+    },
+    {
+      "number": 5,
+      "canonical": "primary school",
+      "alternatives": [],
+      "word_limit": "NO MORE THAN TWO WORDS",
+      "numeral_allowance": 0,
+      "counting_rule": "whitespace splits tokens; a hyphenated compound counts as one word"
+    },
+    {
+      "number": 6,
+      "canonical": "park",
+      "alternatives": [],
+      "word_limit": "ONE WORD ONLY",
+      "numeral_allowance": 0,
+      "counting_rule": "whitespace splits tokens; a hyphenated compound counts as one word"
+    },
+    {
+      "number": 7,
+      "canonical": "house",
+      "alternatives": [],
+      "word_limit": "ONE WORD ONLY",
+      "numeral_allowance": 0,
+      "counting_rule": "whitespace splits tokens; a hyphenated compound counts as one word"
+    },
+    {
+      "number": 8,
+      "canonical": "two-bedroom",
+      "alternatives": [],
+      "word_limit": "NO MORE THAN TWO WORDS",
+      "numeral_allowance": 0,
+      "counting_rule": "whitespace splits tokens; a hyphenated compound counts as one word"
+    },
+    {
+      "number": 9,
+      "canonical": "guest room",
+      "alternatives": [],
+      "word_limit": "NO MORE THAN TWO WORDS",
+      "numeral_allowance": 0,
+      "counting_rule": "whitespace splits tokens; a hyphenated compound counts as one word"
+    },
+    {
+      "number": 10,
+      "canonical": "office",
+      "alternatives": [],
+      "word_limit": "NO MORE THAN TWO WORDS",
+      "numeral_allowance": 0,
+      "counting_rule": "whitespace splits tokens; a hyphenated compound counts as one word"
+    }
+  ],
+  "evidence": [
+    {
+      "number": 1,
+      "turn_index": 4,
+      "quote": "It's Anna Woods.",
+      "narrator_window_id": 1,
+      "paraphrase_relation": "exact",
+      "carrier_entity": "the caller's full name",
+      "evidence_entity": "the name she gives",
+      "proposition_relation": "same subject, same request, same point in the call",
+      "proposition_alignment_result": "aligned"
+    },
+    {
+      "number": 2,
+      "turn_index": 8,
+      "quote": "It's 118 Fordyce.",
+      "narrator_window_id": 1,
+      "paraphrase_relation": "exact",
+      "carrier_entity": "her current street",
+      "evidence_entity": "the street she states",
+      "proposition_relation": "same subject, same request, same point in the call",
+      "proposition_alignment_result": "aligned"
+    },
+    {
+      "number": 3,
+      "turn_index": 10,
+      "quote": "It's BT14 9BJ.",
+      "narrator_window_id": 1,
+      "paraphrase_relation": "exact",
+      "carrier_entity": "her postcode",
+      "evidence_entity": "the postcode she states",
+      "proposition_relation": "same subject, same request, same point in the call",
+      "proposition_alignment_result": "aligned"
+    },
+    {
+      "number": 4,
+      "turn_index": 12,
+      "quote": "It's 07840051963.",
+      "narrator_window_id": 1,
+      "paraphrase_relation": "exact",
+      "carrier_entity": "her contact number",
+      "evidence_entity": "the mobile number she gives",
+      "proposition_relation": "same subject, same request, same point in the call",
+      "proposition_alignment_result": "aligned"
+    },
+    {
+      "number": 5,
+      "turn_index": 20,
+      "quote": "He is still in primary school.",
+      "narrator_window_id": 1,
+      "paraphrase_relation": "paraphrase",
+      "carrier_entity": "the son's current stage of education",
+      "evidence_entity": "the stage she confirms after correcting herself",
+      "proposition_relation": "same subject, same request, same point in the call",
+      "proposition_alignment_result": "aligned"
+    },
+    {
+      "number": 6,
+      "turn_index": 29,
+      "quote": "he'd love a park nearby",
+      "narrator_window_id": 2,
+      "paraphrase_relation": "paraphrase",
+      "carrier_entity": "the outdoor amenity the family wants",
+      "evidence_entity": "the amenity she says her son would love",
+      "proposition_relation": "same subject, same request, same point in the call",
+      "proposition_alignment_result": "aligned"
+    },
+    {
+      "number": 7,
+      "turn_index": 32,
+      "quote": "we've always lived in a house",
+      "narrator_window_id": 2,
+      "paraphrase_relation": "paraphrase",
+      "carrier_entity": "the property kind preferred",
+      "evidence_entity": "the kind she says they stick with",
+      "proposition_relation": "same subject, same request, same point in the call",
+      "proposition_alignment_result": "aligned"
+    },
+    {
+      "number": 8,
+      "turn_index": 35,
+      "quote": "you definitely need a two-bedroom property",
+      "narrator_window_id": 2,
+      "paraphrase_relation": "signpost",
+      "carrier_entity": "the minimum size",
+      "evidence_entity": "the size the agent confirms",
+      "proposition_relation": "same subject, same request, same point in the call",
+      "proposition_alignment_result": "aligned"
+    },
+    {
+      "number": 9,
+      "turn_index": 37,
+      "quote": "how about having a guest room",
+      "narrator_window_id": 2,
+      "paraphrase_relation": "paraphrase",
+      "carrier_entity": "the additional space wanted",
+      "evidence_entity": "the space the agent proposes and she accepts",
+      "proposition_relation": "same subject, same request, same point in the call",
+      "proposition_alignment_result": "aligned"
+    },
+    {
+      "number": 10,
+      "turn_index": 40,
+      "quote": "it'd be handy to have an office",
+      "narrator_window_id": 2,
+      "paraphrase_relation": "paraphrase",
+      "carrier_entity": "the non-essential extra",
+      "evidence_entity": "the room she calls handy",
+      "proposition_relation": "same subject, same request, same point in the call",
+      "proposition_alignment_result": "aligned"
+    }
   ]
 }

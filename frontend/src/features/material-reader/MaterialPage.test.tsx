@@ -9,8 +9,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import type { AudioStatusResponse, MaterialRecord } from '@/contracts/api'
-import { buildRecord } from '@/mocks/fixtures'
+import type {
+  AudioStatusResponse,
+  MaterialQuestionsResponse,
+  MaterialRecord,
+} from '@/contracts/api'
+import { buildRecord, QUESTION_PACKAGE } from '@/mocks/fixtures'
 import { MaterialPage } from './MaterialPage'
 
 // 生产形状的 material_id（`YYYYMMDD-<scenario_key>-<8 hex>`）。用假形状会让这一页看起来能用
@@ -29,6 +33,18 @@ let record: MaterialRecord = baseRecord
 let audio: AudioStatusResponse = { status: 'not_requested', progress: { done: 0, total: 0 } }
 const previewCalls: string[] = []
 
+/**
+ * 题目端点。默认「暂无题目」，因为那是绝大多数材料一生中的常态——把有题当默认会让「没题时这一页
+ * 长什么样」永远测不到。调用参数被记下来：这一页刻意在页签被打开之前不去取题目。
+ */
+let questions: MaterialQuestionsResponse = {
+  material_id: MATERIAL_ID,
+  questions: null,
+  slot: null,
+  request_status: null,
+}
+const questionCalls: Array<[string, string | undefined]> = []
+
 vi.mock('@/api/endpoints', () => ({
   api: {
     getMaterial: () => Promise.resolve(record),
@@ -39,6 +55,10 @@ vi.mock('@/api/endpoints', () => ({
       return Promise.resolve({ material_id: id, audio_job_id: 'job-1', repeat: false })
     },
     getAudio: () => Promise.resolve(audio),
+    materialQuestions: (id: string, batchId?: string) => {
+      questionCalls.push([id, batchId])
+      return Promise.resolve(questions)
+    },
   },
 }))
 
@@ -56,6 +76,8 @@ beforeEach(() => {
   record = baseRecord
   previewCalls.length = 0
   audio = { status: 'not_requested', progress: { done: 0, total: 0 } }
+  questionCalls.length = 0
+  questions = { material_id: MATERIAL_ID, questions: null, slot: null, request_status: null }
 })
 
 describe('MaterialPage 音频', () => {
@@ -230,5 +252,174 @@ describe('返回批次', () => {
     const compare = await screen.findByRole('link', { name: /对比本场景/ })
     // 对比页对历史批次只能靠 `?batch=` 取材料（真实后端没有按场景列材料的路由）。
     expect(compare.getAttribute('href')).toBe('/compare/accommodation-rental?batch=b1')
+  })
+})
+
+/* ── 标题下的两个页签 ────────────────────────────────────────────────────── */
+
+describe('MaterialPage 页签', () => {
+  it('标题下有 [对话原文] 与 [题目预览]，默认停在对话原文', async () => {
+    renderPage()
+    const script = await screen.findByRole('tab', { name: '对话原文' })
+    const preview = screen.getByRole('tab', { name: '题目预览' })
+    expect(script).toHaveAttribute('aria-selected', 'true')
+    expect(preview).toHaveAttribute('aria-selected', 'false')
+    // 「对话原文 —— 保持现有内容和行为不变」：进来时看到的仍然是原来那一页。
+    expect(document.querySelector('.exam-points')).not.toBeNull()
+  })
+
+  /**
+   * 打开页签之前不发请求。多数材料还没有题，而这一页最常见的用法是读原文——进页面就问一次注定
+   * `questions: null` 的请求，只是给每次打开都加一次往返。
+   */
+  it('题目只在页签被打开之后才取，并带上 batch_id 以便解释「为什么没有」', async () => {
+    renderPage()
+    await screen.findByRole('tab', { name: '题目预览' })
+    expect(questionCalls).toEqual([])
+
+    await userEvent.click(screen.getByRole('tab', { name: '题目预览' }))
+    await waitFor(() => expect(questionCalls.length).toBeGreaterThan(0))
+    // batch_id 买到的是「为什么没有题」；没有它后端根本不去读 slot。
+    expect(questionCalls[0]).toEqual([MATERIAL_ID, 'b1'])
+  })
+
+  it('切到题目预览时收起原文那一整套，切回来又完整回来', async () => {
+    renderPage()
+    await screen.findByRole('tab', { name: '题目预览' })
+    await userEvent.click(screen.getByRole('tab', { name: '题目预览' }))
+    await waitFor(() => expect(document.querySelector('.exam-points')).toBeNull())
+    await userEvent.click(screen.getByRole('tab', { name: '对话原文' }))
+    await waitFor(() => expect(document.querySelector('.exam-points')).not.toBeNull())
+  })
+
+  it('音频播放器留在页签之外：听音频与看题面是同时进行的动作', async () => {
+    renderPage()
+    await screen.findByRole('button', { name: /生成音频/ })
+    await userEvent.click(screen.getByRole('tab', { name: '题目预览' }))
+    // 藏进某一个页签会让另一个页签里的人失去它。
+    expect(screen.getByRole('button', { name: /生成音频/ })).toBeInTheDocument()
+  })
+
+  it('有题时画出真实版式，答案默认可见', async () => {
+    questions = {
+      material_id: MATERIAL_ID,
+      questions: QUESTION_PACKAGE,
+      slot: null,
+      request_status: null,
+    }
+    renderPage()
+    await screen.findByRole('tab', { name: '题目预览' })
+    await userEvent.click(screen.getByRole('tab', { name: '题目预览' }))
+    await waitFor(() => expect(document.querySelector('.qp-table')).not.toBeNull())
+    expect(document.querySelectorAll('.qp-form').length).toBe(2)
+    expect(screen.getByRole('checkbox', { name: /显示答案和证据/ })).toBeChecked()
+  })
+
+  /**
+   * 从题解跳回原文。先切回 [对话原文] 再跳，否则跳转落在一个没挂载的阅读器上——点了没反应，
+   * 而这个按钮的全部意义就是「让我看这句话在哪」。
+   */
+  it('点原文轮次会切回对话原文页签并滚到那一句', async () => {
+    questions = {
+      material_id: MATERIAL_ID,
+      questions: QUESTION_PACKAGE,
+      slot: null,
+      request_status: null,
+    }
+    renderPage()
+    await screen.findByRole('tab', { name: '题目预览' })
+    await userEvent.click(screen.getByRole('tab', { name: '题目预览' }))
+    await waitFor(() => expect(document.querySelector('.qp-turn')).not.toBeNull())
+    await userEvent.click(document.querySelectorAll('.qp-turn')[0] as HTMLElement)
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: '对话原文' })).toHaveAttribute(
+        'aria-selected',
+        'true',
+      ),
+    )
+    expect(document.querySelector('.exam-points')).not.toBeNull()
+  })
+})
+
+/* ── 没有题目的几种处境 ──────────────────────────────────────────────────── */
+
+describe('MaterialPage 题目预览的异常状态', () => {
+  async function openPreview() {
+    renderPage()
+    await screen.findByRole('tab', { name: '题目预览' })
+    await userEvent.click(screen.getByRole('tab', { name: '题目预览' }))
+  }
+
+  const slotBase = {
+    slot_id: 'slot-1',
+    scenario: 'accommodation-rental',
+    material_id: MATERIAL_ID,
+    created_at: 1_770_000_000,
+    resumable: true,
+    checkpointed: false,
+    system_fault: false,
+    last_failure: null,
+    attempts: { questions: 1 },
+  }
+
+  it('从没出过题时是一句中性的说明，不是一条报错', async () => {
+    await openPreview()
+    expect(await screen.findByText('暂无题目')).toBeInTheDocument()
+    // 中性语气走 info，不用 banner-bad：没有题是常态，画成红色会让人以为出了故障。
+    expect(document.querySelector('.banner-bad')).toBeNull()
+  })
+
+  it('还在出题时说「正在生成中」，并且不给「重新查看」按钮', async () => {
+    questions = {
+      material_id: MATERIAL_ID,
+      questions: null,
+      slot: { ...slotBase, state: 'questions_pending' },
+      request_status: 'running',
+    }
+    await openPreview()
+    expect(await screen.findByText(/题目正在生成中/)).toBeInTheDocument()
+    // 它会自己变好，所以不该出现一个让人反复点的按钮。
+    expect(screen.queryByRole('button', { name: '重新查看' })).toBeNull()
+  })
+
+  it('停在 checkpoint 时说清材料已存住、要等下一次运行', async () => {
+    questions = {
+      material_id: MATERIAL_ID,
+      questions: null,
+      slot: {
+        ...slotBase,
+        state: 'questions_pending',
+        checkpointed: true,
+        last_failure: { stage: 'questions', reason: 'time_budget' },
+      },
+      request_status: 'incomplete',
+    }
+    await openPreview()
+    expect(await screen.findByText(/出题已暂停/)).toBeInTheDocument()
+    expect(document.body.textContent).toContain('不会重新生成材料')
+  })
+
+  it('名额用尽与系统故障都画成红色，且说法不同', async () => {
+    questions = {
+      material_id: MATERIAL_ID,
+      questions: null,
+      slot: { ...slotBase, state: 'exhausted', resumable: false },
+      request_status: 'incomplete',
+    }
+    await openPreview()
+    expect(await screen.findByText(/候选材料已用尽/)).toBeInTheDocument()
+    expect(document.querySelector('.banner-bad')).not.toBeNull()
+  })
+
+  it('系统故障说明这不是材料质量问题', async () => {
+    questions = {
+      material_id: MATERIAL_ID,
+      questions: null,
+      slot: { ...slotBase, state: 'questions_pending', system_fault: true, resumable: false },
+      request_status: 'system_failure',
+    }
+    await openPreview()
+    expect(await screen.findByText(/系统故障中断/)).toBeInTheDocument()
+    expect(document.body.textContent).toContain('不是材料质量问题')
   })
 })

@@ -11,6 +11,7 @@
 //   node scripts/gen-fixtures.mjs           # write
 //   node scripts/gen-fixtures.mjs --check   # fail if output would change
 
+import { execFileSync } from 'node:child_process'
 import { readFile, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -47,7 +48,7 @@ const chunks = [
  * The explicit type annotations make tsc verify them against the frozen
  * schema-generated contract types.
  */
-import type { Audit, Blueprint, Material } from '@/contracts'
+import type { Audit, Blueprint, Material, QuestionPackage } from '@/contracts'
 `,
 ]
 
@@ -55,6 +56,35 @@ for (const t of FILES) {
   const data = JSON.parse(await readFile(resolve(fxDir, t.file), 'utf8'))
   chunks.push(`\nexport const ${t.name}: ${t.type} = ${JSON.stringify(data, null, 2)}\n`)
 }
+
+// The question package is not a committed fixture and deliberately is not one: `build_fixtures.py`
+// owns `fixtures/` and the package is assembled in memory from material_valid + blueprint_valid by
+// the 60-check suite's own helper (`run_tests._question_package`), which is also what
+// backend/tests/conftest.py imports. So it is generated the same way rather than copied: a
+// hand-written face here would be the frontend's own idea of the contract, and the one thing it
+// would be free to get wrong is the three-block separation this whole tab is built around.
+//
+// The mixed form/note/table group structure matters as much as the fields: it is what the tab's
+// three real layouts are checked against, and inventing it would mean inventing the shape of the
+// thing under test.
+const questionPackage = JSON.parse(
+  execFileSync(
+    'python3',
+    [
+      '-c',
+      [
+        'import json, sys',
+        `sys.path.insert(0, ${JSON.stringify(resolve(repoRoot, 'skills/shared/tests'))})`,
+        'import run_tests',
+        'print(json.dumps(run_tests._question_package(), ensure_ascii=False))',
+      ].join('\n'),
+    ],
+    { cwd: repoRoot, encoding: 'utf8' },
+  ),
+)
+chunks.push(
+  `\nexport const QUESTION_PACKAGE_VALID: QuestionPackage = ${JSON.stringify(questionPackage, null, 2)}\n`,
+)
 
 const next = chunks.join('')
 

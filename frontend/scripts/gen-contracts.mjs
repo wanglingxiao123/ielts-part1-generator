@@ -22,6 +22,7 @@ const outDir = resolve(here, '..', 'src/contracts')
 // Spelled out rather than globbed: a glob matching two subjects would pick one by directory order
 // and generate types for the wrong one.
 const GENERATE_SCHEMAS = 'skills/generate/generate-listening-part1/schemas'
+const QUESTION_SCHEMAS = 'skills/generate/generate-questions-part1/schemas'
 const AUDIT_SCHEMAS = 'skills/audit/audit-listening-part1/schemas'
 
 // The blueprint target is the READ schema, not blueprint.schema.json. The frontend RECEIVES
@@ -37,6 +38,16 @@ const TARGETS = [
   { dir: GENERATE_SCHEMAS, schema: 'material.schema.json', out: 'material.ts', root: 'Material' },
   { dir: GENERATE_SCHEMAS, schema: 'blueprint.read.schema.json', out: 'blueprint.ts', root: 'Blueprint' },
   { dir: AUDIT_SCHEMAS, schema: 'audit.schema.json', out: 'audit.ts', root: 'Audit' },
+  // The question package, for the 题目预览 tab. Generated for the same reason the other three are:
+  // the three-block separation (question_face / answer_key / evidence) is the whole point of that
+  // schema, and a hand-written mirror of it is a place where the candidate-visible block could
+  // quietly acquire a field from one of the other two.
+  {
+    dir: QUESTION_SCHEMAS,
+    schema: 'question_package.schema.json',
+    out: 'questions.ts',
+    root: 'QuestionPackage',
+  },
 ]
 
 const BANNER = [
