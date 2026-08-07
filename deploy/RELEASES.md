@@ -7,17 +7,27 @@
 
 ## 当前生产版本
 
-**`prod-20260805`** — Runtime version **17** + ECS taskdef **`ielts-part1-web:32`**
+**`prod-20260805` 的代码**，承载在 Runtime version **19** + ECS taskdef **`ielts-part1-web:32`**
 
-回退命令见 [`rollback.sh`](rollback.sh)：
+`prod-20260807`（Runtime 18 / taskdef 33）已于 2026-08-07 因验收失败回退，见台账与下方演练记录。
+
+**version 19 不是新功能，是 17 的镜像**：DEFAULT 端点无法被 `update-agent-runtime-endpoint`
+重新指向（见下方第二次演练），只能用 `update-agent-runtime` 重推旧镜像，而那必然产生新版本号。
+所以 19 与 17 的 `containerUri` 都是 `ielts-part1-backend:two-states-20260801`，字节相同。
+**看版本号推断不出线上代码是哪一版**，只能查 `containerUri`：
 
 ```bash
-bash deploy/rollback.sh --to prod-20260805 --dry-run   # 先看清，什么都不改
-bash deploy/rollback.sh --to prod-20260805
+aws bedrock-agentcore-control get-agent-runtime \
+  --agent-runtime-id ielts_part1_runtime-fA4wkq8nKf --agent-runtime-version 19 \
+  --query 'agentRuntimeArtifact.containerConfiguration.containerUri' --output text
 ```
 
-`prod-20260801`（taskdef :31）是上一个锚点，两者代码相同，只差
-`ALLOWED_EMAIL_DOMAINS`。除非需要临时放开域名限制，回退目标用 `prod-20260805`。
+回退命令见 [`rollback.sh`](rollback.sh)，但**它的 Runtime 分支目前是坏的**（同上）：
+
+```bash
+bash deploy/rollback.sh --to <tag> --dry-run   # 先看清，什么都不改
+bash deploy/rollback.sh --to <tag>             # web 层会成功，Runtime 层会 ConflictException
+```
 
 ## 台账
 
@@ -25,6 +35,8 @@ bash deploy/rollback.sh --to prod-20260805
 
 | 日期 | 镜像标签 | git commit | git tag | Runtime ver | taskdef | 说明 |
 |---|---|---|---|---|---|---|
+| 2026-08-07（晚） | `two-states-20260801`（回退，镜像未重建） | `fa598d9` 的代码 | — | **19**（= 17 的镜像） | **32** | **回退 `prod-20260807`**：验收 6 条里 2 条硬失败，5 次真实 invocation 一套都没交付。见下方第二次演练记录 |
+| 2026-08-07 | `question-sets-20260807`（backend + frontend 同 tag） | `c9b1709` | `prod-20260807` | 18（已下线） | 33（已下线） | 前端改发 `generate_sets`（题目自此真的会生成，此前 `_questions/` 一直为空）；出题的 13 个环节名与断点状态进入进度显示。两个产物同轮上线——线上旧镜像的 `web/app.py` 里 `material-questions` 出现 0 次，只部一半会让新页签调不存在的接口。**当日回退** |
 | 2026-08-05 | `two-states-20260801`（未变） | `fa598d9` | `prod-20260805` | 17（未变） | **32** | 仅收紧 `ALLOWED_EMAIL_DOMAINS`：`*` → `amazon.com,example.com`，镜像未重建。同时作为回退演练素材，见下方演练记录 |
 | 2026-08-01 | `two-states-20260801` | `380869a` | `prod-20260801` | 17 | 31 | 状态收到两个、撤回改为整批、候选保留期延到 30 天 |
 | 2026-07-31 | `agent-autonomy` | `a3bf922`（推定） | — | 16 | ~30 | Agent 自主性重写：Python 只做调度，模型步骤改为调预定义 Agent |
@@ -94,3 +106,36 @@ git push origin prod-<日期>
 - 未覆盖：**Runtime 层**没有实际切换（v17 就是目标，切了等于没切）。
   `update-agent-runtime-endpoint --agent-runtime-version` 的参数已核实存在，
   但真实切换要等下一次后端发布产生 v18 之后才能演练。这是当前唯一未经实测的分支。
+  → **2026-08-07 演练了，这个分支是坏的。见下。**
+
+### 2026-08-07 — 第二次演练（真回退，不是演习）
+
+`prod-20260807` 验收失败后按预案回退 18/33 → 17/32。**Runtime 层第一次真正切换**，也就是
+上一次留下的那个唯一未测分支。
+
+| # | 动作 | 结果 |
+|---|---|---|
+| 1 | `rollback.sh --to prod-20260805 --dry-run` | 正确识别 18→17、33→32 |
+| 2 | `rollback.sh --to prod-20260805` | web 层 **stable**；Runtime 层 **失败**，见下 |
+| 3 | 手工 `update-agent-runtime` 重推 `two-states-20260801` | 产生 version **19**，READY |
+| 4 | 核对 v19 的 `containerUri` | `ielts-part1-backend:two-states-20260801` —— 确是旧镜像 |
+| 5 | 核对线上 bundle（不是只看 `/healthz`） | `generate_sets`/`resumable_slots`/`questions_started`/断点文案 **各 0 次** |
+| 6 | `/healthz`、旧 session cookie | 200 / 0.85s；`/api/auth/me` **200**，用户不掉线 |
+| 7 | S3 核对 | `_batches/` 285、`_candidates/` 363、`_slots/` 13 未被删改 |
+
+**`rollback.sh` 的 Runtime 分支不能用。** 第 163 行调
+`update-agent-runtime-endpoint --agent-runtime-version`，AWS 直接拒绝：
+
+```
+ConflictException: Default endpoints are managed through agent updates.
+Please use the update agent operation.
+```
+
+上一次演练只核实了「这个参数存在」，没核实「对 DEFAULT 端点可用」——参数存在不等于这条路走得通，
+这正是未跑过的路径等于不存在的原因。而且它是**先 web 后 Runtime**，于是失败点把生产留在
+「web 已回退、Runtime 未回退」的半回退态，比两端任何一端都糟。修的时候要一起改这两件事：
+Runtime 分支换成 `update-agent-runtime`（代价是版本号只增不减，见「当前生产版本」一节），
+且顺序要能容忍中途失败。
+
+第 161 行的注释写着这样做是为了「版本列表保持真实历史，不积累 v19 = 旧 v17 的条目」——
+那个目标现在达不到了：唯一可用的回退手段必然产生新版本号，所以版本号不再能反推代码版本。
