@@ -427,6 +427,21 @@ export interface SseBatchDoneEvent {
   completed: number
   failed: number
   audit_rejected: number
+
+  /**
+   * 精确 N 套请求（`action: generate_sets`）才有的四个字段，普通批次上**缺席**而不是填零：
+   * `generate` 本来就允许少交付，给它一个 `incomplete` 等于把正常结果报成缺口。
+   *
+   * `incomplete` + 非空 `resumable_slots` 是 checkpoint：这一次运行时间用完了，进度存在 S3 里，
+   * 下一次运行接着做。它不是失败，页面不能画成失败。
+   *
+   * 类型里排掉 `running`：这是**终态**事件，而 `RequestStatus` 的 `running` 描述的是还在跑的请求。
+   * 用完整的 `RequestStatus` 会让「批次已结束」和「请求仍在进行」在类型上同时成立。
+   */
+  request_status?: Exclude<RequestStatus, 'running'>
+  requested?: number
+  delivered?: number
+  resumable_slots?: string[]
 }
 
 export interface SsePingEvent {

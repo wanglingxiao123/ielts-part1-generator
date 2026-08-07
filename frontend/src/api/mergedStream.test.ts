@@ -133,11 +133,15 @@ function mergedFrames(plan: Array<{ scenario: string; ok: boolean }>): string[] 
 
 /* ── the harness ──────────────────────────────────────────────────────────── */
 
+/** 发出去的每个 payload，按顺序。断言前端到底请求了哪个 action 用它。 */
+const sentPayloads: Array<Record<string, unknown>> = []
+
 /** Serves `frames` as the /invocations response; other actions answer the catalogue. */
 function installFanoutBackend(frames: string[], scenarios: string[]) {
   const original = globalThis.fetch
   globalThis.fetch = ((_url: RequestInfo | URL, init?: RequestInit) => {
     const body = init?.body ? (JSON.parse(String(init.body)) as { action?: string }) : {}
+    sentPayloads.push(body as Record<string, unknown>)
     if (body.action === 'list_scenarios') {
       return Promise.resolve(
         new Response(
@@ -205,6 +209,7 @@ describe('the merged fan-out stream', () => {
   beforeEach(() => {
     resetAgentCore()
     useBatchStore.getState().reset()
+    sentPayloads.length = 0
   })
 
   afterEach(() => {
@@ -240,6 +245,30 @@ describe('the merged fan-out stream', () => {
     })
     return created
   }
+
+  /**
+   * 前端请求的是 `generate_sets`，不是 `generate`。
+   *
+   * 这两个 action 承诺的东西不一样（backend/app.py §8.2）：`generate` 交材料，允许少交，**不出题**；
+   * `generate_sets` 交「材料 + 题目」整套、交足 N 套、并把卡位状态写进 `_slots/` 所以能断点续跑。
+   * 题目只在后一条路上存在——前端一直发 `generate`，是生产上 `_questions/` 一直空着的原因，而页面
+   * 那时已经有一个题目预览页在等一个永远不会来的东西。
+   *
+   * 顺带钉住 `batch_id` 不由前端发：它必须每个子调用唯一（`web/fanout.py` 的 `plan_children` 按
+   * `{batch}-{slot}` 现铸），前端塞一个进去会让 N 个子调用抢同一条记录。
+   */
+  it('asks for generate_sets, and leaves batch_id to the web tier', async () => {
+    await runBatch()
+    const invocations = sentPayloads.filter((p) => p.action !== 'list_scenarios')
+    expect(invocations.length).toBeGreaterThan(0)
+    for (const payload of invocations) {
+      expect(payload.action).toBe('generate_sets')
+      expect(payload).not.toHaveProperty('batch_id')
+      // 场景与套数照旧带上，否则「交足 N 套」无从谈起。
+      expect(payload.scenarios).toBeDefined()
+      expect(payload.counts).toBeDefined()
+    }
+  })
 
   it('accepts a batch well past the old ceiling of 6', async () => {
     // The exact submission the client was refused: 8 sets, no BATCH_LIMIT_EXCEEDED anywhere.

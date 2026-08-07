@@ -13,6 +13,7 @@ import type {
   BatchStatus,
   MaterialRecord,
   MaterialStage,
+  RequestStatus,
   SseEvent,
 } from '@/contracts/api'
 import { advancePhase, phaseOfProgress, type ProgressPhase } from '@/domain/progressStages'
@@ -80,6 +81,19 @@ export interface BatchState {
   lastError: string | null
   /** True once a disconnect happened — the UI must say it is in recovery. */
   degradedRecovery: boolean
+  /**
+   * 精确 N 套请求（`generate_sets`）的交付结论。普通批次上是 null。
+   *
+   * 单独存一份、不折进 `status`：`status: 'partial'` 说的是「有卡片没成」，而
+   * `request_status: 'incomplete'` + 非空 `resumableSlots` 说的是「这一次时间用完了，下一次接着
+   * 做」。两者在页面上要说完全不同的话，合成一个字段就没法区分了。
+   */
+  requestStatus: Exclude<RequestStatus, 'running'> | null
+  /** 下一次运行能接着做的卡位。非空 + `incomplete` 即 checkpoint。 */
+  resumableSlots: string[]
+  /** 请求要的套数与已交付套数，来自后端的 PLAN，不由这里数卡片。 */
+  requestedCount: number | null
+  deliveredCount: number | null
 }
 
 interface Actions {
@@ -114,6 +128,10 @@ const EMPTY: BatchState = {
   reconnectAttempt: 0,
   lastError: null,
   degradedRecovery: false,
+  requestStatus: null,
+  resumableSlots: [],
+  requestedCount: null,
+  deliveredCount: null,
 }
 
 export interface PersistedBatch {
@@ -266,6 +284,10 @@ export const useBatchStore = create<BatchState & Actions>((set, get) => ({
       let connection = s.connection
       let itemOrder = s.itemOrder
       let customLabel = s.customLabel
+      let requestStatus = s.requestStatus
+      let resumableSlots = s.resumableSlots
+      let requestedCount = s.requestedCount
+      let deliveredCount = s.deliveredCount
 
       switch (event.event) {
         case 'hello':
@@ -330,13 +352,19 @@ export const useBatchStore = create<BatchState & Actions>((set, get) => ({
           status = event.status
           connection = event.status === 'done' ? 'done' : 'partial'
           finishedAt = Date.now()
+          // 精确 N 套的结论按原样收下。`status` 不因此改变：`partial` 说的是卡片，
+          // `requestStatus` 说的是请求，页面要分别说它们（见 BatchState 的注释）。
+          if (event.request_status) requestStatus = event.request_status
+          if (event.resumable_slots) resumableSlots = event.resumable_slots
+          if (event.requested !== undefined) requestedCount = event.requested
+          if (event.delivered !== undefined) deliveredCount = event.delivered
           break
         case 'ping':
           break
       }
 
       return { seenSeqs, seqHigh, items, materials, status, connection, itemOrder, customLabel,
-               finishedAt }
+               finishedAt, requestStatus, resumableSlots, requestedCount, deliveredCount }
     })
     return true
   },

@@ -20,14 +20,31 @@
  */
 import type { MaterialStage } from '@/contracts/api'
 
-/** 客户写的顺序：生成→校验→修改→复评。 */
-export type ProgressPhase = 'writing' | 'checking' | 'revising' | 'reviewing'
+/**
+ * 客户写的顺序：生成→校验→修改→复评。后面三段是出题环节，`generate_sets` 才会走到。
+ *
+ * 出题为什么必须是**另外三段**、而不是复用前四段：一套材料合格之后，出题从零开始再走一遍
+ * 「写→审→改」。复用的话，用户会看到进度条从「复评」跳回「生成」——而 `advancePhase` 只前进
+ * 不后退，于是它压根不跳，整个出题阶段（可能好几分钟）进度条一动不动停在「复评」。
+ * 那正是这一版之前的真实表现。
+ */
+export type ProgressPhase =
+  | 'writing'
+  | 'checking'
+  | 'revising'
+  | 'reviewing'
+  | 'questioning'
+  | 'question_review'
+  | 'question_revising'
 
 export const PHASE_SEQUENCE: readonly ProgressPhase[] = [
   'writing',
   'checking',
   'revising',
   'reviewing',
+  'questioning',
+  'question_review',
+  'question_revising',
 ] as const
 
 export const PHASE_LABEL: Record<ProgressPhase, string> = {
@@ -35,6 +52,9 @@ export const PHASE_LABEL: Record<ProgressPhase, string> = {
   checking: '校验',
   revising: '修改',
   reviewing: '复评',
+  questioning: '出题',
+  question_review: '题目审核',
+  question_revising: '题目修订',
 }
 
 /**
@@ -47,6 +67,8 @@ const PHASE_BY_STAGE: Record<string, ProgressPhase | null> = {
   generating: 'writing',
   regenerating: 'writing',
   refilling: 'writing',
+  // `generate_sets` 每个卡位开头发的那一下。和 `generating` 同段：用户看到的是「开始写这一套了」。
+  material_started: 'writing',
   // 校验：确定性校验 + 锚点修复 + 评价方初评，用户眼里都是「在检查」。
   validating: 'checking',
   anchors_repaired: 'checking',
@@ -54,6 +76,26 @@ const PHASE_BY_STAGE: Record<string, ProgressPhase | null> = {
   audited: 'checking',
   revising: 'revising',
   re_auditing: 'reviewing',
+
+  // ── 出题环节（`action: generate_sets`）──
+  //
+  // 材料这一半到 `material_done` 为止，所以它归「复评」——那是材料的最后一段，不是出题的第一段。
+  // 出题自己的三段按第 1 条同样的规则折叠：写题（含被拒后重写）、审题（校验+盲审+交叉检查）、
+  // 改题。`question_set_clean` / `set_complete` 归「题目修订」而不是新开一段「完成」：进度条的
+  // 最后一段亮起就是完成，再加一段会让「跑完了」和「还剩一段」看起来一样。
+  material_done: 'reviewing',
+  questions_started: 'questioning',
+  question_generation_started: 'questioning',
+  questions_restarting: 'questioning',
+  questions_rejected: 'questioning',
+  question_validated: 'question_review',
+  question_cross_check: 'question_review',
+  question_revision_started: 'question_revising',
+  question_revision_skipped: 'question_revising',
+  question_set_clean: 'question_revising',
+  question_set_blocked: 'question_revising',
+  set_complete: 'question_revising',
+
   // 不出声的两个：见文件头第 2 条。
   infra_retry: null,
   refill_abandoned: null,
@@ -103,9 +145,21 @@ export function describeProgress(input: {
   /** 尚未产出材料的那些套里，走得最远的一段。 */
   phase: ProgressPhase | null
   finished: boolean
+  /**
+   * 这一次运行的时间用完了，余下的卡位在 S3 里等下一次接着做（`request_status: 'incomplete'`
+   * 且 `resumable_slots` 非空）。
+   *
+   * 必须单独告诉这个函数，不能从 `finished` + 差额推：断点的外观和真缺口**完全一样**
+   * （批次终态、`completed < total`），而下面那句「其余未能生成」会和页面上的断点提示直接对立
+   * ——一句说没做出来、一句说存住了待续，用户没法同时相信两句。
+   */
+  checkpointed?: boolean
 }): string {
   if (input.total > 0 && input.completed >= input.total) {
     return '全部生成完毕'
+  }
+  if (input.checkpointed) {
+    return '本次已结束，余下留有断点'
   }
   // 跑完了但没跑齐（partial）。说「已全部生成」会和页面上那几张红色的「生成异常」
   // 卡片直接矛盾，而矛盾比缺一句话更像 bug。

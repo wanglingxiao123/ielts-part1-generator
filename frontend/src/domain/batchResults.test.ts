@@ -136,8 +136,18 @@ describe('compare picking', () => {
 /* ── 内部环节 → 用户看到的四段 ────────────────────────────────────────────── */
 
 describe('progress phases', () => {
-  it('labels exactly the four phases the client asked for', () => {
-    expect(PHASE_SEQUENCE.map((p) => PHASE_LABEL[p])).toEqual(['生成', '校验', '修改', '复评'])
+  it('labels the four material phases then the three question phases, in that order', () => {
+    // 顺序不是排版偏好：`advancePhase` 只前进不后退，靠的就是这个数组的下标。出题排在材料四段
+    // 之后，因为它确实发生在材料通过之后；排前面会让出题事件到达时进度条拒绝前进。
+    expect(PHASE_SEQUENCE.map((p) => PHASE_LABEL[p])).toEqual([
+      '生成',
+      '校验',
+      '修改',
+      '复评',
+      '出题',
+      '题目审核',
+      '题目修订',
+    ])
   })
 
   it('maps every retry stage onto the phase it belongs to, never its own step', () => {
@@ -206,6 +216,25 @@ describe('progress phases', () => {
       expect(text).not.toMatch(/未过|重试|重新生成|失败|第 \d+ 次/)
       expect(text).not.toMatch(/\d/)
     }
+  })
+
+  /**
+   * 断点的形状和真缺口一模一样：批次终态、`completed < total`。所以「其余未能生成」必须由
+   * `checkpointed` 顶掉——否则同一页上一句说「没做出来、去补跑」，一句说「存住了、下一次接着做」。
+   */
+  it('说断点时不说未能生成', () => {
+    const shortfall = { completed: 1, total: 4, phase: null, finished: true }
+    expect(describeProgress(shortfall)).toBe('已结束，其余未能生成')
+
+    const checkpointed = describeProgress({ ...shortfall, checkpointed: true })
+    expect(checkpointed).toBe('本次已结束，余下留有断点')
+    expect(checkpointed).not.toMatch(/未能生成/)
+    // 数字仍归计数器，这句话一个都不带。
+    expect(checkpointed).not.toMatch(/\d/)
+    // 全部交付齐时「断点」无从谈起，不能因为这个标志就改口。
+    expect(describeProgress({ completed: 4, total: 4, phase: null, finished: true, checkpointed: true })).toBe(
+      '全部生成完毕',
+    )
   })
 })
 

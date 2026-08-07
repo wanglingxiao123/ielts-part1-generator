@@ -187,6 +187,23 @@ interface WireBatchCompleted {
   stage_timings?: Record<string, unknown>
   slots?: unknown[]
   at: number
+
+  /**
+   * Present only for an `action: generate_sets` batch, and absent rather than zeroed on a plain
+   * `generate` one — see `FanOut.request_status` in web/fanout.py: `generate` may legitimately
+   * deliver fewer materials than asked, so `incomplete` on one of its batches would report a normal
+   * outcome as a shortfall.
+   *
+   * `incomplete` with a non-empty `resumable_slots` is the checkpoint case: the invocation ran out
+   * of clock, the work is saved in S3, and the NEXT invocation continues it. That is not a failure
+   * and must not be drawn as one.
+   */
+  request_status?: 'succeeded' | 'incomplete' | 'system_failure'
+  requested?: number
+  delivered?: number
+  resumable_slots?: string[]
+  system_faults?: unknown[]
+  request_ids?: string[]
 }
 
 interface WireBatchFailed {
@@ -309,12 +326,39 @@ const STAGE_MAP: Record<string, MaterialStage> = {
   // A NOT_ASSESSABLE slot being silently re-run to fill the requested count. It
   // starts over, so it is a `generating` stage in §8 terms.
   refilling: 'generating',
+  material_started: 'generating',
   validating: 'validating',
   anchors_repaired: 'validating',
   auditing: 'auditing',
   audited: 'auditing',
   revising: 'revising',
   re_auditing: 're_auditing',
+
+  // ── the question stage (`action: generate_sets`) ──
+  //
+  // §8's six `MaterialStage` values describe producing a MATERIAL, and the question stage is not one
+  // of them: it runs after `material_done`, on a material that is already finished. Rather than widen
+  // that union — which would make every existing consumer handle values it has no rendering for —
+  // each question step maps onto the material stage whose *kind of work* it repeats: writing a set is
+  // `generating`, checking it is `validating`, auditing it is `auditing`, revising it is `revising`.
+  //
+  // The precise names still reach the UI: `progress.raw_stage` carries them verbatim, and
+  // `domain/progressStages.ts` maps them to the user-facing 出题/审核/修订 phases. This map exists so a
+  // card is not frozen on its last material stage for the whole question phase — before this, every
+  // name below fell through `?? previous` and the grid sat motionless for minutes.
+  material_done: 'validating',
+  questions_started: 'generating',
+  question_generation_started: 'generating',
+  // A question set the loop refused to deliver; the slot re-enters the stage on the same material.
+  questions_restarting: 'generating',
+  question_validated: 'validating',
+  question_cross_check: 'auditing',
+  question_revision_started: 'revising',
+  question_revision_skipped: 'revising',
+  question_set_clean: 're_auditing',
+  question_set_blocked: 're_auditing',
+  questions_rejected: 'generating',
+  set_complete: 're_auditing',
   // infra_retry / refill_abandoned keep whatever stage they interrupted;
   // handled at the call site.
 }
@@ -628,6 +672,11 @@ function applyWire(session: Session, wire: WireEvent): void {
         wire.skipped > 0 || wire.failed > 0 ? 'partial' : 'done'
       session.status = status
       session.done = true
+      // The exact-count fields, passed through and NOT re-derived. `request_status` is the web tier's
+      // fold of what the children reported about their own requests (web/fanout.py), and it knows
+      // things this frontend cannot see: a storage refusal or an absent validator makes a request
+      // `system_failure` while every slot state still looks merely unfinished. Recomputing it from
+      // `succeeded`/`failed` here would be a second, worse copy of that rule.
       emit(session, (seq) => ({
         event: 'batch_done',
         seq,
@@ -636,6 +685,10 @@ function applyWire(session: Session, wire: WireEvent): void {
         failed: wire.failed,
         audit_rejected: [...session.slots.values()].filter((s) => s.record?.audit_rejection)
           .length,
+        ...(wire.request_status ? { request_status: wire.request_status } : {}),
+        ...(wire.requested !== undefined ? { requested: wire.requested } : {}),
+        ...(wire.delivered !== undefined ? { delivered: wire.delivered } : {}),
+        ...(wire.resumable_slots ? { resumable_slots: wire.resumable_slots } : {}),
       }))
       break
     }
@@ -916,7 +969,18 @@ async function createBatch(body: CreateBatchRequest): Promise<CreateBatchRespons
     counts[r.scenario_key] = r.count
   }
 
-  const payload: Record<string, unknown> = { action: 'generate', scenarios, counts }
+  // `generate_sets`, not `generate`. The two are separate actions with different promises
+  // (backend/app.py §8.2): `generate` delivers MATERIALS and may deliver fewer than asked;
+  // `generate_sets` delivers complete material+question sets, exactly N of them, and is resumable
+  // across invocations because it persists slot state under `_slots/`. Questions only exist on this
+  // path — asking for `generate` and then opening 题目预览 finds `_questions/` empty forever, which
+  // is exactly what it did before this line changed.
+  //
+  // No `batch_id` here even though the action requires one. It must be unique PER CHILD, since each
+  // child's slot record is keyed on it and every child calls its own slot `slot-1`; the web tier
+  // therefore mints `{batch}-{slot}` per child plus a shared `group_id` (web/fanout.py's
+  // `plan_children`). A single id chosen here would have N children overwriting one record.
+  const payload: Record<string, unknown> = { action: 'generate_sets', scenarios, counts }
   if (custom) payload.custom_scenario = custom
 
   // The batch id comes from the BACKEND, and getting it is why this awaits before building

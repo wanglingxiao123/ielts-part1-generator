@@ -671,6 +671,14 @@ export function BatchProgressPage() {
 
   const completed = groups.reduce((n, g) => n + g.arrived, 0)
   const finished = batchFinished
+  /**
+   * checkpoint：请求没交付齐，而余下的卡位后端说得出「下一次能接着做」。
+   *
+   * 两个条件都要，缺一不可——`incomplete` 且 `resumable_slots` 为空是**不可续做**的缺口
+   * （比如候选材料用尽），那种情况该走下面的「未能生成」，不该说「下一次接着做」。
+   */
+  const checkpointed =
+    store.requestStatus === 'incomplete' && store.resumableSlots.length > 0
   const scenarioCount = groups.length
   const perScenario = groups[0]?.slots.length ?? 0
   /** 计划总套数。骨架期 store.total 已经有值，所以进度条一开始就说得出分母。 */
@@ -812,7 +820,13 @@ export function BatchProgressPage() {
           ) : (
             <>
               <span>
-                {describeProgress({ completed, total: plannedTotal, phase: activePhase, finished })}
+                {describeProgress({
+                  completed,
+                  total: plannedTotal,
+                  phase: activePhase,
+                  finished,
+                  checkpointed,
+                })}
               </span>
               {!finished && <PhaseTrack phase={activePhase} finished={false} />}
             </>
@@ -889,9 +903,32 @@ export function BatchProgressPage() {
       {/* 连接状态只对活批次有意义：历史批次没有流可断。 */}
       {isLiveBatch && <ConnectionBanner onRetry={stream.retryNow} />}
 
+      {/* checkpoint：这一次运行的时间用完了，进度在 S3 里，下一次运行接着做。
+          必须排在下面那条「未能生成」之前并把它挡掉——同一批次两者的条件会同时成立
+          （status 是 partial、pending 非空），而把「存住了、待续」说成「没生成出来、要补跑」
+          会让人去重跑一批已经做完一半的活。 */}
+      {isLiveBatch && checkpointed && (
+        <div className="banner banner-info">
+          <strong>本次运行时间用完，已存断点</strong>
+          <div>
+            已交付 {store.deliveredCount ?? completed} / {store.requestedCount ?? store.total} 套。
+            余下 {store.resumableSlots.length} 套的进度已经存住，下一次运行会从断点继续，
+            <strong>不会重新生成已经通过的材料</strong>。这一页不用一直等。
+          </div>
+        </div>
+      )}
+
+      {/* 系统故障：不是材料质量问题，重跑也不会好。 */}
+      {isLiveBatch && store.requestStatus === 'system_failure' && (
+        <div className="banner banner-bad">
+          <strong>出题因系统故障中断</strong>
+          <div>这不是材料质量问题，需要有人查看后端日志；在这一页重试不会有帮助。</div>
+        </div>
+      )}
+
       {/* 「有几套没生成出来」是结果，不是环节：这里只说数量和补生成的入口，
           不再逐套播报它卡在哪个内部环节、试了几次。 */}
-      {isLiveBatch && store.status === 'partial' && pending.length > 0 && (
+      {isLiveBatch && !checkpointed && store.status === 'partial' && pending.length > 0 && (
         <div className="banner banner-warn">
           <strong>有 {pending.length} 套未能生成</strong>
           <div>

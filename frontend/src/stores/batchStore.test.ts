@@ -11,7 +11,9 @@ import type { SseEvent } from '@/contracts/api'
 
 import { useBatchStore } from './batchStore'
 
-function done(seq: number, status: 'done' | 'partial'): SseEvent {
+// 具体那一支，不是 `SseEvent` 联合：下面几处要 `{...done(1,'partial'), request_status: …}`，
+// 而展开一个联合类型后 TS 只认所有分支的公共字段。
+function done(seq: number, status: 'done' | 'partial'): Extract<SseEvent, { event: 'batch_done' }> {
   return {
     event: 'batch_done',
     seq,
@@ -80,5 +82,95 @@ describe('finishedAt', () => {
     initOneSlot()
 
     expect(useBatchStore.getState().finishedAt).toBeNull()
+  })
+})
+
+/**
+ * 精确 N 套请求（`generate_sets`）的交付结论。
+ *
+ * 这一组守的是「断点不是失败」。一次 invocation 的时钟用完时，后端把已通过的材料存进 S3、
+ * 回一个 `request_status: 'incomplete'` 加上非空 `resumable_slots`，下一次接着做。它和
+ * 「有卡片没做出来」是两件事，页面上要说完全不同的话——所以这几个字段单独存，不折进 `status`。
+ */
+describe('generate_sets 的交付结论', () => {
+  beforeEach(() => {
+    initOneSlot()
+  })
+
+  it('新批次上这些字段是空的，不是 0', () => {
+    // 0 会被读成「一套都没交」。普通 `generate` 批次不带这些字段，必须区分得开。
+    const s = useBatchStore.getState()
+    expect(s.requestStatus).toBeNull()
+    expect(s.resumableSlots).toEqual([])
+    expect(s.requestedCount).toBeNull()
+    expect(s.deliveredCount).toBeNull()
+  })
+
+  it('checkpoint：收下 incomplete 与可续跑卡位，而 status 仍按卡片说话', () => {
+    useBatchStore.getState().applyEvent({
+      ...done(1, 'partial'),
+      request_status: 'incomplete',
+      requested: 3,
+      delivered: 1,
+      resumable_slots: ['slot-2', 'slot-3'],
+    })
+
+    const s = useBatchStore.getState()
+    expect(s.requestStatus).toBe('incomplete')
+    expect(s.resumableSlots).toEqual(['slot-2', 'slot-3'])
+    expect(s.requestedCount).toBe(3)
+    expect(s.deliveredCount).toBe(1)
+    // 两句话同时成立：卡片层面 partial，请求层面「没跑完但存了断点」。
+    expect(s.status).toBe('partial')
+  })
+
+  it('交付数按后端的计划收，不由本地数卡片', () => {
+    // 本地只有 1 张卡（initOneSlot），后端说要 3 套交了 3 套——以后端为准。
+    useBatchStore.getState().applyEvent({
+      ...done(1, 'done'),
+      request_status: 'succeeded',
+      requested: 3,
+      delivered: 3,
+    })
+
+    const s = useBatchStore.getState()
+    expect(s.requestStatus).toBe('succeeded')
+    expect(s.deliveredCount).toBe(3)
+    expect(s.resumableSlots).toEqual([])
+  })
+
+  it('system_failure 照原样收下，不改写成 incomplete', () => {
+    // 成因（存储拒写、审核器缺失）前端看不见，所以这个判断只能由 web 层给，不能本地推。
+    useBatchStore.getState().applyEvent({
+      ...done(1, 'partial'),
+      request_status: 'system_failure',
+      requested: 2,
+      delivered: 0,
+      resumable_slots: [],
+    })
+
+    expect(useBatchStore.getState().requestStatus).toBe('system_failure')
+  })
+
+  it('普通 generate 批次不会凭空得到一个交付结论', () => {
+    useBatchStore.getState().applyEvent(done(1, 'done'))
+
+    const s = useBatchStore.getState()
+    expect(s.requestStatus).toBeNull()
+    expect(s.requestedCount).toBeNull()
+  })
+
+  it('开新批次时清空上一批的交付结论', () => {
+    useBatchStore.getState().applyEvent({
+      ...done(1, 'partial'),
+      request_status: 'incomplete',
+      resumable_slots: ['slot-2'],
+    })
+
+    initOneSlot()
+
+    const s = useBatchStore.getState()
+    expect(s.requestStatus).toBeNull()
+    expect(s.resumableSlots).toEqual([])
   })
 })

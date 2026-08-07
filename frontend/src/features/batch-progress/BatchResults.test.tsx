@@ -267,6 +267,86 @@ describe('internal stage wording never reaches the user', () => {
   })
 })
 
+/* ── 1b. 断点 ≠ 失败 ─────────────────────────────────────────────────────── */
+
+/**
+ * `generate_sets` 的三种收尾在页面上说三句不同的话。
+ *
+ * 最要紧的是 checkpoint 那一句。一次 invocation 的时钟用完时，`status` 是 `partial`、`pending`
+ * 非空——和「有几套没生成出来」的条件**完全重合**。若两条 banner 同时出现，用户会去点「补生成」，
+ * 而那是重跑一批已经做完一半的活；真正该说的是「存住了，下一次接着做，不会重新生成已通过的材料」。
+ */
+describe('generate_sets 的收尾', () => {
+  /** 一半交付、一半留断点：真实 checkpoint 的形状。 */
+  function halfDeliveredThen(tail: Record<string, unknown>) {
+    startBatch(TWO_SCENARIOS)
+    deliver(
+      buildRecord('balanced', {
+        materialId: 'm1',
+        batchId: BATCH,
+        scenarioKey: 'accommodation-rental',
+        index: 0,
+      }),
+    )
+    apply({
+      event: 'batch_done',
+      status: 'partial',
+      completed: 1,
+      failed: 0,
+      audit_rejected: 0,
+      ...tail,
+    } as never)
+  }
+
+  it('断点说的是「下一次接着做」，并把「未能生成」那条挡掉', () => {
+    halfDeliveredThen({
+      request_status: 'incomplete',
+      requested: 4,
+      delivered: 1,
+      resumable_slots: ['slot-2', 'slot-3', 'slot-4'],
+    })
+    renderPage()
+
+    expect(screen.getByText(/本次运行时间用完，已存断点/)).toBeInTheDocument()
+    expect(screen.getByText(/不会重新生成已经通过的材料/)).toBeInTheDocument()
+    // 交付数来自后端的计划，不是本地数出来的卡片数。
+    expect(screen.getByText(/已交付 1 \/ 4 套/)).toBeInTheDocument()
+    // 这一条是这个测试真正守的东西：两句话不能同时出现。「未能生成」在这一页有两处出口
+    // ——banner 和进度条那行说明文字——断点时两处都不能说它。
+    expect(screen.queryByText(/未能生成/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /补生成/ })).not.toBeInTheDocument()
+    expect(screen.getByText(/本次已结束，余下留有断点/)).toBeInTheDocument()
+  })
+
+  it('可续跑卡位为空的 incomplete 不算断点：那是补不回来的缺口', () => {
+    // 「时间用完了、存住了」和「候选材料用尽、这几套做不出来」是两回事。后者要给补生成入口。
+    halfDeliveredThen({ request_status: 'incomplete', requested: 4, delivered: 1, resumable_slots: [] })
+    renderPage()
+
+    expect(screen.queryByText(/已存断点/)).not.toBeInTheDocument()
+    expect(screen.getByText(/有 3 套未能生成/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /补生成/ })).toBeInTheDocument()
+  })
+
+  it('系统故障说清「重试没用」，不混进材料质量', () => {
+    halfDeliveredThen({ request_status: 'system_failure', requested: 4, delivered: 1 })
+    renderPage()
+
+    expect(screen.getByText(/出题因系统故障中断/)).toBeInTheDocument()
+    expect(screen.getByText(/不是材料质量问题/)).toBeInTheDocument()
+  })
+
+  it('普通 generate 批次一条都不出：这些字段它根本不带', () => {
+    startBatch(TWO_SCENARIOS)
+    deliverAll(TWO_SCENARIOS)
+    renderPage()
+
+    const body = document.body.textContent ?? ''
+    expect(body).not.toContain('已存断点')
+    expect(body).not.toContain('系统故障')
+  })
+})
+
 /* ── 2. 版式 ─────────────────────────────────────────────────────────────── */
 
 describe('layout', () => {

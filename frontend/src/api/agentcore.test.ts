@@ -121,6 +121,64 @@ describe('stage mapping', () => {
     }
   })
 
+  /**
+   * 出题阶段的环节名。
+   *
+   * 这一组钉的是一个**不会报错的**故障：出题环节名没被映射时，`mapStage` 和 `phaseOfStage` 都
+   * 走 `?? previous` / `?? null`，于是卡片和进度条静静地停在材料的最后一段，而后端正在跑好几分钟
+   * 的出题、审题、改题。页面不报错、控制台不出声、测试全绿——只有人盯着一个不动的进度条。
+   */
+  const QUESTION_STAGES = [
+    'questions_started',
+    'question_generation_started',
+    'question_validated',
+    'question_cross_check',
+    'question_revision_started',
+    'question_revision_skipped',
+    'question_set_clean',
+    'question_set_blocked',
+    'questions_restarting',
+    'questions_rejected',
+    'set_complete',
+    'material_done',
+    'material_started',
+  ]
+
+  it('每个出题环节名都落在一个已知的 §8 stage 上，不靠 previous 兜底', () => {
+    for (const name of QUESTION_STAGES) {
+      // 用一个哨兵作 previous：映射缺失时函数会把它原样还回来，于是这一条失败。
+      expect(mapStage(name, 'queued'), name).not.toBe('queued')
+    }
+  })
+
+  it('每个出题环节名都落在一段用户看得见的进度上', () => {
+    for (const name of QUESTION_STAGES) {
+      expect(phaseOfStage(name), name).not.toBeNull()
+    }
+  })
+
+  it('出题的三段排在材料四段之后，所以材料跑完进出题时进度条继续前进', () => {
+    // 真实顺序：材料复评 → 出题 → 审题 → 改题。advancePhase 只前进不后退，所以「继续前进」
+    // 这件事完全取决于出题三段的下标在材料四段之后。
+    let phase = advancePhase(null, phaseOfStage('re_auditing'))
+    expect(phase).toBe('reviewing')
+    for (const [name, expected] of [
+      ['questions_started', 'questioning'],
+      ['question_validated', 'question_review'],
+      ['question_revision_started', 'question_revising'],
+    ] as const) {
+      phase = advancePhase(phase, phaseOfStage(name))
+      expect(phase, name).toBe(expected)
+    }
+  })
+
+  it('出题被拒后重写不算倒退：仍停在已到过的最远一段', () => {
+    // 一套题被判不可交付 → 同一材料重新出题。用户眼里这和第一次出题没区别，
+    // 而进度条不能从「题目修订」跳回「出题」。
+    const at = advancePhase('question_revising', phaseOfStage('questions_restarting'))
+    expect(at).toBe('question_revising')
+  })
+
   it('never shows a retry as a step backwards', () => {
     // 校验 → 重新生成 → 校验 must read as "still checking", not "back to writing":
     // the user cannot act on the system retrying itself.
@@ -133,10 +191,13 @@ describe('stage mapping', () => {
   })
 
   it('exposes no internal stage name as user-facing copy', () => {
+    // 材料四段 + 出题三段。出题那三段是 `generate_sets` 才走到的，加在末尾而不是插进去：
+    // 出题发生在材料通过之后，进度条的顺序必须和真实先后一致。
     const labels = Object.values(PHASE_LABEL)
-    expect(labels).toEqual(['生成', '校验', '修改', '复评'])
+    expect(labels).toEqual(['生成', '校验', '修改', '复评', '出题', '题目审核', '题目修订'])
+    // 这一条才是这个测试真正守的东西：标签是给用户看的话，不是内部环节名。
     for (const label of labels) {
-      expect(label).not.toMatch(/未过|重试|失败|regenerat|retry|refill/i)
+      expect(label).not.toMatch(/未过|重试|失败|regenerat|retry|refill|question|_/i)
     }
   })
 })
