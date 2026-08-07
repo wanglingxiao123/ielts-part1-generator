@@ -34,9 +34,11 @@ from backend.deterministic.question_crosscheck import (  # noqa: E402
 )
 from backend.orchestration.question_loop import (  # noqa: E402
     QuestionCandidate,
+    QuestionResult,
     ScriptWasEdited,
     SEVERITY_ORDER,
     _assert_script_untouched,
+    delivery_blockers,
     is_clean_questions,
     pick_better_questions,
 )
@@ -545,6 +547,102 @@ class TestTheRankingIsLexicographicNotWeighted:
         assert not is_clean_questions(candidate)
 
 
+class TestTheDeliveryGate:
+    """``question_qc_status`` is not a delivery gate. All four conditions are required together.
+
+    The class exists because the dangerous case is a review that says PASS. Every test here builds a
+    set the status alone would wave through, and asserts that the gate does not.
+    """
+
+    @staticmethod
+    def _candidate(package, material, review, errors=(), warnings=(), label="initial"):
+        from backend.deterministic.question_crosscheck import (
+            QuestionCrossCheckResult, crosscheck_questions)
+        from backend.deterministic.validate import ValidationResult
+        cross = crosscheck_questions(package, review, material)
+        return QuestionCandidate(package, review, cross,
+                                 ValidationResult(list(errors), list(warnings), {}), label)
+
+    def test_a_fully_clean_set_is_deliverable(self, question_package, material):
+        candidate = self._candidate(question_package, material, _review(question_package))
+        assert delivery_blockers(candidate) == []
+        assert is_clean_questions(candidate)
+
+    def test_a_pass_status_does_not_clear_a_cross_check_divergence(
+            self, question_package, material):
+        """The headline requirement: status PASS, and the set is still not deliverable."""
+        review = _review(question_package)
+        review["reconstructed_answers"][0]["answer"] = "name"
+        candidate = self._candidate(question_package, material, review)
+        assert candidate.status == "PASS"
+        assert not is_clean_questions(candidate)
+        assert any("answer_divergence" in line for line in delivery_blockers(candidate))
+
+    def test_a_validator_error_blocks_a_passing_review(self, question_package, material):
+        candidate = self._candidate(question_package, material, _review(question_package),
+                                    errors=["QR-021: two answers share a carrier"])
+        assert candidate.status == "PASS"
+        assert any("validator error" in line for line in delivery_blockers(candidate))
+
+    def test_a_nine_of_ten_review_cannot_be_delivered(self, question_package, material):
+        """Coverage is read from the recompute, not from the review's claim about itself."""
+        review = _review(question_package)
+        review["reconstructed_answers"] = review["reconstructed_answers"][:9]
+        review["coverage"]["reviewed_question_ids"] = list(range(1, 10))
+        candidate = self._candidate(question_package, material, review)
+        blockers = delivery_blockers(candidate)
+        assert any("not all ten items" in line for line in blockers)
+
+    def test_nine_of_ten_agreement_blocks_even_with_no_hard_defect(
+            self, question_package, material):
+        """An adjacent anchor is not agreement, so 9/10 agreed is not a deliverable 10/10."""
+        review = _review(question_package)
+        row = review["reconstructed_answers"][2]
+        row["turn_index"] = row["turn_index"] + 1
+        turns = material["listening_material_parts"][0]["script"]["turns"]
+        row["quote"] = turns[row["turn_index"]]["text"][:15]
+        candidate = self._candidate(question_package, material, review)
+        assert candidate.cross_check.hard_defects == []      # nothing hard...
+        assert candidate.cross_check.needs_review            # ...but not agreement either
+        blockers = delivery_blockers(candidate)
+        assert any("agrees on 9 of 10" in line for line in blockers)
+        assert not is_clean_questions(candidate)
+
+    def test_a_validator_warning_blocks_and_says_so_verbatim(self, question_package, material):
+        """The deliberate strictness, pinned so a future relaxation is a visible decision.
+
+        This is the condition that can send an otherwise clean set to REGENERATE_MATERIAL: the QR-026
+        ceiling warning fires when a set is AT a legal limit, and the real material carries it. The test
+        asserts the blocker quotes the warning, because the cost of this choice must be legible in the
+        failure detail rather than looking like a real defect.
+        """
+        warning = "end-of-line blanks are at the QR-026 ceiling (7 of 10); one more would fail"
+        candidate = self._candidate(question_package, material, _review(question_package),
+                                    warnings=[warning])
+        blockers = delivery_blockers(candidate)
+        assert blockers == ["validator warning: %s" % warning]
+        assert not is_clean_questions(candidate)
+
+    def test_every_blocker_is_reported_not_just_the_first(self, question_package, material):
+        review = _review(question_package, [_finding(2, "MAJOR")])
+        review["reconstructed_answers"][0]["answer"] = "name"
+        review["reconstructed_answers"][0]["derivable_without_recording"] = True
+        candidate = self._candidate(question_package, material, review, errors=["QR-021"])
+        blockers = delivery_blockers(candidate)
+        assert len(blockers) >= 4
+        assert any("MAJOR" in b for b in blockers)
+        assert any("answer_divergence" in b for b in blockers)
+        assert any("printed page" in b for b in blockers)
+        assert any("validator error" in b for b in blockers)
+
+    def test_a_failed_result_cannot_be_built_with_a_deliverable_candidate(
+            self, question_package, material):
+        candidate = self._candidate(question_package, material, _review(question_package))
+        with pytest.raises(ValueError) as exc:
+            QuestionResult(False, candidate=candidate)
+        assert "rejected_candidate" in str(exc.value)
+
+
 class TestTheScriptCannotBeRevised:
     """SR-021. The audio may already exist, so a script edit does not fix an item."""
 
@@ -629,19 +727,99 @@ class TestTheLoopWiring:
         harness.reviews = [defective, _review(question_package)]
         result = await run_questions(harness.material, harness.blueprint)
         assert harness.calls == ["generate", "validate", "audit", "revise", "validate", "audit"]
-        assert result.selected_version == "revised"
+        assert result.ok
+        assert result.selected_version == "revised-1"
+        assert result.rounds == 1
         assert harness.instruction.must_fix
 
     @pytest.mark.asyncio
-    async def test_a_revision_that_makes_things_worse_is_discarded(
+    async def test_a_second_round_runs_when_the_first_revision_is_still_blocked(
             self, harness, question_package):
+        """The change this contract is for: round one improves the set but does not clear it."""
+        from backend.orchestration.question_loop import run_questions
+
+        harness.reviews = [
+            _review(question_package, [_finding(1, "MAJOR"), _finding(8, "MAJOR")]),
+            _review(question_package, [_finding(8, "MINOR")]),   # Q1 fixed, Q8 downgraded
+            _review(question_package),                            # Q8 cleared
+        ]
+        result = await run_questions(harness.material, harness.blueprint)
+        assert harness.calls == ["generate", "validate", "audit",
+                                 "revise", "validate", "audit",
+                                 "revise", "validate", "audit"]
+        assert result.ok
+        assert result.selected_version == "revised-2"
+        assert result.rounds == 2
+
+    @pytest.mark.asyncio
+    async def test_the_loop_stops_at_two_revisions_and_asks_for_a_new_material(
+            self, harness, question_package):
+        from backend.orchestration.question_loop import (
+            MAX_QUESTION_REVISIONS, QUESTIONS_NOT_DELIVERABLE, run_questions)
+        from backend.deterministic.feasibility import REGENERATE_MATERIAL
+
+        harness.reviews = [_review(question_package, [_finding(1, "MAJOR")]) for _ in range(3)]
+        result = await run_questions(harness.material, harness.blueprint)
+        assert harness.calls.count("revise") == MAX_QUESTION_REVISIONS
+        assert harness.calls.count("audit") == MAX_QUESTION_REVISIONS + 1
+        assert not result.ok
+        assert result.reason == QUESTIONS_NOT_DELIVERABLE
+        assert result.outcome == REGENERATE_MATERIAL
+        assert result.rounds == 2
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_set_is_never_reachable_as_a_delivered_one(
+            self, harness, question_package):
+        """The contract's core prohibition: no "current best but still defective" delivery.
+
+        Asserted on the attribute a caller would actually read to ship, not on the flag it is supposed
+        to check first -- because the failure being designed out is a forgotten ``if result.ok``.
+        """
+        from backend.orchestration.question_loop import run_questions
+
+        harness.reviews = [_review(question_package, [_finding(1, "CRITICAL")]) for _ in range(3)]
+        result = await run_questions(harness.material, harness.blueprint)
+        assert result.candidate is None
+        assert result.rejected_candidate is not None
+        assert result.blockers
+        payload = result.as_dict()
+        assert payload["ok"] is False
+        assert "package" not in payload
+        assert payload["rejected_candidate"]["package"] is not None
+
+    @pytest.mark.asyncio
+    async def test_a_revision_that_makes_things_worse_does_not_become_the_verdict(
+            self, harness, question_package):
+        """``pick_better_questions`` keeps the better DIAGNOSIS; neither version is delivered."""
         from backend.orchestration.question_loop import run_questions
 
         harness.reviews = [_review(question_package, [_finding(1, "MINOR")]),
+                           _review(question_package, [_finding(1, "CRITICAL")]),
                            _review(question_package, [_finding(1, "CRITICAL")])]
         result = await run_questions(harness.material, harness.blueprint)
-        assert result.selected_version == "initial"
-        assert result.candidate.status == "WARNING"
+        assert not result.ok
+        # The initial WARNING set is the least defective of the three and is what the report carries.
+        assert result.rejected_candidate.label == "initial"
+        assert result.rejected_candidate.status == "WARNING"
+
+    @pytest.mark.asyncio
+    async def test_an_unactionable_blocker_stops_the_loop_without_delivering(
+            self, harness, question_package):
+        """Blocked with an empty instruction used to DELIVER. It must now refuse.
+
+        A validator error the instruction builder does not translate into prose leaves nothing to ask
+        for -- which is not evidence the defect is gone.
+        """
+        from backend.deterministic.validate import ValidationResult
+        from backend.orchestration.question_loop import run_questions
+
+        harness.validation = ValidationResult(["QR-021: two answers share a carrier"], [], {})
+        harness.reviews = [_review(question_package)]
+        result = await run_questions(harness.material, harness.blueprint)
+        assert harness.calls == ["generate", "validate", "audit"]
+        assert not result.ok
+        assert result.rounds == 0
+        assert any("QR-021" in line for line in result.blockers)
 
     @pytest.mark.asyncio
     async def test_the_auditor_never_receives_the_answer_key(self, harness, question_package):
@@ -679,11 +857,17 @@ class TestTheLoopWiring:
         from backend.orchestration.question_loop import run_questions
 
         harness.validation = ValidationResult([], ["a band deviation"], {})
+        # Three reviews, not two: the warning itself blocks delivery, so both rounds run even though
+        # the audit comes back clean. That is the QR-026-ceiling behaviour pinned in
+        # TestTheDeliveryGate, seen here from the loop's side.
         harness.reviews = [_review(question_package, [_finding(1, "MAJOR")]),
+                           _review(question_package),
                            _review(question_package)]
-        await run_questions(harness.material, harness.blueprint)
+        result = await run_questions(harness.material, harness.blueprint)
         assert any("band deviation" in line for line in harness.instruction.advisory)
         assert not any("band deviation" in line for line in harness.instruction.must_fix)
+        assert not result.ok
+        assert result.blockers == ["validator warning: a band deviation"]
 
 
 class TestTheQuestionEnvelope:

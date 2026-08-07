@@ -1,7 +1,8 @@
 """The deterministic loop for one material's ten questions (the question-stage twin of :mod:`loop`).
 
     generate -> validate -> blind audit -> cross-check (pure Python)
-      -> revise -> validate -> blind re-audit (memoryless) -> cross-check -> pick_better -> deliver
+      -> [ revise -> validate -> blind re-audit (memoryless) -> cross-check ] x up to 2
+      -> deliver the first round that clears every gate, or REGENERATE_MATERIAL
 
 Every branch is a Python ``if`` here, for the reason the material loop states and this stage makes
 sharper: the model is never asked whether its questions are answerable. It cannot be -- the auditor
@@ -16,15 +17,33 @@ script before and after -- not because the generator is expected to disobey, but
 fix for a leaked answer or a second defensible answer is easier to make in the script than in the
 question, and a script edit here does not fail: it silently invalidates audio that already exists.
 
-**No regeneration path.** The material loop retries generation when the validator reports errors,
-because a script with structural errors is worth replacing. A question set with validator errors is
-not in the same position: the ten information points are fixed by the blueprint, so a second attempt
-draws from exactly the same well, and the defects this stage finds (an answer available on the page, a
-rival reading) are editing problems with a known fix -- the auditor supplies one. So errors flow into
-the revision instruction and the loop runs once. A set that is still defective after revision is
-delivered with its findings attached, which is the same choice the material loop made for the same
-reason: withholding it makes the defect unappealable and unseen, while delivering it with the review
-makes it a note a reviewer can weigh.
+**This stage does not deliver its best effort, and that is the difference from the material loop.**
+There, a material that still carries findings after revision is delivered with them attached, because
+withholding it makes the defect unappealable while delivering it makes the finding a note a reviewer
+can weigh. A question set has no equivalent reading. Its defects are not editorial opinions -- an
+answer available on the printed page, a second equally-supported answer, a rebuilt answer the key
+would mark wrong -- and every one of them is a candidate being graded against something the paper does
+not support. There is no reviewer downstream who benefits from seeing that in a delivered set; the
+grading has already happened by then. So the exits are: clear every gate and deliver, or return
+:data:`REGENERATE_MATERIAL` and let the replacement slot draw a different material.
+
+**Up to two targeted revisions, each judged on its own full evidence.** Every round runs the whole
+deterministic chain -- validator, blind audit, cross-check -- so a round is never accepted on the
+strength of the previous round's review, and a fix that repairs one item while breaking another is
+seen. The first round that clears every gate is delivered immediately: continuing would spend a call
+to look for defects that have already been shown absent, and would risk replacing a clean set.
+
+**Two is a budget, not a convergence claim.** The ten information points are fixed by the blueprint,
+so successive rounds redraw from the same well; a third round is not obviously better than a different
+material, and the measured cost of a round is ~100-120s of model time. Where the second round still
+leaves a hard defect, the honest answer is that this material's questions are hard to make fair, which
+is what :data:`REGENERATE_MATERIAL` says.
+
+**``pick_better_questions`` no longer chooses what to ship.** It survives to keep the best-diagnosed
+candidate for the failure report, and nothing more. Ranking says which of two defective sets is less
+defective; it has never said either is deliverable, and on the failure path the winner is reachable
+only through ``rejected_candidate`` -- never through ``candidate``, which is the attribute a caller
+reads to ship.
 """
 
 from __future__ import annotations
@@ -32,6 +51,7 @@ from __future__ import annotations
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from ..deterministic.feasibility import REGENERATE_MATERIAL
 from ..deterministic.question_crosscheck import crosscheck_questions
 from ..deterministic.question_metrics import question_metrics
 from ..deterministic.validate_questions import validate_questions
@@ -40,10 +60,14 @@ from .loop import _noop_emit, _with_infra_retries
 from .question_revision_plan import build_question_revise_instruction
 
 __all__ = [
+    "MAX_QUESTION_REVISIONS",
+    "QUESTION_NUMBERS",
+    "QUESTIONS_NOT_DELIVERABLE",
     "QuestionCandidate",
     "QuestionResult",
     "SEVERITY_ORDER",
     "ScriptWasEdited",
+    "delivery_blockers",
     "is_clean_questions",
     "pick_better_questions",
     "run_questions",
@@ -51,6 +75,29 @@ __all__ = [
 
 # Most severe first. The order IS the ranking, which is why it is a tuple and not a set.
 SEVERITY_ORDER = ("CRITICAL", "MAJOR", "MINOR")
+
+# Part 1 is exactly ten items, and the delivery gate requires the audit to have covered all ten.
+# Duplicated from the shared cross-check's own ``NUMBERS`` rather than imported, for the reason
+# ``QUESTION_COUNT`` in agent_steps states: that module is loaded off a runtime ``sys.path`` and
+# importing it here to read one constant would make this module's import order load-bearing.
+QUESTION_NUMBERS = tuple(range(1, 11))
+
+# Targeted revision rounds after the initial generation. Two, per the product decision.
+#
+# Why a constant and not an environment knob: the number is a quality contract, not a tuning
+# parameter. Raising it trades model time for the chance that a third redraw from the same fixed
+# blueprint finds a fix the first two did not, and lowering it converts sets that the second round
+# would have cleared -- measured: the first real case cleared Q1 in round one and needed a second round
+# for Q8 -- into regenerated materials. Either change deserves the diff.
+MAX_QUESTION_REVISIONS = 2
+
+# The failure reason this loop returns when no round produced a deliverable set. Named here rather than
+# spelled at the raise site so a caller can match on it without repeating the string.
+#
+# It carries the material-stage vocabulary deliberately: the remedy is not another question attempt --
+# two have already run against a blueprint that cannot change -- but a different material, which is
+# what the replacement slot does with this verdict.
+QUESTIONS_NOT_DELIVERABLE = "questions_not_deliverable"
 
 
 class QuestionCandidate(object):
@@ -152,39 +199,109 @@ class QuestionCandidate(object):
         return "QuestionCandidate(%s, status=%s, key=%s)" % (self.label, self.status, self.key())
 
 
-def is_clean_questions(candidate: QuestionCandidate) -> bool:
-    """Can this set be delivered without a revision pass?
+def delivery_blockers(candidate: QuestionCandidate) -> List[str]:
+    """Every reason this set may not be delivered, as prose. Empty means deliverable.
 
-    Requires: no graded finding at any severity, no cross-check hard defect, no leakage, no
-    equally-supported rival, and no validator error. Note that MINOR findings block, matching the
-    material loop: a revision that fixes them costs one call, and if it makes things worse
-    ``pick_better_questions`` discards it at no cost to quality.
+    **A list rather than a bool, because this is now the gate and not a hint.** Under the old
+    always-deliver loop the answer only chose whether to spend a revision call, so "not clean" needed
+    no explanation. It now decides between shipping and :data:`REGENERATE_MATERIAL`, and a material
+    rejected with no stated reason is a material nobody can argue with -- the reasons go into the
+    failure detail, and each one names the check that produced it.
+
+    The four conditions, all required together:
+
+    * **the validator reports no hard error.** Warnings do not clear the gate either; see below.
+    * **the audit covered exactly Q1-Q10.** Read from the cross-check's own recompute, not from the
+      review's claim about itself.
+    * **the cross-check agrees on all ten items.** Not merely "no hard defect": ``agreed`` counts only
+      ``agree``, so an item parked in ``anchor_adjacent`` -- answers matching, anchors one turn apart --
+      leaves the total at nine and blocks. That is the stricter reading of the instruction and it is
+      the right one here, because adjacency is explicitly *not* agreement (the neighbouring turn has to
+      confirm the same fact, which no integer comparison establishes) and this gate is the last place
+      anyone looks.
+    * **no graded finding, no hard defect, no leakage, no rival.**
 
     Leakage and rivals are checked separately from the findings rather than assumed to imply one. They
     are produced by Python from the auditor's own reconstruction, so they hold even when the auditor
     reported nothing -- which is exactly the case where reading only the findings would call a broken
     set clean.
+
+    **Validator warnings block, and this is the one condition worth arguing about.** MINOR findings
+    block for the material loop's reason -- a revision costs one call and a worse result is discarded.
+    Warnings are different: the question validator's ``end-of-line blanks are at the QR-026 ceiling
+    (7 of 10)`` fires when a set is *at* a legal limit rather than over it, and the real material this
+    loop was built against carries it permanently. So this condition can send a set with no other
+    defect to REGENERATE_MATERIAL. It is kept because the instruction's priority is explicit -- never
+    deliver a set with hard errors -- and because a warning-tolerant gate is one edit away if the
+    measured rate of benign-warning rejections turns out to be the larger cost. What must not happen is
+    that choice being made silently: the blocker line below names the warning verbatim, so a rejection
+    on this ground is legible in the failure detail rather than looking like a real defect.
     """
+    blockers: List[str] = []
     counts = candidate.counts
-    if any(int(counts.get(name, 0) or 0) for name in SEVERITY_ORDER):
-        return False
+    graded = [(name, int(counts.get(name, 0) or 0)) for name in SEVERITY_ORDER]
+    for name, count in graded:
+        if count:
+            blockers.append("%d open %s finding(s) in the blind audit" % (count, name))
+
     cross = candidate.cross_check
-    if cross.hard_defects or cross.leakage or cross.equally_supported_rivals:
-        return False
-    if cross.needs_review:
-        return False
-    return not (getattr(candidate.validation, "errors", None)
-                or getattr(candidate.validation, "warnings", None))
+    for row in cross.hard_defects:
+        blockers.append("cross-check %s on Q%s" % (row.get("outcome"), row.get("number")))
+    for row in cross.leakage:
+        blockers.append("Q%s is answerable from the printed page alone (QR-040)" % row.get("number"))
+    for row in cross.equally_supported_rivals:
+        blockers.append("Q%s has an equally-supported rival answer %r (AR-012)"
+                        % (row.get("number"), row.get("text")))
+    for row in cross.needs_review:
+        blockers.append("Q%s's evidence anchor is one turn from the writer's and unconfirmed"
+                        % row.get("number"))
+
+    reviewed = ((cross.consistency or {}).get("computed") or {}).get("reviewed_question_ids") or []
+    if sorted(reviewed) != list(QUESTION_NUMBERS):
+        blockers.append("the blind audit covered %s, not all ten items" % sorted(reviewed))
+    if cross.compared and cross.agreed != cross.compared:
+        blockers.append("the cross-check agrees on %d of %d items"
+                        % (cross.agreed, cross.compared))
+
+    for message in (cross.consistency or {}).get("errors") or []:
+        blockers.append("the review disagrees with itself: %s" % message)
+
+    for error in getattr(candidate.validation, "errors", None) or []:
+        blockers.append("validator error: %s" % error)
+    for warning in getattr(candidate.validation, "warnings", None) or []:
+        blockers.append("validator warning: %s" % warning)
+
+    return blockers
+
+
+def is_clean_questions(candidate: QuestionCandidate) -> bool:
+    """Is this set deliverable? True exactly when :func:`delivery_blockers` is empty.
+
+    Kept as the name the loop and the tests read, and reduced to one line over ``delivery_blockers`` so
+    the predicate and the explanation can never disagree about what blocks. Two independent copies of
+    this rule is the failure mode worth designing out: the version that decides whether to ship and the
+    version that lists why it did not must be the same code.
+    """
+    return not delivery_blockers(candidate)
 
 
 def pick_better_questions(
     before: QuestionCandidate, after: QuestionCandidate
 ) -> QuestionCandidate:
-    """Choose between the pre- and post-revision question sets.
+    """Which of two question sets is *better diagnosed*. **Not** which one may be delivered.
 
-    Ties go to the revision, exactly as on the material side: where the measured quality is identical
-    the revised set has at least absorbed the defect list, so it is the better artifact to hand a
-    reviewer.
+    **This function no longer selects what ships, and the distinction is the whole point of the
+    two-round contract.** Delivery is decided solely by :func:`delivery_blockers`, which is a
+    conjunction of absolute conditions; ranking is a comparison, and a comparison between two defective
+    sets has a winner. Reading that winner as an outcome is exactly the mistake the contract forbids --
+    "current best but still carrying hard errors" is not a deliverable question set at any rank.
+
+    What it is still for: when every round fails, the failure report should carry the least defective
+    version rather than whichever happened to run last, because that is the one worth reading to see
+    why the material resisted. It reaches the caller as ``rejected_candidate``, never as ``candidate``.
+
+    Ties go to the later set, as on the material side: where the measured quality is identical the
+    revision has at least absorbed the defect list.
     """
     return after if after.key() >= before.key() else before
 
@@ -268,10 +385,17 @@ async def _audit_and_crosscheck(
 
 
 class QuestionResult(object):
-    """Outcome for one material's question set: the delivered candidate plus how it was reached."""
+    """Outcome for one material's question set: the delivered candidate plus how it was reached.
+
+    **``candidate`` is populated only on success, and that is enforced rather than documented.** A
+    failed result carries its best version as ``rejected_candidate``, a separate attribute, so that no
+    caller can ship a rejected set by reading the field it would read on the happy path. Putting both
+    in one attribute and asking callers to check ``ok`` first is the arrangement this contract exists to
+    rule out: it makes delivering a defective set a missing ``if`` rather than an impossibility.
+    """
 
     __slots__ = ("ok", "candidate", "selected_version", "reason", "detail", "timings",
-                 "script_unchanged")
+                 "script_unchanged", "outcome", "rejected_candidate", "blockers", "rounds")
 
     def __init__(
         self,
@@ -282,9 +406,20 @@ class QuestionResult(object):
         detail: Any = None,
         timings: Optional[Dict[str, float]] = None,
         script_unchanged: bool = True,
+        outcome: Optional[str] = None,
+        rejected_candidate: Optional[QuestionCandidate] = None,
+        blockers: Optional[List[str]] = None,
+        rounds: int = 0,
     ) -> None:
         if ok and candidate is None:
             raise ValueError("a successful QuestionResult must carry a candidate")
+        if not ok and candidate is not None:
+            # The invariant stated in the class docstring, checked. A failed result holding a candidate
+            # in the deliverable slot would be indistinguishable from a success to every reader that
+            # tests the attribute rather than the flag.
+            raise ValueError(
+                "a failed QuestionResult must not carry a deliverable candidate; "
+                "pass it as rejected_candidate")
         self.ok = ok
         self.candidate = candidate
         self.selected_version = selected_version
@@ -292,11 +427,30 @@ class QuestionResult(object):
         self.detail = detail
         self.timings = timings or {}
         self.script_unchanged = script_unchanged
+        # The feasibility-vocabulary verdict for the replacement slot. Present on both paths: on success
+        # it is None because no verdict is needed, and a reader must not have to infer that from `ok`.
+        self.outcome = outcome
+        self.rejected_candidate = rejected_candidate
+        self.blockers = blockers or []
+        self.rounds = rounds
 
     def as_dict(self) -> Dict[str, Any]:
         if not self.ok or self.candidate is None:
-            return {"ok": False, "reason": self.reason, "detail": self.detail,
-                    "timings": self.timings}
+            payload = {
+                "ok": False,
+                "reason": self.reason,
+                "outcome": self.outcome,
+                "detail": self.detail,
+                "blockers": self.blockers,
+                "rounds": self.rounds,
+                "timings": self.timings,
+            }
+            if self.rejected_candidate is not None:
+                # Under its own key, and never under "package". A serialised failure that carried the
+                # rejected set where a delivered one goes would be shippable by accident downstream --
+                # the same reason the two live in different attributes.
+                payload["rejected_candidate"] = self.rejected_candidate.as_dict()
+            return payload
         payload = self.candidate.as_dict()
         payload.update({
             "ok": True,
@@ -304,6 +458,7 @@ class QuestionResult(object):
             # Stated on every successful result, not only when it was violated. A reader must be able
             # to see that the script was checked, because "no warning" and "not checked" look identical.
             "script_unchanged": self.script_unchanged,
+            "rounds": self.rounds,
             "timings": self.timings,
         })
         return payload
@@ -314,7 +469,12 @@ async def run_questions(
     blueprint: Dict[str, Any],
     emit: Optional[Callable] = None,
 ) -> QuestionResult:
-    """Produce one question set for a finalised material.
+    """Produce one deliverable question set for a finalised material, or refuse to deliver one.
+
+    Returns ``ok=True`` only for a set that cleared every condition in :func:`delivery_blockers`. When
+    the initial set and both revision rounds are blocked, returns ``ok=False`` with
+    ``outcome=REGENERATE_MATERIAL`` and the best-diagnosed version under ``rejected_candidate``. There
+    is no third exit: this function never returns a set it knows to be defective.
 
     ``emit`` is optional and defaults to a no-op, matching ``run_one``: a caller that wants progress
     events passes one, and a test that does not need them is not obliged to invent one.
@@ -339,51 +499,102 @@ async def run_questions(
     review, cross = await _audit_and_crosscheck(material, package, "initial", emit)
     timings["audit"] = round(time.time() - started, 1)
 
-    initial = QuestionCandidate(package, review, cross, validation, "initial")
-    if is_clean_questions(initial):
-        await emit("question_set_clean", {"status": initial.status})
-        return QuestionResult(True, initial, "initial", timings=timings)
+    current = QuestionCandidate(package, review, cross, validation, "initial")
+    best = current
+    rounds = 0
 
-    instruction = build_question_revise_instruction(review, cross, validation.warnings)
-    if instruction.empty:
-        # Not clean, yet nothing to instruct. Possible when the only signal is a validator error the
-        # instruction builder does not translate into prose. Revising against an empty defect list
-        # would spend a call asking for an unspecified change, so the set is delivered with its review.
-        await emit("question_revision_skipped", {"reason": "no actionable defects"})
-        return QuestionResult(True, initial, "initial", timings=timings)
+    while True:
+        blockers = delivery_blockers(current)
+        if not blockers:
+            # Deliver on the first round that clears every gate, without a further revision. A revision
+            # from here could only make it worse, and `pick_better_questions` discarding the result
+            # would not refund the call.
+            await emit("question_set_clean", {"version": current.label, "status": current.status,
+                                              "rounds": rounds})
+            return QuestionResult(True, current, current.label, timings=timings, rounds=rounds)
 
-    started = time.time()
-    await emit("question_revision_started", {"must_fix": len(instruction.must_fix),
-                                             "advisory": len(instruction.advisory)})
-    revised = await _with_infra_retries(
-        lambda: agent_steps.revise_questions(material, blueprint, package, instruction),
-        "question revision", emit)
-    timings["revise"] = round(time.time() - started, 1)
+        best = pick_better_questions(best, current)
+        await emit("question_set_blocked", {"version": current.label, "rounds": rounds,
+                                            "blockers": blockers[:8],
+                                            "blocker_count": len(blockers)})
 
-    # Before anything else is done with the revision.
-    _assert_script_untouched(revised)
+        if rounds >= MAX_QUESTION_REVISIONS:
+            break
 
-    started = time.time()
-    revised_validation = await _with_infra_retries(
-        lambda: validate_questions(material, blueprint, revised), "question revalidation", emit)
-    timings["revalidate"] = round(time.time() - started, 1)
-    await emit("question_validated", {"version": "revised",
-                                      "errors": len(revised_validation.errors),
-                                      "warnings": len(revised_validation.warnings)})
+        instruction = build_question_revise_instruction(
+            current.review, current.cross_check, current.validation.warnings)
+        if instruction.empty:
+            # Blocked with nothing to instruct. Possible when the only blocker is one the instruction
+            # builder does not translate into prose -- a validator error, or a coverage shortfall the
+            # generator cannot act on. Revising against an empty defect list would spend a call asking
+            # for an unspecified change, so the loop stops here.
+            #
+            # Under the old contract this path DELIVERED the set. It must not: "we could not describe
+            # the defect" is not evidence the defect is absent, and it is the one blocked state where a
+            # deliver-anyway would look most reasonable in a log.
+            await emit("question_revision_skipped", {"reason": "no actionable defects",
+                                                     "rounds": rounds})
+            break
 
-    started = time.time()
-    # A fresh agent per call inside `audit_questions_blind`, which is what makes this re-audit
-    # memoryless: it cannot inherit the first review's conclusions or the defect list it was asked to
-    # fix, because there is no shared session to inherit them from.
-    revised_review, revised_cross = await _audit_and_crosscheck(
-        material, revised, "revised", emit)
-    timings["reaudit"] = round(time.time() - started, 1)
+        rounds += 1
+        label = "revised-%d" % rounds
+        started = time.time()
+        await emit("question_revision_started", {"round": rounds, "label": label,
+                                                 "must_fix": len(instruction.must_fix),
+                                                 "advisory": len(instruction.advisory)})
+        revised = await _with_infra_retries(
+            lambda: agent_steps.revise_questions(
+                material, blueprint, current.package, instruction),
+            "question revision %d" % rounds, emit)
+        timings["revise_%d" % rounds] = round(time.time() - started, 1)
 
-    after = QuestionCandidate(revised, revised_review, revised_cross, revised_validation, "revised")
-    chosen = pick_better_questions(initial, after)
-    await emit("question_version_selected", {
-        "selected": chosen.label,
-        "initial_key": list(initial.key()),
-        "revised_key": list(after.key()),
+        # Before anything else is done with the revision.
+        _assert_script_untouched(revised)
+
+        started = time.time()
+        revised_validation = await _with_infra_retries(
+            lambda: validate_questions(material, blueprint, revised),
+            "question revalidation %d" % rounds, emit)
+        timings["revalidate_%d" % rounds] = round(time.time() - started, 1)
+        await emit("question_validated", {"version": label,
+                                          "errors": len(revised_validation.errors),
+                                          "warnings": len(revised_validation.warnings)})
+
+        started = time.time()
+        # A fresh agent per call inside `audit_questions_blind`, which is what makes every re-audit
+        # memoryless: it cannot inherit the previous review's conclusions or the defect list it was
+        # asked to fix, because there is no shared session to inherit them from. That matters more with
+        # two rounds than with one -- round two's auditor must not be reading round one's verdict.
+        revised_review, revised_cross = await _audit_and_crosscheck(
+            material, revised, label, emit)
+        timings["reaudit_%d" % rounds] = round(time.time() - started, 1)
+
+        # Each round is judged on its own complete evidence: its own validator run, its own blind
+        # review, its own cross-check. Nothing is carried forward from the round that produced it.
+        current = QuestionCandidate(
+            revised, revised_review, revised_cross, revised_validation, label)
+
+    # Every round was blocked. The best-diagnosed version goes into the report and nowhere near the
+    # deliverable slot; the verdict is REGENERATE_MATERIAL, which the replacement slot answers with a
+    # different material rather than a third attempt at this blueprint.
+    blockers = delivery_blockers(best)
+    await emit("questions_rejected", {
+        "outcome": REGENERATE_MATERIAL,
+        "rounds": rounds,
+        "best_version": best.label,
+        "best_key": list(best.key()),
+        "blockers": blockers[:8],
+        "blocker_count": len(blockers),
     })
-    return QuestionResult(True, chosen, chosen.label, timings=timings)
+    return QuestionResult(
+        False,
+        reason=QUESTIONS_NOT_DELIVERABLE,
+        outcome=REGENERATE_MATERIAL,
+        detail=("%d revision round(s) did not produce a deliverable question set; best version %r "
+                "still carries %d blocker(s): %s"
+                % (rounds, best.label, len(blockers), "; ".join(blockers[:3]))),
+        rejected_candidate=best,
+        blockers=blockers,
+        timings=timings,
+        rounds=rounds,
+    )
