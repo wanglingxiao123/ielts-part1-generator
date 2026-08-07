@@ -48,3 +48,34 @@ def audit_diverged() -> dict:
 @pytest.fixture
 def clone():
     return copy.deepcopy
+
+
+def _question_package_document() -> dict:
+    """The validator-clean question package, built by the skill suite's own helper.
+
+    Imported rather than reproduced, for the same reason this file loads the skill fixtures instead of
+    writing material inline. There is no committed question-package fixture -- ``build_fixtures.py``
+    owns ``fixtures/`` and the package is assembled in memory from the material and the plan -- so the
+    only alternative was a hand-written face here, which would drift from the contract the 60-check
+    suite keeps and leave these tests asserting a shape nothing else agrees with.
+
+    ``run_tests`` imports only the standard library at module scope, so this costs nothing but a
+    directory glob.
+    """
+    tests_dir = str(FIXTURES.parent)
+    if tests_dir not in sys.path:
+        sys.path.insert(0, tests_dir)
+    import run_tests  # noqa: PLC0415 - path must be set up first
+
+    return run_tests._question_package()
+
+
+@pytest.fixture
+def question_package() -> dict:
+    return _question_package_document()
+
+
+@pytest.fixture
+def question_face() -> dict:
+    """Block A alone -- the only block a question auditor may ever receive."""
+    return _question_package_document()["question_face"]

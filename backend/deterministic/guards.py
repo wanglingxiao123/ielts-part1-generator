@@ -25,12 +25,14 @@ from pathlib import Path
 from typing import Iterable, List, Sequence
 
 __all__ = [
+    "ANSWER_ONLY_KEYS",
     "BLUEPRINT_ONLY_KEYS",
     "BLUEPRINT_JSON_FIELDS",
     "FEASIBILITY_ITEM_COUNT",
     "FEASIBILITY_PLAN_VERSION",
     "BlindnessViolation",
     "MissingPlanViolation",
+    "assert_answer_blind",
     "assert_blind",
     "assert_carries_plan",
     "assert_no_plan_on_disk",
@@ -126,6 +128,77 @@ def assert_blind(payload: str, label: str = "payload") -> None:
     hits = blueprint_key_hits(payload, BLUEPRINT_ONLY_KEYS)
     if hits:
         _fail(label, hits)
+
+
+# The question auditor's own forbidden set, and a SEPARATE tuple rather than a relaxation of
+# BLUEPRINT_ONLY_KEYS above. The reason is recorded in question_package.schema.json's own description
+# and is worth restating where the code is: a question face legitimately carries `response_form`,
+# `answer_category` and `narrator_window_id`, all three of which are in BLUEPRINT_ONLY_KEYS -- so
+# `assert_blind` cannot pass a question-audit payload. Removing them from that tuple to make one guard
+# serve both callers would silently reopen the material-audit leak the tuple was built for, and the
+# symptom on that side is a score that comes out too high with no error anywhere.
+#
+# What is forbidden here is the ANSWER, not the plan's shape. Each entry names a field that exists only
+# in the two blocks a question auditor must never receive:
+#   canonical / alternatives / counting_rule -- answer_key
+#   quote / turn_index / paraphrase_relation / carrier_entity / evidence_entity /
+#     proposition_relation / proposition_alignment_result -- evidence
+#   answer_key / evidence / blueprint -- the block names themselves, and the plan whose
+#     `items[].target` IS the answer
+#
+# Four of them are matched in quoted JSON-field form only, for the reason `"target"` and `"distractor"`
+# are on the material side: `canonical`, `alternatives`, `evidence` and above all `quote` are ordinary
+# English words that a Part 1 dialogue can legitimately contain -- a removals company quoting a price
+# is a textbook Part 1 scenario -- and a guard that rejects valid materials trains people to disable
+# it, taking the real check with it. A leaked answer block serialises as `"canonical": "Anna Woods"`,
+# so the quoted form still catches the thing this guard exists for.
+#
+# The rest are snake_case identifiers that cannot occur in prose and so need no quoting. Counted
+# against the real inputs before being added: 0 hits across /tmp/qgen_real/material.json, the same
+# run's question_face, and skills/shared/tests/fixtures/material_valid.json -- so no entry can repeat
+# `confirmed`'s fires-on-every-call problem.
+#
+# `target` is deliberately NOT here at all: a carrier can say "our target date" in either form, and
+# `blueprint` already catches a serialised plan.
+ANSWER_ONLY_KEYS = (
+    "answer_key",
+    '"canonical"',
+    '"alternatives"',
+    "counting_rule",
+    '"evidence"',
+    '"quote"',
+    "turn_index",
+    "paraphrase_relation",
+    "carrier_entity",
+    "evidence_entity",
+    "proposition_relation",
+    "proposition_alignment_result",
+    "blueprint",
+)
+
+
+def assert_answer_blind(payload: str, label: str = "payload") -> None:
+    """Fail the call if orchestrator-assembled question-audit text carries answers or evidence.
+
+    The wire guard for the question audit, and the counterpart of :func:`assert_blind` rather than a
+    reuse of it -- see ``ANSWER_ONLY_KEYS`` above for why one tuple cannot serve both.
+
+    Raising rather than stripping, for the same reason as the material side and more sharply: the
+    auditor's whole product is the answer it rebuilt without a key. An audit that saw the key does not
+    fail, it *agrees* -- every reconstruction matches, the uniqueness check passes, the status comes out
+    clean, and the document has exactly the shape of a genuine review. Stripping the offending text
+    would keep the batch running while quietly changing what was audited, and nobody would learn the
+    guard had fired.
+
+    Applied to the payload only. The skill's own markdown says "never accepts a supplied answer, ...
+    a quotation table", so the words appear in the reference text by necessity; that tier is
+    :func:`assert_reference_text_blind`'s.
+    """
+    hits = blueprint_key_hits(payload, ANSWER_ONLY_KEYS)
+    if hits:
+        raise BlindnessViolation(
+            "question audit %s leaked answer-only keys: %s" % (label, list(hits))
+        )
 
 
 # Where a generation agent's scratch files land. Same roots the purge covers; scanning the whole

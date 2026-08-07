@@ -30,20 +30,34 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from ..agents import build_audit_agent, build_feasibility_agent, build_generate_agent
-from ..deterministic.guards import assert_blind, assert_carries_plan, assert_no_plan_on_disk
+from ..agents import (
+    build_audit_agent,
+    build_feasibility_agent,
+    build_generate_agent,
+    build_question_audit_agent,
+)
+from ..deterministic.guards import (
+    assert_answer_blind,
+    assert_blind,
+    assert_carries_plan,
+    assert_no_plan_on_disk,
+)
 from ..model import provider
 from .call import ModelCallError, extract_json
 
 __all__ = [
     "BlindAuditInput",
+    "BlindQuestionAuditInput",
     "FeasibilityInput",
     "GenOutput",
     "audit_blind",
+    "audit_questions_blind",
     "build_audit_message",
     "build_audit_payload",
     "build_feasibility_message",
     "build_feasibility_payload",
+    "build_question_audit_message",
+    "build_question_audit_payload",
     "build_revise_message",
     "feasibility_audit",
     "generate",
@@ -318,6 +332,158 @@ async def audit_blind(material: Dict[str, Any], metrics: Dict[str, Any]) -> Dict
     assert_no_plan_on_disk()
     agent = build_audit_agent()
     return _audit_envelope(await _invoke(agent, payload, "audit"), "audit")
+
+
+class BlindQuestionAuditInput(object):
+    """Everything the question auditor is allowed to see. Immutable, and exactly three fields.
+
+    A separate type from :class:`BlindAuditInput` rather than a third slot on it, and the reason is not
+    tidiness. The two audits are blind to *different things*: the material auditor must not see the
+    plan, while this one must not see the answers or the evidence they were anchored to -- and a
+    question face legitimately carries fields (``response_form``, ``answer_category``,
+    ``narrator_window_id``) that are on the material auditor's forbidden list. One type would need one
+    guard, and any guard broad enough to pass both payloads is too narrow to catch either leak.
+
+    ``material`` is the COMPLETE script INCLUDING its narrator turns. Withholding narration would look
+    like extra caution and would remove the auditor's ability to decide window membership at all
+    (SC-019 / AL-017), which is one of the judgements this step exists to obtain.
+
+    ``question_face`` is block A of the question package and nothing else. ``answer_key`` and
+    ``evidence`` are the other two blocks, physically separate in the package for exactly this moment.
+
+    Frozen so nothing can attach the key after construction either.
+    """
+
+    __slots__ = ("material", "question_face", "question_metrics")
+
+    def __init__(
+        self,
+        material: Dict[str, Any],
+        question_face: Dict[str, Any],
+        question_metrics: Dict[str, Any],
+    ) -> None:
+        object.__setattr__(self, "material", material)
+        object.__setattr__(self, "question_face", question_face)
+        object.__setattr__(self, "question_metrics", question_metrics)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError("BlindQuestionAuditInput is frozen")
+
+    def __delattr__(self, name: str) -> None:
+        raise AttributeError("BlindQuestionAuditInput is frozen")
+
+
+def build_question_audit_payload(data: BlindQuestionAuditInput) -> str:
+    """Serialise the permitted input into the question auditor's message.
+
+    **Not built on :func:`build_audit_payload`, deliberately and permanently.** That function's output
+    string is pinned by a test because the material audit must stay byte-identical, and its caller
+    follows it with ``assert_blind`` -- a guard this payload cannot pass, because a question face
+    carries ``response_form`` and ``answer_category`` and both are blueprint-only keys on that side.
+    Giving it a question-face parameter would either loosen that guard, reopening the material-audit
+    leak it exists for, or leave this payload unguarded. Two builders whose guards reject each other's
+    output is the honest arrangement, the same conclusion :func:`build_feasibility_payload` reached
+    from the opposite direction.
+
+    Blindness here is an omission rather than a filter, as on the material side: the only data reaching
+    this function is a ``BlindQuestionAuditInput``, which has three fields, and the answer is not one
+    of them. There is nothing to strip because there is nothing to strip out.
+
+    The instruction names what is withheld, which the material payload does not need to. Its auditor
+    reconstructs a map from a script and could not be handed an "answer" even in principle; this one is
+    looking at ten gaps that each have a right answer somewhere, and a model that assumes the key was
+    lost in transit tends to ask for it or hedge around not having it. Saying that the omission is the
+    design turns that into the instruction it is.
+    """
+    return "\n\n".join([
+        "Audit the ten Part 1 questions below against the material below. Rebuild each answer, its "
+        "decisive evidence and its same-level rivals yourself: you are not given the answers, the "
+        "evidence table or the item plan, and that omission is deliberate rather than an accident of "
+        "packaging. If any of them appears anywhere in this request, report the leak and audit "
+        "nothing.",
+        "## material.json (complete script, narration included)\n\n%s"
+        % json.dumps(data.material, ensure_ascii=False, indent=2),
+        "## question_face.json (everything the candidate sees)\n\n%s"
+        % json.dumps(data.question_face, ensure_ascii=False, indent=2),
+        "## Deterministic question metrics (already calculated; do not recount)\n\n%s"
+        % json.dumps(data.question_metrics, ensure_ascii=False, indent=2),
+    ])
+
+
+def build_question_audit_message(
+    material: Dict[str, Any],
+    question_face: Dict[str, Any],
+    question_metrics: Dict[str, Any],
+) -> str:
+    """Convenience wrapper over the frozen input plus its payload builder."""
+    return build_question_audit_payload(
+        BlindQuestionAuditInput(material, question_face, question_metrics))
+
+
+# The keys the question audit schema requires and whose absence is silently benign, which is the same
+# selection principle as `_AUDIT_REQUIRED_KEYS`. A reply without `reconstructed_answers` has no product
+# at all yet reads as a review; one without `coverage` cannot be checked for the nine-of-ten case; one
+# without `per_question_findings` reads as "no defects"; one without `question_qc_status` leaves the
+# caller to infer a verdict it was supposed to be told.
+_QUESTION_AUDIT_REQUIRED_KEYS = (
+    "reconstructed_answers",
+    "per_question_findings",
+    "coverage",
+    "question_qc_status",
+)
+
+
+def _question_audit_envelope(reply: str, label: str) -> Dict[str, Any]:
+    """Parse and shape-check a question audit reply.
+
+    Same decoy problem as ``_audit_envelope``: ``extract_json`` returns the first balanced object, so a
+    reply that opens with a summary object delivers that instead of the review. Requiring the four
+    load-bearing keys makes a decoy fail to qualify and puts the call back on the retry budget.
+
+    ``reconstructed_answers`` is additionally checked for being a non-empty list, which the other
+    envelopes have no equivalent of. It is the one field that is *worthless when well-formed but
+    empty*: ``[]`` passes any key check, satisfies the schema's array type, and leaves the deterministic
+    cross-check with nothing to compare -- which it then reports as agreement.
+    """
+    audit = extract_json(reply)
+    missing = [key for key in _QUESTION_AUDIT_REQUIRED_KEYS if key not in audit]
+    if missing:
+        raise ModelCallError(
+            "%s reply is missing required keys %s; keys present=%s"
+            % (label, missing, sorted(audit.keys())[:10])
+        )
+    rebuilt = audit.get("reconstructed_answers")
+    if not isinstance(rebuilt, list) or not rebuilt:
+        raise ModelCallError(
+            "%s reply carries no reconstructed answers (%r); an empty reconstruction leaves the "
+            "cross-check nothing to compare and reads as agreement"
+            % (label, type(rebuilt).__name__)
+        )
+    return audit
+
+
+async def audit_questions_blind(
+    material: Dict[str, Any],
+    question_face: Dict[str, Any],
+    question_metrics: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Audit ten questions. Three parameters, and there will never be a fourth.
+
+    A fresh agent per call, like the other three steps, so a re-audit cannot inherit the first
+    review's conclusions.
+
+    ``assert_no_plan_on_disk`` is called here as well as on the material side, and it is doing more
+    work at this point in the run: the generator has just written this material's questions, so a
+    scratch file left behind holds this set's actual answers rather than an earlier material's plan.
+    ``file_read`` resolves against the process working directory and consults no sandbox.
+    """
+    payload = build_question_audit_payload(
+        BlindQuestionAuditInput(material, question_face, question_metrics))
+    assert_answer_blind(payload)
+    assert_no_plan_on_disk()
+    agent = build_question_audit_agent()
+    return _question_audit_envelope(
+        await _invoke(agent, payload, "question audit"), "question audit")
 
 
 class FeasibilityInput(object):

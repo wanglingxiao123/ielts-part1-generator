@@ -67,9 +67,11 @@ __all__ = [
     "FEASIBILITY_SYSTEM_PROMPT",
     "GENERATE_POOL",
     "GENERATE_SYSTEM_PROMPT",
+    "QUESTION_AUDIT_SYSTEM_PROMPT",
     "build_audit_agent",
     "build_feasibility_agent",
     "build_generate_agent",
+    "build_question_audit_agent",
     "pool_dir",
 ]
 
@@ -121,6 +123,20 @@ AUDIT_SYSTEM_PROMPT = (
     "annotation, and you must not ask for it: your reconstruction is worth something precisely "
     "because it was made without it. A detail you cannot recover from the script is a real defect, "
     "because a candidate hearing the recording once will not recover it either.\n\n"
+    "Reply with the JSON the skill's schema specifies and nothing else."
+)
+
+QUESTION_AUDIT_SYSTEM_PROMPT = (
+    "You are a listening-question audit specialist.\n\n"
+    "Your available skills are listed in your system context. Decide which one covers the items you "
+    "were sent, and activate it with the `skills` tool before judging anything. Then execute its "
+    "workflow completely, reading the rules and the schema it points to with `file_read`.\n\n"
+    "You receive the script, the candidate-visible page and pre-calculated counts. You are never "
+    "given the answers, the evidence they were anchored to, or the item plan, and you must not ask "
+    "for them: your core product is the answer you rebuild yourself from the script, and it is worth "
+    "something precisely because you had no key beside it. If any of those appears in the request, "
+    "report the leak and audit nothing -- an audit that has seen the answers does not fail, it "
+    "agrees, and nothing in its output would ever show it.\n\n"
     "Reply with the JSON the skill's schema specifies and nothing else."
 )
 
@@ -338,6 +354,36 @@ def build_audit_agent() -> Any:
     """
     return _build(
         AUDIT_POOL, AUDIT_SYSTEM_PROMPT,
+        effort=AUDIT_EFFORT, max_tokens=AUDIT_MAX_TOKENS, with_shell=False,
+    )
+
+
+def build_question_audit_agent() -> Any:
+    """A question auditor over the audit pool. No ``shell``, for the sharper version of the reason.
+
+    **Same pool as the material auditor, and that is the correct placement.** Gate 1b's argument about
+    the feasibility skill turns on what a skill *reads*: that one reads a plan, so it cannot sit in a
+    pool whose defining property is holding no plan. This one reads a script and a printed page and is
+    handed no plan either, so it belongs exactly where the other blind reviewer is -- and being in the
+    audit pool means every existing pool-wide guard applies to it unchanged: the blueprint-field grep,
+    the "no plan schema in this pool" assertion, and the reference-text scan over every markdown file.
+    A fourth pool would have bought isolation from those checks rather than isolation from the plan.
+
+    The consequence to keep in mind is that both auditors can activate either skill. That is
+    acceptable because neither skill carries answers -- activating the wrong one produces a reply the
+    envelope check rejects, which is loud. What must never happen is the payloads mixing, and that is
+    prevented one layer down: ``BlindQuestionAuditInput`` and ``BlindAuditInput`` are separate frozen
+    types whose builders are guarded by ``assert_answer_blind`` and ``assert_blind`` respectively, and
+    each guard rejects the other's payload.
+
+    No shell, and here the reason is at its sharpest: the answers for these ten items exist on disk
+    while the questions are being generated, so an auditor able to run a command could read the very
+    thing its entire product is defined by not having seen.
+
+    Built per call like the other three, so no set's review can inherit another's.
+    """
+    return _build(
+        AUDIT_POOL, QUESTION_AUDIT_SYSTEM_PROMPT,
         effort=AUDIT_EFFORT, max_tokens=AUDIT_MAX_TOKENS, with_shell=False,
     )
 

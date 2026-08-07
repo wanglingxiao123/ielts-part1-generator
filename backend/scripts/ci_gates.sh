@@ -187,8 +187,15 @@ DISTRIBUTION = {"strands": "strands-agents", "strands_tools": "strands-agents-to
 # skills/generate/generate-listening-part1/scripts/, and `deterministic/feasibility.py` imports the
 # first after inserting that directory (the aggregator then imports the second at its own module
 # scope). Without them listed here this gate demands that pip install two of our own skill scripts.
+#
+# `validate_questions_part1` is that case a third time: it lives in
+# skills/generate/generate-questions-part1/scripts/ and `deterministic/question_metrics.py` imports it
+# after inserting that directory, so the blank-position classifier is shared with the validator
+# instead of reimplemented. Listing it here is the whole fix -- gate 8 is what checks that the pool
+# reaches the image, and it does.
 FIRST_PARTY = {"audio_storage", "backend", "web", "skills", "config", "cross_check",
-               "question_feasibility_preflight", "validate_part1"}
+               "question_feasibility_preflight", "validate_part1",
+               "validate_questions_part1"}
 
 dockerfile = pathlib.Path("backend/Dockerfile").read_text(encoding="utf-8")
 pyproject = pathlib.Path("backend/pyproject.toml").read_text(encoding="utf-8")

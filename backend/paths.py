@@ -87,5 +87,15 @@ def validate_script() -> Path:
     return _script_in_pool("generate", "validate_part1.py")
 
 
+def question_validate_script() -> Path:
+    """The question-stage validator, a second skill in the same pool.
+
+    Its filename is not ``validate_part1.py`` precisely so that ``validate_script`` above stays
+    unambiguous: two scripts matching one glob would make ``_script_in_pool`` raise rather than pick,
+    which is the right behaviour and the reason the names differ.
+    """
+    return _script_in_pool("generate", "validate_questions_part1.py")
+
+
 def metrics_script() -> Path:
     return _script_in_pool("audit", "audit_metrics.py")

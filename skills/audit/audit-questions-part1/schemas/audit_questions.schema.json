@@ -1,0 +1,410 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "audit_questions.schema.json",
+  "title": "IELTS Listening Part 1 Question Audit Result",
+  "description": "Structured review of ten Part 1 completion items, produced from the script and the candidate-visible page alone. reconstructed_answers is the load-bearing product: the auditor rebuilds each answer, its evidence and its same-level rivals independently, and every judgement below is made against that reconstruction rather than against an authored key. Nothing in this document may be filled in from a supplied key or evidence table -- there is none in the request, and an audit that had one would produce a report that is merely too agreeable, with no error to notice and nothing in the delivered artifact to give it away.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "reconstructed_answers",
+    "per_question_findings",
+    "group_findings",
+    "coverage",
+    "summary",
+    "question_qc_status",
+    "content_review_readiness",
+    "visual_qc_status",
+    "visual_findings"
+  ],
+  "properties": {
+    "reconstructed_answers": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10,
+      "items": {
+        "$ref": "#/definitions/reconstructed_answer"
+      },
+      "description": "One entry per item the auditor reviewed, in question order. Ten entries for a complete review; fewer only when coverage says so and explains why."
+    },
+    "per_question_findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/question_finding"
+      },
+      "description": "Content findings attached to a single item. An empty array is a real result and the honest one when the ten items are sound: an invented finding costs a rewrite of something that was already correct."
+    },
+    "group_findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/group_finding"
+      },
+      "description": "Findings whose scope is a group rather than an item -- leakage across the group's visible surface, a missing heading, a set of ten sentences that is not really one form, note or table. They belong here because their fix changes the group, and reporting them ten times over would make one defect look like ten."
+    },
+    "coverage": {
+      "$ref": "#/definitions/coverage"
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "counts",
+        "visual_counts"
+      ],
+      "properties": {
+        "counts": {
+          "$ref": "#/definitions/severity_counts",
+          "description": "Every content finding, item-level and group-level together, INFO and ADVISORY_WARNING included. Those two are counted and do not move question_qc_status; leaving them out of the counts would make the report disagree with itself."
+        },
+        "visual_counts": {
+          "$ref": "#/definitions/severity_counts",
+          "description": "Separate tally for visual_findings, kept apart so a border-width remark can never reach question_qc_status. Zero throughout while the visual pass has not run."
+        }
+      }
+    },
+    "question_qc_status": {
+      "enum": [
+        "PASS",
+        "WARNING",
+        "FAIL"
+      ],
+      "description": "Computed from UNRESOLVED content findings only, by severity.md 3.2: any CRITICAL or MAJOR gives FAIL; otherwise any MINOR gives WARNING; otherwise PASS. INFO and ADVISORY_WARNING never change it, and neither does anything in visual_findings. Findings in state resolved, waived or not_applicable are excluded from the count."
+    },
+    "content_review_readiness": {
+      "enum": [
+        "READY_FOR_HUMAN_REVIEW",
+        "BLOCKED"
+      ],
+      "description": "Whether a human reviewer can actually read the items, their printed numbering, their gaps and their instructions. Deliberately independent of question_qc_status: a set can be readable and still fail, and merging the two thresholds is how a draft nobody can read gets called ready."
+    },
+    "visual_qc_status": {
+      "const": "NOT_RUN",
+      "description": "Pinned. This audit reviews content from a script and a text page; typography, borders and pagination are not visible to it, so any other value here would be a claim about something never inspected."
+    },
+    "visual_findings": {
+      "type": "array",
+      "maxItems": 0,
+      "description": "Always empty for the same reason. A layout defect noticed in passing that actually hides required content is a content finding under QR-015, not an entry here."
+    }
+  },
+  "definitions": {
+    "reconstructed_answer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "number",
+        "answer",
+        "turn_index",
+        "quote",
+        "confidence",
+        "competing_candidates",
+        "derivable_without_recording"
+      ],
+      "properties": {
+        "number": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "answer": {
+          "type": "string",
+          "description": "What the auditor would write in this gap, having read the script and the page and nothing else. Empty string when no decisive evidence could be located: that is a reportable defect (SR-005 / AL-002), not a gap in the audit, and it must be stated rather than filled with a guess."
+        },
+        "turn_index": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Zero-based position in the script's turns array, narration turns included, of the turn the auditor treats as decisive. Read it off the array rather than counting by eye. The decisive turn may be a later confirmation rather than the first mention -- ordinary Part 1 writing -- but it must sit inside the item's own narrator question-number window."
+        },
+        "quote": {
+          "type": "string",
+          "description": "Shortest sufficient verbatim span from that exact turn. Verbatim so a reader can check it; a paraphrase here cannot be checked against anything."
+        },
+        "confidence": {
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ],
+          "description": "How securely the script pins this answer for a candidate hearing it once. low is a finding in itself: an item only a re-reader can settle is not answerable under test conditions."
+        },
+        "competing_candidates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/competing_candidate"
+          },
+          "description": "Same-level rivals the auditor actually substituted into the carrier (AR-012 / QR-010). An empty array asserts that substitution was carried out and found nothing that also fits -- so it must not be used to mean the check was skipped. Any entry with equally_supported true requires a matching AR-012 finding."
+        },
+        "derivable_without_recording": {
+          "type": "boolean",
+          "description": "True when this answer can be produced from the printed page alone -- title, headings, signposts, row and column labels, neighbouring carriers. This is the leakage test taken from its strongest side: the auditor has no supplied key, so anything recoverable here was recoverable by the candidate too. True requires a QR-040 or SC-012 finding."
+        }
+      }
+    },
+    "competing_candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "text",
+        "equally_supported",
+        "reason"
+      ],
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The rival, as it would be written into the gap."
+        },
+        "equally_supported": {
+          "type": "boolean",
+          "description": "True when the script supports it just as decisively as the chosen answer and the carrier does not rule it out. That is the uniqueness failure; a rival that merely sounds plausible until the carrier is read is false here and worth recording as the evidence that the check was done."
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Why it does or does not survive substitution, naming what excludes it -- the carrier's time limit, its subject, the narrator window. 'Less likely' is not a reason."
+        }
+      }
+    },
+    "question_finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "number",
+        "rule_id",
+        "severity",
+        "evidence",
+        "fix",
+        "state"
+      ],
+      "properties": {
+        "number": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "rule_id": {
+          "$ref": "#/definitions/rule_id"
+        },
+        "severity": {
+          "$ref": "#/definitions/severity"
+        },
+        "evidence": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The shortest text that shows the defect, from the script or the printed page, with the turn index or the printed line it sits on. A finding whose evidence is a restatement of the rule cannot be verified or fixed."
+        },
+        "fix": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The smallest concrete change, naming the line and the edit. 'Improve the wording' is not a fix; 'add \"before Friday\" to the carrier on row 3 so the later date cannot fill the gap' is. The script is never a fix: audible text is frozen once the material is final (SR-021), so a defect can only be repaired on the page."
+        },
+        "state": {
+          "$ref": "#/definitions/state"
+        },
+        "waiver_reason": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Required when state is waived, and only usable when the request itself carries the authorisation. An auditor may never waive its own finding."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "waived"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "required": [
+              "waiver_reason"
+            ]
+          }
+        }
+      ]
+    },
+    "group_finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "group_id",
+        "rule_id",
+        "severity",
+        "evidence",
+        "fix",
+        "state"
+      ],
+      "properties": {
+        "group_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "affected_questions": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10
+          },
+          "description": "Which items the group-level defect reaches. Present so severity can be read against real spread: severity.md 2.2 allows one step up when several items are affected, and this is where that claim is checked."
+        },
+        "rule_id": {
+          "$ref": "#/definitions/rule_id"
+        },
+        "severity": {
+          "$ref": "#/definitions/severity"
+        },
+        "evidence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fix": {
+          "type": "string",
+          "minLength": 1
+        },
+        "state": {
+          "$ref": "#/definitions/state"
+        },
+        "waiver_reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "waived"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "required": [
+              "waiver_reason"
+            ]
+          }
+        }
+      ]
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reviewed_question_ids",
+        "unreviewed"
+      ],
+      "description": "What was actually reviewed, declared rather than implied. A review that quietly stops at nine items reads exactly like a clean one, so the set is written out and the orchestrator compares it against the ten it asked for.",
+      "properties": {
+        "reviewed_question_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10,
+          "uniqueItems": true,
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10
+          }
+        },
+        "unreviewed": {
+          "type": "array",
+          "maxItems": 10,
+          "uniqueItems": true,
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10
+          }
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Why the unreviewed items could not be reviewed. Required as soon as anything is unreviewed: an unexplained omission is indistinguishable from an oversight, and the caller cannot decide what to do about it."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "unreviewed": {
+                "minItems": 1
+              }
+            },
+            "required": [
+              "unreviewed"
+            ]
+          },
+          "then": {
+            "required": [
+              "reason"
+            ]
+          }
+        }
+      ]
+    },
+    "severity_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "CRITICAL",
+        "MAJOR",
+        "MINOR",
+        "INFO",
+        "ADVISORY_WARNING"
+      ],
+      "properties": {
+        "CRITICAL": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "MAJOR": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "MINOR": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "INFO": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ADVISORY_WARNING": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "severity": {
+      "enum": [
+        "CRITICAL",
+        "MAJOR",
+        "MINOR",
+        "INFO",
+        "ADVISORY_WARNING"
+      ],
+      "description": "severity.md 1, graded by real impact and never by how much work the fix is. Two equally supported answers, an answer with no script evidence, and candidate-visible text that gives an answer away are MAJOR by default and CRITICAL when the pattern runs through the set. A wording that is merely less natural than an alternative, with the original correct and clear, is at most INFO."
+    },
+    "state": {
+      "enum": [
+        "open",
+        "resolved",
+        "waived",
+        "not_applicable"
+      ],
+      "description": "severity.md 4. not_applicable means the rule was evaluated and does not apply -- useful and not a defect. Only open findings count towards question_qc_status."
+    },
+    "rule_id": {
+      "type": "string",
+      "pattern": "^(SC|QR|AR|AL|LG|SR)-[0-9]{3}$",
+      "description": "The rule actually violated, from the six namespaces. One id per finding: a finding citing three rules cannot be fixed once, and the reference file states which id owns which judgement."
+    }
+  }
+}

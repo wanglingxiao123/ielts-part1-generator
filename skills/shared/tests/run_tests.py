@@ -41,6 +41,10 @@ VALIDATE = _one("generate", "*/scripts/validate_part1.py")
 # `*/scripts/validate_part1.py` rather than turning `_one`'s assertion into a two-match failure.
 QUESTION_VALIDATE = _one("generate", "*/scripts/validate_questions_part1.py")
 METRICS = _one("audit", "*/scripts/audit_metrics.py")
+# The question audit is a SECOND skill in the audit pool, and it ships a schema and no script -- so it
+# is located by its schema, the way the feasibility pool is. It cannot be reached through `METRICS`:
+# that path derives from audit_metrics.py's own skill directory and stops there.
+QUESTION_AUDIT_SCHEMAS = _one("audit", "*/schemas/audit_questions.schema.json").parent
 CROSS_CHECK = SHARED / "cross_check.py"
 RENDER = SHARED / "render_audit_report.py"
 GENERATE_SCHEMAS = VALIDATE.parents[1] / "schemas"
@@ -58,7 +62,9 @@ FEASIBILITY_SCHEMAS = _one("feasibility", "*/schemas/feasibility.schema.json").p
 # holds two skills now and each carries its own schemas/ directory, so a directory derived from one
 # skill's validator does not reach the other's. Omitting it leaves question_package.schema.json
 # unresolvable by `_schema` and unvalidated by `test_schemas_are_valid` -- which reads as passing.
-SCHEMA_DIRS = (GENERATE_SCHEMAS, QUESTION_SCHEMAS, AUDIT_SCHEMAS, FEASIBILITY_SCHEMAS)
+# `QUESTION_AUDIT_SCHEMAS` is the same case in the audit pool, which now also holds two skills.
+SCHEMA_DIRS = (GENERATE_SCHEMAS, QUESTION_SCHEMAS, AUDIT_SCHEMAS, QUESTION_AUDIT_SCHEMAS,
+               FEASIBILITY_SCHEMAS)
 
 
 def _schema(name: str) -> Path:
@@ -108,6 +114,7 @@ SCHEMA_NAMES = (
     "blueprint.read.schema.json",
     "question_package.schema.json",
     "audit.schema.json",
+    "audit_questions.schema.json",
     "feasibility.schema.json",
 )
 
@@ -2377,6 +2384,214 @@ def test_question_blank_number_is_matched_as_a_whole_numeral() -> None:
           repr(numbering_errors(10, "(10) .....")))
 
 
+_QUESTION_AUDIT_SCHEMA = "audit_questions.schema.json"
+
+
+def _question_audit_review() -> dict:
+    """A complete, clean ten-item review, shaped to match the schema.
+
+    Built here rather than committed as a fixture: `build_fixtures.py` owns fixtures/ and rebuilds it,
+    and this document has exactly one reader.
+    """
+    answers = []
+    for number in range(1, 11):
+        answers.append({
+            "number": number,
+            "answer": "answer %d" % number,
+            "turn_index": number + 2,
+            "quote": "verbatim span for item %d" % number,
+            "confidence": "high",
+            "competing_candidates": [{
+                "text": "rival %d" % number,
+                "equally_supported": False,
+                "reason": "the carrier limits the row to the caller's own address",
+            }],
+            "derivable_without_recording": False,
+        })
+    zero = {"CRITICAL": 0, "MAJOR": 0, "MINOR": 0, "INFO": 0, "ADVISORY_WARNING": 0}
+    return {
+        "reconstructed_answers": answers,
+        "per_question_findings": [],
+        "group_findings": [],
+        "coverage": {"reviewed_question_ids": list(range(1, 11)), "unreviewed": []},
+        "summary": {"counts": dict(zero), "visual_counts": dict(zero)},
+        "question_qc_status": "PASS",
+        "content_review_readiness": "READY_FOR_HUMAN_REVIEW",
+        "visual_qc_status": "NOT_RUN",
+        "visual_findings": [],
+    }
+
+
+def test_question_audit_schema_contract() -> None:
+    """The output contract of the blind question audit.
+
+    The positives carry as much weight as the negatives. A schema that required a finding per item, or
+    forbade an empty `competing_candidates`, would reject a genuinely clean review -- and every negative
+    case below would still pass against that broken version, so the clean review is asserted first.
+    """
+    print("question audit schema")
+    try:
+        import jsonschema  # noqa: F401 - availability probe
+    except ImportError:
+        print("  SKIP  jsonschema not installed")
+        return
+
+    def errors(data: object) -> list[str]:
+        return _schema_errors(_QUESTION_AUDIT_SCHEMA, data)
+
+    base = _question_audit_review()
+    check("a clean ten-item review validates", errors(base) == [], repr(errors(base))[:400])
+
+    def mutated(mutate) -> dict:
+        payload = copy.deepcopy(base)
+        mutate(payload)
+        return payload
+
+    def real_finding(payload: dict) -> None:
+        payload["per_question_findings"].append({
+            "number": 4, "rule_id": "AR-012", "severity": "MAJOR",
+            "evidence": "turn 19 offers Tuesday and Thursday with equal support",
+            "fix": "add 'the earlier of the two' to the carrier on row 4",
+            "state": "open"})
+        payload["summary"]["counts"]["MAJOR"] = 1
+        payload["question_qc_status"] = "FAIL"
+
+    check("a real finding with its status validates", errors(mutated(real_finding)) == [],
+          repr(errors(mutated(real_finding)))[:400])
+
+    def waived_with_reason(payload: dict) -> None:
+        payload["group_findings"].append({
+            "group_id": "A", "rule_id": "QR-031", "severity": "MINOR",
+            "evidence": "the note group prints no heading",
+            "fix": "add a heading naming the record the four rows describe",
+            "state": "waived", "waiver_reason": "accepted for this draft by the request"})
+        payload["summary"]["counts"]["MINOR"] = 1
+
+    check("a waived finding carrying its reason validates",
+          errors(mutated(waived_with_reason)) == [], repr(errors(mutated(waived_with_reason)))[:400])
+
+    def nine_reviewed(payload: dict) -> None:
+        payload["reconstructed_answers"].pop()
+        payload["coverage"] = {"reviewed_question_ids": list(range(1, 10)), "unreviewed": [10],
+                               "reason": "item 10's carrier references a group that is not printed"}
+
+    check("a nine-item review with an explained omission validates (the schema records coverage; the "
+          "orchestrator decides whether nine is acceptable)", errors(mutated(nine_reviewed)) == [],
+          repr(errors(mutated(nine_reviewed)))[:400])
+
+    for label, mutate in (
+        # The three blocks the auditor must never receive, arriving back in its own output. Each would
+        # mean the review had them, which is the leak this whole path exists to prevent.
+        ("a supplied answer key echoed at the top level",
+         lambda p: p.update({"answer_key": [{"number": 1, "canonical": "Anna Woods"}]})),
+        ("an evidence table echoed at the top level",
+         lambda p: p.update({"evidence": [{"number": 1, "turn_index": 3}]})),
+        ("the item plan echoed at the top level", lambda p: p.update({"blueprint": {}})),
+        # Coverage is the field that makes a truncated review visible, so an unexplained gap must fail.
+        ("an unreviewed item with no reason",
+         lambda p: p["coverage"].update({"unreviewed": [10]})),
+        ("a reviewed id outside 1-10",
+         lambda p: p["coverage"].update({"reviewed_question_ids": [0, 1, 2]})),
+        ("a duplicated reviewed id",
+         lambda p: p["coverage"].update({"reviewed_question_ids": [1, 1, 2]})),
+        # A waived finding is the one state the auditor may not assign itself, and the reason is the
+        # only thing distinguishing an authorised waiver from a self-issued one.
+        ("a waived finding with no waiver_reason", lambda p: p["per_question_findings"].append(
+            {"number": 2, "rule_id": "QR-040", "severity": "MAJOR", "evidence": "the heading prints "
+             "the answer", "fix": "rename the heading", "state": "waived"})),
+        # Findings must be actionable and attributable, one rule each.
+        ("a finding with an empty fix", lambda p: p["per_question_findings"].append(
+            {"number": 2, "rule_id": "QR-040", "severity": "MAJOR", "evidence": "x", "fix": "",
+             "state": "open"})),
+        ("a finding citing a free-text rule", lambda p: p["per_question_findings"].append(
+            {"number": 2, "rule_id": "leakage", "severity": "MAJOR", "evidence": "x", "fix": "y",
+             "state": "open"})),
+        ("a severity outside the enum", lambda p: p["per_question_findings"].append(
+            {"number": 2, "rule_id": "QR-040", "severity": "BLOCKER", "evidence": "x", "fix": "y",
+             "state": "open"})),
+        ("a finding state outside the four", lambda p: p["per_question_findings"].append(
+            {"number": 2, "rule_id": "QR-040", "severity": "MINOR", "evidence": "x", "fix": "y",
+             "state": "wontfix"})),
+        ("a status outside PASS/WARNING/FAIL",
+         lambda p: p.update({"question_qc_status": "PASS_WITH_MINOR_EDITS"})),
+        # The two separated statuses from severity.md 3.1. This audit inspects no typography, so any
+        # other visual value would be a claim about something never looked at.
+        ("visual_qc_status claiming a pass", lambda p: p.update({"visual_qc_status": "PASS"})),
+        ("a visual finding smuggled in", lambda p: p.update({"visual_findings": [{"note": "border"}]})),
+        # The reconstruction is the product. A rival recorded without a verdict, or an answer without
+        # its evidence, is a reconstruction that cannot be cross-checked.
+        ("a rival with no equally_supported verdict",
+         lambda p: p["reconstructed_answers"][0]["competing_candidates"].append(
+             {"text": "Thursday", "reason": "also in the list"})),
+        ("an answer with no quote",
+         lambda p: p["reconstructed_answers"][0].pop("quote")),
+        ("an answer with no confidence",
+         lambda p: p["reconstructed_answers"][0].pop("confidence")),
+        ("confidence as a number",
+         lambda p: p["reconstructed_answers"][0].update({"confidence": 0.9})),
+        ("a negative turn_index",
+         lambda p: p["reconstructed_answers"][0].update({"turn_index": -1})),
+        ("an eleventh reconstructed answer",
+         lambda p: p["reconstructed_answers"].append(copy.deepcopy(p["reconstructed_answers"][0]))),
+        ("counts missing a severity", lambda p: p["summary"]["counts"].pop("INFO")),
+        ("visual_counts dropped entirely", lambda p: p["summary"].pop("visual_counts")),
+        ("an unknown top-level block", lambda p: p.update({"score": {"total": 80}})),
+    ):
+        check("schema rejects: %s" % label, errors(mutated(mutate)) != [])
+
+
+def test_question_audit_coverage_must_account_for_all_ten() -> None:
+    """Nine reviewed items must be visible as nine, at both layers that can see it.
+
+    The failure this pins is the quiet one. A review that stops at nine has the shape of a complete
+    review: the findings list is plausible, the status computes, and nothing in the document says a
+    tenth item exists. So `coverage` is the field that has to carry it, and it has to be impossible to
+    leave an omission unexplained -- an unexplained gap is indistinguishable from an oversight, and the
+    caller cannot decide what to do about it.
+
+    Both layers are asserted because they answer different questions. The schema can only require that
+    an omission is *declared and explained*; whether nine is acceptable at all is the orchestrator's
+    call, so that comparison is made against the ten items it asked for.
+    """
+    print("question audit coverage")
+    try:
+        import jsonschema  # noqa: F401 - availability probe
+    except ImportError:
+        print("  SKIP  jsonschema not installed")
+        return
+
+    def errors(data: object) -> list[str]:
+        return _schema_errors(_QUESTION_AUDIT_SCHEMA, data)
+
+    nine = copy.deepcopy(_question_audit_review())
+    nine["reconstructed_answers"].pop()
+    nine["coverage"] = {"reviewed_question_ids": list(range(1, 10)), "unreviewed": [10]}
+
+    check("nine reviewed with an undeclared reason is rejected by the schema", errors(nine) != [])
+
+    nine["coverage"]["reason"] = "no decisive turn could be located for item 10 inside its window"
+    check("nine reviewed with a stated reason is accepted by the schema", errors(nine) == [],
+          repr(errors(nine))[:300])
+
+    # The orchestrator's layer: the schema accepted the document above, and it still is not a review
+    # of ten items. This is the comparison a caller has to make, expressed as the caller would.
+    expected = set(range(1, 11))
+    reviewed = set(nine["coverage"]["reviewed_question_ids"])
+    check("and the caller can still tell it did not cover Q1-Q10",
+          reviewed != expected and expected - reviewed == {10})
+
+    # The truncation that hides itself: nine answers rebuilt while coverage claims ten. Nothing in the
+    # schema can catch this, so the caller must compare the two lists rather than trusting either.
+    lying = copy.deepcopy(_question_audit_review())
+    lying["reconstructed_answers"].pop()
+    check("a review claiming ten while rebuilding nine passes the schema", errors(lying) == [],
+          repr(errors(lying))[:300])
+    rebuilt = {answer["number"] for answer in lying["reconstructed_answers"]}
+    claimed = set(lying["coverage"]["reviewed_question_ids"])
+    check("so the caller compares the reconstruction against the claim, and the gap shows",
+          claimed - rebuilt == {10})
+
+
 def main() -> int:
     for suite in (
         test_schemas_are_valid,
@@ -2420,6 +2635,8 @@ def main() -> int:
         test_question_validator_catches_the_stage_defects,
         test_question_ar003_tiers_follow_the_canonical,
         test_question_blank_number_is_matched_as_a_whole_numeral,
+        test_question_audit_schema_contract,
+        test_question_audit_coverage_must_account_for_all_ten,
     ):
         suite()
     print()
