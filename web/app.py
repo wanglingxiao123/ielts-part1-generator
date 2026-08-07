@@ -25,11 +25,11 @@ calls through untouched, so the SSE path has nothing between it and the server.
 
 **Neither SSE path lets a blocking read touch the event loop, and each does it differently.**
 
-* `action: generate` is fanned out: one `invoke_agent_runtime` per material, merged into one event
-  stream (`web/fanout.py`). Each child's blocking `iter_lines` sits on a dedicated executor thread
-  and hands events to the loop through `call_soon_threadsafe`, so the merged generator is `async`
-  and never blocks. This is what removed the batch ceiling -- the platform's 15-minute wall now
-  bounds one ~200s material instead of a whole batch.
+* `action: generate` and `action: generate_sets` are fanned out: one `invoke_agent_runtime` per
+  material, merged into one event stream (`web/fanout.py`). Each child's blocking `iter_lines` sits on
+  a dedicated executor thread and hands events to the loop through `call_soon_threadsafe`, so the
+  merged generator is `async` and never blocks. This is what removed the batch ceiling -- the
+  platform's 15-minute wall now bounds one ~200s material instead of a whole batch.
 * Every other action still goes through `_relay`, a *sync* generator. `StreamingResponse` runs a
   sync iterator through `iterate_in_threadpool`, so each blocking read happens off the loop and each
   line reaches the browser as it arrives. Collecting the lines into a list first would pass every
@@ -490,8 +490,15 @@ class WebTier:
     async def _invocations(self, request: Request) -> Any:
         """Proxy one payload to the Runtime. JSON in, JSON or SSE out.
 
-        `generate` is the fanned-out case: N invocations, one per material, merged into one stream.
-        Everything else is a single call relayed as-is.
+        `generate` and `generate_sets` are the fanned-out cases: N invocations, one per material,
+        merged into one stream. Everything else is a single call relayed as-is.
+
+        `generate_sets` is fanned out for exactly the reason `generate` is -- one invocation per
+        material, so the 900s wall applies to one material rather than to the whole batch -- and it has
+        to be, not merely may be: the alternative is one invocation carrying N sets, and N × ~200s of
+        generation plus the question stages does not fit under one wall. What differs is only what each
+        child promises about its own material, which is the backend's business (`backend/app.py`), and
+        the per-child request ids `plan_children` mints so the children's slot records do not collide.
         """
         user = request.scope.get(USER_SCOPE_KEY) or {}
         payload = await _json_body(request)
@@ -499,7 +506,7 @@ class WebTier:
             return JSONResponse(_error_body("bad_request", "payload must be a JSON object"),
                                 status_code=400)
 
-        if str(payload.get("action") or "generate") == "generate":
+        if str(payload.get("action") or "generate") in ("generate", "generate_sets"):
             if not self.runtime.configured:
                 # A per-batch precondition, not a per-child failure: with no Runtime ARN every
                 # child would fail identically, and N cards reading "RuntimeNotConfigured" tells

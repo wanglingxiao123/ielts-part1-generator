@@ -238,3 +238,97 @@ class TestActionNames:
         for action in ("list_scenarios", "select", "preview_audio", "audio_status",
                        "presign_audio"):
             assert action in text, action
+
+
+class TestGenerateSetsDispatch:
+    """`action=generate_sets` reaching the streaming branch, and staying a separate action.
+
+    Two things are asserted here that nothing else would notice:
+
+    * **It must be SSE.** `BedrockAgentCoreApp` picks JSON or SSE from whether the handler's return
+      value is an async generator, so a dispatch line that `await`ed the run instead of returning the
+      generator would serve a 20-minute request as one JSON body -- silent for its whole duration, and
+      therefore dropped by the first intermediary with an idle-read timeout.
+    * **It must not be `generate` with a flag.** The two make opposite promises in the one field every
+      caller reads: `generate` may deliver fewer materials than asked, `generate_sets` may not
+      (§8.2(3)). One name for both would leave a caller unable to tell from the response which
+      contract applied.
+    """
+
+    @pytest.mark.asyncio
+    async def test_generate_sets_reaches_the_streaming_branch(self, monkeypatch):
+        import inspect
+
+        from backend import app as app_module
+
+        result = await app_module.invoke({"action": "generate_sets", "scenarios": [],
+                                          "batch_id": "b1"})
+        assert inspect.isasyncgen(result)
+        await result.aclose()
+
+    @pytest.mark.asyncio
+    async def test_the_entrypoint_itself_is_not_a_generator_function(self):
+        """A single `yield` inside `invoke` would make `list_scenarios` stream too. The generator
+        branches have to stay delegated."""
+        import inspect
+
+        from backend import app as app_module
+
+        assert not inspect.isasyncgenfunction(app_module.invoke)
+
+    @pytest.mark.asyncio
+    async def test_a_bad_payload_is_a_batch_failed_not_an_invented_request(self, monkeypatch):
+        """No `batch_id` means nothing was planned, so there is no request whose status could be
+        reported. A `request_completed` here would put an id nobody issued into the one field a
+        resumption keys on."""
+        from backend import app as app_module
+
+        stream = await app_module.invoke({"action": "generate_sets",
+                                          "scenarios": ["booking-hotel"]})
+        events = [event async for event in stream]
+        assert [e["type"] for e in events] == ["batch_failed"]
+        assert events[0]["reason"] == "bad_request"
+        assert "batch_id" in events[0]["detail"]
+
+    @pytest.mark.asyncio
+    async def test_the_ids_and_budget_reach_the_runner(self, monkeypatch):
+        """The dispatch line is where `group_id` could be dropped, and dropping it would silently make
+        every fan-out child its own candidate group of one -- a batch whose materials never compete for
+        the user's choice, which looks like a working batch."""
+        from backend import app as app_module
+        from backend.orchestration import delivery as delivery_module
+
+        seen = {}
+
+        async def fake_stream(scenarios, batch_id, **kwargs):
+            seen.update(kwargs, scenarios=len(scenarios), batch_id=batch_id)
+            yield {"type": "request_completed", "status": "succeeded"}
+
+        monkeypatch.setattr(delivery_module, "stream_request", fake_stream)
+        stream = await app_module.invoke({
+            "action": "generate_sets", "scenarios": ["booking-hotel"], "count": 2,
+            "batch_id": "web-9-slot-2", "group_id": "web-9", "concurrency": 3,
+            "hard_limit_seconds": 120,
+        })
+        events = [event async for event in stream]
+
+        assert [e["type"] for e in events] == ["request_completed"]
+        assert seen["batch_id"] == "web-9-slot-2"
+        assert seen["group_id"] == "web-9"
+        assert seen["scenarios"] == 2
+        assert seen["concurrency"] == 3
+        assert seen["budget"] is not None
+
+    def test_generate_is_still_its_own_action(self):
+        """The deployed frontend is on `generate`, and this branch must not need a coordinated
+        frontend release. Both names have to be handled, separately."""
+        handler = (REPO / "backend" / "app.py").read_text(encoding="utf-8")
+        assert '"generate_sets"' in handler
+        assert 'action != "generate"' in handler
+
+    def test_the_unknown_action_message_lists_the_new_action(self):
+        """Otherwise a typo in `generate_sets` produces an error naming every action except the one
+        the caller was reaching for."""
+        handler = (REPO / "backend" / "app.py").read_text(encoding="utf-8")
+        message = handler[handler.index("unknown action"):]
+        assert "generate_sets" in message[:400]

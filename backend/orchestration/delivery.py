@@ -44,6 +44,13 @@ resumable without a human). There is deliberately no state meaning "fewer than N
 **Resumption reads storage, not memory** (§8.2(4)). ``run_request`` with a ``batch_id`` that already
 has a request record continues from the slot records, which is the same code path a first run takes
 with none -- so the resumable path is not a rarely-exercised branch.
+
+**Two ids, because a fanned-out child is one request and part of one batch.** ``batch_id`` names the
+*request*: it is the key every slot record hangs off and the name the next invocation resumes by, so
+each child of a web fan-out needs its own (they would otherwise all write ``slot-1`` to one key and
+overwrite each other). ``group_id`` names the *candidate group*: which materials compete for one
+user choice, which is still "the same scenario in the same browser batch" and therefore shared across
+children. Collapsing them would either break resumption or break selection, in opposite directions.
 """
 
 from __future__ import annotations
@@ -86,6 +93,7 @@ __all__ = [
     "MAX_REPLACEMENT_SLOTS",
     "QUESTION_P95_SECONDS",
     "run_request",
+    "stream_request",
 ]
 
 # --- the outer bound (§8.2(2)) ---------------------------------------------------------------
@@ -193,15 +201,20 @@ class _Paused(Exception):
 class _Context(object):
     """Everything one slot's state machine needs that is not its own record."""
 
-    __slots__ = ("store", "budget", "queue", "batch_id", "scenarios", "run_material",
+    __slots__ = ("store", "budget", "queue", "batch_id", "group_id", "scenarios", "run_material",
                  "run_question_stage", "faults", "paused")
 
     def __init__(self, store, budget, queue, batch_id, scenarios,
-                 run_material, run_question_stage) -> None:
+                 run_material, run_question_stage, group_id=None) -> None:
         self.store = store
         self.budget = budget
         self.queue = queue
         self.batch_id = batch_id
+        # The candidate-group namespace, which is NOT the request id. See the module docstring: with
+        # one Runtime invocation per child, every child has its own `batch_id` (its slot records must
+        # not collide) while the materials of one browser batch must still compete for one user
+        # choice. Defaults to `batch_id`, which is right for a single-request run.
+        self.group_id = group_id or batch_id
         # slot_id -> the Scenario that slot generates from. A replacement slot inherits its
         # predecessor's scenario: the position in the request is what is being refilled, and a
         # replacement that quietly generated a different scenario would answer a request the user
@@ -231,6 +244,7 @@ async def run_request(
     concurrency: Optional[int] = None,
     run_material: Optional[Callable] = None,
     run_question_stage: Optional[Callable] = None,
+    group_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Deliver one complete set per entry in ``scenarios``, or return an honest non-success.
 
@@ -247,18 +261,59 @@ async def run_request(
     resumption, and fewer-than-N never succeeding -- are all about *what the runner does with* a
     stage's answer, and each needs to script those answers precisely.
 
+    ``group_id`` namespaces the candidate group and defaults to ``batch_id``; see the module docstring
+    for why the two are separate.
+
     Returns the request summary. It is also written to ``_slots/{batch_id}/request.json`` before being
     returned, so the status a caller reports and the status stored are the same document rather than
     two renderings of it.
+
+    ``emit`` is awaited for every event as it happens, which is what makes this usable behind SSE; the
+    return value is the same summary the last event carries. A caller that wants the events *as a
+    stream* rather than through a callback uses :func:`stream_request`, which is this function with the
+    queue exposed instead of drained.
     """
     emit = emit or _noop
+    summary: Dict[str, Any] = {}
+    async for event in stream_request(
+            scenarios, batch_id, store=store, budget=budget, concurrency=concurrency,
+            run_material=run_material, run_question_stage=run_question_stage, group_id=group_id):
+        await emit(event)
+        if event.get("type") == "request_completed":
+            summary = {k: v for k, v in event.items() if k not in ("type", "at")}
+    return summary
+
+
+async def stream_request(
+    scenarios: List[Any],
+    batch_id: str,
+    store: Any = None,
+    budget: Optional[DeliveryBudget] = None,
+    concurrency: Optional[int] = None,
+    run_material: Optional[Callable] = None,
+    run_question_stage: Optional[Callable] = None,
+    group_id: Optional[str] = None,
+):
+    """:func:`run_request` as an async generator: every event yielded as it occurs.
+
+    The Runtime action needs this shape rather than a callback. AgentCore picks JSON or SSE from
+    whether the handler is an async generator (``backend/app.py``), and the events have to reach the
+    browser *while* the request runs -- a request that yielded nothing for six minutes would be
+    dropped by the first intermediary with an idle-read timeout.
+
+    The terminal ``request_completed`` event carries the summary, so no consumer needs a second
+    channel to learn the status. It is emitted on every path, including the two persistence failures:
+    a stream that ends without it is a lost connection, and that must not be confusable with a
+    request that finished short.
+    """
     store = store or build_slot_store()
     budget = budget or DeliveryBudget()
     wanted = len(scenarios)
 
     queue: asyncio.Queue = asyncio.Queue()
     ctx = _Context(store, budget, queue, batch_id, {},
-                   run_material or run_one, run_question_stage or run_questions)
+                   run_material or run_one, run_question_stage or run_questions,
+                   group_id=group_id)
 
     records = _plan(store, batch_id, scenarios, ctx)
     try:
@@ -269,12 +324,15 @@ async def run_request(
         # Nothing has been generated yet, and nothing may be: a request that cannot record its own
         # progress cannot honour §8.2(1) or §8.2(4), and running anyway would produce work whose only
         # trace is an SSE stream nobody can resume from.
-        return _summary(batch_id, wanted, SYSTEM_FAILURE, [], ctx,
-                        detail="slot state could not be persisted: %s" % exc)
+        yield events.request_completed(
+            _summary(batch_id, wanted, SYSTEM_FAILURE, [], ctx, records,
+                     detail="slot state could not be persisted: %s" % exc))
+        return
+
+    async for row in _pump(queue, _advance_all(records, ctx, concurrency)):
+        yield row
 
     delivered: List[Dict[str, Any]] = []
-    for row in await _drain(queue, _advance_all(records, ctx, concurrency)):
-        await emit(row)
     for record in store.list_slots(batch_id):
         if record.state == COMPLETE and record.material_id:
             payload = store.load_questions(record.material_id)
@@ -283,11 +341,12 @@ async def run_request(
                                   "material_id": record.material_id,
                                   "questions": payload})
 
-    status = _status(store.list_slots(batch_id), wanted, ctx)
-    summary = _summary(batch_id, wanted, status, delivered, ctx)
+    final = store.list_slots(batch_id)
+    status = _status(final, wanted, ctx)
+    summary = _summary(batch_id, wanted, status, delivered, ctx, final)
     try:
         store.save_request(_request_document(
-            batch_id, wanted, status, store.list_slots(batch_id), ctx,
+            batch_id, wanted, status, final, ctx,
             store_backend=describe_slot_store(store)))
     except SlotPersistenceError as exc:
         # The work happened; only the final status write failed. Reported as a system failure over the
@@ -296,8 +355,7 @@ async def run_request(
         # this function just returned is not one anybody should trust.
         summary["status"] = SYSTEM_FAILURE
         summary["detail"] = "request status could not be persisted: %s" % exc
-    await emit(events.request_completed(summary))
-    return summary
+    yield events.request_completed(summary)
 
 
 def _plan(store, batch_id: str, scenarios: List[Any], ctx: _Context) -> List[SlotRecord]:
@@ -617,7 +675,7 @@ def _register_material(result: Any, scenario: Any, record: SlotRecord, ctx: _Con
     """
     from .batch import _register
 
-    _register(result, scenario, "%s:%s" % (record.batch_id, record.scenario_id))
+    _register(result, scenario, "%s:%s" % (ctx.group_id, record.scenario_id))
     if not result.material_id:
         raise SlotPersistenceError("material for slot %s was registered without an id"
                                    % record.slot_id)
@@ -702,7 +760,16 @@ def _status(records: List[SlotRecord], wanted: int, ctx: _Context) -> str:
 
 
 def _summary(batch_id: str, wanted: int, status: str, delivered: List[Dict[str, Any]],
-             ctx: _Context, detail: Optional[str] = None) -> Dict[str, Any]:
+             ctx: _Context, records: Optional[List[SlotRecord]] = None,
+             detail: Optional[str] = None) -> Dict[str, Any]:
+    """The request summary, which is also the wire's terminal event and the stored request document.
+
+    ``slots`` carries every slot's state, and it is on the wire rather than only in storage because of
+    what the web tier has to do with it (§8.1). ``web/fanout.py`` used to call a slot with no terminal
+    event ``failed``; once a slot can outlive one invocation, a checkpointed or still-retrying slot has
+    to be distinguishable from a stuck one, and this is the field that distinguishes them. Sending it
+    means the common case costs no storage read at all -- the child that owns the state reports it.
+    """
     payload = {
         "batch_id": batch_id,
         "status": status,
@@ -714,10 +781,42 @@ def _summary(batch_id: str, wanted: int, status: str, delivered: List[Dict[str, 
         "system_faults": [{"slot_id": slot, "reason": reason}
                           for slot, reason in sorted(ctx.faults.items())],
         "paused": ctx.paused,
+        "slots": [_slot_row(record, ctx) for record in (records or [])],
     }
     if detail:
         payload["detail"] = detail
     return payload
+
+
+def _slot_row(record: SlotRecord, ctx: _Context) -> Dict[str, Any]:
+    """One slot as the wire describes it: enough to draw a card and to decide it is not stuck.
+
+    A trimmed projection of ``SlotRecord.as_record()`` rather than the record itself. The record grows
+    fields for the runner's own bookkeeping, and a projection is what stops each of those becoming a
+    published field the frontend can start depending on.
+    """
+    return {
+        "slot_id": record.slot_id,
+        "scenario": record.scenario_id,
+        "state": record.state,
+        "material_id": record.material_id,
+        # Included because a POSITION can hold several records -- an exhausted slot and the replacement
+        # that took over -- and a reader deciding which one describes the position needs to know which
+        # came last. `list_slots` already returns them in this order, but a reader that has to rely on
+        # list order cannot tell a reordering from a replacement.
+        "created_at": record.created_at,
+        # True while this slot has work the next invocation can pick up. Stated rather than derived
+        # from `state` by the reader, because "resumable" is this module's judgement: an exhausted slot
+        # is terminal for the slot and its position may still be refilled, and a reader reconstructing
+        # that rule from state names would be a second copy of it.
+        "resumable": record.state not in (COMPLETE, EXHAUSTED),
+        "checkpointed": record.checkpoint_at is not None,
+        "system_fault": record.system_fault,
+        "last_failure": record.last_failure,
+        "attempts": dict(record.attempts),
+        "replaces": record.replaces,
+        "replaced_by": record.replaced_by,
+    }
 
 
 def _request_document(batch_id: str, wanted: int, status: str, records: List[SlotRecord],
@@ -739,13 +838,22 @@ def _request_document(batch_id: str, wanted: int, status: str, records: List[Slo
     }
 
 
-async def _drain(queue: asyncio.Queue, work) -> List[Dict[str, Any]]:
-    """Run ``work`` to completion and return every event it queued, in order.
+async def _pump(queue: asyncio.Queue, work):
+    """Run ``work`` and yield every event it queues, in order, as it is queued.
 
     A sentinel-terminated drain, the same shape ``run_batch`` uses and for the same measured reason:
     racing ``queue.get()`` against the worker and cancelling the pending get can drop an item already
-    handed to it. Here the loss would be a stage event rather than a material, but the request summary
-    is assembled from storage afterwards precisely so no event is load-bearing.
+    handed to it.
+
+    Yielded rather than accumulated, because the events are the heartbeat. Collecting them and
+    replaying at the end would leave the connection silent for the whole request, which is what the
+    ``stage``-as-keepalive contract (``events.py``) exists to prevent.
+
+    ``work`` is awaited in the ``finally``, so a consumer that stops reading (a browser that went
+    away, closing the generator) does not leave the slot tasks running unattended. The sentinel is
+    queued only after ``work`` has finished, so on the normal path the cancel below has nothing left
+    to cancel; it matters only on the abandoned path, where waiting for the remaining stages would
+    hold the response open for a client that is gone.
     """
     sentinel = object()
 
@@ -756,16 +864,18 @@ async def _drain(queue: asyncio.Queue, work) -> List[Dict[str, Any]]:
             await queue.put(sentinel)
 
     closer = asyncio.ensure_future(close())
-    out: List[Dict[str, Any]] = []
     try:
         while True:
             item = await queue.get()
             if item is sentinel:
                 break
-            out.append(item)
+            yield item
     finally:
-        await closer
-    return out
+        closer.cancel()
+        try:
+            await closer
+        except asyncio.CancelledError:
+            pass
 
 
 async def _noop(_event: Dict[str, Any]) -> None:

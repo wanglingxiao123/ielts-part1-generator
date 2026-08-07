@@ -70,6 +70,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 import logging
 
 from .runtime_client import SSE_CONTENT_TYPE, iter_sse_payloads, new_session_id, read_json
+from .slot_state import COMPLETE, TERMINAL_SLOT_STATES, SlotStateReader, build_reader
 
 LOG = logging.getLogger(__name__)
 
@@ -170,6 +171,14 @@ def plan_children(
     scenario -- is left alone and sent to a child verbatim, so the backend's own validation
     produces the error message. Duplicating that validation here would give the user two different
     sentences for the same mistake, and the web tier has no catalogue to check ids against.
+
+    **``action: generate_sets`` children get their own request ids.** That action persists slot state
+    under ``_slots/{batch_id}/slots/{slot_id}.json`` and every child calls its own slot ``slot-1``, so
+    one shared ``batch_id`` would have N children overwriting one another's records -- and a resumption
+    would find one slot where the user asked for N. Each child therefore carries
+    ``batch_id: {batch}-{slot}`` (its own resumable request) plus ``group_id: {batch}`` (the candidate
+    group they share, so the materials of one submission still compete for one user choice). ``generate``
+    children are untouched: that path mints its own group key per invocation and never reads the field.
     """
     counts = payload.get("counts")
     counts = counts if isinstance(counts, dict) else {}
@@ -203,6 +212,8 @@ def plan_children(
     seat_of: Dict[str, int] = {}
     seen_per_scenario: Dict[str, int] = {}
 
+    delivers_sets = str(payload.get("action") or "generate") == "generate_sets"
+
     def add(child_payload: Dict[str, Any], scenario: str, materials: int) -> None:
         allotted = [
             "slot-%d" % (len(slot_ids) + offset + 1) for offset in range(materials)
@@ -211,7 +222,14 @@ def plan_children(
             seat_of[slot] = seen_per_scenario.get(scenario, 0)
             seen_per_scenario[scenario] = seat_of[slot] + 1
         slot_ids.extend(allotted)
-        child_payload["batch_id"] = batch_id
+        if delivers_sets:
+            # Per-child request id, batch-wide group id. See the docstring: the first is what slot state
+            # is stored under and must be unique per invocation, the second is what decides which
+            # candidates compete for one choice and must not be.
+            child_payload["batch_id"] = "%s-%s" % (batch_id, allotted[0])
+            child_payload["group_id"] = batch_id
+        else:
+            child_payload["batch_id"] = batch_id
         children.append(ChildPlan(len(children), child_payload, allotted, scenario,
                                   {slot: seat_of[slot] for slot in allotted}))
 
@@ -266,6 +284,49 @@ def launch_order(children: List[ChildPlan]) -> List[ChildPlan]:
     return ordered
 
 
+def outcome_for_state(row: Dict[str, Any]) -> str:
+    """One recorded slot state -> the merge's outcome word for it.
+
+    Three inputs and three answers:
+
+    * ``complete`` -> ``ok``. The set was delivered; a lost frame does not unmake it.
+    * resumable (anything not terminal) -> ``pending``. The next invocation can carry it further, so
+      calling it failed would report recoverable work as lost.
+    * ``exhausted`` -> ``failed``. Terminal for the slot. Its position may still be refilled by a
+      replacement slot, and that replacement is a slot of its own with its own row -- so reporting
+      *this* one as failed does not under-report the position.
+
+    ``resumable`` is read from the row when the row carries it, because on the wire it is the Runtime's
+    own judgement (``delivery._slot_row`` states it) and preferring a local re-derivation would ignore
+    the one authority on the question. The ``state`` fallback is not a legacy path: rows read back from
+    storage come from ``SlotRecord.as_record()``, which stores ``state`` and no ``resumable`` flag, so a
+    row fetched by ``web/slot_state.py`` always takes it. Hence ``TERMINAL_SLOT_STATES``, and hence the
+    test that pins it against ``slot_store`` -- the fallback is exercised on every silent slot.
+    """
+    state = str(row.get("state") or "")
+    if state == COMPLETE:
+        return "ok"
+    if row.get("resumable") is not None:
+        return "pending" if row.get("resumable") else "failed"
+    return "failed" if state in TERMINAL_SLOT_STATES or not state else "pending"
+
+
+def best_row(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """The row that describes a POSITION, out of the slot records for it.
+
+    A position accumulates records: a slot that exhausted its candidate swaps hands over to a
+    replacement, and both are stored. What the card shows is the position's outcome, so the records are
+    ranked by how much they claim -- delivered beats still-working beats given-up -- and the winner is
+    reported. Ties go to the newest, which is the replacement rather than what it replaced.
+    """
+    order = {"ok": 2, "pending": 1, "failed": 0}
+
+    def rank(row: Dict[str, Any]):
+        return (order.get(outcome_for_state(row), 0), float(row.get("created_at") or 0))
+
+    return max(rows, key=rank)
+
+
 class _Merge(object):
     """Aggregate state for one fanned-out batch. Mutated only from the event loop.
 
@@ -285,7 +346,7 @@ class _Merge(object):
     `degraded`, `refilled`, `stage_timings`, and the per-slot detail rows.
     """
 
-    __slots__ = ("degraded", "refilled", "rows", "timings", "config", "outcomes")
+    __slots__ = ("degraded", "refilled", "rows", "timings", "config", "outcomes", "requests")
 
     def __init__(self) -> None:
         self.degraded = 0
@@ -294,29 +355,127 @@ class _Merge(object):
         self.rows: Dict[str, Dict[str, Any]] = {}
         self.timings: Dict[str, Dict[str, Any]] = {}
         self.config: Dict[str, Any] = {}
-        # slot_id -> "ok" | "failed" | "skipped". One entry per slot that reached a terminal state;
-        # a dict rather than counters so a duplicate terminal event for one slot cannot double-count.
+        # slot_id -> "ok" | "failed" | "skipped" | "pending". One entry per slot that reached a
+        # terminal state; a dict rather than counters so a duplicate terminal event for one slot cannot
+        # double-count. `pending` is the state Stage 4 added: a slot the Runtime has recorded as
+        # resumable, which is neither delivered nor given up on.
         self.outcomes: Dict[str, str] = {}
+        # batch_id -> the `request_completed` summary that child reported, for `generate_sets` children.
+        # Keyed by the child's own request id because that is what a resumption addresses.
+        self.requests: Dict[str, Dict[str, Any]] = {}
 
     def record(self, slot_id: str, outcome: str) -> None:
         self.outcomes.setdefault(slot_id, outcome)
 
-    def summarise(self, slot_ids: List[str], scenarios: Dict[str, str]) -> Dict[str, Any]:
+    def absorb_request(self, child: "ChildPlan", summary: Dict[str, Any]) -> None:
+        """Fold one `generate_sets` child's terminal summary in, including its per-slot states.
+
+        This is what makes a checkpointed slot distinguishable from a stuck one without an S3 read:
+        the child that owns the state says so on the wire (`delivery._slot_row`). Storage is consulted
+        only for a child that never answered at all.
+
+        The child's rows are collapsed to one per POSITION, by `best_row`, rather than renamed one by
+        one. A child is planned for one material and may hold several records for it -- an exhausted slot
+        and the replacement that delivered -- so mapping them individually would either invent cards the
+        frontend never planned or report the abandoned record over the delivered one.
+        """
+        batch_id = str(child.payload.get("batch_id") or "")
+        if batch_id:
+            self.requests[batch_id] = dict(summary)
+        rows = [row for row in (summary.get("slots") or [])
+                if isinstance(row, dict) and row.get("slot_id")]
+        if not rows or not child.slot_ids:
+            return
+        slot_id = child.slot_ids[0]
+        row = best_row(rows)
+        self.record(slot_id, outcome_for_state(row))
+        merged = dict(self.rows.get(slot_id) or {})
+        merged.update({k: v for k, v in row.items() if k != "slot_id"})
+        self.rows[slot_id] = merged
+
+    def summarise(self, slot_ids: List[str], scenarios: Dict[str, str],
+                  states: Optional[Dict[str, Dict[str, Any]]] = None,
+                  exact_count: bool = False) -> Dict[str, Any]:
         """The summary counts and per-slot rows, over every slot the batch PLANNED.
 
         Driven by the plan rather than by what arrived, so the summary has exactly one row per card
-        the browser drew. A slot with no terminal event is `failed`: its child produced neither a
-        material nor a stated failure, and reporting a clean batch over a card still spinning is the
-        one outcome worse than saying that slot failed.
+        the browser drew.
+
+        **A slot with no terminal event is `failed` only when nothing is recorded about it.** That used
+        to be unconditional, and the reasoning was sound while a slot could not outlive one SSE stream:
+        a child that produced neither a material nor a stated failure had produced nothing, and a clean
+        batch drawn over a spinning card is worse than an honest failure. `generate_sets` breaks the
+        premise -- a slot is a persistent record now, and a request that ran out of clock is resumable --
+        so `states` (from `web/slot_state.py`, consulted only for the silent slots) can answer
+        `pending` instead, and a resumable slot is reported as such rather than as lost work.
+
+        `exact_count` comes from the PLAN, not from what arrived. It has to: a `generate_sets` batch
+        whose children all died reported no `request_status` at all while it was inferred from the
+        children's summaries, which is precisely the batch that most needs to say `incomplete` -- the
+        frontend would have been handed a batch that never states whether the request it made was
+        delivered, on the one path where the answer is definitely no.
         """
         for slot_id in slot_ids:
-            self.outcomes.setdefault(slot_id, "failed")
+            if slot_id in self.outcomes:
+                continue
+            row = (states or {}).get(slot_id)
+            if row is None:
+                # Nothing arrived and nothing is recorded: the original case, and still `failed`.
+                self.outcomes[slot_id] = "failed"
+                continue
+            self.outcomes[slot_id] = outcome_for_state(row)
+            merged = dict(self.rows.get(slot_id) or {})
+            merged.update({k: v for k, v in row.items() if k != "slot_id"})
+            self.rows[slot_id] = merged
         outcomes = [self.outcomes[slot_id] for slot_id in slot_ids]
-        return {
+        summary = {
             "succeeded": outcomes.count("ok"),
             "failed": outcomes.count("failed"),
             "skipped": outcomes.count("skipped"),
             "slots": [self._row(slot_id, scenarios) for slot_id in slot_ids],
+        }
+        if exact_count:
+            summary.update(self.request_status(slot_ids, outcomes))
+        return summary
+
+    def request_status(self, slot_ids: List[str], outcomes: List[str]) -> Dict[str, Any]:
+        """The exact-count fields, added only for a `generate_sets` batch.
+
+        Absent on a plain `generate` batch rather than zeroed, because these describe a contract that
+        path does not make: `generate` may legitimately deliver fewer materials than asked, so a
+        `request_status: "incomplete"` on one of its batches would report a normal outcome as a
+        shortfall.
+
+        `succeeded` requires N -- every planned slot delivered -- and nothing else does. A batch with any
+        resumable slot is `incomplete` and a batch with any system fault is `system_failure`, with the
+        count checked first for the reason `delivery._status` gives: a delivery that reached N is not
+        demoted by a fault on a position that was later refilled.
+        """
+        faults = [fault for summary in self.requests.values()
+                  for fault in (summary.get("system_faults") or [])]
+        stated = {str(summary.get("status") or "") for summary in self.requests.values()}
+        if outcomes.count("ok") >= len(slot_ids) and slot_ids:
+            status = "succeeded"
+        elif faults or "system_failure" in stated:
+            # The children's own word for it, not re-derived: a child reports `system_failure` for
+            # causes the web tier cannot see (storage refusing a write, a validator that is absent), and
+            # inferring the status from slot states alone would report those as merely incomplete.
+            status = "system_failure"
+        else:
+            status = "incomplete"
+        return {
+            "request_status": status,
+            "requested": len(slot_ids),
+            "delivered": outcomes.count("ok"),
+            # Slots the next invocation could carry further, by the child's own account. A non-empty
+            # list with `request_status: "incomplete"` is the checkpoint case; an empty one with the
+            # same status means the shortfall is not resumable.
+            "resumable_slots": [slot_ids[i] for i, outcome in enumerate(outcomes)
+                                if outcome == "pending"],
+            "system_faults": faults,
+            # The per-child request ids, so an operator (or a resume) can address the requests this
+            # batch was made of. The browser batch id is not one of them -- see `plan_children`.
+            "request_ids": sorted(self.requests),
         }
 
     def _row(self, slot_id: str, scenarios: Dict[str, str]) -> Dict[str, Any]:
@@ -334,7 +493,16 @@ class _Merge(object):
         row["ok"] = outcome == "ok"
         # `reason` is the child's own phrasing when it gave one; the outcome word is the fallback for
         # a slot that never spoke, where "failed" is all anyone can honestly say.
-        row["reason"] = row.get("reason") or (None if outcome == "ok" else outcome)
+        #
+        # A `pending` slot is the exception: it has not failed, so it gets no failure reason. Its
+        # `last_failure` (why the last attempt stopped) is already on the row from the slot state, and
+        # promoting that into `reason` would present a slot mid-retry as a finished failure -- which is
+        # the misreport this whole change exists to remove.
+        if outcome == "pending":
+            row["reason"] = row.get("reason")
+            row["pending"] = True
+        else:
+            row["reason"] = row.get("reason") or (None if outcome == "ok" else outcome)
         return row
 
     def absorb_completed(self, event: Dict[str, Any], rename) -> None:
@@ -394,10 +562,14 @@ class FanOut(object):
 
     def __init__(self, runtime: Any, children: List[ChildPlan], slot_ids: List[str], *,
                  executor: ThreadPoolExecutor, concurrency: int = FANOUT_CONCURRENCY,
-                 batch_id: str = "") -> None:
+                 batch_id: str = "", slot_state: Optional[SlotStateReader] = None) -> None:
         self.runtime = runtime
         self.children = children
         self.slot_ids = slot_ids
+        # Consulted only for a slot that produced no terminal event, and only for a `generate_sets`
+        # batch. Injected rather than built here so a test can supply one and the deployed tier gets
+        # the S3-backed reader without this class knowing about buckets.
+        self.slot_state = slot_state if slot_state is not None else build_reader()
         # The id `web/app.py` minted for this batch, and the id `web/batch_history.py` keys the
         # record on. Carried here for one reason: it has to reach the browser in `batch_started`.
         # See the `events()` docstring.
@@ -407,6 +579,20 @@ class FanOut(object):
         self._bodies: Dict[int, Any] = {}
         self._bodies_lock = threading.Lock()
         self._stopped = threading.Event()
+
+    @staticmethod
+    def _delivers_sets(child: ChildPlan) -> bool:
+        return str(child.payload.get("action") or "") == "generate_sets"
+
+    @property
+    def delivers_sets(self) -> bool:
+        """Whether this batch promised N complete sets, by the PLAN rather than by what arrived.
+
+        Read from the children's payloads because that is what was actually sent, and `any` rather
+        than `all` because a mixed batch is not a shape this module produces -- if one ever appeared,
+        under-reporting the exact-count fields would hide the promise the request made.
+        """
+        return any(self._delivers_sets(child) for child in self.children)
 
     # ── slot identity ────────────────────────────────────────────────────────
 
@@ -623,7 +809,9 @@ class FanOut(object):
                     yield event
 
             yield dict(
-                merge.summarise(self.slot_ids, scenario_of),
+                merge.summarise(self.slot_ids, scenario_of,
+                                await self._recorded_states(merge),
+                                exact_count=self.delivers_sets),
                 type="batch_completed",
                 degraded=merge.degraded,
                 refilled=merge.refilled,
@@ -637,6 +825,52 @@ class FanOut(object):
             self.close()
             for future in futures:
                 future.cancel()
+
+    async def _recorded_states(self, merge: _Merge) -> Dict[str, Dict[str, Any]]:
+        """Slot state from `_slots/` for the slots no terminal event covered. `{}` when none is needed.
+
+        Reads nothing on the ordinary path -- a batch whose children all answered has every slot in
+        `merge.outcomes`, so this returns immediately -- and reads nothing at all for a `generate`
+        batch, which has no `_slots/` records to find. That matters because this runs while the
+        browser is waiting for the last frame of a batch it has already seen the materials of.
+
+        In a thread: an S3 GET is blocking, and the rule this whole module is built around is that
+        nothing blocking runs on the loop. `run_in_threadpool`'s pool is anyio's default one, which the
+        module docstring says not to take *children's* threads from -- the objection there is a token
+        held for four minutes, and this is one GET per child at the very end of the batch.
+        """
+        missing = [child for child in self.children
+                   if self._delivers_sets(child)
+                   and any(slot_id not in merge.outcomes for slot_id in child.slot_ids)]
+        if not missing or not self.slot_state.available:
+            return {}
+
+        def read() -> Dict[str, Dict[str, Any]]:
+            found: Dict[str, Dict[str, Any]] = {}
+            for child in missing:
+                rows = self.slot_state.load_slots(str(child.payload.get("batch_id") or ""))
+                if not rows or not child.slot_ids:
+                    continue
+                # The child's own slot ids, mapped onto this fan-out's. Not `self._rename`: that
+                # allocates ids for unknown ones and mutates the per-child map, which is the event
+                # loop's state.
+                #
+                # A `generate_sets` child is planned for ONE material, and its request may hold several
+                # slot records for that one position -- an exhausted slot plus the replacements that
+                # took over from it (`delivery._replacement_for`). So the records are collapsed to the
+                # best outcome for the position rather than mapped positionally: an exhausted original
+                # beside a completed replacement means the position was delivered, and reporting the
+                # original's state would call a delivered set a failure.
+                found[child.slot_ids[0]] = best_row(rows)
+            return found
+
+        from starlette.concurrency import run_in_threadpool
+
+        try:
+            return await run_in_threadpool(read)
+        except Exception:  # noqa: BLE001 - an unread state is "unknown", never a broken stream
+            LOG.warning("could not read slot state for the batch summary", exc_info=True)
+            return {}
 
     def _translate(self, child: ChildPlan, event: Dict[str, Any], merge: _Merge,
                    rename) -> List[Dict[str, Any]]:
@@ -653,6 +887,14 @@ class FanOut(object):
 
         if kind == "batch_completed":
             merge.absorb_completed(event, rename)
+            return []
+
+        if kind == "request_completed":
+            # A `generate_sets` child's terminal event. Swallowed like `batch_completed`, and for the
+            # same reason: one merged batch has one terminal event, and N children each announcing a
+            # finished request would tell the frontend the batch ended N times. Its per-slot states are
+            # folded into the merge instead, where they decide the merged summary's counts.
+            merge.absorb_request(child, event)
             return []
 
         if kind == "__child_aborted__":

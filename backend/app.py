@@ -18,6 +18,14 @@ The two are separate actions on purpose. ``select`` claims the candidate group a
 siblings; ``preview_audio`` only voices one candidate so a reviewer can listen before deciding, and
 must therefore leave the alternatives standing. They share the clips, so a select after a preview
 costs nothing further.
+
+``generate`` and ``generate_sets`` are likewise separate, and the reason is a contract rather than a
+feature: ``generate`` delivers materials and is allowed to deliver fewer than asked,
+``generate_sets`` delivers complete material+question sets and is not (§8.2(3)). Both are SSE. The
+slot writes ``generate_sets`` makes are small (~1KB) single PUTs of the same class as the candidate
+registration ``generate`` already performs on this loop; if the health check ever suffers, they are
+what to move to a thread first, and the honest statement today is that neither has been measured
+inside the Runtime.
 """
 
 from __future__ import annotations
@@ -39,7 +47,7 @@ from .orchestration.publish import (
     select_material,
 )
 from .orchestration.scenarios import ScenarioCatalogue, load_catalogue
-from .request import BadRequest, parse_generate_request
+from .request import BadRequest, parse_delivery_request, parse_generate_request
 
 app = BedrockAgentCoreApp()
 
@@ -87,9 +95,12 @@ async def invoke(payload: Dict[str, Any]):
     if action == "presign_audio":
         return await _presign(payload or {})
 
+    if action == "generate_sets":
+        return _generate_sets(payload or {})
+
     if action != "generate":
         return {
-            "error": "unknown action %r; expected generate, list_scenarios, select, "
+            "error": "unknown action %r; expected generate, generate_sets, list_scenarios, select, "
                      "preview_audio, audio_status, list_candidates or presign_audio" % action
         }
 
@@ -176,6 +187,39 @@ async def _generate(payload: Dict[str, Any]):
         yield {"type": "batch_failed", "reason": "bad_request", "detail": str(exc)}
         return
     async for event in run_batch(request):
+        yield event
+
+
+async def _generate_sets(payload: Dict[str, Any]):
+    """``action=generate_sets``: N complete material+question sets under one resumable ``batch_id``.
+
+    A separate action from ``generate``, not a flag on it. ``generate`` delivers materials and may
+    deliver fewer than asked (``orchestration/batch.py``); this one delivers complete sets and may not
+    (§8.2(3)). Two contracts that opposite in the one field every caller reads must not arrive under one
+    name -- and the deployed frontend is on ``generate``, so keeping it untouched is also what lets this
+    branch ship without a coordinated frontend release.
+
+    An async generator for the same reason ``_generate`` is: this is the SSE branch, and the stage
+    events are the keepalive. Called again with the same ``batch_id`` it resumes from the stored slot
+    state rather than regenerating (§8.2(4)); the terminal ``request_completed`` says which of the three
+    statuses it reached.
+    """
+    from .orchestration.delivery import stream_request
+
+    found = await catalogue()
+    try:
+        request = parse_delivery_request(found, payload)
+    except BadRequest as exc:
+        # `batch_failed` and not `request_completed`: nothing was planned, so there is no request whose
+        # status could be reported. The frontend already treats this shape as a terminal failure, and
+        # inventing a `system_failure` summary for a payload that never named a request would put a
+        # batch_id nobody issued into the one field resumption keys on.
+        yield {"type": "batch_failed", "reason": "bad_request", "detail": str(exc)}
+        return
+    async for event in stream_request(
+        request.slots, request.batch_id, budget=request.budget,
+        concurrency=request.concurrency, group_id=request.group_id,
+    ):
         yield event
 
 

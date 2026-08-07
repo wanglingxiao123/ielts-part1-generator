@@ -17,7 +17,7 @@ from backend.orchestration.scenarios import (
     ScenarioCatalogue,
     load_catalogue,
 )
-from backend.request import BadRequest, parse_generate_request
+from backend.request import BadRequest, parse_delivery_request, parse_generate_request
 
 
 class FakeScenario:
@@ -744,3 +744,115 @@ class TestRequestParsing:
             "scenarios": ["booking-hotel"], "count": 1, "hard_limit_seconds": 120,
         })
         assert request.budget.remaining() < 120
+
+
+class TestDeliveryRequestParsing:
+    """`action=generate_sets`: the payload that names a resumable request.
+
+    Shares `_expand` with `generate`, so the two actions cannot disagree about scenario ids, counts or
+    the ORDER those expand in -- which is the order `web/fanout.py`'s `plan_children` mirrors and the
+    frontend laid its cards out in. What differs is `batch_id`, which is the resumption key.
+    """
+
+    def test_the_expansion_is_the_same_one_generate_uses(self, catalogue):
+        payload = {"scenarios": ["accommodation-rental", "booking-hotel"],
+                   "counts": {"accommodation-rental": 2, "booking-hotel": 1}}
+        generated = parse_generate_request(catalogue, payload)
+        delivered = parse_delivery_request(catalogue, dict(payload, batch_id="b1"))
+        # Same ids in the same order: a card at position 3 must mean the same scenario on both paths.
+        assert [s.id for s in delivered.slots] == [s.id for s in generated.slots]
+
+    def test_the_custom_scenario_still_comes_last(self, catalogue):
+        request = parse_delivery_request(catalogue, {
+            "scenarios": ["booking-hotel"], "count": 1, "batch_id": "b1",
+            "custom_scenario": {"prompt_hint": "A cyclist asks about repairs.", "count": 2},
+        })
+        assert [s.category for s in request.slots] == ["booking", "custom", "custom"]
+
+    def test_a_missing_batch_id_is_rejected_rather_than_minted(self, catalogue):
+        """Minting one here would be silently unresumable: the next invocation would generate a fresh
+        id, find no records and start the whole request over. The caller that owns the identity has to
+        state it, and the error message says why."""
+        with pytest.raises(BadRequest) as exc:
+            parse_delivery_request(catalogue, {"scenarios": ["booking-hotel"]})
+        assert "batch_id" in str(exc.value) and "resume" in str(exc.value)
+
+    def test_a_blank_batch_id_is_rejected_too(self, catalogue):
+        with pytest.raises(BadRequest):
+            parse_delivery_request(catalogue, {"scenarios": ["booking-hotel"], "batch_id": "   "})
+
+    def test_a_batch_id_with_a_slash_is_rejected(self, catalogue):
+        """It becomes a path segment under `_slots/`. A slash would write somewhere else and make the
+        request unresumable by the id the caller believes it used."""
+        with pytest.raises(BadRequest) as exc:
+            parse_delivery_request(catalogue, {"scenarios": ["booking-hotel"],
+                                              "batch_id": "web-9/slot-1"})
+        assert "'/'" in str(exc.value)
+
+    def test_the_batch_id_is_stripped(self, catalogue):
+        request = parse_delivery_request(catalogue, {"scenarios": ["booking-hotel"],
+                                                    "batch_id": "  web-9-slot-1  "})
+        assert request.batch_id == "web-9-slot-1"
+
+    def test_the_group_id_defaults_to_the_batch_id(self, catalogue):
+        """A request that names no group is its own group. That keeps a direct caller -- one invocation,
+        one request -- from having to know the field exists."""
+        request = parse_delivery_request(catalogue, {"scenarios": ["booking-hotel"],
+                                                    "batch_id": "batch-solo"})
+        assert request.group_id == "batch-solo"
+
+    def test_a_group_id_is_kept_distinct_from_the_batch_id(self, catalogue):
+        """The web fan-out's shape: per-child request id, one shared candidate group. Collapsing them
+        would either have the children overwrite each other's slot records or stop their materials
+        competing for one user choice."""
+        request = parse_delivery_request(catalogue, {
+            "scenarios": ["booking-hotel"], "batch_id": "web-9-slot-2", "group_id": "web-9"})
+        assert (request.batch_id, request.group_id) == ("web-9-slot-2", "web-9")
+
+    def test_an_unknown_scenario_is_still_rejected_by_name(self, catalogue):
+        with pytest.raises(BadRequest) as exc:
+            parse_delivery_request(catalogue, {"scenarios": ["made-up"], "batch_id": "b1"})
+        assert "list_scenarios" in str(exc.value)
+
+    def test_an_empty_request_is_rejected(self, catalogue):
+        with pytest.raises(BadRequest):
+            parse_delivery_request(catalogue, {"scenarios": [], "batch_id": "b1"})
+
+    def test_concurrency_is_optional_and_not_defaulted_to_generates(self, catalogue):
+        """`None` means "the runner's own default". Copying `MAX_CONCURRENCY` here would pin the
+        delivery path to a number chosen for a materials-only batch."""
+        request = parse_delivery_request(catalogue, {"scenarios": ["booking-hotel"],
+                                                    "batch_id": "b1"})
+        assert request.concurrency is None
+        assert parse_delivery_request(catalogue, {
+            "scenarios": ["booking-hotel"], "batch_id": "b1", "concurrency": 3}).concurrency == 3
+
+    def test_a_bad_concurrency_is_reported_not_guessed(self, catalogue):
+        with pytest.raises(BadRequest):
+            parse_delivery_request(catalogue, {"scenarios": ["booking-hotel"], "batch_id": "b1",
+                                              "concurrency": "lots"})
+
+    def test_the_hard_limit_builds_a_delivery_budget_not_a_batch_budget(self, catalogue):
+        """The two budgets are different shapes -- `Budget` has one start threshold, `DeliveryBudget`
+        one per stage -- and the checkpoint path is only reachable by running out of clock, so a test
+        that had to wait 900s for it would never be run."""
+        from backend.orchestration.delivery import DeliveryBudget
+
+        request = parse_delivery_request(catalogue, {
+            "scenarios": ["booking-hotel"], "batch_id": "b1", "hard_limit_seconds": 120})
+        assert isinstance(request.budget, DeliveryBudget)
+
+    def test_no_hard_limit_leaves_the_budget_to_the_runner(self, catalogue):
+        request = parse_delivery_request(catalogue, {"scenarios": ["booking-hotel"],
+                                                    "batch_id": "b1"})
+        assert request.budget is None
+
+    def test_a_bad_hard_limit_is_reported_not_guessed(self, catalogue):
+        with pytest.raises(BadRequest):
+            parse_delivery_request(catalogue, {"scenarios": ["booking-hotel"], "batch_id": "b1",
+                                              "hard_limit_seconds": "soon"})
+
+    def test_there_is_no_ceiling_here_either(self, catalogue):
+        request = parse_delivery_request(catalogue, {"scenarios": ["booking-hotel"], "count": 30,
+                                                    "batch_id": "b1"})
+        assert len(request.slots) == 30

@@ -583,3 +583,85 @@ def test_importing_the_module_constructs_no_aws_client(tmp_path):
     tier = build_tier({"USER_STORE_PATH": str(tmp_path / "u.json")})
     assert tier.runtime._client is None
     assert tier.runtime.configured is False
+
+
+def test_generate_sets_is_fanned_out_not_relayed(fanout_runtime, auth, static_dir):
+    """`generate_sets` has to reach `_fanned_out_generate`, or the new code is unreachable.
+
+    Not a cosmetic routing detail: the unary `_relay` path sends ONE invocation carrying every set, and
+    N × ~200s of generation plus the question stages does not fit under one 900s wall. It would also
+    hand the browser N `request_completed` frames and no merged summary, so the batch would appear to
+    end N times and never state whether the request was delivered.
+
+    Asserted through what the runtime was actually asked -- N invocations, each for one set, with the
+    per-child request ids -- because a single relayed call would pass any test that only looked at the
+    content type.
+    """
+    for slot in ("slot-1", "slot-2"):
+        body = fanout_runtime.body_for(slot)
+        body.push_event({"type": "batch_started", "total": 1})
+        body.push_event({"type": "material_completed", "slot_id": "slot-1", "scenario": "a",
+                         "ok": True})
+        body.push_event({"type": "request_completed", "status": "succeeded", "requested": 1,
+                         "delivered": 1, "system_faults": [], "paused": False,
+                         "slots": [{"slot_id": "slot-1", "scenario": "a", "state": "complete",
+                                    "material_id": "mat-1", "created_at": 1.0,
+                                    "resumable": False, "checkpointed": False}]})
+        body.finish()
+
+    tier = WebTier(auth, fanout_runtime, str(static_dir))
+    from fastapi.testclient import TestClient
+
+    with TestClient(tier.app) as test_client:
+        register(test_client)
+        response = test_client.post(
+            "/api/invocations",
+            json={"action": "generate_sets", "scenarios": ["a"], "count": 2},
+        )
+
+    assert response.status_code == 200
+    assert "text/event-stream" in response.headers["content-type"]
+    # Two invocations, one per set -- not one invocation carrying both.
+    assert len(fanout_runtime.calls) == 2
+    assert all(call["count"] == 1 for call in fanout_runtime.calls)
+    assert all(call["action"] == "generate_sets" for call in fanout_runtime.calls)
+    # Per-child request id, one shared group: what stops the children overwriting each other's slot
+    # records while still competing for one user choice.
+    assert len({call["batch_id"] for call in fanout_runtime.calls}) == 2
+    assert len({call["group_id"] for call in fanout_runtime.calls}) == 1
+
+    events = _sse_events(response.text)
+    types = [e["type"] for e in events]
+    assert types.count("batch_started") == 1
+    assert types.count("batch_completed") == 1
+    # The children's own terminal events are swallowed: one merged batch has one ending.
+    assert types.count("request_completed") == 0
+    summary = events[-1]
+    assert summary["request_status"] == "succeeded"
+    assert summary["requested"] == 2 and summary["delivered"] == 2
+
+
+def test_generate_sets_also_refuses_up_front_with_no_runtime_arn(auth, static_dir):
+    """Same precondition as `generate`: every child would fail identically, so one 503 naming the
+    missing variable beats N cards reading "RuntimeNotConfigured"."""
+    from web.runtime_client import AgentCoreRuntimeClient
+
+    tier = WebTier(auth, AgentCoreRuntimeClient(""), str(static_dir))
+    from fastapi.testclient import TestClient
+
+    with TestClient(tier.app) as client:
+        register(client)
+        response = client.post("/api/invocations",
+                               json={"action": "generate_sets", "scenarios": ["a"], "count": 2})
+        assert response.status_code == 503
+        assert response.json()["error"]["code"] == "RUNTIME_NOT_CONFIGURED"
+
+
+def test_a_unary_action_is_still_relayed_unchanged(client, runtime):
+    """The counterweight to the routing change: only the two batch actions are fanned out. Sending
+    `select` through the fan-out would invoke it once per planned slot."""
+    register(client)
+    response = client.post("/api/invocations",
+                           json={"action": "select", "material_id": "mat-1"})
+    assert response.status_code == 200
+    assert len(runtime.calls) == 1

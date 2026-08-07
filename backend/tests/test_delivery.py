@@ -448,3 +448,328 @@ def _budget(material: bool, questions: bool) -> DeliveryBudget:
             return True
 
     return Pinned()
+
+
+class TestStreamRequestIsTheSameRunAsRunRequest:
+    """The wiring. `run_request` is now a wrapper over `stream_request`, and that is load-bearing.
+
+    `run_request` used to buffer every event and replay them after the run, which cannot be the
+    Runtime's shape: the stage events ARE the keepalive (`orchestration/events.py`), so a request that
+    said nothing for six minutes would be dropped by the first intermediary with an idle-read timeout.
+    What makes the two safe to keep is that the callback form now delegates rather than duplicating --
+    so these tests are about the two not being able to disagree.
+    """
+
+    def test_events_are_yielded_during_the_run_not_after_it(self):
+        """The property the buffering version failed. Asserted by observing the stage events arrive
+        before the terminal one, from a run that only completes because the consumer keeps reading."""
+        from backend.orchestration.delivery import stream_request
+
+        recorder = Recorder([material_ok], [questions_ok()])
+        store = memory_store()
+
+        async def go():
+            seen = []
+            async for event in stream_request(
+                    [FakeScenario()], "batch-stream", store=store,
+                    run_material=recorder.run_material,
+                    run_question_stage=recorder.run_questions):
+                seen.append(event)
+                # The terminal event must be last, and something must have arrived before it.
+                if event["type"] == "request_completed":
+                    assert len(seen) > 1, "the only event was the summary: nothing streamed"
+            return seen
+
+        seen = asyncio.run(go())
+        assert seen[-1]["type"] == "request_completed"
+        assert [e["type"] for e in seen[:-1]].count("request_completed") == 0
+
+    def test_the_terminal_event_carries_the_summary_run_request_returns(self):
+        """One document, two shapes. A second channel for the status is how they would drift."""
+        from backend.orchestration.delivery import stream_request
+
+        store = memory_store()
+        recorder = Recorder([material_ok], [questions_ok()])
+
+        async def go():
+            return [e async for e in stream_request(
+                [FakeScenario()], "batch-same-a", store=store,
+                run_material=recorder.run_material, run_question_stage=recorder.run_questions)]
+
+        streamed = asyncio.run(go())[-1]
+
+        other = Recorder([material_ok], [questions_ok()])
+        returned = asyncio.run(run_request(
+            [FakeScenario()], "batch-same-b", store=memory_store(),
+            run_material=other.run_material, run_question_stage=other.run_questions))
+
+        assert streamed["type"] == "request_completed"
+        # Same keys, and the batch_id is the only value that differs by construction.
+        assert set(streamed) - {"type", "at"} == set(returned)
+        assert streamed["status"] == returned["status"] == SUCCEEDED
+        assert streamed["delivered"] == returned["delivered"] == 1
+
+    def test_run_request_still_emits_every_event_to_its_callback(self):
+        """The callback form is what `probe`-style callers and the tests above it use. Delegating must
+        not have cost it any event."""
+        emitted = []
+
+        async def emit(event):
+            emitted.append(event)
+
+        recorder = Recorder([material_ok], [questions_ok()])
+        summary = asyncio.run(run_request(
+            [FakeScenario()], "batch-cb", store=memory_store(), emit=emit,
+            run_material=recorder.run_material, run_question_stage=recorder.run_questions))
+
+        assert emitted[-1]["type"] == "request_completed"
+        assert emitted[-1]["status"] == summary["status"] == SUCCEEDED
+        assert any(e["type"] == "stage" for e in emitted), "the keepalive events were lost"
+
+    def test_an_abandoned_stream_does_not_leave_the_stages_running(self):
+        """A browser that goes away closes the generator. The slot tasks must not carry on spending
+        model tokens for output nobody will read."""
+        from backend.orchestration.delivery import stream_request
+
+        recorder = Recorder([material_ok], [questions_ok()])
+        store = memory_store()
+
+        async def go():
+            stream = stream_request(
+                [FakeScenario()], "batch-abandon", store=store,
+                run_material=recorder.run_material, run_question_stage=recorder.run_questions)
+            first = await stream.__anext__()
+            await stream.aclose()
+            return first
+
+        first = asyncio.run(go())
+        assert first["type"] != "request_completed"
+        # No pending-task warning, and the loop closed cleanly: `_pump`'s finally cancelled the work.
+
+    def test_a_persistence_failure_still_ends_with_a_terminal_event(self):
+        """A stream that ends without `request_completed` means a lost connection. That must not be
+        confusable with a request that finished short, so even the refuse-to-start path says so."""
+        from backend.orchestration.delivery import stream_request
+        from backend.orchestration.slot_store import SlotPersistenceError
+
+        store = memory_store()
+
+        def refuse(document):
+            raise SlotPersistenceError("bucket refused")
+
+        store.save_request = refuse  # type: ignore[assignment]
+        recorder = Recorder([material_ok], [questions_ok()])
+
+        async def go():
+            return [e async for e in stream_request(
+                [FakeScenario()], "batch-nostore-stream", store=store,
+                run_material=recorder.run_material, run_question_stage=recorder.run_questions)]
+
+        seen = asyncio.run(go())
+        assert seen[-1]["type"] == "request_completed"
+        assert seen[-1]["status"] == SYSTEM_FAILURE
+        assert recorder.material_calls == []
+
+
+class TestTheSummaryCarriesTheSlotStatesTheWebTierReads:
+    """§8.1: `web/fanout.py` decides checkpointed-vs-stuck from these rows, on the wire.
+
+    Without them the web tier would need an S3 read per silent child to tell a resumable slot from a
+    dead one -- and the row's absence would leave it doing what it used to do, which is call every
+    silent slot a failure.
+    """
+
+    def test_every_slot_appears_with_its_state_and_resumable_flag(self):
+        recorder = Recorder([material_ok], [questions_ok()])
+        summary = asyncio.run(run_request(
+            [FakeScenario()], "batch-rows", store=memory_store(),
+            run_material=recorder.run_material, run_question_stage=recorder.run_questions))
+
+        rows = summary["slots"]
+        assert [r["slot_id"] for r in rows] == ["slot-1"]
+        assert rows[0]["state"] == COMPLETE
+        assert rows[0]["resumable"] is False
+        assert rows[0]["checkpointed"] is False
+        assert rows[0]["created_at"] is not None
+
+    def test_a_checkpointed_slot_says_so_and_says_it_is_resumable(self):
+        """The row the web tier needs to draw 「还没做完，可以继续」 instead of a failure."""
+        recorder = Recorder([material_ok], [questions_ok()])
+        summary = asyncio.run(run_request(
+            [FakeScenario()], "batch-rows-ckpt", store=memory_store(),
+            budget=_budget(material=True, questions=False),
+            run_material=recorder.run_material, run_question_stage=recorder.run_questions))
+
+        assert summary["status"] == INCOMPLETE
+        row = summary["slots"][0]
+        assert row["state"] == MATERIAL_DONE
+        assert row["resumable"] is True
+        assert row["checkpointed"] is True
+        assert row["last_failure"]["reason"] == "time_budget"
+
+    def test_a_replacement_and_its_exhausted_original_both_appear(self):
+        """Both records for one position, so the reader can collapse them by outcome. Only the
+        replacement's row would leave the exhausted attempt unexplained; only the original's would
+        report a delivered position as failed."""
+        recorder = Recorder(
+            [material_regenerate, material_regenerate, material_regenerate, material_ok],
+            [questions_ok()])
+        summary = asyncio.run(run_request(
+            [FakeScenario()], "batch-rows-repl", store=memory_store(),
+            run_material=recorder.run_material, run_question_stage=recorder.run_questions))
+
+        rows = {r["slot_id"]: r for r in summary["slots"]}
+        assert set(rows) == {"slot-1", "slot-1r1"}
+        assert rows["slot-1"]["state"] == EXHAUSTED and rows["slot-1"]["resumable"] is False
+        assert rows["slot-1"]["replaced_by"] == "slot-1r1"
+        assert rows["slot-1r1"]["state"] == COMPLETE
+        # The tie-break the reader ranks on: the replacement is the newer record.
+        assert rows["slot-1r1"]["created_at"] >= rows["slot-1"]["created_at"]
+
+    def test_the_row_is_a_projection_not_the_whole_record(self):
+        """The stored record grows fields for the runner's own bookkeeping. Publishing it whole would
+        make each of those a field the frontend can start depending on."""
+        recorder = Recorder([material_ok], [questions_ok()])
+        store = memory_store()
+        summary = asyncio.run(run_request(
+            [FakeScenario()], "batch-rows-proj", store=store,
+            run_material=recorder.run_material, run_question_stage=recorder.run_questions))
+
+        stored = set(store.load_slot("batch-rows-proj", "slot-1").as_record())
+        published = set(summary["slots"][0])
+        assert stored - published, "the wire row is the whole record: it is not a projection"
+        # `group_key` is the sharpest case: an internal join key with no meaning to a browser.
+        assert "group_key" not in published
+
+
+class TestTheTwoIds:
+    """§8.1: `batch_id` names the request, `group_id` names the candidate group.
+
+    Collapsing them breaks resumption or breaks selection, in opposite directions -- which is why the
+    web fan-out gives each child its own `batch_id` and one shared `group_id`.
+    """
+
+    def test_the_group_key_defaults_to_the_batch_id(self):
+        """A request that names no group is its own group, so nothing changes for a caller that never
+        heard of the field."""
+        seen = []
+        recorder = Recorder([material_ok], [questions_ok()])
+        summary = asyncio.run(_run_capturing_group(
+            seen, [FakeScenario()], "batch-grp-default", recorder))
+        assert summary["status"] == SUCCEEDED
+        assert seen == ["batch-grp-default:accommodation-rental"]
+
+    def test_a_group_id_overrides_it_for_registration_only(self):
+        """The candidate group is shared; the slot records still hang off `batch_id`. Both halves are
+        asserted here because swapping them is the mistake this split exists to prevent."""
+        seen = []
+        recorder = Recorder([material_ok], [questions_ok()])
+        store = memory_store()
+        summary = asyncio.run(_run_capturing_group(
+            seen, [FakeScenario()], "web-9-slot-2", recorder, group_id="web-9", store=store))
+
+        assert seen == ["web-9:accommodation-rental"]
+        assert summary["batch_id"] == "web-9-slot-2"
+        # Storage is keyed by the request id, not by the group: two children of one batch must not
+        # write over each other's records.
+        assert [r.slot_id for r in store.list_slots("web-9-slot-2")] == ["slot-1"]
+        assert store.list_slots("web-9") == []
+
+    def test_two_children_of_one_batch_keep_separate_records_and_one_group(self):
+        """The fan-out's arrangement, end to end: what would collide if the ids were one field."""
+        store = memory_store()
+        seen = []
+        for slot in ("slot-1", "slot-2"):
+            asyncio.run(_run_capturing_group(
+                seen, [FakeScenario()], "web-9-%s" % slot,
+                Recorder([material_ok], [questions_ok()]), group_id="web-9", store=store))
+
+        assert seen == ["web-9:accommodation-rental"] * 2, "the materials must share one group"
+        for slot in ("slot-1", "slot-2"):
+            records = store.list_slots("web-9-%s" % slot)
+            assert [r.state for r in records] == [COMPLETE], slot
+
+
+async def _run_capturing_group(seen, scenarios, batch_id, recorder, group_id=None, store=None):
+    """Run one request, recording the group id each material was registered under.
+
+    Wraps whatever `_register_material` currently is -- which under `offer_materials` is the fixture's
+    id-minting fake -- and reads `ctx.group_id` on the way through. That is deliberately the plumbing
+    half of the split: does the id reach the registration call site, and does it default to `batch_id`.
+    The composition of the group KEY from it is tested separately, against the real function.
+    """
+    import contextlib
+
+    original = delivery_module._register_material
+
+    def capture(result, scenario, record, ctx):
+        seen.append("%s:%s" % (ctx.group_id, record.scenario_id))
+        return original(result, scenario, record, ctx)
+
+    with contextlib.ExitStack() as stack:
+        delivery_module._register_material = capture
+        stack.callback(setattr, delivery_module, "_register_material", original)
+        return await run_request(
+            scenarios, batch_id, store=store or memory_store(), group_id=group_id,
+            run_material=recorder.run_material, run_question_stage=recorder.run_questions)
+
+
+# The real function, captured before `offer_materials` replaces it. Held at module level because the
+# fixture is autouse: an `import` inside a test body would get the fixture's fake, and the test would
+# then pass by asserting nothing about the line it names.
+_REAL_REGISTER_MATERIAL = delivery_module._register_material
+
+
+class TestTheGroupKeyIsComposedFromTheGroupId:
+    """The one line the two ids meet on, tested directly.
+
+    The run-level tests above pin the plumbing -- that `group_id` reaches `_Context` and defaults to
+    `batch_id` -- but they cannot pin the composition, because `offer_materials` replaces
+    `_register_material` wholesale. So this class calls it for real with `batch._register` captured.
+    """
+
+    def test_the_group_key_is_group_id_and_scenario(self, monkeypatch):
+        from backend.orchestration import batch as batch_module
+        from backend.orchestration.delivery import _Context
+        from backend.orchestration.slot_store import SlotRecord
+
+        _register_material = _REAL_REGISTER_MATERIAL
+
+        keys = []
+
+        def capture(result, scenario, group_key):
+            keys.append(group_key)
+            result.material_id = "mat-1"
+
+        monkeypatch.setattr(batch_module, "_register", capture)
+        ctx = _Context(memory_store(), DeliveryBudget(), asyncio.Queue(), "web-9-slot-2", {},
+                       None, None, group_id="web-9")
+        record = SlotRecord(batch_id="web-9-slot-2", slot_id="slot-1",
+                            scenario_id="accommodation-rental")
+        _register_material(material_ok("slot-1", "accommodation-rental"), FakeScenario(),
+                           record, ctx)
+
+        # The group, not the request: two children of one batch must produce the same key here, and
+        # `batch_id` would make every child its own group of one.
+        assert keys == ["web-9:accommodation-rental"]
+
+    def test_without_a_group_id_the_key_is_the_batch_id(self, monkeypatch):
+        from backend.orchestration import batch as batch_module
+        from backend.orchestration.delivery import _Context
+        from backend.orchestration.slot_store import SlotRecord
+
+        _register_material = _REAL_REGISTER_MATERIAL
+
+        keys = []
+
+        def capture(result, scenario, group_key):
+            keys.append(group_key)
+            result.material_id = "mat-1"
+
+        monkeypatch.setattr(batch_module, "_register", capture)
+        ctx = _Context(memory_store(), DeliveryBudget(), asyncio.Queue(), "batch-solo", {},
+                       None, None)
+        record = SlotRecord(batch_id="batch-solo", slot_id="slot-1", scenario_id="booking-hotel")
+        _register_material(material_ok("slot-1", "booking-hotel"), FakeScenario(), record, ctx)
+
+        assert keys == ["batch-solo:booking-hotel"]

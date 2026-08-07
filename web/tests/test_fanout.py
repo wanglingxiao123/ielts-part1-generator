@@ -703,3 +703,423 @@ class TestHeartbeat:
 
         seen = await drain(fan)
         assert not any(x is fanout.HEARTBEAT for x in seen)
+
+
+# ── generate_sets: exact-count delivery through the fan-out ───────────────────
+
+
+def child_request(*rows, status: str = "succeeded", faults=None, delivered=None):
+    """One `generate_sets` child's whole stream: its own batch_started, then `request_completed`.
+
+    `rows` are `delivery._slot_row` projections. The child names its slots `slot-1`, `slot-1r1` and so
+    on, in ITS OWN id space -- which is the whole reason the merge has to translate them.
+    """
+    rows = list(rows)
+    return [
+        {"type": "batch_started", "total": 1, "deadline_at": 1.0, "config": {"model_id": "gpt"}},
+        {"type": "request_completed",
+         "batch_id": "child",
+         "status": status,
+         "requested": 1,
+         "delivered": len([r for r in rows if r.get("state") == "complete"])
+                      if delivered is None else delivered,
+         "sets": [],
+         "system_faults": faults if faults is not None else [],
+         "paused": False,
+         "slots": rows},
+    ]
+
+
+def slot_row(slot_id="slot-1", state="complete", **kwargs):
+    """A `_slot_row`-shaped projection, defaulted to a delivered slot."""
+    row = {
+        "slot_id": slot_id,
+        "scenario": kwargs.pop("scenario", "a"),
+        "state": state,
+        "material_id": kwargs.pop("material_id", "mat-1"),
+        "created_at": kwargs.pop("created_at", 1000.0),
+        "resumable": state not in ("complete", "exhausted"),
+        "checkpointed": False,
+        "system_fault": None,
+        "last_failure": None,
+        "attempts": {},
+        "replaces": None,
+        "replaced_by": None,
+    }
+    row.update(kwargs)
+    return row
+
+
+class FakeSlotState:
+    """A `SlotStateReader` whose answers a test writes directly. Never touches S3."""
+
+    def __init__(self, by_batch=None, available: bool = True, raises=None):
+        self.by_batch = by_batch or {}
+        self.available = available
+        self.raises = raises
+        self.asked = []
+
+    def load_slots(self, batch_id: str):
+        self.asked.append(batch_id)
+        if self.raises is not None:
+            raise self.raises
+        return self.by_batch.get(batch_id)
+
+
+def build_sets(runtime, payload, executor, *, slot_state=None, concurrency: int = 6,
+               batch_id: str = "b1") -> FanOut:
+    children, slots = plan_children(dict(payload, action="generate_sets"), batch_id=batch_id)
+    return FanOut(runtime, children, slots, executor=executor, concurrency=concurrency,
+                  batch_id=batch_id,
+                  slot_state=slot_state if slot_state is not None else FakeSlotState(available=False))
+
+
+class TestPlanChildrenForGenerateSets:
+    """The id split. Getting it wrong breaks resumption or selection, in opposite directions."""
+
+    def test_each_child_gets_its_own_request_id(self):
+        """Every child calls its own slot `slot-1` and writes it under `_slots/{batch_id}/`. One
+        shared id would have N children overwriting one record, and a resumption would find one slot
+        where the user asked for N."""
+        children, _ = plan_children(
+            {"action": "generate_sets", "scenarios": ["a"], "count": 3}, batch_id="web-9")
+        assert [c.payload["batch_id"] for c in children] == [
+            "web-9-slot-1", "web-9-slot-2", "web-9-slot-3"]
+        assert len({c.payload["batch_id"] for c in children}) == 3
+
+    def test_every_child_shares_one_group_id(self):
+        """The counterweight: candidates compete for one user choice within a group, so two materials
+        of one submission must share it. Distinct group ids would stop them competing at all."""
+        children, _ = plan_children(
+            {"action": "generate_sets", "scenarios": ["a"], "count": 3}, batch_id="web-9")
+        assert {c.payload["group_id"] for c in children} == {"web-9"}
+
+    def test_a_plain_generate_batch_is_untouched(self):
+        """`generate` has no slot records to collide, mints its own group key per invocation, and is
+        what the deployed frontend sends. Splitting its ids would change a shipped path for nothing."""
+        children, _ = plan_children({"scenarios": ["a"], "count": 2}, batch_id="web-9")
+        assert {c.payload["batch_id"] for c in children} == {"web-9"}
+        assert all("group_id" not in c.payload for c in children)
+
+    def test_the_action_reaches_every_child(self):
+        children, _ = plan_children(
+            {"action": "generate_sets", "scenarios": ["a"], "count": 2}, batch_id="b1")
+        assert {c.payload["action"] for c in children} == {"generate_sets"}
+
+
+class TestOutcomeForState:
+    """The three-way reading of one recorded slot state, in isolation."""
+
+    def test_complete_is_ok(self):
+        assert fanout.outcome_for_state(slot_row(state="complete")) == "ok"
+
+    def test_exhausted_is_failed(self):
+        assert fanout.outcome_for_state(slot_row(state="exhausted")) == "failed"
+
+    @pytest.mark.parametrize("state", ["material_pending", "material_done", "questions_pending"])
+    def test_every_non_terminal_state_is_pending(self, state):
+        assert fanout.outcome_for_state(slot_row(state=state)) == "pending"
+
+    def test_a_stored_row_without_the_resumable_flag_falls_back_to_state(self):
+        """Not a legacy path: rows read from `_slots/` come from `SlotRecord.as_record()`, which has
+        `state` and no `resumable`. So this is the branch every silent slot takes."""
+        stored = {"slot_id": "slot-1", "state": "material_done", "created_at": 1.0}
+        assert fanout.outcome_for_state(stored) == "pending"
+        assert fanout.outcome_for_state(dict(stored, state="exhausted")) == "failed"
+        assert fanout.outcome_for_state(dict(stored, state="complete")) == "ok"
+
+    def test_a_row_with_no_state_at_all_is_failed(self):
+        """Unreadable is not resumable: promising a retry that will not happen is worse than saying
+        the slot failed."""
+        assert fanout.outcome_for_state({"slot_id": "slot-1"}) == "failed"
+
+    def test_the_runtimes_flag_wins_over_the_local_reading(self):
+        """Which states are terminal is the Runtime's rule. A row that says a state this module has
+        never heard of is resumable is taken at its word."""
+        row = {"slot_id": "slot-1", "state": "some_future_state", "resumable": False}
+        assert fanout.outcome_for_state(row) == "failed"
+
+
+class TestBestRow:
+    """A position accumulates records; the card shows the position."""
+
+    def test_a_completed_replacement_beats_the_exhausted_original(self):
+        """The misreport this exists to remove: reporting the abandoned original would call a
+        delivered set a failure."""
+        rows = [slot_row("slot-1", state="exhausted", created_at=1.0),
+                slot_row("slot-1r1", state="complete", created_at=2.0)]
+        assert fanout.best_row(rows)["slot_id"] == "slot-1r1"
+        # And in either arrival order -- ranking, not list position.
+        assert fanout.best_row(list(reversed(rows)))["slot_id"] == "slot-1r1"
+
+    def test_a_still_working_replacement_beats_the_exhausted_original(self):
+        rows = [slot_row("slot-1", state="exhausted", created_at=1.0),
+                slot_row("slot-1r1", state="material_done", created_at=2.0)]
+        assert fanout.best_row(rows)["slot_id"] == "slot-1r1"
+
+    def test_the_newest_wins_a_tie(self):
+        rows = [slot_row("slot-1", state="exhausted", created_at=1.0),
+                slot_row("slot-1r1", state="exhausted", created_at=2.0)]
+        assert fanout.best_row(rows)["slot_id"] == "slot-1r1"
+
+    def test_a_missing_created_at_does_not_raise(self):
+        rows = [slot_row("slot-1", state="exhausted", created_at=None),
+                slot_row("slot-1r1", state="exhausted", created_at=None)]
+        assert fanout.best_row(rows)["slot_id"] in ("slot-1", "slot-1r1")
+
+
+class TestRequestStatusOnTheWire:
+    """What the merged `batch_completed` says about an exact-count request."""
+
+    async def test_exactly_n_delivered_is_succeeded(self, executor):
+        runtime = FanOutRuntimeClient()
+        for slot in ("slot-1", "slot-2"):
+            arm(runtime, slot, child_request(slot_row(state="complete")))
+        events = await drain(build_sets(runtime, {"scenarios": ["a"], "count": 2}, executor))
+
+        summary = events[-1]
+        assert summary["request_status"] == "succeeded"
+        assert summary["requested"] == 2 and summary["delivered"] == 2
+        assert summary["succeeded"] == 2 and summary["failed"] == 0
+        assert summary["resumable_slots"] == []
+
+    async def test_one_short_of_n_is_never_succeeded(self, executor):
+        """§8.2(5): there is no partial-success exit. N-1 delivered sets is not a delivered request,
+        however healthy every event looked."""
+        runtime = FanOutRuntimeClient()
+        arm(runtime, "slot-1", child_request(slot_row(state="complete")))
+        arm(runtime, "slot-2", child_request(slot_row(state="exhausted"), status="incomplete"))
+        events = await drain(build_sets(runtime, {"scenarios": ["a"], "count": 2}, executor))
+
+        summary = events[-1]
+        assert summary["request_status"] == "incomplete"
+        assert summary["delivered"] == 1 and summary["requested"] == 2
+        # Not resumable: the slot gave up, it did not run out of clock.
+        assert summary["resumable_slots"] == []
+
+    async def test_a_checkpointed_slot_is_incomplete_and_resumable_not_failed(self, executor):
+        """The checkpoint case. The slot has a qualified material on disk and stopped on the clock;
+        calling it failed tells the user their material is gone when the next invocation would have
+        finished it."""
+        runtime = FanOutRuntimeClient()
+        arm(runtime, "slot-1", child_request(slot_row(state="complete")))
+        arm(runtime, "slot-2", child_request(
+            slot_row(state="material_done", checkpointed=True,
+                     last_failure={"reason": "time_budget"}),
+            status="incomplete"))
+        events = await drain(build_sets(runtime, {"scenarios": ["a"], "count": 2}, executor))
+
+        summary = events[-1]
+        assert summary["request_status"] == "incomplete"
+        assert summary["resumable_slots"] == ["slot-2"]
+        assert summary["failed"] == 0, "a resumable slot must not be counted as a failure"
+        row = [r for r in summary["slots"] if r["slot_id"] == "slot-2"][0]
+        assert row["pending"] is True and row["ok"] is False
+        # `last_failure` says why the last attempt stopped; promoting it to `reason` would draw a slot
+        # mid-retry as a finished failure.
+        assert row["reason"] is None
+        assert row["last_failure"] == {"reason": "time_budget"}
+
+    async def test_a_system_fault_surfaces_as_system_failure(self, executor):
+        """Not merely incomplete: a system fault is not resumable without a human, and reporting it
+        as a shortfall would send the user back to retry a request that cannot succeed."""
+        runtime = FanOutRuntimeClient()
+        arm(runtime, "slot-1", child_request(
+            slot_row(state="exhausted", system_fault="validator_unavailable"),
+            status="system_failure",
+            faults=[{"slot_id": "slot-1", "reason": "validator_unavailable"}]))
+        events = await drain(build_sets(runtime, {"scenarios": ["a"], "count": 1}, executor))
+
+        summary = events[-1]
+        assert summary["request_status"] == "system_failure"
+        assert summary["system_faults"] == [
+            {"slot_id": "slot-1", "reason": "validator_unavailable"}]
+
+    async def test_a_stated_system_failure_counts_even_with_no_fault_list(self, executor):
+        """A child reports `system_failure` for causes the web tier cannot see -- storage refusing a
+        write, its own status document unpersistable -- and those arrive as a status, not a fault
+        row. Re-deriving the status from slot states alone would report them as merely incomplete."""
+        runtime = FanOutRuntimeClient()
+        arm(runtime, "slot-1", child_request(
+            slot_row(state="material_pending"), status="system_failure", faults=[]))
+        events = await drain(build_sets(runtime, {"scenarios": ["a"], "count": 1}, executor))
+
+        assert events[-1]["request_status"] == "system_failure"
+
+    async def test_reaching_n_is_not_demoted_by_a_fault_on_a_refilled_position(self, executor):
+        """`delivery._status` checks the count first, and this has to agree: a position that
+        exhausted and was refilled delivered its set, and the request delivered N."""
+        runtime = FanOutRuntimeClient()
+        arm(runtime, "slot-1", child_request(
+            slot_row("slot-1", state="exhausted", created_at=1.0,
+                     system_fault="candidate_swaps_exhausted"),
+            slot_row("slot-1r1", state="complete", created_at=2.0),
+            status="succeeded",
+            faults=[{"slot_id": "slot-1", "reason": "candidate_swaps_exhausted"}]))
+        events = await drain(build_sets(runtime, {"scenarios": ["a"], "count": 1}, executor))
+
+        summary = events[-1]
+        assert summary["request_status"] == "succeeded"
+        assert summary["delivered"] == 1 and summary["succeeded"] == 1
+        # The position, not the abandoned record: the card shows the replacement's material.
+        assert [r["material_id"] for r in summary["slots"]] == ["mat-1"]
+
+    async def test_the_child_request_ids_are_reported(self, executor):
+        """So an operator, or a resume, can address the requests this batch was actually made of.
+        The browser batch id is not one of them."""
+        runtime = FanOutRuntimeClient()
+        for slot in ("slot-1", "slot-2"):
+            arm(runtime, slot, child_request(slot_row(state="complete")))
+        events = await drain(build_sets(runtime, {"scenarios": ["a"], "count": 2}, executor,
+                                        batch_id="web-9"))
+        assert events[-1]["request_ids"] == ["web-9-slot-1", "web-9-slot-2"]
+
+    async def test_request_completed_is_not_relayed_to_the_browser(self, executor):
+        """One merged batch has one terminal event. N children each announcing a finished request
+        would tell the frontend the batch ended N times."""
+        runtime = FanOutRuntimeClient()
+        for slot in ("slot-1", "slot-2"):
+            arm(runtime, slot, child_request(slot_row(state="complete")))
+        events = await drain(build_sets(runtime, {"scenarios": ["a"], "count": 2}, executor))
+
+        types = [e["type"] for e in events if isinstance(e, dict)]
+        assert types.count("request_completed") == 0
+        assert types.count("batch_completed") == 1
+        assert types.count("batch_started") == 1
+
+    async def test_a_plain_generate_batch_carries_no_request_status(self, executor):
+        """`generate` may legitimately deliver fewer materials than asked, so `incomplete` on one of
+        its batches would report that path's normal outcome as a shortfall."""
+        runtime = FanOutRuntimeClient()
+        for slot in ("slot-1", "slot-2"):
+            arm(runtime, slot, child_batch(slot))
+        events = await drain(build(runtime, {"scenarios": ["a"], "count": 2}, executor))
+
+        summary = events[-1]
+        for field in ("request_status", "requested", "delivered", "resumable_slots",
+                      "request_ids"):
+            assert field not in summary
+
+
+class TestRecordedStateForASilentChild:
+    """The fallback: a child that never answered, whose state is only on disk."""
+
+    async def test_a_recorded_complete_slot_counts_as_delivered(self, executor):
+        """A lost frame does not unmake a delivery. The set is on disk and the browser already has
+        the material; counting it failed would draw a failure over a finished card."""
+        runtime = FanOutRuntimeClient()
+        runtime.body_for("slot-1").finish()  # opens and closes, saying nothing
+        state = FakeSlotState({"b1-slot-1": [
+            {"slot_id": "slot-1", "state": "complete", "material_id": "mat-7",
+             "created_at": 1.0}]})
+        events = await drain(build_sets(runtime, {"scenarios": ["a"], "count": 1}, executor,
+                                        slot_state=state))
+
+        summary = events[-1]
+        assert summary["succeeded"] == 1 and summary["failed"] == 0
+        assert summary["request_status"] == "succeeded"
+        assert summary["slots"][0]["material_id"] == "mat-7"
+        assert state.asked == ["b1-slot-1"]
+
+    async def test_a_recorded_resumable_slot_is_pending_not_failed(self, executor):
+        runtime = FanOutRuntimeClient()
+        runtime.body_for("slot-1").finish()
+        state = FakeSlotState({"b1-slot-1": [
+            {"slot_id": "slot-1", "state": "material_done", "material_id": "mat-7",
+             "created_at": 1.0}]})
+        events = await drain(build_sets(runtime, {"scenarios": ["a"], "count": 1}, executor,
+                                        slot_state=state))
+
+        summary = events[-1]
+        assert summary["request_status"] == "incomplete"
+        assert summary["resumable_slots"] == ["slot-1"]
+        assert summary["failed"] == 0
+
+    async def test_a_completed_replacement_is_read_over_its_exhausted_original(self, executor):
+        """The records are collapsed by outcome, not by list position. Mapping positionally would
+        report the exhausted original and ignore the replacement that delivered."""
+        runtime = FanOutRuntimeClient()
+        runtime.body_for("slot-1").finish()
+        state = FakeSlotState({"b1-slot-1": [
+            {"slot_id": "slot-1", "state": "exhausted", "created_at": 1.0},
+            {"slot_id": "slot-1r1", "state": "complete", "material_id": "mat-9",
+             "created_at": 2.0}]})
+        events = await drain(build_sets(runtime, {"scenarios": ["a"], "count": 1}, executor,
+                                        slot_state=state))
+
+        summary = events[-1]
+        assert summary["succeeded"] == 1
+        assert summary["slots"][0]["material_id"] == "mat-9"
+
+    async def test_a_slot_that_produced_nothing_and_recorded_nothing_is_still_failed(self, executor):
+        """The original case, unchanged. `None` from the reader means the child never got as far as
+        its first write, and a clean batch drawn over a spinning card is worse than a failure."""
+        runtime = FanOutRuntimeClient()
+        runtime.body_for("slot-1").finish()
+        events = await drain(build_sets(runtime, {"scenarios": ["a"], "count": 1}, executor,
+                                        slot_state=FakeSlotState({})))
+
+        summary = events[-1]
+        assert summary["failed"] == 1 and summary["succeeded"] == 0
+        assert summary["request_status"] == "incomplete"
+        assert summary["resumable_slots"] == []
+
+    async def test_an_unreadable_store_leaves_the_slot_failed_rather_than_breaking_the_stream(
+            self, executor):
+        """This runs while the browser waits for the last frame of a batch it has already seen the
+        materials of. An exception here would replace the summary with a stream error."""
+        runtime = FanOutRuntimeClient()
+        runtime.body_for("slot-1").finish()
+        state = FakeSlotState(raises=RuntimeError("AccessDenied"))
+        events = await drain(build_sets(runtime, {"scenarios": ["a"], "count": 1}, executor,
+                                        slot_state=state))
+
+        summary = events[-1]
+        assert summary["type"] == "batch_completed"
+        assert summary["failed"] == 1
+
+    async def test_nothing_is_read_when_every_child_answered(self, executor):
+        """The ordinary path costs no S3 read at all: the child that owns the state reported it."""
+        runtime = FanOutRuntimeClient()
+        for slot in ("slot-1", "slot-2"):
+            arm(runtime, slot, child_request(slot_row(state="complete")))
+        state = FakeSlotState({})
+        await drain(build_sets(runtime, {"scenarios": ["a"], "count": 2}, executor,
+                              slot_state=state))
+        assert state.asked == []
+
+    async def test_a_generate_batch_never_reads_slot_state(self, executor):
+        """It has no `_slots/` records to find, and a read per silent child would be pure latency on
+        the path that is already deployed."""
+        runtime = FanOutRuntimeClient()
+        runtime.body_for("slot-1").finish()
+        state = FakeSlotState({})
+        children, slots = plan_children({"scenarios": ["a"], "count": 1}, batch_id="b1")
+        fan = FanOut(runtime, children, slots, executor=executor, concurrency=6, batch_id="b1",
+                     slot_state=state)
+        events = await drain(fan)
+        assert state.asked == []
+        assert events[-1]["failed"] == 1
+
+    async def test_an_unavailable_reader_reads_nothing(self, executor):
+        """No bucket configured is a local run, and the pre-existing behaviour is the right default:
+        a missing bucket must not make an unknown slot look complete."""
+        runtime = FanOutRuntimeClient()
+        runtime.body_for("slot-1").finish()
+        state = FakeSlotState({"b1-slot-1": [{"slot_id": "slot-1", "state": "complete"}]},
+                              available=False)
+        events = await drain(build_sets(runtime, {"scenarios": ["a"], "count": 1}, executor,
+                                        slot_state=state))
+        assert state.asked == []
+        assert events[-1]["failed"] == 1
+
+    async def test_a_child_that_failed_outright_is_not_looked_up(self, executor):
+        """It already has an outcome from the merged stream. Reading storage for it would risk
+        overriding a stated failure with a stale record."""
+        runtime = FanOutRuntimeClient()
+        runtime.fail_slots["slot-1"] = RuntimeError("invoke refused")
+        state = FakeSlotState({})
+        events = await drain(build_sets(runtime, {"scenarios": ["a"], "count": 1}, executor,
+                                        slot_state=state))
+        assert state.asked == []
+        assert events[-1]["failed"] == 1
