@@ -14,7 +14,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 __all__ = ["batch_started", "stage", "material_completed", "material_failed",
-           "material_skipped", "batch_completed"]
+           "material_skipped", "batch_completed", "request_completed"]
 
 
 def batch_started(total: int, deadline_at: float, config: Dict[str, Any]) -> Dict[str, Any]:
@@ -104,3 +104,23 @@ def batch_completed(
         "slots": slots,
         "at": time.time(),
     }
+
+
+def request_completed(summary: Dict[str, Any]) -> Dict[str, Any]:
+    """Terminal event for an exact-count request (orchestration/delivery.py).
+
+    A sixth ``type``, not a sixth meaning for ``batch_completed``. That event's ``succeeded`` /
+    ``failed`` / ``skipped`` counts describe slots that each produced a card, and the frontend renders
+    a finished batch from them; a request has one status for the whole delivery and can legitimately
+    end ``incomplete`` with work still pending, which those three counts have no way to express. Reusing
+    the type would make an unfinished request indistinguishable from a partly-failed batch to every
+    existing consumer.
+
+    ``summary`` is passed through verbatim -- it is the same document written to
+    ``_slots/{batch_id}/request.json``, so what the client is told and what a resumption reads cannot
+    diverge.
+    """
+    payload = dict(summary)
+    payload["type"] = "request_completed"
+    payload["at"] = time.time()
+    return payload
