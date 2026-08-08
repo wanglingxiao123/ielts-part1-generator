@@ -100,6 +100,25 @@ def norm(value: object) -> str:
     return str(value or "").strip()
 
 
+def ambiguous_anchor(turns: list, index: object, phrase: str) -> bool:
+    """Does ``phrase`` occur in a turn ADJACENT to ``index`` as well as in ``index`` itself?
+
+    Only meaningful once :func:`anchor_ok` has passed, and only checked against the two neighbours
+    rather than the whole script: a span repeated in a distant turn is ordinary English, and the anchor
+    is unambiguous because nobody resolves an anchor across the whole script. The +-1 neighbourhood is
+    different, because that is exactly the width the question-stage cross-check searches when it
+    reconciles the writer's anchor with the auditor's -- so a span occurring twice inside that window
+    leaves the reconciliation with two candidates and no way to choose.
+
+    ``anchor_ok``'s speaker rule is deliberately reused rather than reimplemented: a neighbouring
+    *narration* turn containing the same words is not a rival anchor, because narration can never be
+    anchored on in the first place.
+    """
+    if isinstance(index, bool) or not isinstance(index, int):
+        return False
+    return any(anchor_ok(turns, index + offset, phrase) for offset in (-1, 1))
+
+
 def tokens_of(text: str) -> list:
     """Whole orthographic tokens, casefolded. Hyphens are kept inside a token (AR-014)."""
     return [match.group(0).casefold().strip("'’-") for match in TOKEN_RE.finditer(text or "")
@@ -559,6 +578,15 @@ def validate_evidence(numbers: list, questions: dict, answers: dict, evidence: d
         if not quote or not anchor_ok(turns, index, quote):
             errors.append("Q%d evidence quote %r does not occur in dialogue turn %r; a quote that "
                           "is not in the turn it names proves nothing (AL-007)"
+                          % (number, quote, index))
+        elif ambiguous_anchor(turns, index, quote):
+            # The quote IS in the turn it names, and also in a neighbour. AL-007 is satisfied and the
+            # anchor is still unusable: the downstream cross-check locates the auditor's quote within +-1
+            # and normalises a one-turn index gap when the span pins exactly one turn. A span occurring
+            # twice pins nothing, so an item anchored this way can never be settled deterministically and
+            # is parked for human reading on the strength of a quote the writer could have made longer.
+            errors.append("Q%d evidence quote %r occurs in turn %d and also in an adjacent turn, so it "
+                          "identifies no single sentence; lengthen it until it occurs once (AL-007)"
                           % (number, quote, index))
         if index <= previous:
             errors.append("Q%d evidence is at turn %d, not after Q%d's turn %d; question order "

@@ -214,7 +214,11 @@ Per item, record:
 - `turn_index` — the zero-based position in the material's `turns` array, counting narration turns.
   Copy it out of the array rather than counting by eye.
 - `quote` — the shortest sufficient **verbatim** span from that exact turn. Verbatim is checkable and
-  a paraphrase is not, which is the entire reason this field is a quote.
+  a paraphrase is not, which is the entire reason this field is a quote. "Shortest sufficient" has a
+  floor: the span must occur in that turn and **not** in either neighbouring dialogue turn. The
+  validator rejects one that occurs in both. A span appearing twice inside that window identifies no
+  sentence, and the blind cross-check reconciles your anchor against the auditor's across exactly ±1 —
+  so an ambiguous quote is what turns a sound item into one no deterministic check can settle.
 - `narrator_window_id` — the item's window. Evidence may not leave it (AL-017 / SC-019).
 - `paraphrase_relation` — `exact`, `signpost` (a retained locating label rather than a rewrite,
   which QR-034 often requires) or `paraphrase`.

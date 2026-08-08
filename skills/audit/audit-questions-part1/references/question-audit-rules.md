@@ -84,6 +84,22 @@ Per item, in this order:
 4. **Write the answer you would write**, and take the shortest verbatim span from that exact turn as
    the quote. If nothing decisive exists, record an empty answer and raise it — SR-005 / AL-002,
    MAJOR. An answer invented to fill the field destroys the only product this review has.
+
+   **Then read the index back off the array, and check that your quote is in *that* entry.** Not the
+   turn you believe you were reading — the entry at the number you are about to write. These two must
+   describe one sentence. A review is rejected and re-run when they do not, which costs a whole call, so
+   spend the moment now.
+
+   This is the one error that has actually happened, measured. A review counted the narration turn
+   "Before you hear the rest of the conversation…" where the writer had not, and every index after it
+   was one too high. The quotes were perfect and the answers all matched the key; the set was still
+   rejected, and it took three stages to work out that nothing was wrong with the questions. An index
+   that is one out does not read as a typo further down the pipeline — it reads as a claim that the
+   answer lives in a different sentence than the writer says, which is a serious finding about the
+   item. Do not make that claim by accident.
+
+   Make the quote long enough to occur **once**. A span so short that it also appears in the
+   neighbouring turn identifies no sentence at all, and no later check can recover which one you meant.
 5. **Set confidence for a candidate hearing it once**, not for yourself with the text in front of
    you. `low` is itself worth a finding.
 6. **Then** do §4 and §5, in that order. Rivals before leakage: the leakage scan needs the
@@ -145,7 +161,7 @@ dialogue is built on. So each dimension is judged on its own.
 | The answer text | **Strict.** An answer is either right or it is not. |
 | The factual proposition (AL-018: subject, object, place, time, relation) | **Strict.** A displaced proposition is an AL-018 failure regardless of how near the turns are. |
 | Narrator window membership | **Strict.** SC-019 calls it an unbreakable structural boundary; evidence outside the item's window is AL-017. |
-| The quote existing in the turn you named | **Strict.** A quote that is not in that turn is AL-007. |
+| The quote existing in the turn you named | **Strict, and machine-checked.** A quote that is not in that turn is AL-007, and the review is rejected and re-run rather than interpreted. |
 | The **position** of the decisive turn | **±1, conditionally.** |
 
 The ±1 applies only when all three hold **at once**:
@@ -158,6 +174,11 @@ The ±1 applies only when all three hold **at once**:
 **Adjacency alone is never enough.** Two neighbouring turns that support different answers are two
 different facts; pairing them because they are neighbours turns a real defect into a pass, and that
 failure is silent.
+
+**The ±1 is for a genuine confirmation turn, not for a miscounted index.** If your quote turns out to
+sit in the turn next to the one you wrote down, you have not used the tolerance — you have mis-stated
+where your evidence is, and §3.4 is where that gets fixed. The tolerance exists for the case where you
+deliberately anchored on the confirming turn and said so.
 
 ---
 

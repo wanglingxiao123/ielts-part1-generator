@@ -546,6 +546,173 @@ class TestTheRealQ1AndQ8Divergences:
         assert len(instruction.advisory) == 3
 
 
+class TestTheRealRevisedTwoAdjacencies:
+    """The 2026-08-08 run's ``revised-2`` candidate, and the two things a one-turn gap can be.
+
+    Fixture reconstructed from the wire frame of request ``web-1786...-slot-1`` (material
+    ``harbour-view-hotel-reservation``), whose third question package reported::
+
+        {"version": "revised-2", "agreed": 7, "hard_defects": 0, "leakage": 0, "rivals": 0,
+         "status": "PASS", "by_outcome": {"agree": [3, 4, 6, 7, 8, 9, 10],
+                                          "anchor_adjacent": [1, 2, 5]}}
+
+    and was still withheld, on **four** blockers. Its own script was never persisted -- the auditor's
+    review is written nowhere, which is why the exact turns Q1/Q2/Q5 named cannot be read back -- so the
+    frame is replayed against the committed material: same three item numbers, same window, same
+    ``aligned`` evidence, same 7/10, and the writer's anchors likewise every one ``aligned``.
+
+    What the shape does not say is which of two situations produced it, and they get opposite treatment:
+
+    * the auditor quoted the **writer's own sentence** under an index one out. One sentence, no reading
+      to do, so it agrees -- and is recorded rather than absorbed, because five of them in a set is an
+      auditor mis-counting the narration.
+    * the auditor quoted the **neighbouring sentence**. Two sentences, and whether the neighbour
+      confirms the same fact is a reading no integer performs. Stays hard, and a uniquely located quote
+      does not change that: locating a quote establishes which sentence was read, never that two
+      sentences state one fact.
+
+    Both are asserted here together on purpose. A change that promoted the second to agreement would
+    make the first test pass and this one fail, which is the only way to keep the release narrow.
+    """
+
+    @staticmethod
+    def _drifted_index(review, turns, numbers):
+        """The auditor quotes the writer's sentence verbatim, having written the index one too high."""
+        for row in review["reconstructed_answers"]:
+            if row["number"] in numbers:
+                row["turn_index"] = row["turn_index"] + 1
+        return review
+
+    @staticmethod
+    def _quoted_the_neighbour(review, turns, numbers):
+        """The auditor read the *next* turn and anchored there -- a genuinely different sentence."""
+        for row in review["reconstructed_answers"]:
+            if row["number"] in numbers:
+                row["turn_index"] = row["turn_index"] + 1
+                row["quote"] = turns[row["turn_index"]]["text"]
+        return review
+
+    def test_a_mis_stated_index_is_agreement_and_says_so(self, question_package, material):
+        """Q1/Q2/Q5 reach 10/10, and the normalisation is visible in the result rather than silent."""
+        turns = material["listening_material_parts"][0]["script"]["turns"]
+        review = self._drifted_index(_review(question_package), turns, (1, 2, 5))
+        result = crosscheck_questions(question_package, review, material)
+        assert result.agreed == 10
+        assert result.by_outcome == {"agree": NUMBERS}
+        assert [row["number"] for row in result.adjacency_normalised] == [1, 2, 5]
+        for row in result.adjacency_normalised:
+            evidence = {e["number"]: e for e in question_package["evidence"]}
+            assert row["normalised_turn"] == evidence[row["number"]]["turn_index"]
+            assert row["quote_pins_one_turn"] is True
+            assert "mis-stated index rather than a second reading" in row["reason"]
+
+    def test_quoting_the_neighbouring_sentence_stays_hard(self, question_package, material):
+        """The residual on the real run, and it is not an arithmetic problem. It must not be waved on.
+
+        Every release condition holds here -- the answers match, one window, the writer's evidence is
+        ``aligned``, and the quote pins exactly one turn -- and it still does not agree, because the two
+        anchors are two sentences.
+        """
+        turns = material["listening_material_parts"][0]["script"]["turns"]
+        review = self._quoted_the_neighbour(_review(question_package), turns, (1, 2, 5))
+        result = crosscheck_questions(question_package, review, material)
+        assert result.agreed == 7
+        assert result.by_outcome == {"agree": [3, 4, 6, 7, 8, 9, 10],
+                                    "anchor_adjacent": [1, 2, 5]}
+        assert result.hard_defects == []
+        assert result.adjacency_normalised == []
+        assert [row["number"] for row in result.needs_review] == [1, 2, 5]
+        for row in result.needs_review:
+            assert row["quote_pins_one_turn"] is True     # located, and still not agreement
+            assert "two different sentences one turn apart" in row["reason"]
+
+    def test_three_adjacencies_are_three_blockers_not_four(self, question_package, material):
+        """The fourth blocker on the real run was the first three added up.
+
+        ``agrees on 7 of 10`` restates exactly the three lines above it. Charging it again inflates the
+        count the failure path prints and makes a set look further from deliverable than it is.
+        """
+        from backend.deterministic.validate import ValidationResult
+        turns = material["listening_material_parts"][0]["script"]["turns"]
+        review = self._quoted_the_neighbour(_review(question_package), turns, (1, 2, 5))
+        result = crosscheck_questions(question_package, review, material)
+        candidate = QuestionCandidate(question_package, review, result,
+                                      ValidationResult([], [], {}), "revised-2")
+        blockers = hard_blockers(candidate)
+        assert len(blockers) == 3
+        assert [line for line in blockers if "agrees on" in line] == []
+        assert all("evidence anchor is one turn" in line for line in blockers)
+        assert advisory_notes(candidate) == []      # and not downgraded to advisory either
+        assert not is_deliverable(candidate)
+
+    def test_an_unnamed_shortfall_is_still_stated(self, question_package, material):
+        """The suppression is narrow: it holds only while the shortfall is what was already named.
+
+        Every outcome that is not ``agree`` currently produces a line of its own -- hard defects one by
+        one, ``anchor_adjacent`` one by one -- so on today's classification the two totals always match
+        and the restatement is always the arithmetic. That is what makes suppressing it safe, and also
+        what makes it untestable from a review alone: no reconstruction can produce a shortfall with
+        nothing named. So the condition is forced directly on the result. A new outcome that counted
+        against agreement without being listed would be a hole in this report, and the guard is what
+        keeps it from passing in silence.
+        """
+        from backend.deterministic.validate import ValidationResult
+        review = _review(question_package)
+        review["reconstructed_answers"][4]["answer"] = ""       # Q5: no_answer_found -- hard, named
+        result = crosscheck_questions(question_package, review, material)
+        candidate = QuestionCandidate(question_package, review, result,
+                                      ValidationResult([], [], {}), "revised-2")
+        assert result.agreed == 9
+        assert len(result.hard_defects) == 1
+        assert [line for line in hard_blockers(candidate) if "agrees on" in line] == []
+        result.agreed = 7           # two more items short of agreement, neither of them listed
+        assert any("agrees on 7 of 10 items beyond the 1 already listed" in line
+                   for line in hard_blockers(candidate))
+
+    def test_an_ambiguous_quote_pins_nothing_and_never_promotes(self, question_package, material):
+        """A span in two turns of the neighbourhood resolves to the declared one and looks located.
+
+        ``bedroom`` occurs in turns 35, 36 and 37 of this script -- the exact shape both the writer's
+        validator and the auditor's instructions now reject, because it leaves the reconciliation with
+        several candidates and no way to choose. It must not be read as evidence of anything.
+        """
+        review = _review(question_package)
+        row = review["reconstructed_answers"][8]        # Q9, writer's anchor is turn 37
+        row["turn_index"] = 36
+        row["quote"] = "bedroom"
+        result = crosscheck_questions(question_package, review, material)
+        parked = next(item for item in result.items if item["number"] == 9)
+        assert parked["outcome"] == "anchor_adjacent"
+        assert parked["quote_pins_one_turn"] is False
+        assert "does not even pin one of them" in parked["reason"]
+        assert result.adjacency_normalised == []
+
+    def test_the_auditors_own_drifted_anchor_is_a_retry_not_a_deliberation(
+            self, question_package, material):
+        """Same fixture, one stage earlier: the envelope rejects it before anyone has to classify it.
+
+        This is the fix that makes the branch above unreachable on a well-formed review. A mistyped
+        integer is cheap to retry with a fresh agent and expensive to adjudicate three stages later as
+        a question about two sentences.
+        """
+        turns = material["listening_material_parts"][0]["script"]["turns"]
+        review = self._drifted_index(_review(question_package), turns, (1, 2, 5))
+        with pytest.raises(ModelCallError) as exc:
+            _question_audit_envelope(json.dumps(review), "question audit", material)
+        message = str(exc.value)
+        assert "anchors quotes on turns they are not in" in message
+        for number in (1, 2, 5):
+            assert "Q%d quotes" % number in message
+        assert "AL-007" in message
+        # Without the script the check cannot run, and not running is not the same as passing.
+        assert _question_audit_envelope(json.dumps(review), "question audit")
+
+    def test_a_clean_review_passes_the_new_anchor_check(self, question_package, material):
+        """The anti-false-positive half. Every quote in the turn it names, and nothing fires."""
+        assert _question_audit_envelope(json.dumps(_review(question_package)),
+                                        "question audit", material)
+
+
 class TestTheRankingIsLexicographicNotWeighted:
     """One MAJOR must never be outvoted by any number of MINORs."""
 
@@ -738,7 +905,12 @@ class TestTheDeliveryGate:
 
     def test_nine_of_ten_agreement_blocks_even_with_no_hard_defect(
             self, question_package, material):
-        """An adjacent anchor is not agreement, so 9/10 agreed is not a deliverable 10/10."""
+        """An adjacent anchor is not agreement, so 9/10 agreed is not a deliverable 10/10.
+
+        What blocks is the named adjacency, and it blocks alone. The shortfall total is *not* restated:
+        one non-agreeing item that already has its own line makes "agrees on 9 of 10" that same line
+        arithmetic, and charging it twice is what turned three real adjacencies into four blockers.
+        """
         review = _review(question_package)
         row = review["reconstructed_answers"][2]
         row["turn_index"] = row["turn_index"] + 1
@@ -748,8 +920,11 @@ class TestTheDeliveryGate:
         assert candidate.cross_check.hard_defects == []      # nothing hard...
         assert candidate.cross_check.needs_review            # ...but not agreement either
         blockers = delivery_blockers(candidate)
-        assert any("agrees on 9 of 10" in line for line in blockers)
+        assert any("Q3's evidence anchor is one turn" in line for line in blockers)
+        assert not any("agrees on" in line for line in blockers)
+        assert len(blockers) == 1
         assert not is_clean_questions(candidate)
+        assert not is_deliverable(candidate)
 
     def test_the_qr026_ceiling_warning_does_not_block(self, question_package, material):
         """AT a legal cap is not a defect: the validator already ruled the set legal.

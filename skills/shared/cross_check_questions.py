@@ -21,14 +21,31 @@ will answer, from the very same information the candidate gets:
 
 This is deterministic Python. No model, so it costs nothing per run and its verdict cannot drift.
 
-**Adjacency is never agreement.** A turn index one away from the writer's is reported as
-``anchor_adjacent`` and never as a match: the audit rules allow +-1 only when the neighbouring turn
-*confirms the same fact*, which is a reading of two sentences and not something an integer comparison
-can establish. Three things are checked deterministically before that release is granted -- the answers
-match, both anchors sit in the same narration-derived window, and the writer's own evidence row is
-marked ``proposition_alignment_result == "aligned"`` -- and any of them unmet makes the one-turn gap a
-hard defect rather than a note. Every unknown falls to the hard side, because ``anchor_adjacent`` is a
-release and a release granted by silence is not a check.
+**Adjacency is never agreement on the strength of the integers.** A turn index one away from the
+writer's is reported as ``anchor_adjacent`` and not as a match: the audit rules allow +-1 only when the
+neighbouring turn *confirms the same fact*, which is a reading of two sentences and not something an
+integer comparison can establish. Three things are checked deterministically before that release is
+even considered -- the answers match, both anchors sit in the same narration-derived window, and the
+writer's own evidence row is marked ``proposition_alignment_result == "aligned"`` -- and any of them
+unmet makes the one-turn gap a hard defect rather than a note. Every unknown falls to the hard side,
+because ``anchor_adjacent`` is a release and a release granted by silence is not a check.
+
+**Where the line actually falls, and it is narrower than "within one turn".** Two different situations
+both present as a one-turn gap, and only one of them is a judgment:
+
+* the auditor quoted the **writer's own sentence** and mistyped the index. Resolving the quote puts both
+  anchors on one turn, the gap closes to zero, and it is agreement -- there is no second sentence and
+  nothing for a reader to adjudicate. Rows reaching agreement this way carry ``adjacency_normalised``
+  and are listed in that key of the result, because five of them in one set is an auditor mis-counting
+  the narration systematically and that has to stay legible in an otherwise clean result.
+* the auditor quoted the **neighbouring sentence**. Then the two anchors really are two sentences, and
+  whether the neighbour confirms the same fact is the reading no integer settles. This stays
+  ``anchor_adjacent`` and stays hard, and a *uniquely* located quote does not change that: locating the
+  quote establishes which sentence was read, never that two sentences state one fact.
+
+``quote_pins_one_turn`` records which of those it was on every row. A span occurring in more than one
+turn of the neighbourhood pins nothing at all, which is why both the writer's validator and the
+auditor's instructions now require a quote long enough to occur once.
 
 The auditor's quote is also resolved within +-1 of the turn it named rather than only in that exact
 turn, which is what makes the above reachable. Measured: a real re-audit counted a narration turn the
@@ -189,6 +206,81 @@ def _resolve_quote_nearby(turns: list, index, quote: object):
         if 0 <= candidate < len(turns) and _quote_is_in_turn(turns, candidate, quote):
             return candidate
     return None
+
+
+def _quote_turns_nearby(turns: list, index, quote: object) -> list:
+    """EVERY turn within +-1 of ``index`` containing ``quote``, ascending. Not just the first.
+
+    The counterpart of :func:`_resolve_quote_nearby`, which stops at the first hit with the declared
+    turn searched first. That preference is right for *locating* a quote and wrong for asking whether
+    the location is knowable: a span occurring in both the declared turn and its neighbour resolves to
+    the declared one and looks pinned, when in fact two readings fit it equally. Only the full list
+    distinguishes "the auditor mistyped an index" from "the auditor's evidence does not say which
+    sentence it read", and those two get opposite treatment below.
+    """
+    if index is None or not turns or not normalise(quote):
+        return []
+    return [candidate for candidate in (index - ADJACENT, index, index + ADJACENT)
+            if 0 <= candidate < len(turns) and _quote_is_in_turn(turns, candidate, quote)]
+
+
+def _unique_quote_turn(turns: list, index, quote: object):
+    """The single turn in the +-1 neighbourhood carrying ``quote`` verbatim, or None if not unique.
+
+    What a unique match establishes is narrow, and the narrowness is the point: it identifies *which
+    sentence the auditor read*, by the auditor's own evidence rather than by an assumption about how it
+    counted turns. It does not establish that this sentence and the writer's state the same fact -- that
+    is a reading of two sentences, and no amount of uniqueness performs it.
+
+    So the caller uses this only to describe the row (``quote_pins_one_turn``) and never as grounds to
+    promote a genuine two-sentence gap to agreement. None when the neighbourhood carries the span twice
+    or not at all: twice means two sentences share a substring, which pins nothing, and a short quote
+    makes that likelier rather than rarer.
+    """
+    found = _quote_turns_nearby(turns, index, quote)
+    return found[0] if len(found) == 1 else None
+
+
+def quote_anchor_errors(review: object, material: object) -> list:
+    """Every rebuilt answer whose ``quote`` is not verbatim in the ``turn_index`` it declares.
+
+    The auditor's side of AL-007, which until now nothing enforced. The writer's side has been strict
+    from the start -- ``validate_questions_part1.validate_evidence`` rejects a package whose quote is
+    not in the turn it names -- so a drifted anchor could only ever come from the auditor, and it
+    arrived downstream as an ``anchor_adjacent`` row that read like a semantic question about two
+    sentences. It is not one. It is a mistyped integer, and this is where it should be caught and
+    retried rather than deliberated over three stages later.
+
+    Reported per item rather than raised, and stated as prose the auditor can act on: a retry needs to
+    know which item and which turn, and a caller may want to log every drifted row rather than the
+    first. An empty list means every quote sits in the turn it claims -- which makes the +-1 machinery
+    below dead code on a well-formed review, and that is the intended end state.
+
+    Rows with no locatable quote at all are NOT reported here. That is ``quote_unverifiable``, a
+    different and more serious defect that :func:`compare` already classifies, and duplicating it would
+    charge one fault twice.
+    """
+    turns = _turns(material)
+    if not turns:
+        return []
+    errors = []
+    for number, row in sorted(_by_number((review or {}).get("reconstructed_answers")).items()):
+        quote = row.get("quote")
+        if not normalise(quote):
+            continue
+        declared = _anchor_of(row)
+        if declared is not None and _quote_is_in_turn(turns, declared, quote):
+            continue
+        located = _resolve_quote_nearby(turns, declared, quote)
+        if located is None:
+            # Not in the neighbourhood at all: `quote_unverifiable`, not a drifted index.
+            continue
+        errors.append(
+            "Q%s quotes %r but that span is in turn %s, not the turn %s it declares; the quote and the "
+            "turn_index must describe the same sentence (AL-007)"
+            % (number, quote, located, declared)
+        )
+    return errors
 
 
 def narrator_window_of(turns: list, index):
@@ -407,6 +499,15 @@ def compare(package: dict, review: dict, material: object = None) -> dict:
         if quote_turn is not None and quote_turn != auditor_turn:
             row["stated_turn_shift"] = quote_turn - auditor_turn
 
+        # Is the sentence the auditor read *known*, or merely narrowed to a neighbourhood? Only a single
+        # verbatim occurrence in the +-1 window settles it; two occurrences resolve to the declared turn
+        # by preference alone, which reads as pinned while two readings fit equally. Recorded on every
+        # row because it is what tells a reader whether the anchor comparison below rests on located
+        # evidence or on the auditor's say-so -- it does not by itself decide any outcome.
+        pinned = _unique_quote_turn(turns, auditor_turn, mine.get("quote")) is not None if turns \
+            else False
+        row["quote_pins_one_turn"] = pinned
+
         gap = None if writer_turn is None or effective_turn is None else abs(
             writer_turn - effective_turn)
 
@@ -429,16 +530,34 @@ def compare(package: dict, review: dict, material: object = None) -> dict:
 
         if gap == 0:
             row["outcome"] = "agree"
+            # Agreement reached only because the quote relocated a stated index that was one out. The
+            # sentence is the writer's, so this is agreement and not a note -- but it is recorded, because
+            # five of these in one set is an auditor mis-counting the narration systematically and that
+            # must stay visible in an otherwise clean result rather than being absorbed without trace.
+            if row.get("stated_turn_shift"):
+                row["adjacency_normalised"] = True
+                row["normalised_turn"] = effective_turn
+                row["reason"] = ("answers agree and the auditor's quote occurs verbatim in exactly one "
+                                 "turn of the +-1 neighbourhood, which is the writer's own anchor (turn "
+                                 "%s); the stated index %s was one out, so this is a mis-stated index "
+                                 "rather than a second reading, normalised and counted as agreement"
+                                 % (effective_turn, auditor_turn))
         elif gap == ADJACENT and same_window and aligned:
-            # Deliberately NOT `agree`. The audit rules permit +-1 only when the neighbouring turn
-            # confirms the same fact; the three conditions above are the strongest evidence Python can
-            # gather that it does, and a reader is still told to confirm it.
+            # Deliberately NOT `agree`, and this is the branch the narrow quote exception does NOT reach.
+            # Reaching here means the quote was located -- possibly uniquely -- in a turn that is *not*
+            # the writer's. So the auditor read a different sentence from the one the writer anchored,
+            # and whether that neighbouring sentence confirms the same fact is a reading of two
+            # sentences. A unique match cannot settle that: it establishes *which* sentence was read, not
+            # that the two sentences state one fact. Promoting it here would be exactly the "adjacency is
+            # agreement" move the module docstring rules out.
             row["outcome"] = "anchor_adjacent"
             row["reason"] = ("answers agree, both anchors sit in narrator window %s and the writer's "
-                             "evidence is proposition-aligned, but the anchors are one turn apart "
-                             "(writer %s, auditor %s); adjacency alone is not agreement -- confirm the "
-                             "neighbouring turn really confirms the same fact"
-                             % (writer_window, writer_turn, effective_turn))
+                             "evidence is proposition-aligned, but the auditor's quote is in turn %s "
+                             "while the writer's evidence is in turn %s -- two different sentences one "
+                             "turn apart%s; adjacency alone is not agreement -- confirm the neighbouring "
+                             "turn really confirms the same fact"
+                             % (writer_window, effective_turn, writer_turn,
+                                "" if pinned else ", and the quote does not even pin one of them"))
         elif gap == ADJACENT:
             # One turn apart with a condition unmet. Hard, not advisory: without the same window and an
             # aligned proposition there is nothing supporting the claim that the neighbour confirms the
@@ -501,6 +620,10 @@ def compare(package: dict, review: dict, material: object = None) -> dict:
         "items": items,
         "hard_defects": hard,
         "needs_review": [row for row in items if row["outcome"] == "anchor_adjacent"],
+        # Rows that agree only because a uniquely-located quote normalised a one-turn index gap. Counted
+        # in `agreed`, and listed here as well: five of these in one set is an auditor mis-counting the
+        # narration systematically, and that is worth seeing even though no item is defective.
+        "adjacency_normalised": [row for row in items if row.get("adjacency_normalised")],
         "leakage": leakage,
         "equally_supported_rivals": rivals,
         # Stated rather than implied: without the script the quote check did not run, and a reader of
@@ -548,6 +671,11 @@ def main() -> int:
                  row.get("auditor_answer"), row.get("reason")))
     for row in result["needs_review"]:
         print("ADJACENT: Q%s %s" % (row["number"], row.get("reason")))
+    # Printed even though these count as agreement: the run is clean, and a reader still has to be able
+    # to see that N anchors needed normalising before calling the auditor's turn numbering sound.
+    for row in result["adjacency_normalised"]:
+        print("NORMALISED: Q%s auditor turn %s -> %s (quote pins one turn)"
+              % (row["number"], row.get("effective_auditor_turn"), row.get("normalised_turn")))
     for row in result["leakage"]:
         print("LEAKAGE: Q%s %r is on the page" % (row["number"], row["auditor_answer"]))
     for row in result["equally_supported_rivals"]:

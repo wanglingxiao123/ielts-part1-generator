@@ -43,7 +43,7 @@ from ..deterministic.guards import (
     assert_no_answers_on_disk,
     assert_no_plan_on_disk,
 )
-from ..deterministic.question_crosscheck import review_consistency
+from ..deterministic.question_crosscheck import quote_anchor_errors, review_consistency
 from ..model import provider
 from .call import ModelCallError, extract_json
 
@@ -445,7 +445,8 @@ _QUESTION_AUDIT_REQUIRED_KEYS = (
 )
 
 
-def _question_audit_envelope(reply: str, label: str) -> Dict[str, Any]:
+def _question_audit_envelope(reply: str, label: str,
+                             material: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Parse and shape-check a question audit reply.
 
     Same decoy problem as ``_audit_envelope``: ``extract_json`` returns the first balanced object, so a
@@ -475,7 +476,18 @@ def _question_audit_envelope(reply: str, label: str) -> Dict[str, Any]:
     zeros and a ``question_qc_status`` of ``PASS``. Every field is well-typed, the schema is satisfied,
     and the orchestrator routes on the status -- so it would ship the material.
 
-    Both raise ``ModelCallError`` rather than returning a flag, which puts the call back on the
+    **And each quote must sit in the turn its own row names** (AL-007), when ``material`` is supplied.
+    The writer's side of this has been strict since the beginning; the auditor's side was enforced
+    nowhere, so a mistyped index travelled all the way to the delivery gate disguised as a semantic
+    question -- "is the neighbouring turn the confirmation of the same fact?" -- about what was really
+    one integer written down wrong. Checked here because here it is a cheap retry, and because a fresh
+    agent quoting the script correctly is exactly what fixes it.
+
+    ``material`` is optional in the signature so the shape checks above remain reachable without a
+    script, and every production caller passes it. Without it the quote check simply does not run, which
+    is honest: it is not the same as running and finding nothing.
+
+    All of these raise ``ModelCallError`` rather than returning a flag, which puts the call back on the
     infrastructure retry budget with a fresh agent. That is the right remedy: an arithmetic slip in a
     long structured reply is exactly the kind of thing a second attempt does not repeat.
     """
@@ -499,6 +511,13 @@ def _question_audit_envelope(reply: str, label: str) -> Dict[str, Any]:
             "%s reply disagrees with itself: %s"
             % (label, "; ".join(consistency["errors"]))
         )
+    if material is not None:
+        drifted = quote_anchor_errors(audit, material)
+        if drifted:
+            raise ModelCallError(
+                "%s reply anchors quotes on turns they are not in: %s"
+                % (label, "; ".join(drifted))
+            )
     return audit
 
 
@@ -533,8 +552,11 @@ async def audit_questions_blind(
     assert_no_plan_on_disk()
     assert_no_answers_on_disk()
     agent = build_question_audit_agent()
+    # `material` reaches the envelope for the quote check only. It is emphatically NOT added to the
+    # payload: the auditor's blindness is what makes its reconstruction worth anything, and `payload`
+    # has already passed `assert_answer_blind`. This argument is read after the reply comes back.
     return _question_audit_envelope(
-        await _invoke(agent, payload, "question audit"), "question audit")
+        await _invoke(agent, payload, "question audit"), "question audit", material)
 
 
 # The question package's own required blocks, from question_package.schema.json. Checked in the

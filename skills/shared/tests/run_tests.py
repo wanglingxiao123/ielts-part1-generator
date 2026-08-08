@@ -2224,6 +2224,18 @@ def test_question_validator_catches_the_stage_defects() -> None:
     def wrong_quote(package: dict) -> None:
         package["evidence"][6]["quote"] = "we have always preferred a house"
 
+    def ambiguous_quote(package: dict) -> None:
+        """Q9's anchor shortened to `bedroom`, which turns 35, 36 and 37 all contain.
+
+        AL-007 is satisfied -- the span really is in turn 37 -- and the anchor is still unusable. The
+        question stage's cross-check reconciles the writer's turn against the blind auditor's across
+        exactly +-1, and a span occurring more than once inside that width resolves to the declared turn
+        by preference alone: it reads as located while several readings fit it equally. Measured on a
+        real run, an anchor that pins nothing is what leaves an item parked for human reading on the
+        strength of a quote the writer could have made one clause longer.
+        """
+        package["evidence"][8]["quote"] = "bedroom"
+
     def note_without_title(package: dict) -> None:
         for group in package["question_face"]["groups"]:
             if group["group_id"] == "G3":
@@ -2275,6 +2287,7 @@ def test_question_validator_catches_the_stage_defects() -> None:
         # AL-001 / AL-010 / AL-007.
         ("an evidence entry missing", drop_evidence, "exactly once"),
         ("a quote absent from the turn it names", wrong_quote, "proves nothing"),
+        ("a quote in its turn AND in a neighbour", ambiguous_quote, "identifies no single sentence"),
         # QR-031 / QR-015 / QR-026.
         ("a note group with no title", note_without_title, "QR-031"),
         ("a table group with no column labels", table_without_columns, "column_labels"),

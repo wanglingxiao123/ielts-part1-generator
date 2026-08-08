@@ -73,8 +73,11 @@ Read nothing else.
 
 4. **Rebuild each answer independently.** The core product.
    For each item: find the turn that *settles* it — which may be a later confirmation rather than the
-   first mention — write the answer you would write, and quote the shortest verbatim span from that
-   exact turn. Set confidence for a candidate hearing the recording once, not for yourself with the
+   first mention — write the answer you would write, and quote the shortest span that occurs in that
+   turn and **only** that turn. Then read the index back off the turns array and confirm your quote is
+   in the entry at that number: the quote and `turn_index` must name one sentence, this is checked
+   mechanically, and a mismatch costs the whole review a re-run (rules §3.4).
+   Set confidence for a candidate hearing the recording once, not for yourself with the
    text in front of you. Where no decisive evidence exists, record an empty answer and raise it
    (SR-005 / AL-002): an invented answer destroys the only thing this review produces.
 

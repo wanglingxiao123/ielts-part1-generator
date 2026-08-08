@@ -275,9 +275,15 @@ def hard_blockers(candidate: QuestionCandidate) -> List[str]:
       the review's claim about itself.
     * **the cross-check does not agree on all ten items.** Not merely "no hard defect": ``agreed``
       counts only ``agree``, so an item parked in ``anchor_adjacent`` -- answers matching, anchors one
-      turn apart -- leaves the total at nine and blocks. Adjacency is explicitly *not* agreement (the
-      neighbouring turn has to confirm the same fact, which no integer comparison establishes) and
-      this gate is the last place anyone looks.
+      turn apart with the auditor's quote not pinning either -- leaves the total at nine and blocks.
+      Adjacency is explicitly *not* agreement (the neighbouring turn has to confirm the same fact,
+      which no integer comparison establishes) and this gate is the last place anyone looks.
+
+      Stated **only when it is not the arithmetic of the entries already listed.** Every non-agreeing
+      item normally produces its own line above, so restating the total charges the same fact twice --
+      three adjacencies became four blockers on a real run, and the fourth was the first three added
+      up. Suppressed in that case; still stated whenever the shortfall exceeds what was named, because
+      an item that failed to agree without appearing above is a hole in this report.
     * **a hard defect, leakage, or an equally-supported rival.**
     * **a review that disagrees with itself.**
 
@@ -310,9 +316,18 @@ def hard_blockers(candidate: QuestionCandidate) -> List[str]:
     reviewed = ((cross.consistency or {}).get("computed") or {}).get("reviewed_question_ids") or []
     if sorted(reviewed) != list(QUESTION_NUMBERS):
         blockers.append("the blind audit covered %s, not all ten items" % sorted(reviewed))
-    if cross.compared and cross.agreed != cross.compared:
-        blockers.append("the cross-check agrees on %d of %d items"
-                        % (cross.agreed, cross.compared))
+    # The shortfall blocks, but only where it says something the entries above have not. When the
+    # non-agreeing items are exactly the ones already named one-by-one, "agrees on 7 of 10" is those
+    # three lines added up: it charges one fact twice, inflates `blocker_count`, and makes a set look
+    # further from deliverable than it is. It is kept for every other shortfall, because an item that
+    # failed to agree without producing a named entry is a gap in the reporting above and must not pass
+    # in silence.
+    shortfall = (cross.compared - cross.agreed) if cross.compared else 0
+    named = len(cross.hard_defects) + len(cross.needs_review)
+    if shortfall and shortfall != named:
+        blockers.append("the cross-check agrees on %d of %d items%s"
+                        % (cross.agreed, cross.compared,
+                           " beyond the %d already listed" % named if named else ""))
 
     for message in (cross.consistency or {}).get("errors") or []:
         blockers.append("the review disagrees with itself: %s" % message)
