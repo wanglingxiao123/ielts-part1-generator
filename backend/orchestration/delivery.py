@@ -646,6 +646,133 @@ async def _do_questions(record: SlotRecord, ctx: _Context) -> None:
     ctx.save(record)
     await ctx.emit(record.slot_id, "set_complete",
                    {"material_id": record.material_id, "rounds": result.rounds})
+    # The set exists. Announce the MATERIAL on the contract every consumer of the material-only path
+    # already reads, so the card, the reader page and batch history need no second shape -- see
+    # `_material_completed_event`.
+    await _announce_delivered(record, ctx)
+
+
+async def _announce_delivered(record: SlotRecord, ctx: _Context) -> None:
+    """Emit ``material_completed`` for a slot that reached ``complete``. At most once per request.
+
+    **Why this path needs it at all.** ``batch.py`` emits one ``material_completed`` per material and
+    every consumer downstream is built on that event: the frontend sets ``slot.materialId`` from it
+    (``agentcore.ts``), the store builds the ``MaterialRecord`` a card is drawn from, and the web tier
+    folds it into the batch record (``batch_history._on_material``). This module emitted only ``stage``
+    frames, so a delivered set had no announcement -- measured on batch ``web-1786178662486-1``, whose
+    question package sat complete in ``_questions/`` while the record said ``materials: []`` and the
+    grid had nothing to open. The id was on the wire (inside ``material_done``'s detail, and in the
+    terminal summary's rows) and in a shape no consumer reads, which is the same thing as absent.
+
+    **Reusing the existing contract rather than adding a delivery-specific event.** The keys are
+    asserted in both directions by ``test_wire_contract``; a second shape for the same fact would need
+    the frontend to learn a second one, and the two would drift the first time a field moved.
+
+    **Idempotent across resumption, and that is the load-bearing property.** A ``generate_sets``
+    request is re-invoked after a checkpoint and ``_plan`` returns only non-terminal slots -- so a slot
+    that completed in invocation 1 is not advanced again in invocation 2 and this is not reached for it
+    twice. What makes that safe rather than lucky is the two consumers' own arithmetic: the web tier's
+    ``_Merge.record`` is ``setdefault``-based (a second ``ok`` for one slot cannot raise the count) and
+    ``batch_history._on_material`` appends to ``materials`` only when that ``material_id`` is absent.
+    So a duplicate would be absorbed, and this function is written not to produce one anyway.
+
+    **``delivered`` is still counted once.** The merged summary's counts come from the terminal events
+    actually relayed, keyed per slot (``fanout._Merge``), and ``request_completed`` contributes the
+    per-slot *states* rather than a second tally -- so an announced material and the request summary
+    describe the same slot, they do not add up.
+
+    Best-effort: a candidate that cannot be read back is logged past, not raised. The set is delivered
+    and stored either way, and failing the slot here would discard a complete set over a display event.
+    """
+    candidate = _delivered_candidate(record)
+    if candidate is None:
+        return
+    await ctx.queue.put(_material_completed_event(record, ctx, candidate))
+
+
+def _delivered_candidate(record: SlotRecord) -> Optional[Any]:
+    """The registered candidate behind a delivered slot, or None if it cannot be read.
+
+    Separate from ``_load_material`` because the two want different things from the same object: that
+    one needs the two artifacts the question stage runs on, this one needs the whole candidate, whose
+    audit and cross-check the reader page states.
+    """
+    if not record.material_id:
+        return None
+    from .publish import REGISTRY
+
+    try:
+        return REGISTRY.get(str(record.material_id))
+    except Exception:  # noqa: BLE001 - UnknownMaterial or any storage error: see `_announce_delivered`
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "delivered slot %s: candidate %r cannot be read back, no material_completed emitted",
+            record.slot_id, record.material_id, exc_info=True)
+        return None
+
+
+def _material_completed_event(record: SlotRecord, ctx: _Context, candidate: Any) -> Dict[str, Any]:
+    """One delivered slot as ``material_completed``, built from the registered candidate.
+
+    Every key ``MATERIAL_COMPLETED_KEYS`` names is present, because the frontend reads one shape and
+    an absent key cannot be told apart from an empty one. Three of them are worth their reasoning:
+
+    * ``route`` is ``loop.route_for``'s only answer, ``"pending"``. Stated as the literal rather than
+      by calling it, because that function takes a ``loop.Candidate`` (a different class from
+      ``publish.Candidate``) and the value is a constant either way. What it must NOT be is
+      ``"quarantine"``, which is the one value that makes the frontend draw an audit rejection.
+    * ``selected_version`` / ``note`` come from the material stage and are not on the candidate record,
+      so they are stated as unknown rather than guessed. The reader page shows them as reference; a
+      wrong value there would be worse than an absent one.
+    * ``timings`` is empty: this event is assembled after the fact, possibly in a later invocation
+      than the one that did the work, and the stage timings belong to that run's stream.
+    """
+    return {
+        "type": "material_completed",
+        "slot_id": record.slot_id,
+        "scenario": record.scenario_id,
+        "ok": True,
+        "material_id": candidate.material_id,
+        "scenario_key": candidate.scenario_key,
+        "group_key": candidate.group_key,
+        "material": candidate.material,
+        "blueprint": candidate.blueprint,
+        "audit": candidate.audit,
+        "cross_check": _cross_check_dict(candidate.cross_check),
+        "selected_version": None,
+        "route": "pending",
+        "note": None,
+        "degraded": bool(candidate.degraded),
+        "degraded_reason": candidate.degraded_reason,
+        "refill_rounds": record.attempts.get("candidate_swaps", 0),
+        "anchor_repairs": [],
+        "warnings": [],
+        "validation_findings": list(candidate.validation_findings or []),
+        "timings": {},
+        "at": time.time(),
+    }
+
+
+def _cross_check_dict(cross_check: Any) -> Dict[str, Any]:
+    """``cross_check`` as a plain dict, whatever the candidate happens to be holding.
+
+    A candidate rebuilt from storage carries a dict already; one still in the registering process's
+    cache carries the ``CrossCheckResult`` the Loop produced. Both reach here because ``REGISTRY.get``
+    prefers the in-memory copy, so normalising is not optional -- and the frontend's type declares the
+    three list fields, which is why the fallback names them rather than returning ``{}``.
+    """
+    if isinstance(cross_check, dict):
+        return cross_check
+    as_dict = getattr(cross_check, "as_dict", None)
+    if callable(as_dict):
+        try:
+            found = as_dict()
+            if isinstance(found, dict):
+                return found
+        except Exception:  # noqa: BLE001 - fall through to the empty shape
+            pass
+    return {"unrecoverable": [], "unintended_target": [], "ambiguous": []}
 
 
 def _load_material(record: SlotRecord, ctx: _Context) -> Tuple[Optional[Dict], Optional[Dict]]:

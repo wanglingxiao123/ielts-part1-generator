@@ -1123,3 +1123,141 @@ class TestRecordedStateForASilentChild:
                                         slot_state=state))
         assert state.asked == []
         assert events[-1]["failed"] == 1
+
+
+def delivered_material(slot_id: str, material_id: str, scenario: str = "a"):
+    """A delivered set's `material_completed`, as `delivery._material_completed_event` builds it.
+
+    Trimmed to the fields this module acts on. What matters here is only that it is the same event
+    name `batch.py` emits -- the merge does not know which path produced it, which is the point of
+    reusing one contract.
+    """
+    return {"type": "material_completed", "slot_id": slot_id, "scenario": scenario, "ok": True,
+            "material_id": material_id, "scenario_key": scenario, "route": "pending",
+            "material": {"listening_material_parts": []}, "blueprint": {}, "audit": {},
+            "cross_check": {}, "degraded": False}
+
+
+class TestADeliveredSetReachesTheGrid:
+    """`generate_sets` announces its delivered material, and the merge has to seat it correctly.
+
+    The path emitted only `stage` frames until the announcement was added, so a complete question set
+    reached the browser with no card and `slot.materialId` still null -- measured on batch
+    `web-1786178662486-1`. These are about what the fan-out does with the event now that it exists,
+    and the replacement case is not an edge: a `generate_sets` child is planned for ONE material and
+    legitimately emits `slot-1`, `slot-1r1`, `slot-1r2` for that one position.
+    """
+
+    async def test_the_material_is_relayed_on_the_slot_the_batch_planned(self, executor):
+        runtime = FanOutRuntimeClient()
+        for slot in ("slot-1", "slot-2"):
+            body = runtime.body_for(slot)
+            body.push_event(delivered_material("slot-1", "mat-%s" % slot))
+            for event in child_request(slot_row(state="complete")):
+                body.push_event(event)
+            body.finish()
+        events = await drain(build_sets(runtime, {"scenarios": ["a"], "count": 2}, executor))
+
+        announced = [e for e in events if e["type"] == "material_completed"]
+        # Both children call their own slot `slot-1`; two cards, not one overwritten twice.
+        assert sorted(e["slot_id"] for e in announced) == ["slot-1", "slot-2"]
+        assert {e["material_id"] for e in announced} == {"mat-slot-1", "mat-slot-2"}
+        summary = events[-1]
+        assert summary["request_status"] == "succeeded" and summary["delivered"] == 2
+
+    async def test_a_replacement_slots_material_lands_on_the_planned_card(self, executor):
+        """The hazard the announcement created, and the reason `_rename` collapses these.
+
+        A position that exhausted its candidate swaps hands over to `slot-1r1`, which is a second
+        record for ONE card. Minting a fresh batch-wide id for it would draw an extra card the user
+        never asked for -- and now that the delivered set announces itself, the material would land on
+        that invented card while the planned one stayed a spinner.
+        """
+        runtime = FanOutRuntimeClient()
+        body = runtime.body_for("slot-1")
+        body.push_event({"type": "stage", "slot_id": "slot-1", "scenario": "a",
+                         "stage": "generating"})
+        body.push_event({"type": "stage", "slot_id": "slot-1r1", "scenario": "a",
+                         "stage": "generating"})
+        body.push_event(delivered_material("slot-1r1", "mat-replacement"))
+        for event in child_request(
+                slot_row("slot-1", state="exhausted", created_at=1.0),
+                slot_row("slot-1r1", state="complete", created_at=2.0)):
+            body.push_event(event)
+        body.finish()
+
+        events = await drain(build_sets(runtime, {"scenarios": ["a"], "count": 1}, executor))
+
+        seen = [e for e in events if e.get("slot_id")]
+        assert {e["slot_id"] for e in seen} == {"slot-1"}, (
+            "a replacement invented a card: %s" % sorted({e["slot_id"] for e in seen}))
+        announced = [e for e in events if e["type"] == "material_completed"]
+        assert [e["material_id"] for e in announced] == ["mat-replacement"]
+        summary = events[-1]
+        assert summary["request_status"] == "succeeded"
+        assert summary["requested"] == 1 and summary["delivered"] == 1
+        assert [r["slot_id"] for r in summary["slots"]] == ["slot-1"]
+
+    async def test_the_announcement_and_the_request_summary_do_not_both_count_it(self, executor):
+        """One delivered position, counted once.
+
+        `material_completed` records the slot's outcome and `request_completed` contributes the
+        per-slot states for the same slot -- so the two describe one delivery rather than adding up.
+        `_Merge.record` is `setdefault`-based, which is what makes that true by construction.
+        """
+        runtime = FanOutRuntimeClient()
+        body = runtime.body_for("slot-1")
+        body.push_event(delivered_material("slot-1", "mat-1"))
+        for event in child_request(slot_row(state="complete")):
+            body.push_event(event)
+        body.finish()
+
+        events = await drain(build_sets(runtime, {"scenarios": ["a"], "count": 1}, executor))
+
+        summary = events[-1]
+        assert summary["succeeded"] == 1 and summary["failed"] == 0
+        assert summary["delivered"] == 1 and summary["requested"] == 1
+        assert summary["request_status"] == "succeeded"
+
+    async def test_a_lost_summary_frame_still_leaves_the_delivery_counted(self, executor):
+        """The announcement alone is enough, which is the other half of reusing this contract.
+
+        A child whose connection dies after the material but before `request_completed` has delivered
+        a set the browser is rendering. Counting only the summary would report 0 over a card that is
+        already on screen -- the failure mode `_Merge`'s docstring describes for the `generate` path.
+        """
+        runtime = FanOutRuntimeClient()
+        body = runtime.body_for("slot-1")
+        body.push_event(delivered_material("slot-1", "mat-1"))
+        body.finish()  # no request_completed: the stream ended early
+
+        events = await drain(build_sets(runtime, {"scenarios": ["a"], "count": 1}, executor,
+                                        slot_state=FakeSlotState({})))
+
+        summary = events[-1]
+        assert summary["succeeded"] == 1 and summary["failed"] == 0
+        assert summary["request_status"] == "succeeded" and summary["delivered"] == 1
+
+    async def test_a_plain_generate_child_still_gets_fresh_ids_for_extra_slots(self, executor):
+        """The collapse is `generate_sets`-only, and this is what it must not change.
+
+        A `generate` child is allotted its slots up front and has no replacement mechanism, so an
+        unexpected extra slot id there really is an unknown material and must not silently overwrite
+        the card the child was planned for.
+        """
+        runtime = FanOutRuntimeClient()
+        body = runtime.body_for("slot-1")
+        body.push_event({"type": "material_completed", "slot_id": "slot-1", "scenario": "a",
+                         "ok": True, "material_id": "mat-1"})
+        body.push_event({"type": "material_completed", "slot_id": "slot-9", "scenario": "a",
+                         "ok": True, "material_id": "mat-surprise"})
+        body.push_event({"type": "batch_completed", "succeeded": 2, "failed": 0, "skipped": 0,
+                         "degraded": 0})
+        body.finish()
+
+        events = await drain(build(runtime, {"scenarios": ["a"], "count": 1}, executor))
+
+        announced = {e["material_id"]: e["slot_id"]
+                     for e in events if e["type"] == "material_completed"}
+        assert announced["mat-1"] == "slot-1"
+        assert announced["mat-surprise"] == "slot-1-2"

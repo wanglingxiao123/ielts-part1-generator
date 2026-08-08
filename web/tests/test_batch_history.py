@@ -465,6 +465,143 @@ class TestRecording:
         assert sum(1 for e in recorder.events() if e["type"] == "material_completed") == 3
 
 
+def request_completed(*material_ids, status: str = "succeeded"):
+    """A `generate_sets` child's terminal frame, with one complete slot per id.
+
+    Swallowed by the fan-out, so the recorder never sees it -- which is the point of feeding it here:
+    the batch record must be built from `material_completed` and nothing else, and a test that omitted
+    this frame could not tell that apart from a summary the recorder happened to read.
+    """
+    return {
+        "type": "request_completed", "batch_id": "child", "status": status,
+        "requested": len(material_ids), "delivered": len(material_ids), "sets": [],
+        "system_faults": [], "paused": False,
+        "slots": [{"slot_id": "slot-1", "scenario": "booking-hotel", "state": "complete",
+                   "material_id": material_id, "created_at": 1000.0, "resumable": False,
+                   "checkpointed": False, "system_fault": None, "last_failure": None,
+                   "attempts": {}, "replaces": None, "replaced_by": None}
+                  for material_id in material_ids],
+    }
+
+
+class TestADeliveredSetIsRecorded:
+    """A `generate_sets` batch's delivered material becomes a history row and a sidecar.
+
+    **The record used to be empty for this whole path.** Batch `web-1786178662486-1` delivered one
+    complete set -- the question package was in `_questions/`, the slot said `complete`, the summary
+    said `delivered: 1` -- and its record said `materials: []`, because `_on_material` folds
+    `material_completed` and that path emitted only `stage` frames plus its terminal summary. So the
+    history panel had no row, `get_material` had no sidecar, and 阅读全文 on the batch led nowhere.
+
+    Nothing in `batch_history.py` changed to fix it: the delivery path now emits the same event, which
+    is why these tests feed exactly the frame `batch.py`'s materials arrive as.
+    """
+
+    async def test_the_delivered_material_becomes_a_row_and_a_sidecar(
+        self, auth, static_dir, fanout_runtime: FanOutRuntimeClient, history: BatchHistory,
+        batch_store: InMemoryBatchStore,
+    ):
+        tier = WebTier(auth, fanout_runtime, str(static_dir), history=history)
+        cookie = auth.issue_token(auth.register("a@amazon.com", "hunter2hunter2")["email"])
+        body = fanout_runtime.body_for("slot-1")
+        body.push_event(material_event("slot-1", "booking-hotel",
+                                       "20260808-booking-hotel-5ee1cbb2"))
+        body.push_event(request_completed("20260808-booking-hotel-5ee1cbb2"))
+        body.finish()
+
+        await collect(tier, cookie, {"action": "generate_sets",
+                                     "scenarios": ["booking-hotel"], "count": 1})
+
+        batch = history.list_batches()[0]
+        assert [m["material_id"] for m in batch["materials"]] == [
+            "20260808-booking-hotel-5ee1cbb2"]
+        assert batch["arrived"] == 1 and batch["requested_total"] == 1
+        # The sidecar too, resolvable by id alone: that is what 阅读全文 and 题目预览 open.
+        found = history.get_material("20260808-booking-hotel-5ee1cbb2")
+        assert found is not None
+        assert found["scenario_key"] == "booking-hotel"
+        assert found["material"]["listening_material_parts"]
+
+    async def test_a_repeated_announcement_neither_duplicates_the_row_nor_raises_the_count(
+        self, auth, static_dir, fanout_runtime: FanOutRuntimeClient, history: BatchHistory,
+    ):
+        """The resumption property, asserted from the consuming end.
+
+        The delivery path is written not to announce a slot twice -- a resumed invocation does not
+        advance a slot that is already `complete`. This is the belt to that brace, and it is worth
+        having on this side because the two arithmetics live in different processes: if a duplicate
+        ever did arrive, the batch must not grow a second row for one material and the counts must not
+        move. Both hold structurally: `_on_material` appends only when the id is absent, and the
+        merge's per-slot outcome is `setdefault`-based.
+        """
+        tier = WebTier(auth, fanout_runtime, str(static_dir), history=history)
+        cookie = auth.issue_token(auth.register("a@amazon.com", "hunter2hunter2")["email"])
+        body = fanout_runtime.body_for("slot-1")
+        body.push_event(material_event("slot-1", "booking-hotel", "m-dup"))
+        body.push_event(material_event("slot-1", "booking-hotel", "m-dup"))
+        body.push_event(request_completed("m-dup"))
+        body.finish()
+
+        recorder = await collect(tier, cookie, {"action": "generate_sets",
+                                                "scenarios": ["booking-hotel"], "count": 1})
+
+        # Both frames really did reach the recorder: otherwise this asserts the fan-out's filtering
+        # rather than the record's own idempotency.
+        assert sum(1 for e in recorder.events() if e["type"] == "material_completed") == 2
+        batch = history.list_batches()[0]
+        assert [m["material_id"] for m in batch["materials"]] == ["m-dup"]
+        assert batch["arrived"] == 1
+        summary = [e for e in recorder.events() if e["type"] == "batch_completed"][-1]
+        assert summary["succeeded"] == 1 and summary["failed"] == 0
+        assert summary["delivered"] == 1 and summary["requested"] == 1
+        assert batch["counts"]["succeeded"] == 1
+
+    async def test_the_material_and_the_request_summary_agree_on_one_delivery(
+        self, auth, static_dir, fanout_runtime: FanOutRuntimeClient, history: BatchHistory,
+    ):
+        """`material_completed` and `request_completed` describe the same slot, so `delivered` is
+        counted once. Two channels for one fact is how a 1/1 batch would read as 2/1."""
+        tier = WebTier(auth, fanout_runtime, str(static_dir), history=history)
+        cookie = auth.issue_token(auth.register("a@amazon.com", "hunter2hunter2")["email"])
+        for slot, material_id in (("slot-1", "m-1"), ("slot-2", "m-2")):
+            body = fanout_runtime.body_for(slot)
+            body.push_event(material_event(slot, "booking-hotel", material_id))
+            body.push_event(request_completed(material_id))
+            body.finish()
+
+        recorder = await collect(tier, cookie, {"action": "generate_sets",
+                                                "scenarios": ["booking-hotel"], "count": 2})
+
+        summary = [e for e in recorder.events() if e["type"] == "batch_completed"][-1]
+        assert summary["delivered"] == 2 and summary["requested"] == 2
+        assert summary["succeeded"] == 2
+        assert summary["request_status"] == "succeeded"
+        batch = history.list_batches()[0]
+        assert len(batch["materials"]) == 2
+        assert batch["counts"]["succeeded"] == 2
+
+    async def test_a_set_that_arrives_before_an_interruption_is_kept(
+        self, auth, static_dir, fanout_runtime: FanOutRuntimeClient, history: BatchHistory,
+    ):
+        """The per-material write, on this path. A batch whose second child never answers must still
+        hold the first child's delivered set -- the incremental-write property, which is the reason
+        the record is not written once at the end."""
+        tier = WebTier(auth, fanout_runtime, str(static_dir), history=history)
+        cookie = auth.issue_token(auth.register("a@amazon.com", "hunter2hunter2")["email"])
+        body = fanout_runtime.body_for("slot-1")
+        body.push_event(material_event("slot-1", "booking-hotel", "m-kept"))
+        body.push_event(request_completed("m-kept"))
+        body.finish()
+        fanout_runtime.body_for("slot-2").finish()  # opens and says nothing
+
+        await collect(tier, cookie, {"action": "generate_sets",
+                                     "scenarios": ["booking-hotel"], "count": 2})
+
+        batch = history.list_batches()[0]
+        assert [m["material_id"] for m in batch["materials"]] == ["m-kept"]
+        assert batch["arrived"] == 1 and batch["requested_total"] == 2
+
+
 # ── survival across a web-task restart ───────────────────────────────────────
 
 

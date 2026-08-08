@@ -20,6 +20,8 @@ called a second time".
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 import time
 from typing import Callable
 
@@ -811,10 +813,11 @@ async def _run_capturing_group(seen, scenarios, batch_id, recorder, group_id=Non
             run_material=recorder.run_material, run_question_stage=recorder.run_questions)
 
 
-# The real function, captured before `offer_materials` replaces it. Held at module level because the
-# fixture is autouse: an `import` inside a test body would get the fixture's fake, and the test would
-# then pass by asserting nothing about the line it names.
+# The real functions, captured before `offer_materials` replaces them. Held at module level because
+# the fixture is autouse: an `import` inside a test body would get the fixture's fake, and the test
+# would then pass by asserting nothing about the line it names.
 _REAL_REGISTER_MATERIAL = delivery_module._register_material
+_REAL_LOAD_MATERIAL = delivery_module._load_material
 
 
 class TestTheGroupKeyIsComposedFromTheGroupId:
@@ -870,3 +873,266 @@ class TestTheGroupKeyIsComposedFromTheGroupId:
         _register_material(material_ok("slot-1", "booking-hotel"), FakeScenario(), record, ctx)
 
         assert keys == ["batch-solo:booking-hotel"]
+
+
+@pytest.fixture
+def real_registry(monkeypatch):
+    """Registration and read-back through the REAL registry, over an in-memory candidate store.
+
+    The autouse ``offer_materials`` fixture is deliberately undone here. It mints ids without ever
+    registering a candidate, which is right for the tests it was written for -- they are about what the
+    runner does with a stage answer -- and useless for these: what is under test is the event built
+    FROM the registered candidate, so a fake that registers nothing would make every assertion below
+    vacuous while still passing.
+    """
+    from backend.orchestration import publish as publish_module
+    from backend.orchestration.candidate_store import InMemoryCandidateStore
+
+    registry = publish_module.CandidateRegistry(InMemoryCandidateStore())
+    monkeypatch.setattr(publish_module, "REGISTRY", registry)
+    monkeypatch.setattr(delivery_module, "_register_material", _REAL_REGISTER_MATERIAL)
+    monkeypatch.setattr(delivery_module, "_load_material", _REAL_LOAD_MATERIAL)
+    return registry
+
+
+def _stream(recorder, batch_id, store, budget=None, scenarios=None):
+    """Every event one invocation yields, in arrival order.
+
+    `stream_request` rather than `run_request`: what these tests assert is what reaches the wire, and
+    the callback form's own tests already pin that the two cannot disagree.
+    """
+    from backend.orchestration.delivery import stream_request
+
+    async def go():
+        return [event async for event in stream_request(
+            scenarios or [FakeScenario()], batch_id, store=store, budget=budget,
+            run_material=recorder.run_material, run_question_stage=recorder.run_questions)]
+
+    return asyncio.run(go())
+
+
+class TestADeliveredSetAnnouncesItsMaterial:
+    """A slot that reached `complete` emits `material_completed`, on the existing contract.
+
+    **The gap this covers was measured, not imagined.** Batch `web-1786178662486-1` delivered one
+    complete set: the question package was in `_questions/`, the slot record said `complete`, the
+    request summary said `delivered: 1`. And the page had no card and the batch record said
+    `materials: []`, because this path emitted only `stage` frames plus the terminal summary -- while
+    every consumer of a delivered material is built on `material_completed`. The frontend sets
+    `slot.materialId` in that one case (`agentcore.ts`), the store builds the `MaterialRecord` a card
+    is drawn from, and `batch_history._on_material` folds the row and its sidecar. So the id was on
+    the wire, inside a stage detail and inside the summary's rows, in a shape no consumer reads --
+    which is the same thing as absent.
+
+    Asserted on the events rather than on the helper, because the helper being correct is not the
+    property: the property is that a delivered slot announces itself exactly once, with the real id.
+    """
+
+    def test_a_delivered_slot_emits_exactly_one_material_completed(self, real_registry):
+        store = memory_store()
+        events = _stream(Recorder([material_ok], [questions_ok()]), "batch-say", store)
+
+        announced = [e for e in events if e["type"] == "material_completed"]
+        assert len(announced) == 1, [e["type"] for e in events]
+        record = store.load_slot("batch-say", "slot-1")
+        assert record.state == COMPLETE
+        # The REAL minted id, not the frontend's `${batchId}::slot-1` placeholder: without it the
+        # 题目预览 request has nothing to ask about.
+        assert announced[0]["material_id"] == record.material_id
+        # And it is a real minted id (`{YYYYMMDD}-{scenario_key}-{8 hex}`), not a placeholder.
+        assert re.match(r"^\d{8}-accommodation-rental-[0-9a-f]{8}$", record.material_id)
+        assert announced[0]["slot_id"] == "slot-1"
+        assert announced[0]["ok"] is True
+
+    def test_the_announcement_carries_every_key_the_frontend_reads(self, real_registry):
+        """The same key set `test_wire_contract` pins for `batch.py`'s event.
+
+        Imported from there rather than restated, so one shape has one definition: a key added for
+        the material-only path must appear on this one too, or the reader page renders an empty
+        section for a set that is actually complete.
+        """
+        import sys
+        from pathlib import Path
+
+        tests_dir = str(Path(__file__).resolve().parent)
+        if tests_dir not in sys.path:
+            sys.path.insert(0, tests_dir)
+        from test_wire_contract import MATERIAL_COMPLETED_KEYS
+
+        events = _stream(Recorder([material_ok], [questions_ok()]), "batch-keys", memory_store())
+        announced = [e for e in events if e["type"] == "material_completed"][0]
+
+        missing = sorted(MATERIAL_COMPLETED_KEYS - set(announced))
+        assert missing == [], "the delivered-set announcement is missing %s" % missing
+
+    def test_the_artifacts_are_the_registered_candidate_and_json_encodable(self, real_registry):
+        """The reader page draws the script, the blueprint and the audit from this event.
+
+        JSON-encodability is asserted because it is the failure mode of building the event from
+        objects: the registry hands back the Loop's `CrossCheckResult` from its in-process cache and a
+        dict from storage, and an un-normalised one would raise inside the SSE encoder -- killing the
+        stream of a batch that had already succeeded.
+        """
+        events = _stream(Recorder([material_ok], [questions_ok()]), "batch-art", memory_store())
+        announced = [e for e in events if e["type"] == "material_completed"][0]
+        candidate = real_registry.get(announced["material_id"])
+
+        assert announced["material"] == candidate.material
+        assert announced["blueprint"] == candidate.blueprint
+        assert announced["audit"] == candidate.audit
+        assert isinstance(announced["cross_check"], dict)
+        assert announced["scenario_key"] == candidate.scenario_key
+        assert announced["group_key"] == candidate.group_key
+        json.dumps(announced)
+
+    def test_the_route_is_never_quarantine(self, real_registry):
+        """`agentcore.ts` draws an audit rejection for `route === 'quarantine'`.
+
+        A delivered set has passed its blind audit, its feasibility preflight and its question gates,
+        so announcing it as quarantined would put a rejection card over the one material the request
+        delivered.
+        """
+        events = _stream(Recorder([material_ok], [questions_ok()]), "batch-route", memory_store())
+        announced = [e for e in events if e["type"] == "material_completed"][0]
+        assert announced["route"] == "pending"
+
+    def test_it_arrives_after_the_set_exists_and_before_the_summary(self, real_registry):
+        """Order, because both ends of it are load-bearing.
+
+        Announcing before `save_questions` would put a card on the page whose 题目预览 has nothing to
+        read; announcing after `request_completed` would be after the frontend closed the stream on
+        its terminal event.
+        """
+        events = _stream(Recorder([material_ok], [questions_ok()]), "batch-order", memory_store())
+        types = [e["type"] for e in events]
+        stages = [i for i, e in enumerate(events)
+                  if e["type"] == "stage" and e.get("stage") == "set_complete"]
+        announced = types.index("material_completed")
+
+        assert stages and announced > stages[0]
+        assert types[-1] == "request_completed"
+        assert announced < len(types) - 1
+
+    def test_a_slot_that_delivered_nothing_announces_nothing(self, real_registry):
+        """The event means "there is a complete set". A material that qualified and then failed its
+        question stage is not one, and a card for it would offer a preview of nothing."""
+        events = _stream(Recorder([material_ok], [questions_regenerate()]), "batch-noset",
+                         memory_store())
+        assert [e for e in events if e["type"] == "material_completed"] == []
+        assert events[-1]["delivered"] == 0
+
+    def test_a_resumed_invocation_does_not_announce_a_slot_it_did_not_deliver(self, real_registry):
+        """Idempotency across the checkpoint, which is the whole reason this is safe to add.
+
+        A `generate_sets` request is re-invoked after running out of clock. `_plan` returns only
+        non-terminal slots, so a slot that completed in invocation 1 is not advanced again -- and this
+        asserts the consequence rather than the mechanism: the second invocation's stream carries no
+        second announcement, so neither the batch record nor the merged counts can see the same
+        delivery twice.
+        """
+        store = memory_store()
+        first = _stream(Recorder([material_ok], [questions_ok()]), "batch-again", store)
+        assert len([e for e in first if e["type"] == "material_completed"]) == 1
+
+        second = _stream(Recorder([material_ok], [questions_ok()]), "batch-again", store)
+        assert [e for e in second if e["type"] == "material_completed"] == []
+        # And the request is still exactly one delivered set, from either invocation's account.
+        assert first[-1]["delivered"] == second[-1]["delivered"] == 1
+        assert second[-1]["status"] == SUCCEEDED
+
+    def test_a_slot_that_completes_in_a_later_invocation_is_announced_there(self, real_registry):
+        """The case the defect was measured on: the clock stopped between the two stages.
+
+        The material was registered by invocation 1 and the set is delivered by invocation 2, so the
+        announcement has to be built from storage rather than from a `MaterialResult` this process
+        holds. A first invocation that announced nothing and a second that could not would leave the
+        delivered set with no card at all -- which is what production did.
+        """
+        store = memory_store()
+        first = _stream(Recorder([material_ok], [questions_ok()]), "batch-late", store,
+                        budget=_budget(material=True, questions=False))
+        assert [e for e in first if e["type"] == "material_completed"] == []
+        assert first[-1]["status"] == INCOMPLETE
+        assert store.load_slot("batch-late", "slot-1").state == MATERIAL_DONE
+
+        # A fresh Recorder: a regenerated material would show up as a material call, and the id below
+        # would change.
+        resumed = Recorder([material_ok], [questions_ok()])
+        second = _stream(resumed, "batch-late", store)
+        announced = [e for e in second if e["type"] == "material_completed"]
+
+        assert resumed.material_calls == []
+        assert len(announced) == 1
+        assert announced[0]["material_id"] == store.load_slot("batch-late", "slot-1").material_id
+        assert announced[0]["material"], "the artifacts came from storage, not from this process"
+
+    def test_a_candidate_that_cannot_be_read_back_does_not_cost_the_delivery(self, real_registry,
+                                                                            monkeypatch):
+        """Best-effort, on purpose. The set is delivered and stored either way.
+
+        Failing the slot over an unreadable candidate would discard a complete question set to protect
+        a display event -- the exact trade §8.2(1) refuses everywhere else.
+        """
+        from backend.orchestration.delivery import stream_request
+
+        store = memory_store()
+        recorder = Recorder([material_ok], [questions_ok()])
+
+        def refuse(material_id):
+            raise RuntimeError("candidate store said AccessDenied")
+
+        # Broken only once the question stage has answered, so the read this test breaks is the
+        # announcement's own. Refusing every read would fault the slot at `_load_material` instead,
+        # and the test would then pass on a path it does not name.
+        async def run_questions(material, blueprint, emit):
+            found = await recorder.run_questions(material, blueprint, emit)
+            monkeypatch.setattr(real_registry, "get", refuse)
+            return found
+
+        async def go():
+            return [event async for event in stream_request(
+                [FakeScenario()], "batch-unread", store=store,
+                run_material=recorder.run_material, run_question_stage=run_questions)]
+
+        events = asyncio.run(go())
+
+        assert [e for e in events if e["type"] == "material_completed"] == []
+        assert events[-1]["status"] == SUCCEEDED
+        assert events[-1]["delivered"] == 1
+        record = store.load_slot("batch-unread", "slot-1")
+        assert record.state == COMPLETE
+        assert store.load_questions(record.material_id) is not None
+
+
+class TestCrossCheckNormalisation:
+    """`_cross_check_dict` alone: the registry answers with two different types.
+
+    Tested directly as well as through the run above, because the run only ever exercises the branch
+    its own fixture produces -- and which branch that is depends on whether the registry served the
+    candidate from its cache or rebuilt it from storage.
+    """
+
+    def test_the_loops_result_object_is_converted(self):
+        from backend.orchestration.delivery import _cross_check_dict
+
+        found = _cross_check_dict(CrossCheckResult({"ok": True, "matched": 9, "planned": 10}))
+        assert found["matched"] == 9 and found["ok"] is True
+
+    def test_a_dict_from_storage_is_passed_through(self):
+        from backend.orchestration.delivery import _cross_check_dict
+
+        stored = {"ok": False, "unrecoverable": [{"id": 3}]}
+        assert _cross_check_dict(stored) == stored
+
+    def test_anything_else_becomes_the_shape_the_frontend_declares(self):
+        """Including `None`, which is what a candidate registered before cross-check existed holds.
+
+        `{}` would be wrong rather than merely empty: the frontend indexes the three lists, so an
+        absent key reaches it as `undefined.length`.
+        """
+        from backend.orchestration.delivery import _cross_check_dict
+
+        for value in (None, "not a cross check", object()):
+            found = _cross_check_dict(value)
+            assert sorted(found) == ["ambiguous", "unintended_target", "unrecoverable"]
+            assert all(v == [] for v in found.values())

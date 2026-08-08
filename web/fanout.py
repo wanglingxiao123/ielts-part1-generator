@@ -602,12 +602,24 @@ class FanOut(object):
         A child that emits more slot ids than it was allotted gets fresh ids appended rather than
         colliding with another child's. That cannot happen while every child carries one material,
         and silently mapping two materials onto one card is a worse failure than an extra card.
+
+        **A ``generate_sets`` child is the exception, and it is not an edge case.** That child is
+        planned for ONE material and legitimately emits several slot ids for it: a slot that exhausts
+        its candidate swaps hands the position to a replacement (``delivery._replacement_for``), so
+        ``slot-1``, ``slot-1r1`` and ``slot-1r2`` are three records for one card. Appending fresh ids
+        for those would draw two extra cards for a position the user asked for once -- and now that a
+        delivered set announces itself with ``material_completed``, the material would land on an
+        invented card instead of the planned one. So every slot id from such a child maps to its single
+        allotted id, which is the same collapse ``absorb_request`` applies to the summary rows: the
+        position is the identity, and the records are attempts at it.
         """
         mapped = extra.get(slot_id)
         if mapped is not None:
             return mapped
         used = len(extra)
-        if used < len(child.slot_ids):
+        if self._delivers_sets(child) and child.slot_ids:
+            mapped = child.slot_ids[0]
+        elif used < len(child.slot_ids):
             mapped = child.slot_ids[used]
         else:
             mapped = "slot-%d-%d" % (child.index + 1, used + 1)
