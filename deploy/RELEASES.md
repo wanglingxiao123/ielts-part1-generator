@@ -7,19 +7,23 @@
 
 ## 当前生产版本
 
-**`prod-20260805` 的代码**，承载在 Runtime version **19** + ECS taskdef **`ielts-part1-web:32`**
+**`anchor-fix-20260808`（`12f3c30`）**，承载在 Runtime version **21** + ECS taskdef
+**`ielts-part1-web:35`**。代码在 `feat/listening-full-test`，**未合并 main**。
 
-`prod-20260807`（Runtime 18 / taskdef 33）已于 2026-08-07 因验收失败回退，见台账与下方演练记录。
+上一版是 `gate-fix-20260808`（Runtime 20 / taskdef 34），回滚基线记在
+[`.deploy-baseline-20260808b.md`](.deploy-baseline-20260808b.md)；再往前一格是
+`two-states-20260801`（Runtime 19 / taskdef 32），记在
+[`.deploy-baseline-20260808.md`](.deploy-baseline-20260808.md)。
 
-**version 19 不是新功能，是 17 的镜像**：DEFAULT 端点无法被 `update-agent-runtime-endpoint`
-重新指向（见下方第二次演练），只能用 `update-agent-runtime` 重推旧镜像，而那必然产生新版本号。
-所以 19 与 17 的 `containerUri` 都是 `ielts-part1-backend:two-states-20260801`，字节相同。
-**看版本号推断不出线上代码是哪一版**，只能查 `containerUri`：
+**版本号推断不出线上代码是哪一版**（19 装的是 17 的镜像，见下方第二次演练：DEFAULT 端点无法被
+`update-agent-runtime-endpoint` 重新指向，只能用 `update-agent-runtime` 重推镜像，而那必然产生
+新版本号）。判定线上代码只能查 `containerUri`：
 
 ```bash
 aws bedrock-agentcore-control get-agent-runtime \
-  --agent-runtime-id ielts_part1_runtime-fA4wkq8nKf --agent-runtime-version 19 \
+  --agent-runtime-id ielts_part1_runtime-fA4wkq8nKf --agent-runtime-version 21 \
   --query 'agentRuntimeArtifact.containerConfiguration.containerUri' --output text
+# → 907488872981.dkr.ecr.us-east-1.amazonaws.com/ielts-part1-backend:anchor-fix-20260808
 ```
 
 回退命令见 [`rollback.sh`](rollback.sh)。**Runtime 分支已于 2026-08-07 修好**：改用
@@ -41,6 +45,8 @@ bash deploy/rollback.sh --runtime-image two-states-20260801   # 直接按镜像�
 
 | 日期 | 镜像标签 | git commit | git tag | Runtime ver | taskdef | 说明 |
 |---|---|---|---|---|---|---|
+| 2026-08-08（晚） | `anchor-fix-20260808`（backend + frontend 同 tag） | `12f3c30` | — | **21** | **35** | quote 落在相邻 ±1 turn 且能唯一逐字定位时归一化为 agreement 并留痕；引用邻句仍硬阻断；生成器与 validator 双侧要求 quote 与 `turn_index` 一致；agreement 不足若只是已列 adjacency 的算术则不重复加 blocker。**顺带把 taskdef 34 静默变回 `*` 的 `ALLOWED_EMAIL_DOMAINS` 收回 `amazon.com,example.com`**。前端无改动但同轮重建，保持两层标签一致。验收范围仅健康检查 + 接口版本，一套真实 `generate_sets` 由人从前端手动发起 |
+| 2026-08-08 | `gate-fix-20260808`（backend + frontend 同 tag） | `062668c` | — | 20 | 34 | 交付门不再因单个 MINOR 就拒；固化 `answer_category` 边界；修 `rollback.sh`。**此次部署没在环境里带 `ALLOWED_EMAIL_DOMAINS`，`service.sh` 的 `${ALLOWED_EMAIL_DOMAINS:-*}` 默认值把公网注册静默放开了**，次轮修回 |
 | 2026-08-07（晚） | `two-states-20260801`（回退，镜像未重建） | `fa598d9` 的代码 | — | **19**（= 17 的镜像） | **32** | **回退 `prod-20260807`**：验收 6 条里 2 条硬失败，5 次真实 invocation 一套都没交付。见下方第二次演练记录 |
 | 2026-08-07 | `question-sets-20260807`（backend + frontend 同 tag） | `c9b1709` | `prod-20260807` | 18（已下线） | 33（已下线） | 前端改发 `generate_sets`（题目自此真的会生成，此前 `_questions/` 一直为空）；出题的 13 个环节名与断点状态进入进度显示。两个产物同轮上线——线上旧镜像的 `web/app.py` 里 `material-questions` 出现 0 次，只部一半会让新页签调不存在的接口。**当日回退** |
 | 2026-08-05 | `two-states-20260801`（未变） | `fa598d9` | `prod-20260805` | 17（未变） | **32** | 仅收紧 `ALLOWED_EMAIL_DOMAINS`：`*` → `amazon.com,example.com`，镜像未重建。同时作为回退演练素材，见下方演练记录 |
@@ -51,6 +57,11 @@ bash deploy/rollback.sh --runtime-image two-states-20260801   # 直接按镜像�
 > 2026-07-31 及更早的行是从 ECR 推送时间与 git 提交时间对照**推定**的，不是当时记录的。
 > `dev` 这个 frontend 标签是在 ECR 设为 IMMUTABLE 之前推的，曾被覆盖过，不能作为可信回退点。
 > 从 `prod-20260801` 起，每行都在部署时写入。
+>
+> **`service.sh` 里 `ALLOWED_EMAIL_DOMAINS` 是 `"${ALLOWED_EMAIL_DOMAINS:-*}"`**：环境里不带这个
+> 变量，部署就会把公网注册静默放开（2026-08-08 的 taskdef 34 就是这么丢的）。每次跑
+> `service.sh` 都要显式带上 `ALLOWED_EMAIL_DOMAINS=amazon.com,example.com`；同理，按 taskdef
+> 回退时要先确认目标 revision 的这个值，`--taskdef 34` 会把 `*` 一起带回来。
 
 ## 怎么补一行
 
