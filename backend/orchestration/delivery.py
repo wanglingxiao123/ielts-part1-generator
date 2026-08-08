@@ -113,9 +113,12 @@ MAX_CANDIDATE_SWAPS = int(os.environ.get("IELTS_MAX_CANDIDATE_SWAPS", "2"))
 # request the next invoke can pick up.
 MAX_REPLACEMENT_SLOTS = int(os.environ.get("IELTS_MAX_REPLACEMENT_SLOTS", "2"))
 
-# How many times the question stage may be re-entered on a material that already qualified, after a
-# crash rather than a verdict. One: a transient fault deserves a retry, and a second identical crash
-# on the same input is a defect somebody has to look at, not a budget to spend.
+# How many times the question stage may be re-entered on a material that already qualified -- after a
+# crash OR after a not-deliverable verdict, which is the cheaper of the two ways to answer either
+# (`_questions_not_deliverable`). One, per material: a first failure deserves a fresh attempt against
+# the same qualified blueprint, and a second failure on the same input has become evidence rather than
+# noise -- a crash that repeats is a defect somebody has to look at, and a verdict that repeats is the
+# statement about the material that spends the swap.
 MAX_QUESTION_RESTARTS = int(os.environ.get("IELTS_MAX_QUESTION_RESTARTS", "1"))
 
 # What the question stage costs, for the budget check before starting one.

@@ -118,16 +118,17 @@ class SlotRecord(object):
     counters, so a reader of the record can see both levels at once:
 
     * ``candidate_swaps`` -- the OUTER level. How many times this slot abandoned a material and drew
-      another. Spent by ``REGENERATE_MATERIAL``, by an unassessable material, and by a material-stage
-      failure with no content.
+      another. Spent by a feasibility ``REGENERATE_MATERIAL``, by an unassessable material, by a
+      material-stage failure with no content, and by the SECOND question-stage failure on one material.
     * ``material_repairs`` / ``question_repairs`` -- the INNER level, reported not enforced. Both
       caps live inside the loops that own them (``MAX_GENERATION_ATTEMPTS``,
       ``MAX_QUESTION_REVISIONS``); duplicating them here would be a second source of truth for a
       bound that is already enforced where the work happens.
     * ``question_restarts`` -- how many times the question stage was re-entered on the SAME qualified
-      material after a crash. Separate from ``candidate_swaps`` on purpose: a crash is not evidence
-      against the material, and charging it to the outer budget would throw away a material that
-      §8.2(1) says must be kept.
+      material, after a crash or after a not-deliverable verdict. Separate from ``candidate_swaps`` on
+      purpose: neither is evidence against the material *the first time*, and charging either to the
+      outer budget would throw away a material that §8.2(1) says must be kept. Counted per material,
+      so a swap resets it -- see ``delivery._swap_candidate``.
     """
 
     __slots__ = ("batch_id", "slot_id", "scenario_id", "state", "attempts", "material_id",
