@@ -40,8 +40,10 @@ from backend.orchestration.question_loop import (  # noqa: E402
     WARNING_STATUS,
     _assert_script_untouched,
     advisory_notes,
+    delivered_status,
     delivery_blockers,
     hard_blockers,
+    sole_adjacency_release,
     is_clean_questions,
     is_deliverable,
     pick_better_questions,
@@ -626,11 +628,16 @@ class TestTheRealRevisedTwoAdjacencies:
             assert row["quote_pins_one_turn"] is True     # located, and still not agreement
             assert "two different sentences one turn apart" in row["reason"]
 
-    def test_three_adjacencies_are_three_blockers_not_four(self, question_package, material):
+    def test_three_adjacencies_are_three_notes_not_four_blockers(self, question_package, material):
         """The fourth blocker on the real run was the first three added up.
 
         ``agrees on 7 of 10`` restates exactly the three lines above it. Charging it again inflates the
-        count the failure path prints and makes a set look further from deliverable than it is.
+        count and makes a set look further from deliverable than it is -- and it is the line that would
+        silently re-block a released set, because it is stated *about the set* rather than per item. So
+        the count is asserted here on the release path too, not only on the hard one.
+
+        The three lines themselves moved from hard to advisory on 2026-08-08 (see
+        :func:`sole_adjacency_release`). The count did not.
         """
         from backend.deterministic.validate import ValidationResult
         turns = material["listening_material_parts"][0]["script"]["turns"]
@@ -638,12 +645,13 @@ class TestTheRealRevisedTwoAdjacencies:
         result = crosscheck_questions(question_package, review, material)
         candidate = QuestionCandidate(question_package, review, result,
                                       ValidationResult([], [], {}), "revised-2")
-        blockers = hard_blockers(candidate)
-        assert len(blockers) == 3
-        assert [line for line in blockers if "agrees on" in line] == []
-        assert all("evidence anchor is one turn" in line for line in blockers)
-        assert advisory_notes(candidate) == []      # and not downgraded to advisory either
-        assert not is_deliverable(candidate)
+        assert hard_blockers(candidate) == []
+        notes = advisory_notes(candidate)
+        assert len(notes) == 3
+        assert [line for line in notes if "agrees on" in line] == []
+        assert all("evidence anchor is one turn" in line for line in notes)
+        assert is_deliverable(candidate)
+        assert delivered_status(candidate) == WARNING_STATUS
 
     def test_an_unnamed_shortfall_is_still_stated(self, question_package, material):
         """The suppression is narrow: it holds only while the shortfall is what was already named.
@@ -903,13 +911,20 @@ class TestTheDeliveryGate:
         blockers = delivery_blockers(candidate)
         assert any("not all ten items" in line for line in blockers)
 
-    def test_nine_of_ten_agreement_blocks_even_with_no_hard_defect(
+    def test_nine_of_ten_agreement_is_not_clean_but_is_now_deliverable(
             self, question_package, material):
-        """An adjacent anchor is not agreement, so 9/10 agreed is not a deliverable 10/10.
+        """An adjacent anchor is still not agreement -- and on its own it no longer withholds the set.
 
-        What blocks is the named adjacency, and it blocks alone. The shortfall total is *not* restated:
-        one non-agreeing item that already has its own line makes "agrees on 9 of 10" that same line
-        arithmetic, and charging it twice is what turned three real adjacencies into four blockers.
+        This test asserted ``not is_deliverable`` until 2026-08-08, and the change of that one line is
+        the whole of the adjacency release. What it protected was correct and is unchanged: the anchor
+        gap is real, the set is NOT clean, and the gap is named. What it also did was destroy fair
+        materials over it -- seven of the eight rejections on batch ``web-1786166271869-1`` were this
+        exact shape and nothing else (see :class:`TestSoleAdjacencyShipsAsWarning`).
+
+        The shortfall total is still *not* restated: one non-agreeing item that already has its own line
+        makes "agrees on 9 of 10" that same line arithmetic, and charging it twice is what turned three
+        real adjacencies into four blockers. That the line moved from hard to advisory must not
+        resurrect it.
         """
         review = _review(question_package)
         row = review["reconstructed_answers"][2]
@@ -923,8 +938,10 @@ class TestTheDeliveryGate:
         assert any("Q3's evidence anchor is one turn" in line for line in blockers)
         assert not any("agrees on" in line for line in blockers)
         assert len(blockers) == 1
-        assert not is_clean_questions(candidate)
-        assert not is_deliverable(candidate)
+        assert not is_clean_questions(candidate)             # the gap is on the record...
+        assert is_deliverable(candidate)                     # ...and no longer costs the material
+        assert hard_blockers(candidate) == []
+        assert delivered_status(candidate) == WARNING_STATUS
 
     def test_the_qr026_ceiling_warning_does_not_block(self, question_package, material):
         """AT a legal cap is not a defect: the validator already ruled the set legal.
@@ -1090,6 +1107,336 @@ class TestMinorFindingsShipAsWarning:
         assert candidate.counts["MINOR"] == 7
         assert hard_blockers(candidate) == []
         assert is_deliverable(candidate)
+
+
+class TestSoleAdjacencyShipsAsWarning:
+    """The 2026-08-08 regression: adjacency alone destroyed seven materials, and now ships as a note.
+
+    Every fixture here replays a shape measured on batch ``web-1786166271869-1``. Its four child
+    requests spent three resume rounds and 2360s to deliver **one** set out of four; of the 42 blockers
+    the run reported, 26 were ``anchor_adjacent``, and of the eight ``questions_rejected`` verdicts --
+    each one a regenerated material -- **seven** listed nothing but adjacency::
+
+        slot-1r1 revised-1 hard=1 ["Q5's evidence anchor is one turn ..."]
+        slot-1r1 revised-2 hard=1 ["Q2's evidence anchor is one turn ..."]
+        slot-1   revised-2 hard=1 ["Q3's evidence anchor is one turn ..."]
+        slot-1r1 revised-1 hard=3 [Q2, Q5, Q7 -- all three the same row]
+        slot-1r1 revised-2 hard=2 [Q4, Q9 -- likewise]
+        ...
+
+    against cross-check frames that were otherwise spotless -- e.g. ``slot-1r1 revised-1``::
+
+        {"agreed": 9, "by_outcome": {"agree": [1,2,3,4,6,7,8,9,10], "anchor_adjacent": [5]},
+         "hard_defects": 0, "leakage": 0, "rivals": 0, "status": "PASS"}
+
+    The reviews themselves are written nowhere (nothing persists a rejected candidate's audit), so the
+    turn indices those items named cannot be read back. What is replayed is therefore the *frame*: the
+    same item numbers, the same 9/10 or 7/10, everything deterministic clean, driven against the
+    committed material by moving the auditor's anchor to the genuinely neighbouring sentence -- which is
+    the harder of the two readings that produce this outcome (see
+    :class:`TestTheRealRevisedTwoAdjacencies`).
+
+    **The release is narrow, and half of these tests are what keeps it narrow.** Each "still blocks"
+    case is also drawn from the same run: 18 of the 26 adjacency blockers sat *beside* another defect,
+    and those must be untouched.
+    """
+
+    @staticmethod
+    def _candidate(package, material, review, errors=(), warnings=(), label="revised-1"):
+        from backend.deterministic.question_crosscheck import crosscheck_questions
+        from backend.deterministic.validate import ValidationResult
+        cross = crosscheck_questions(package, review, material)
+        return QuestionCandidate(package, review, cross,
+                                 ValidationResult(list(errors), list(warnings), {}), label)
+
+    @staticmethod
+    def _neighbour_anchors(review, turns, numbers):
+        """Move the auditor's anchor to the next turn and quote *that* sentence.
+
+        The neighbouring-sentence reading rather than the mis-stated-index one: a drifted index that
+        still quotes the writer's own sentence normalises to ``agree`` and never reaches the release, so
+        testing the release against it would test nothing.
+        """
+        for row in review["reconstructed_answers"]:
+            if row["number"] in numbers:
+                row["turn_index"] = row["turn_index"] + 1
+                row["quote"] = turns[row["turn_index"]]["text"]
+        return review
+
+    @pytest.fixture
+    def turns(self, material):
+        return material["listening_material_parts"][0]["script"]["turns"]
+
+    @pytest.fixture
+    def slot1r1_revised1(self, question_package, material, turns):
+        """``slot-1r1 revised-1``: 9/10 agreed, Q5 adjacent, one hard blocker, material destroyed."""
+        return self._candidate(question_package, material,
+                               self._neighbour_anchors(_review(question_package), turns, (5,)))
+
+    # ── the shape that was rejected, and now is not ───────────────────────────
+
+    def test_the_measured_frame_is_reproduced_before_anything_is_asserted(self, slot1r1_revised1):
+        """Pin the fixture against the recorded frame first.
+
+        Without this the class could drift into testing a set that never existed, and the entire
+        argument for the release is that this exact shape reached production eight times.
+        """
+        cross = slot1r1_revised1.cross_check
+        assert cross.compared == 10 and cross.agreed == 9
+        assert cross.by_outcome == {"agree": [1, 2, 3, 4, 6, 7, 8, 9, 10], "anchor_adjacent": [5]}
+        assert cross.hard_defects == [] and cross.leakage == []
+        assert cross.equally_supported_rivals == []
+        assert [row["number"] for row in cross.needs_review] == [5]
+        assert slot1r1_revised1.status == "PASS"          # the auditor found nothing at all
+        assert set(slot1r1_revised1.counts.values()) == {0}
+        assert not any(slot1r1_revised1.counts.get(name) for name in SEVERITY_ORDER)
+
+    def test_it_is_deliverable(self, slot1r1_revised1):
+        """The assertion the change exists for: this material is no longer regenerated."""
+        assert sole_adjacency_release(slot1r1_revised1)
+        assert hard_blockers(slot1r1_revised1) == []
+        assert is_deliverable(slot1r1_revised1)
+
+    def test_the_gap_is_reported_as_an_advisory_not_a_blocker(self, slot1r1_revised1):
+        """It moved category; it did not disappear. The reviewer still reads the gap."""
+        notes = advisory_notes(slot1r1_revised1)
+        assert len(notes) == 1
+        assert notes[0].startswith("Q5's evidence anchor is one turn from the writer's within "
+                                   "narrator window ")
+        assert "confirm the neighbouring turn states the same fact" in notes[0]
+        assert delivery_blockers(slot1r1_revised1) == notes
+        assert not is_clean_questions(slot1r1_revised1)
+
+    def test_it_ships_as_warning_and_not_as_pass(self, slot1r1_revised1):
+        """The status the user's requirement names, and the one case the auditor cannot supply.
+
+        Nothing was found, so the rules file computes ``PASS`` -- correctly, as a statement about the
+        audit. The delivered record must not repeat it: a set with an open note recorded as PASS is a
+        clean set as far as every later reader is concerned.
+        """
+        assert slot1r1_revised1.status == "PASS"
+        assert delivered_status(slot1r1_revised1) == WARNING_STATUS
+        result = QuestionResult(True, slot1r1_revised1, "revised-1",
+                                advisories=advisory_notes(slot1r1_revised1))
+        payload = result.as_dict()
+        assert payload["status"] == WARNING_STATUS
+        assert len(payload["advisories"]) == 1
+        # And the auditor's own verdict is still in the record, unrewritten.
+        assert payload["review"]["question_qc_status"] == "PASS"
+
+    @pytest.mark.parametrize("numbers,agreed", [
+        ((5,), 9),                  # slot-1r1 revised-1 / slot-1 revised-2, hard=1
+        ((2,), 9),                  # slot-1r1 revised-2, hard=1
+        ((4, 9), 8),                # slot-3 slot-1r1 revised-2, hard=2
+        ((2, 5, 7), 7),             # slot-2 slot-1r1 revised-1, hard=3
+        ((3, 6, 7, 8, 9), 5),       # slot-1 initial: five adjacent, nothing else open
+    ])
+    def test_every_adjacency_only_rejection_of_the_run_now_delivers(
+            self, question_package, material, turns, numbers, agreed):
+        """All five distinct adjacency-only shapes the run produced, by item set.
+
+        Volume is deliberately not a threshold: the 5/10 case is the same defect five times, not a
+        different kind of defect, and a count-based cutoff here would be the weighted-sum error that
+        ``TestTheRankingIsLexicographicNotWeighted`` exists to prevent.
+        """
+        candidate = self._candidate(
+            question_package, material,
+            self._neighbour_anchors(_review(question_package), turns, numbers))
+        assert candidate.cross_check.agreed == agreed
+        assert [row["number"] for row in candidate.cross_check.needs_review] == sorted(numbers)
+        assert hard_blockers(candidate) == []
+        assert len(advisory_notes(candidate)) == len(numbers)
+        assert is_deliverable(candidate)
+        assert delivered_status(candidate) == WARNING_STATUS
+
+    # ── and every shape from the same run that must STILL block ──────────────
+
+    def test_adjacency_beside_an_answer_divergence_still_blocks(
+            self, question_package, material, turns):
+        """``slot-1r1 initial``: ``{"anchor_adjacent": [5], "answer_divergence": [3]}``, 2 blockers.
+
+        The commonest shape of the run and the reason the release is all-or-nothing: with a divergence
+        open, "the answers agree" is false *about the set*, and the adjacency is no longer the only
+        question. Releasing per-row would have shipped this.
+        """
+        review = self._neighbour_anchors(_review(question_package), turns, (5,))
+        review["reconstructed_answers"][2]["answer"] = "name"        # Q3 diverges
+        candidate = self._candidate(question_package, material, review)
+        assert sole_adjacency_release(candidate) == []
+        blockers = hard_blockers(candidate)
+        assert any("answer_divergence on Q3" in line for line in blockers)
+        assert any("Q5's evidence anchor is one turn" in line for line in blockers)
+        assert not is_deliverable(candidate)
+        assert advisory_notes(candidate) == []
+
+    def test_adjacency_beside_leakage_still_blocks(self, question_package, material, turns):
+        """``slot-1r1 revised-2``: adjacency plus ``Q6 answerable from the printed page`` (QR-040)."""
+        review = self._neighbour_anchors(_review(question_package), turns, (5,))
+        review["reconstructed_answers"][5]["derivable_without_recording"] = True
+        candidate = self._candidate(question_package, material, review)
+        assert sole_adjacency_release(candidate) == []
+        assert any("printed page" in line for line in hard_blockers(candidate))
+        assert not is_deliverable(candidate)
+
+    def test_adjacency_beside_a_major_still_blocks(self, question_package, material, turns):
+        """``slot-2 slot-1 revised-2``: one MAJOR, a divergence, an adjacency and two validator errors.
+
+        A MAJOR means a candidate can be marked wrong for reading the paper correctly, which is the one
+        thing no note trades against.
+        """
+        review = self._neighbour_anchors(
+            _review(question_package, [_finding(7, "MAJOR")]), turns, (7,))
+        candidate = self._candidate(question_package, material, review)
+        assert sole_adjacency_release(candidate) == []
+        assert any("MAJOR" in line for line in hard_blockers(candidate))
+        assert not is_deliverable(candidate)
+
+    def test_adjacency_beside_a_validator_error_still_blocks(
+            self, question_package, material, turns):
+        """The AR-002/QR-017 error the run's ``slot-2`` hit, beside an adjacency."""
+        error = ("Q2 canonical 'marina dot hale at example dot com' is 7 word(s) and 0 number(s), "
+                 "which its group's rubric does not permit (AR-002/QR-017)")
+        candidate = self._candidate(
+            question_package, material,
+            self._neighbour_anchors(_review(question_package), turns, (7,)), errors=[error])
+        assert sole_adjacency_release(candidate) == []
+        assert any("validator error" in line for line in hard_blockers(candidate))
+        assert not is_deliverable(candidate)
+
+    def test_adjacency_beside_a_validator_warning_is_released_but_still_warns(
+            self, question_package, material, turns):
+        """``slot-1r1 revised-2``, hard=1 + one warning: the boundary between the two categories.
+
+        The run reported this as ``["Q3's evidence anchor ...", "validator warning: part of Q5's answer
+        'garden room' appears in group 'A''s visible text"]``. A validator *warning* was already an
+        advisory before this change, so it does not close the release -- both notes ship, and the set is
+        still not called clean. Asserted because "no hard blocker" and "nothing else open" are different
+        conditions and this is the case that distinguishes them.
+        """
+        warning = ("part of Q5's answer 'garden room' appears in group 'A''s visible text (['room']); "
+                   "check it does not narrow the answer to one candidate")
+        candidate = self._candidate(
+            question_package, material,
+            self._neighbour_anchors(_review(question_package), turns, (3,)), warnings=[warning])
+        assert [row["number"] for row in sole_adjacency_release(candidate)] == [3]
+        assert hard_blockers(candidate) == []
+        notes = advisory_notes(candidate)
+        assert len(notes) == 2
+        assert any("validator warning" in line for line in notes)
+        assert any("Q3's evidence anchor" in line for line in notes)
+        assert is_deliverable(candidate) and not is_clean_questions(candidate)
+        assert delivered_status(candidate) == WARNING_STATUS
+
+    def test_a_different_window_is_anchor_divergence_and_never_reaches_the_release(
+            self, question_package, material, turns):
+        """The other adjacency the user's rule keeps hard, and it is hard one level down.
+
+        A one-turn gap that crosses a narration boundary is classified ``anchor_divergence``, not
+        ``anchor_adjacent``, so it lands in ``hard_defects`` and the release never sees it. Asserted
+        rather than assumed: the release's own window check would be unreachable dead code if this
+        classification ever changed, and this is the test that would fail first.
+
+        Built by moving the writer's anchor to the turn immediately *after* the middle narration -- no
+        anchor in the committed fixture sits beside it, so the gap has to be constructed. The auditor
+        then reads the narration turn itself, one turn back and one window back.
+        """
+        narrator = [i for i, turn in enumerate(turns) if turn.get("speaker") == "speaker1"]
+        boundary = narrator[1]
+        package = copy.deepcopy(question_package)
+        for row in package["evidence"]:
+            if row["number"] == 5:
+                row["turn_index"] = boundary + 1
+                row["quote"] = turns[boundary + 1]["text"][:40]
+        review = _review(package)
+        for row in review["reconstructed_answers"]:
+            if row["number"] == 5:
+                row["turn_index"] = boundary
+                row["quote"] = turns[boundary]["text"]
+        candidate = self._candidate(package, material, review)
+        assert candidate.cross_check.needs_review == []
+        assert [row["number"] for row in candidate.cross_check.hard_defects] == [5]
+        defect = candidate.cross_check.hard_defects[0]
+        assert defect["outcome"] == "anchor_divergence"
+        assert "different narrator windows" in defect["reason"]
+        assert sole_adjacency_release(candidate) == []
+        assert not is_deliverable(candidate)
+
+    def test_an_unaligned_proposition_is_anchor_divergence_and_never_reaches_the_release(
+            self, question_package, material, turns):
+        """The third condition, likewise hard one level down: the writer never claimed alignment."""
+        package = copy.deepcopy(question_package)
+        for row in package["evidence"]:
+            if row["number"] == 5:
+                row["proposition_alignment_result"] = "carrier_broader"
+        review = self._neighbour_anchors(_review(package), turns, (5,))
+        candidate = self._candidate(package, material, review)
+        assert candidate.cross_check.needs_review == []
+        assert [row["number"] for row in candidate.cross_check.hard_defects] == [5]
+        assert "not marked proposition-aligned" in candidate.cross_check.hard_defects[0]["reason"]
+        assert sole_adjacency_release(candidate) == []
+        assert not is_deliverable(candidate)
+
+    # ── the release re-derives its preconditions rather than trusting the row ──
+
+    @pytest.mark.parametrize("key,value", [
+        ("same_narrator_window", False),
+        ("same_narrator_window", None),
+        ("proposition_aligned", False),
+        ("proposition_aligned", None),
+        ("writer_window", None),
+        ("auditor_window", 2),
+        ("writer_answer", "something else"),
+        ("effective_auditor_turn", None),
+        ("writer_turn", None),
+    ])
+    def test_a_row_missing_any_precondition_is_not_released(
+            self, question_package, material, turns, key, value):
+        """Every unknown falls to the hard side, which is what makes this a release and not a default.
+
+        These are forced on the row rather than produced from a review, deliberately: today's ``compare``
+        cannot emit an ``anchor_adjacent`` row with these fields unset, and that is exactly the property
+        under test -- if a future change (or a row written before these keys existed) delivers one, the
+        gate must refuse it rather than read the absence as agreement.
+        """
+        candidate = self._candidate(question_package, material,
+                                    self._neighbour_anchors(_review(question_package), turns, (5,)))
+        assert sole_adjacency_release(candidate)            # released before the field is disturbed
+        row = candidate.cross_check.needs_review[0]
+        if value is None:
+            row.pop(key, None)
+        else:
+            row[key] = value
+        assert sole_adjacency_release(candidate) == []
+        assert any("Q5's evidence anchor is one turn" in line
+                   for line in hard_blockers(candidate))
+        assert advisory_notes(candidate) == []
+
+    def test_a_two_turn_gap_on_the_row_is_not_released(self, question_package, material, turns):
+        """The gap is recomputed from the two anchors, not taken from the outcome label."""
+        candidate = self._candidate(question_package, material,
+                                    self._neighbour_anchors(_review(question_package), turns, (5,)))
+        row = candidate.cross_check.needs_review[0]
+        row["effective_auditor_turn"] = row["writer_turn"] + 2
+        assert sole_adjacency_release(candidate) == []
+        assert not is_deliverable(candidate)
+
+    def test_a_nine_item_audit_is_not_released(self, question_package, material, turns):
+        """Coverage is a precondition of its own: a shortfall is not something adjacency explains."""
+        review = self._neighbour_anchors(_review(question_package), turns, (5,))
+        review["reconstructed_answers"] = review["reconstructed_answers"][:9]
+        review["coverage"]["reviewed_question_ids"] = list(range(1, 10))
+        candidate = self._candidate(question_package, material, review)
+        assert sole_adjacency_release(candidate) == []
+        assert not is_deliverable(candidate)
+
+    def test_a_clean_set_is_still_pass_with_no_notes(self, question_package, material):
+        """The other direction: nothing open must not acquire a WARNING from this change."""
+        candidate = self._candidate(question_package, material, _review(question_package))
+        assert sole_adjacency_release(candidate) == []
+        assert advisory_notes(candidate) == []
+        assert delivered_status(candidate) == "PASS"
+        assert QuestionResult(True, candidate, "initial").as_dict()["status"] == "PASS"
+        assert is_clean_questions(candidate)
 
 
 class TestTheScriptCannotBeRevised:
@@ -1263,6 +1610,61 @@ class TestTheLoopWiring:
         assert result.as_dict()["advisories"] == result.advisories
         # And the budget really was spent trying to clear it first.
         assert result.rounds == 2
+
+    @pytest.mark.asyncio
+    async def test_the_worse_revision_is_never_the_one_delivered(
+            self, harness, question_package):
+        """Retention asserted on the shipped artifact, not only on the label.
+
+        The label could be right while the payload was ``current`` -- the two are set from separate
+        expressions at the exit -- and that failure has no symptom: a set delivered under the best
+        version's name carrying the worst version's questions would validate, audit and ship. So the
+        package identity is what is checked, against a revision made distinguishable on purpose.
+        """
+        from backend.orchestration.question_loop import run_questions
+
+        harness.revised_package = copy.deepcopy(question_package)
+        harness.revised_package["question_face"]["questions"][0]["carrier_before"] = "WORSE:"
+        harness.reviews = [_review(question_package, [_finding(1, "MINOR")]),
+                           _review(question_package, [_finding(1, "MAJOR")]),
+                           _review(question_package, [_finding(1, "MAJOR")])]
+        result = await run_questions(harness.material, harness.blueprint)
+        assert result.ok
+        delivered = result.candidate.package["question_face"]["questions"][0]["carrier_before"]
+        assert delivered != "WORSE:"
+        assert result.candidate.package is not harness.revised_package
+        # The review travelling with it is the best version's own, not the last round's: shipping a set
+        # beside another version's audit is a lie about the artifact, which is why they are inseparable.
+        assert [f["severity"] for f in result.candidate.review["per_question_findings"]] == ["MINOR"]
+        assert result.as_dict()["review"]["question_qc_status"] == "WARNING"
+
+    @pytest.mark.asyncio
+    async def test_an_advisory_only_best_ships_as_warning_when_the_audit_says_pass(
+            self, harness, question_package, material):
+        """Item 3 for the shape the auditor cannot label: adjacency, through the whole loop.
+
+        The MINOR case above ships as ``WARNING`` because the rules file already computes ``WARNING``
+        from a MINOR. Here the audit finds *nothing* -- computed status ``PASS`` -- while an adjacency
+        note stays open, so ``WARNING`` can only come from :func:`delivered_status`. Asserted end to end
+        rather than on the function, because the wire status is read off ``QuestionResult.as_dict``, and
+        a loop that returned the candidate's own status would ship this as unqualified-clean.
+        """
+        from backend.orchestration.question_loop import run_questions
+
+        turns = material["listening_material_parts"][0]["script"]["turns"]
+        adjacent = TestSoleAdjacencyShipsAsWarning._neighbour_anchors(
+            _review(question_package), turns, (5,))
+        # Every round returns the same adjacency-only review, so the budget is spent and the exit
+        # decides on a best candidate whose only open entry is the released note.
+        harness.reviews = [adjacent, copy.deepcopy(adjacent), copy.deepcopy(adjacent)]
+        result = await run_questions(harness.material, harness.blueprint)
+
+        assert result.ok, "an adjacency-only set must no longer regenerate its material"
+        assert result.candidate.status == "PASS"
+        assert result.as_dict()["status"] == WARNING_STATUS
+        assert len(result.advisories) == 1
+        assert "one turn from the writer's" in result.advisories[0]
+        assert result.as_dict()["review"]["question_qc_status"] == "PASS"
 
     @pytest.mark.asyncio
     async def test_a_surviving_major_still_regenerates_the_material(

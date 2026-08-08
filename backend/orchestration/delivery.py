@@ -17,20 +17,22 @@ stage 11's step, not this one.
   two revision rounds inside ``run_questions``. Both already enforced where the work happens; this
   module counts them into the slot record and never re-imposes them.
 * *outer* -- abandoning the material and drawing another. Spent by every verdict that says "this
-  material is the problem": ``REGENERATE_MATERIAL`` from either stage, an unassessable script, a
-  material-stage failure that produced no content.
+  material is the problem": a feasibility ``REGENERATE_MATERIAL``, an unassessable script, a
+  material-stage failure that produced no content -- and a question stage that failed *twice* on one
+  qualified material.
 
-The distinction is the whole reason ``REGENERATE_MATERIAL`` charges the outer level. It arrives after
-two question revisions have already failed against a blueprint that cannot change, so charging it
-inward would buy a third redraw from the same well; charging it outward is what makes the verdict mean
-what it says.
+**A qualified material is never regenerated because the question stage failed once** (§8.2(1)). The
+``material_done`` transition is a write, and the question stage runs from what that write records, so
+both a crash and a not-deliverable verdict re-enter the question stage on the same material
+(``question_restarts``); only the second failure on that material spends a candidate swap.
 
-**A qualified material is never regenerated because the question stage broke** (§8.2(1)). The
-``material_done`` transition is a write, and the question stage runs from what that write records. So
-a crash in question generation re-enters the question stage on the same material
-(``question_restarts``), while only a question *verdict* about the material spends a candidate swap.
-Getting this backwards is the expensive mistake in the whole stage: it would throw away 150-250s of
-qualified material because a model call timed out.
+Getting this backwards was measured, not feared. A question verdict reads as a statement about the
+material, and charging the first one outward cost batch ``web-1786166271869-1`` 43 minutes: 11
+materials for 1 delivered set, because 8 rejections each withdrew a material that had passed its blind
+audit and its feasibility preflight. What made the swap wrong is that the restart is not a third
+revision -- the question loop re-enters at generation, so it writes a genuinely new set against the
+same blueprint, which is far cheaper than a new blueprint and no less likely to succeed. See
+:func:`_questions_not_deliverable`.
 
 **Exhausting the swap budget opens a replacement slot; it never lowers the bar** (§8.2(3)). The
 second-round design here was a delivery of "the best set we managed, with its defects listed", and
@@ -631,13 +633,7 @@ async def _do_questions(record: SlotRecord, ctx: _Context) -> None:
     record.attempts["question_repairs"] = int(getattr(result, "rounds", 0) or 0)
 
     if not result.ok:
-        # The question stage refuses to deliver a defective set, so its only failure verdict is
-        # `REGENERATE_MATERIAL` -- and that is a statement about the material, which is what spends
-        # the outer budget. Anything else arriving here would be a verdict this runner does not
-        # understand, and it is charged the same way for the reason `_material_verdict` gives.
-        _swap_candidate(record, ctx, result.reason or "questions_not_deliverable",
-                        {"outcome": result.outcome, "rounds": result.rounds,
-                         "blockers": (result.blockers or [])[:3]})
+        await _questions_not_deliverable(record, ctx, result)
         return
 
     ctx.store.save_questions(record.material_id, result.as_dict())
@@ -681,6 +677,49 @@ def _register_material(result: Any, scenario: Any, record: SlotRecord, ctx: _Con
                                    % record.slot_id)
 
 
+async def _questions_not_deliverable(record: SlotRecord, ctx: _Context, result: Any) -> None:
+    """The question stage produced nothing deliverable. Charge the question budget, keep the material.
+
+    **This used to spend a candidate swap, and that was measured to be the expensive mistake.** The
+    old reading was that ``REGENERATE_MATERIAL`` is a statement about the material, so it belongs to
+    the outer budget. On batch ``web-1786166271869-1`` that reading cost 43 minutes: 11 materials were
+    generated and 1 was delivered, because 8 question-stage rejections each withdrew a material that
+    had passed its blind audit *and* its feasibility preflight, and the replacement then paid the full
+    material price again for a fresh blueprint that the question stage was no likelier to satisfy --
+    the rejections were dominated by one recurring anchor-adjacency reading, not by anything the
+    blueprints had in common.
+
+    So the charge follows the same rule the crash path above already states, extended from a crash to
+    a verdict: a material that PASSED and cleared feasibility is qualified, and this stage does not get
+    to un-qualify it. ``material_done`` and ``material_id`` both stay, the candidate is NOT withdrawn,
+    and the slot re-enters the question stage against the same registered material on the restart
+    budget. What that buys is a genuinely different attempt -- the question loop starts from
+    generation, so the restart is a fresh set rather than a third revision of the rejected one, which
+    is the objection ``QUESTIONS_NOT_DELIVERABLE`` raises against charging inward.
+
+    The difference from the crash path is where exhaustion lands. A repeated crash is a defect in this
+    machine, so it faults. A second rejection is evidence about the *material*: two independent
+    question attempts, each with its own revisions, could not write a fair set against this blueprint.
+    That is the reading ``REGENERATE_MATERIAL`` was always making, and it is credible now that it is
+    made twice, so the swap happens then -- one attempt later than before, not never.
+    """
+    detail = {"outcome": result.outcome, "rounds": result.rounds,
+              "blockers": (result.blockers or [])[:3]}
+    reason = result.reason or "questions_not_deliverable"
+    if record.attempts["question_restarts"] < MAX_QUESTION_RESTARTS:
+        record.bump("question_restarts")
+        record.state = MATERIAL_DONE
+        record.last_failure = {"stage": "questions", "reason": reason, "detail": detail}
+        ctx.save(record)
+        await ctx.emit(record.slot_id, "questions_restarting",
+                       {"restart": record.attempts["question_restarts"],
+                        "of": MAX_QUESTION_RESTARTS,
+                        "material_id": record.material_id,
+                        "reason": reason})
+        return
+    _swap_candidate(record, ctx, reason, detail)
+
+
 def _swap_candidate(record: SlotRecord, ctx: _Context, reason: str, detail: Any) -> None:
     """Charge the outer budget and either draw another material or exhaust the slot.
 
@@ -692,6 +731,12 @@ def _swap_candidate(record: SlotRecord, ctx: _Context, reason: str, detail: Any)
     record.bump("candidate_swaps")
     record.last_failure = {"stage": "material" if record.state == MATERIAL_PENDING else "questions",
                            "reason": reason, "detail": detail}
+    # The restart budget is spent per MATERIAL -- `slot_store` defines it as re-entering the question
+    # stage "on the SAME qualified material" -- and this is the line where the material stops being the
+    # same one. Carrying the count across would give the replacement material one attempt fewer than
+    # the material before it got, for a reason that is about its predecessor. Still bounded: at most
+    # `MAX_QUESTION_RESTARTS` per material and `MAX_CANDIDATE_SWAPS + 1` materials per slot.
+    record.attempts["question_restarts"] = 0
     _withdraw_material(record, ctx)
     record.material_id = None
     if record.attempts["candidate_swaps"] > MAX_CANDIDATE_SWAPS:

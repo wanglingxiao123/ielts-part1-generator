@@ -527,6 +527,15 @@ def compare(package: dict, review: dict, material: object = None) -> dict:
         auditor_window = narrator_window_of(turns, effective_turn)
         same_window = (writer_window is not None and writer_window == auditor_window)
         aligned = (evidence.get(number) or {}).get("proposition_alignment_result") == "aligned"
+        # Recorded on the row, not merely used here. The three conditions are the *reason* an
+        # `anchor_adjacent` row is the narrow kind rather than the hard kind, and a later reader -- a
+        # gate deciding whether the gap may ship as a note, a human reading the failure -- otherwise has
+        # to re-derive them from the script it no longer has. Reporting only; no outcome depends on
+        # these keys, and every consumer re-checks rather than trusts them.
+        row["writer_window"] = writer_window
+        row["auditor_window"] = auditor_window
+        row["same_narrator_window"] = same_window
+        row["proposition_aligned"] = aligned
 
         if gap == 0:
             row["outcome"] = "agree"

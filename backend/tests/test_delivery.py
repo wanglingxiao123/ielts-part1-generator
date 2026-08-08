@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from typing import Callable
 
 import pytest
 
@@ -208,12 +209,14 @@ class TestReplacementSlot:
         assert delivered_id == "mat-1"
         assert store.load_questions(delivered_id) is not None
 
-    def test_a_question_stage_regenerate_verdict_spends_the_outer_budget(self):
-        """§8.2(2): REGENERATE_MATERIAL from the question loop draws a new material, not a 3rd round.
+    def test_the_first_not_deliverable_verdict_keeps_the_qualified_material(self):
+        """§8.2(1): a material that PASSED and cleared feasibility is not withdrawn by one rejection.
 
-        The distinction that matters: the question stage is entered once per material, never twice on
-        the same one after a verdict. Two revision rounds have already run inside it against a
-        blueprint that cannot change.
+        The measured failure this replaces: charging the first question verdict to the outer budget
+        turned 11 materials into 1 delivered set on batch `web-1786166271869-1`, because each rejection
+        threw away a qualified material to buy a fresh blueprint the question stage was no likelier to
+        satisfy. The restart is not a third revision -- the question loop re-enters at generation -- so
+        the cheap attempt has to be tried before the expensive one.
         """
         recorder = Recorder([material_ok],
                             [questions_regenerate(), questions_ok()])
@@ -222,10 +225,87 @@ class TestReplacementSlot:
             [FakeScenario()], "batch-qregen", store=store,
             run_material=recorder.run_material, run_question_stage=recorder.run_questions))
         assert summary["status"] == SUCCEEDED
-        assert len(recorder.material_calls) == 2
+        assert len(recorder.material_calls) == 1, "the verdict must not have drawn a new material"
         assert len(recorder.question_calls) == 2
+        # And the same material both times: the restart runs against the registered candidate, not a
+        # re-registration of an identical one.
+        assert recorder.question_calls[0] is recorder.question_calls[1]
         record = store.load_slot("batch-qregen", "slot-1")
-        assert record.attempts["candidate_swaps"] == 1
+        assert record.attempts["question_restarts"] == 1
+        assert record.attempts["candidate_swaps"] == 0
+        assert record.material_id == "mat-1"
+        assert store.load_questions("mat-1") is not None
+
+    def test_the_material_survives_the_rejection_in_storage_not_only_in_memory(self, monkeypatch):
+        """The restart may happen in a later invocation, so `material_done` has to be on disk.
+
+        Writing the checkpoint before the retry is what makes this the §8.2(1) property rather than a
+        retry loop: a rejection that left the slot pointing at a withdrawn material would be
+        unresumable, and one that kept the material only in memory would regenerate on the next invoke.
+        """
+        withdrawn = []
+        monkeypatch.setattr(delivery_module, "_withdraw_material",
+                            lambda record, ctx: withdrawn.append(record.material_id))
+        # One rejection, then the clock stops before the restart can run -- so the record under test is
+        # the one a later invocation would resume from.
+        recorder = Recorder([material_ok], [questions_regenerate()])
+        store = memory_store()
+        summary = asyncio.run(run_request(
+            [FakeScenario()], "batch-qkeep", store=store,
+            budget=_budget(material=True, questions=_once()),
+            run_material=recorder.run_material, run_question_stage=recorder.run_questions))
+
+        assert summary["status"] == INCOMPLETE
+        assert summary["paused"] is True
+        record = store.load_slot("batch-qkeep", "slot-1")
+        assert record.state == MATERIAL_DONE
+        assert record.material_id == "mat-1"
+        assert record.attempts["question_restarts"] == 1
+        assert record.attempts["candidate_swaps"] == 0
+        assert withdrawn == [], "the candidate must stay in the offer list for the restart to read"
+        # `last_failure` reads `time_budget`, not the verdict: the checkpoint is the later event and the
+        # field holds the most recent reason this slot stopped. The verdict is recorded in the
+        # `questions_restarting` event and in the restart counter above, which is what survives to the
+        # next invocation -- so the rejection is not lost, it is just not the reason it is now waiting.
+        assert record.last_failure["reason"] == "time_budget"
+
+        # And a later invocation resumes at the question stage on that same material, as the crash path
+        # already promises: a fresh Recorder, so a regenerated material would show up as a call.
+        second = Recorder([material_ok], [questions_ok()])
+        resumed = asyncio.run(run_request(
+            [FakeScenario()], "batch-qkeep", store=store,
+            run_material=second.run_material, run_question_stage=second.run_questions))
+        assert second.material_calls == []
+        assert resumed["status"] == SUCCEEDED
+        assert resumed["sets"][0]["material_id"] == "mat-1"
+
+    def test_a_second_not_deliverable_verdict_does_spend_a_candidate_swap(self):
+        """Two independent question attempts failing IS evidence about the blueprint.
+
+        The retry moves the swap one attempt later; it does not remove it. Nothing here lowers the
+        delivery bar either -- the run below delivers zero sets and reports so.
+        """
+        recorder = Recorder([material_ok], [questions_regenerate()])
+        store = memory_store()
+        summary = asyncio.run(run_request(
+            [FakeScenario()], "batch-qregen2", store=store,
+            run_material=recorder.run_material, run_question_stage=recorder.run_questions))
+
+        assert summary["status"] != SUCCEEDED
+        assert summary["delivered"] == 0
+        records = {r.slot_id: r for r in store.list_slots("batch-qregen2")}
+        first = records["slot-1"]
+        assert first.state == EXHAUSTED
+        assert first.system_fault is False, "a content verdict is not a system fault"
+        assert first.attempts["candidate_swaps"] == 3
+        # Zero, not one: the swap resets the restart budget, because the counter is per material and the
+        # swap is where the material stops being the same one. The evidence that both attempts happened
+        # is the call ratio below, which is what the counter would otherwise be standing in for.
+        assert first.attempts["question_restarts"] == 0
+        # Exactly two question attempts per material -- one restart each, no third.
+        assert len(recorder.question_calls) == 2 * len(recorder.material_calls)
+        # The position is refilled rather than dropped (§8.2(3)).
+        assert first.replaced_by == "slot-1r1"
 
     def test_replacement_slots_are_bounded_and_a_bounded_run_is_not_a_success(self):
         """The bound exists so the invocation terminates; it does not create a partial-success exit."""
@@ -436,18 +516,35 @@ def _budget(material: bool, questions: bool) -> DeliveryBudget:
     Pinned rather than computed from a fake ``monotonic``: what these tests need is "the question stage
     was not affordable", and expressing that as a deadline arithmetic makes the test depend on the two
     p95 constants it is not about.
+
+    Either argument may be a callable instead of a bool, for the case a fixed answer cannot express: a
+    clock that afforded the first question attempt and not the second (see :func:`_once`).
     """
+    def answer(value):
+        return value() if callable(value) else value
+
     class Pinned(DeliveryBudget):
         def may_start_material(self):
-            return material
+            return answer(material)
 
         def may_start_questions(self):
-            return questions
+            return answer(questions)
 
         def may_revise(self):
             return True
 
     return Pinned()
+
+
+def _once() -> Callable[[], bool]:
+    """A predicate that is true once and false afterwards -- "there was time for one attempt"."""
+    calls = {"n": 0}
+
+    def predicate():
+        calls["n"] += 1
+        return calls["n"] == 1
+
+    return predicate
 
 
 class TestStreamRequestIsTheSameRunAsRunRequest:

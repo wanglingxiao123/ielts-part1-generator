@@ -31,13 +31,22 @@ The distinction that matters is whether the finding establishes that the set is 
   an audit that did not cover ten items, a cross-check that does not agree. Each of these means a
   candidate can be marked wrong for reading the paper correctly. No number of them is deliverable and
   no reviewer downstream benefits from seeing them, because the grading has already happened.
-* :func:`advisory_notes` -- a MINOR finding, and nothing else. The rules file's own algorithm grades
-  the set ``WARNING`` for these rather than ``FAIL``, which is the audit saying the set is usable and
-  improvable. Withholding it makes the note unappealable; delivering it with the note attached is
-  exactly the material loop's rationale, and it applies here for the same reason.
+* :func:`advisory_notes` -- a MINOR finding, a validator warning, or the one narrow adjacency shape
+  :func:`sole_adjacency_release` describes. The rules file's own algorithm grades a MINOR-only set
+  ``WARNING`` rather than ``FAIL``, which is the audit saying the set is usable and improvable.
+  Withholding it makes the note unappealable; delivering it with the note attached is exactly the
+  material loop's rationale, and it applies here for the same reason.
 
 So the exits are: deliver (``PASS`` when nothing at all is open, ``WARNING`` when only advisories
-are), or return :data:`REGENERATE_MATERIAL` because a **hard** blocker survived two revisions.
+are -- see :func:`delivered_status`, which is what makes that true rather than coincidental), or
+return :data:`REGENERATE_MATERIAL` because a **hard** blocker survived two revisions.
+
+**One adjacency shape is an advisory, every other one still blocks.** ``anchor_adjacent`` is a
+one-turn gap between where the writer and the auditor anchored their evidence for an answer they
+*agree* on. Measured on batch ``web-1786166271869-1`` it was 26 of 42 blockers, and one instance of it
+destroyed an entire material by itself. It is released only when it is the sole open objection in the
+whole set, all-or-nothing, with every precondition re-derived rather than trusted; adjacency sitting
+beside any other defect is untouched. :func:`sole_adjacency_release` is the whole of that rule.
 
 **A set with no hard blocker is never regenerated.** That is the invariant this module now owes its
 caller, and it holds at both decision points -- before the first revision and after the last.
@@ -87,8 +96,10 @@ __all__ = [
     "ScriptWasEdited",
     "WARNING_STATUS",
     "advisory_notes",
+    "delivered_status",
     "delivery_blockers",
     "hard_blockers",
+    "sole_adjacency_release",
     "is_clean_questions",
     "is_deliverable",
     "pick_better_questions",
@@ -147,6 +158,102 @@ AT_CEILING_WARNINGS = ("QR-026 ceiling",)
 
 def _is_at_ceiling_warning(warning: Any) -> bool:
     return any(marker in str(warning) for marker in AT_CEILING_WARNINGS)
+
+
+def sole_adjacency_release(candidate: "QuestionCandidate") -> List[Dict[str, Any]]:
+    """The ``anchor_adjacent`` rows that may ship as advisories, or ``[]`` when none may.
+
+    **All-or-nothing, and only when adjacency is the ONLY thing open.** The release exists for one
+    measured shape: a set where the writer and the auditor agree on all ten answers, nothing
+    deterministic is wrong, and the single remaining objection is that on some items the two anchored
+    the same agreed fact one turn apart. Measured on batch ``web-1786166271869-1``: 26 of 42 blockers
+    across the whole run were this row, one of them destroyed an entire material on its own, and three
+    resume rounds delivered one set in 2360s.
+
+    Why the release is safe *here* and not inside the cross-check: `anchor_adjacent` is reached only
+    after the shared comparison has established that the answers agree, that both anchors sit in one
+    narrator window, and that the writer's evidence is proposition-aligned (see
+    ``cross_check_questions.compare``). What it cannot establish is that the neighbouring sentence
+    confirms the same fact -- a reading. This function does not claim to settle that reading either. It
+    says something narrower and checkable: when nothing else at all is open, a one-turn gap on an
+    otherwise-agreed item is not worth destroying a fair material over, and the note ships attached to
+    the set so the reader sees it.
+
+    Every precondition is re-derived from the row and the candidate rather than trusted:
+
+    * the answers on the row agree -- re-checked, not inferred from the outcome label;
+    * the gap is exactly one turn, recomputed from the writer's anchor and the auditor's *effective*
+      one -- where the quote was found, never the index it stated;
+    * ``same_narrator_window`` -- the row's own recorded windows must be present and equal;
+    * no ``answer_divergence`` or any other hard defect, no leakage, no equally-supported rival,
+      nothing at CRITICAL or MAJOR, no validator error, full ten-item coverage;
+    * ``anchor_adjacent`` is the only non-agreeing outcome present.
+
+    A missing or unparseable field fails the check. That direction is deliberate: the release is a
+    release, so every unknown has to fall to the hard side -- the same rule the shared module applies
+    one level down. Returns the rows so the caller can name them in the advisory text; an empty list
+    means "no release", never "released nothing".
+    """
+    cross = candidate.cross_check
+    rows = list(cross.needs_review)
+    if not rows:
+        return []
+
+    # Anything else open at all -- deterministic or graded -- and this is not the sole-adjacency shape.
+    if cross.hard_defects or cross.leakage or cross.equally_supported_rivals:
+        return []
+    if any(int(candidate.counts.get(name, 0) or 0) for name in BLOCKING_SEVERITIES):
+        return []
+    if getattr(candidate.validation, "errors", None):
+        return []
+    if (cross.consistency or {}).get("errors"):
+        return []
+
+    # The audit must have covered exactly Q1-Q10; a shortfall is not a thing adjacency explains.
+    reviewed = ((cross.consistency or {}).get("computed") or {}).get("reviewed_question_ids") or []
+    if sorted(reviewed) != list(QUESTION_NUMBERS):
+        return []
+
+    # Every item must be either agreed or one of these adjacency rows. `agreed` counts only `agree`,
+    # so this is the arithmetic that rules out a third outcome hiding in the item list.
+    if cross.compared != cross.agreed + len(rows):
+        return []
+
+    for row in rows:
+        if str(row.get("outcome")) != "anchor_adjacent":
+            return []
+        # The answers agreeing is what makes the anchor gap the *only* question. Re-checked here
+        # because a released row must not depend on the outcome label alone.
+        writer, auditor = row.get("writer_answer"), row.get("auditor_answer")
+        if not isinstance(writer, str) or not isinstance(auditor, str):
+            return []
+        if writer.strip().casefold() != auditor.strip().casefold():
+            return []
+        # Same narrator window, from the row's own record of both windows. `compare` only reaches
+        # `anchor_adjacent` when they matched, but an absent value here must not read as a match --
+        # a row produced before those keys existed has to fail, not pass by default.
+        window = row.get("writer_window")
+        if window is None or row.get("auditor_window") != window:
+            return []
+        if row.get("same_narrator_window") is not True:
+            return []
+        # The writer's evidence claiming its quote and carrier state one fact is the third condition
+        # the audit rules attach to +-1. Required explicitly here for the same reason.
+        if row.get("proposition_aligned") is not True:
+            return []
+        # And the gap really is one turn, recomputed from the two anchors on the row.
+        #
+        # ``effective_auditor_turn`` and NOT ``auditor_turn``, with no fallback between them. The
+        # effective turn is where the quote was actually located; the stated one is the value `compare`
+        # distrusted enough to relocate, and reading it when the effective turn is missing would
+        # re-import exactly the off-by-one the relocation removed. Absent means unknown, and unknown
+        # fails.
+        writer_turn, auditor_turn = row.get("writer_turn"), row.get("effective_auditor_turn")
+        if not isinstance(writer_turn, int) or not isinstance(auditor_turn, int):
+            return []
+        if abs(writer_turn - auditor_turn) != 1:
+            return []
+    return rows
 
 
 # The failure reason this loop returns when no round produced a deliverable set. Named here rather than
@@ -309,7 +416,14 @@ def hard_blockers(candidate: QuestionCandidate) -> List[str]:
     for row in cross.equally_supported_rivals:
         blockers.append("Q%s has an equally-supported rival answer %r (AR-012)"
                         % (row.get("number"), row.get("text")))
+    # `sole_adjacency_release` is non-empty ONLY when these rows are the single remaining objection --
+    # it returns [] the moment anything else is open, including a hard defect this same loop is about to
+    # append. So the released rows move to `advisory_notes` and everything else keeps hard-blocking, and
+    # an adjacency sitting beside any other defect is unaffected by the release.
+    released = {row.get("number") for row in sole_adjacency_release(candidate)}
     for row in cross.needs_review:
+        if row.get("number") in released:
+            continue
         blockers.append("Q%s's evidence anchor is one turn from the writer's and unconfirmed"
                         % row.get("number"))
 
@@ -323,6 +437,10 @@ def hard_blockers(candidate: QuestionCandidate) -> List[str]:
     # failed to agree without producing a named entry is a gap in the reporting above and must not pass
     # in silence.
     shortfall = (cross.compared - cross.agreed) if cross.compared else 0
+    # Released rows count as named: they ARE accounted for -- as advisories rather than blockers -- and
+    # leaving them out would re-block the released set through this line, which is the same fact charged
+    # twice that the suppression below exists to prevent. Without this the release would be dead code:
+    # the per-item blockers would go quiet and "agrees on 7 of 10" would withhold the set anyway.
     named = len(cross.hard_defects) + len(cross.needs_review)
     if shortfall and shortfall != named:
         blockers.append("the cross-check agrees on %d of %d items%s"
@@ -363,7 +481,42 @@ def advisory_notes(candidate: QuestionCandidate) -> List[str]:
         if _is_at_ceiling_warning(warning):
             continue
         notes.append("validator warning: %s" % warning)
+    # The third source, and the narrowest: one-turn anchor gaps on items whose answers agree, where
+    # adjacency is the only thing open in the entire set. See :func:`sole_adjacency_release` for why this
+    # is a note rather than a rewrite -- and note it ships as WARNING, so the gap is on the record the
+    # reviewer reads rather than absorbed silently.
+    for row in sole_adjacency_release(candidate):
+        notes.append(
+            "Q%s's evidence anchor is one turn from the writer's within narrator window %s; answers "
+            "agree and nothing else is open, so this ships as a note -- confirm the neighbouring turn "
+            "states the same fact" % (row.get("number"), row.get("writer_window")))
     return notes
+
+
+def delivered_status(candidate: QuestionCandidate) -> str:
+    """The status the DELIVERED record carries: ``WARNING`` whenever a note is still open.
+
+    Until the adjacency release existed this function would have been redundant, and that is exactly
+    why it is needed now. Both of the original advisory sources are MINOR findings or validator
+    warnings, and a MINOR moves the rules file's own algorithm to ``WARNING`` -- so "ships with notes"
+    and "auditor says WARNING" were the same set of cases, and the module header's promise (``PASS``
+    when nothing at all is open, ``WARNING`` when only advisories are) held without anyone asserting
+    it. An adjacency-released set breaks that coincidence: the audit found nothing, so its computed
+    status is ``PASS``, while a note about an unconfirmed anchor is open. Shipping that as ``PASS``
+    would put a set on the record as unqualified-clean with a caveat attached that only the
+    ``advisories`` list mentions -- the "delivering them silently" failure one level up.
+
+    Only ``PASS`` is floored, and only upward. A ``FAIL`` is never softened here: FAIL means CRITICAL
+    or MAJOR, which :func:`hard_blockers` already refused to deliver, so this cannot be reached with
+    one -- and if it ever could, rewriting it would be the more serious of the two bugs.
+
+    The auditor's own value is not overwritten anywhere: it stays under ``review.question_qc_status``
+    in the same payload, and :attr:`QuestionCandidate.status` still reports it unchanged. This is the
+    delivery record's status, which is a different claim from the audit's verdict.
+    """
+    if advisory_notes(candidate) and candidate.status == "PASS":
+        return WARNING_STATUS
+    return candidate.status
 
 
 def delivery_blockers(candidate: QuestionCandidate) -> List[str]:
@@ -577,6 +730,12 @@ class QuestionResult(object):
         payload = self.candidate.as_dict()
         payload.update({
             "ok": True,
+            # Overridden, and only ever upward: see :func:`delivered_status`. The candidate's own
+            # `as_dict` reports the auditor's computed value, which is the right answer to "what did
+            # the audit conclude" and the wrong answer to "what is the state of the set we shipped"
+            # once a note can be open without any finding behind it. The auditor's value is still in
+            # this same payload under `review.question_qc_status`, unmodified.
+            "status": delivered_status(self.candidate),
             "selected_version": self.selected_version,
             # Stated on every successful result, not only when it was violated. A reader must be able
             # to see that the script was checked, because "no warning" and "not checked" look identical.
@@ -725,13 +884,15 @@ async def run_questions(
         # agreement, no hard defect, no leakage and no rival, and it was destroyed along with a
         # perfectly fair material.
         #
-        # `status` is the auditor's own computed value, not one asserted here -- for a MINOR-only set
-        # the rules file already computes WARNING (:data:`WARNING_STATUS`), so there is nothing to
-        # decide. The advisories travel on the result so the delivered record says what is open;
-        # delivering them silently would be the same defect as withholding them, one level quieter.
+        # `status` is :func:`delivered_status`, which is the auditor's own computed value for every
+        # shape that has a finding behind the note -- a MINOR-only set already computes WARNING from
+        # the rules file (:data:`WARNING_STATUS`) -- and floors a finding-free set with an open
+        # advisory to WARNING rather than shipping it as unqualified PASS. The advisories travel on
+        # the result too, so the delivered record says what is open; delivering them silently would
+        # be the same defect as withholding them, one level quieter.
         await emit("question_set_clean", {
             "version": best.label,
-            "status": best.status,
+            "status": delivered_status(best),
             "rounds": rounds,
             "advisory_notes": best_advisories[:8],
             "advisory_count": len(best_advisories),
