@@ -89,6 +89,12 @@ Read nothing else. Everything you need is in this skill's own directory and in t
      behind borders are warning signs that the content is really a form or note. The auditor judges
      the printed structure as a whole.
 
+     Column count does not decide the layout. A two-column Table is legal when its axes express at
+     least two comparable data dimensions. Conversely, a pure field/value list is always Form:
+     `Service stage / Arrangement` with rows for `Driver visit`, `Collection slot`, `Student service
+     charge`, `Included service`, and `Destination paperwork` is not a comparison. Do not add a
+     third column merely to make that list look like a Table.
+
      Put every printed heading, including the first column, in `structure.column_labels`. Then write
      a rectangular `structure.table_rows` matrix with exactly that many cells per row. A cell is
      either `{"text": "candidate-visible fixed text"}` or

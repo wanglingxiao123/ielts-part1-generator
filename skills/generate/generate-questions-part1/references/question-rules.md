@@ -88,6 +88,14 @@ express more naturally. Mixing layouts is legitimate only where the script reall
 record being taken, then requirements being discussed. Alternating layout group by group to look
 varied is forced mixing, and the auditor reports it.
 
+A pure field/value list is Form even when it can be drawn as a two-column grid. Each row in such a
+list names a different record field and supplies that field's value; the rows are not comparable
+observations along a shared second dimension. For example, `Service stage / Arrangement` with
+`Driver visit`, `Collection slot`, `Student service charge`, `Included service`, and `Destination
+paperwork` as rows must be Form. A Table instead needs at least two comparable data dimensions.
+Two-column Tables remain legal when that relationship is real; never invent a third column merely
+to satisfy appearance.
+
 For every new Table, `structure.column_labels` contains every printed column heading and
 `structure.table_rows` supplies the exact rectangular matrix. Each cell contains either fixed
 candidate-visible `text` or one `question_number`, never both. Every question in the group appears

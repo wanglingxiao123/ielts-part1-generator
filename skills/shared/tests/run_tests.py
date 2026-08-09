@@ -2603,6 +2603,21 @@ def test_question_structural_context_and_position_guidelines() -> None:
           and "(as spelt)" in audit and "(as mentioned)" in audit)
 
 
+def test_form_table_semantics_are_consistent_across_agents() -> None:
+    """Keep the production pseudo-table example visible at all three decision layers."""
+    print("question guidance: form/table semantics")
+    documents = {
+        "material specification": VALIDATE.parents[1] / "references" / "specification.md",
+        "question rules": QUESTION_VALIDATE.parents[1] / "references" / "question-rules.md",
+        "audit rules": QUESTION_AUDIT_SCHEMAS.parent / "references"
+        / "question-audit-rules.md",
+    }
+    for label, path in documents.items():
+        text = " ".join(path.read_text(encoding="utf-8").lower().split())
+        check("%s keeps the production field/value counterexample" % label,
+              "service stage / arrangement" in text)
+
+
 def test_question_ar003_tiers_follow_the_canonical() -> None:
     """AR-003's tier is decided by tokenising the canonical, NEVER by the declared word_limit.
 
@@ -3046,6 +3061,7 @@ def main() -> int:
         test_question_package_schema_contract,
         test_question_validator_catches_the_stage_defects,
         test_question_structural_context_and_position_guidelines,
+        test_form_table_semantics_are_consistent_across_agents,
         test_question_ar003_tiers_follow_the_canonical,
         test_question_blank_number_is_matched_as_a_whole_numeral,
         test_question_audit_schema_contract,

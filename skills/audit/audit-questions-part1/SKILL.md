@@ -85,11 +85,16 @@ Read nothing else.
      or scope limit such as `(day and month)`, but flag commentary on speaking, spelling or answering
      such as `(as spelt)` / `(as mentioned)` under naturalness. A labelled form field needs no
      carrier merely to stop the two carrier strings being empty;
-   - **a false or malformed `table`** — judge whether both axes organise comparable information.
+   - **a false or malformed `table`** — judge whether its axes express at least two comparable data
+     dimensions.
      Read `table_rows` as the printed matrix: headings must match the cell dimensions, fixed text and
      blanks must occupy truthful cells, and every member question must appear once. Filler headings
      such as `Detail` / `Notes` / `Information` remain warning signs rather than verdicts
-     (SC-015 / QR-026);
+     (SC-015 / QR-026). Do not use column count as the verdict: a genuine two-column Table is legal.
+     But a pure field/value list, with one unrelated record field and value per row, is Form rather
+     than Table. In particular, `Service stage / Arrangement` with rows for `Driver visit`,
+     `Collection slot`, charges, included service, and paperwork has no comparison axis and must be
+     flagged as a pseudo-table. Do not recommend manufacturing a third column;
    - **a navigation line that names nothing** — apply the transfer test: could it be copied unchanged
      onto a completely different Part 1 material? "Details are confirmed" can (QR-034);
    - **layouts alternating where the dialogue does not change mode** (SC-015).

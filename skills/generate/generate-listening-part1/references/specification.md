@@ -108,6 +108,17 @@ Choose groups with this decision procedure:
    evidence lies in two narrator windows.
 3. If they do not, split only where the candidate-visible record structure genuinely changes.
 
+Choose Form versus Table from the relationship among the facts:
+
+- A **Form** records independent named fields and their values, one field/value pair per row.
+- A **Table** has at least two comparable data dimensions: its axes organise like-with-like
+  information so that the row/column relationship conveys meaning beyond a list of labels.
+- Column count is not the test. A genuine two-column comparison is legal, and no third column may
+  be invented merely to make a Table look substantial.
+- `Service stage / Arrangement` with rows such as `Driver visit`, `Collection slot`, `Student
+  service charge`, `Included service`, and `Destination paperwork` is a pure field/value list and
+  must be planned as Form, not Table.
+
 Group count is content-driven and may be one, two, or three. There is no target distribution and no
 preference for two groups. The midpoint narrator cue is never, by itself, evidence of a structure
 change. Additional requirements:
