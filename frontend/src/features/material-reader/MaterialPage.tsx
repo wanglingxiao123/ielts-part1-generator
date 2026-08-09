@@ -25,6 +25,7 @@ import { Link, useParams } from 'react-router-dom'
 import { api } from '@/api/endpoints'
 import { getThresholds } from '@/config/runtimeConfig'
 import type { MaterialRecord } from '@/contracts/api'
+import type { CommentAnchor } from '@/contracts/comments'
 import { summariseExamPoints } from '@/domain/examPoints'
 import { analyseFormGroups } from '@/domain/formGroups'
 import { joinFromRecord } from '@/domain/joinArtifacts'
@@ -39,10 +40,12 @@ import { AudioPanel, AudioPlayer } from '../audio/AudioPlayer'
 import { useAudioStatus } from '../audio/useAudioStatus'
 import { useAudioPool } from '../audio/useAudioPool'
 import { ExamPointPanel } from './ExamPointPanel'
+import { CommentComposer, CommentList } from './MaterialComments'
 import { MaterialReader } from './MaterialReader'
 import { QuestionPreviewPanel } from './QuestionPreviewPanel'
 import { QuestionTypePanel } from './QuestionTypePanel'
 import { useMaterialQuestions } from './useMaterialQuestions'
+import { useMaterialComments } from './useMaterialComments'
 
 /** 标题下的两个页签。`script` 是进来时的默认，因为「阅读全文」是这一页原本的名字。 */
 type Tab = 'script' | 'questions'
@@ -54,6 +57,9 @@ export function MaterialPage() {
   const [error, setError] = useState<string | null>(null)
   const [jump, setJump] = useState<{ turnIndex: number; nonce: number } | null>(null)
   const [tab, setTab] = useState<Tab>('script')
+  const [questionAnchor, setQuestionAnchor] = useState<CommentAnchor | null>(null)
+  const [turnAnchor, setTurnAnchor] = useState<CommentAnchor | null>(null)
+  const [scriptCommentsOpen, setScriptCommentsOpen] = useState(false)
   /** 生成音频：已按下、还没等到第一次「合成中」状态的那一小段。 */
   const [generating, setGenerating] = useState(false)
   const [generateError, setGenerateError] = useState<string | null>(null)
@@ -140,6 +146,49 @@ export function MaterialPage() {
     questionsRequested && Boolean(record),
   )
   const missing = useMemo(() => explainMissingQuestions(questions.data), [questions.data])
+  const comments = useMaterialComments(materialId ?? '', Boolean(record))
+  const questionComments = useMemo(
+    () => comments.comments.filter((comment) => comment.anchor.type === 'question'),
+    [comments.comments],
+  )
+  const turnComments = useMemo(
+    () => comments.comments.filter((comment) => comment.anchor.type === 'turn'),
+    [comments.comments],
+  )
+  const questionCommentCounts = useMemo(
+    () =>
+      questionComments.reduce((counts, comment) => {
+        counts.set(comment.anchor.index, (counts.get(comment.anchor.index) ?? 0) + 1)
+        return counts
+      }, new Map<number, number>()),
+    [questionComments],
+  )
+  const turnCommentCounts = useMemo(
+    () =>
+      turnComments.reduce((counts, comment) => {
+        counts.set(comment.anchor.index, (counts.get(comment.anchor.index) ?? 0) + 1)
+        return counts
+      }, new Map<number, number>()),
+    [turnComments],
+  )
+
+  const navigateComment = useCallback((anchor: CommentAnchor) => {
+    if (anchor.type === 'question') {
+      setTab('questions')
+      setQuestionsRequested(true)
+      setQuestionAnchor(anchor)
+      window.setTimeout(() => {
+        document
+          .querySelector(`[data-question="${anchor.index}"]`)
+          ?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+      }, 0)
+      return
+    }
+    setTab('script')
+    setScriptCommentsOpen(true)
+    setTurnAnchor(anchor)
+    setJump({ turnIndex: anchor.index, nonce: Date.now() })
+  }, [])
 
   /**
    * 生成音频。走 `preview_audio`，不是 `select`。
@@ -291,6 +340,14 @@ export function MaterialPage() {
           blueprint={record.blueprint}
           view={view}
           onJump={jumpToScript}
+          selectedQuestion={
+            questionAnchor?.type === 'question' ? questionAnchor.index : null
+          }
+          commentCounts={questionCommentCounts}
+          onSelectQuestion={(index) => setQuestionAnchor({ type: 'question', index })}
+          comments={questionComments}
+          commentsState={comments}
+          onNavigateComment={navigateComment}
         />
       ) : (
         <>
@@ -301,7 +358,51 @@ export function MaterialPage() {
             onPlayTurn={playlist ? onPlayTurn : undefined}
             unplayableTurns={playlist?.unplayableTurnIndexes}
             jumpToTurn={jump}
+            commentCounts={turnCommentCounts}
+            onSelectCommentTurn={(index) => {
+              setTurnAnchor({ type: 'turn', index })
+              setScriptCommentsOpen(true)
+            }}
           />
+
+          <section className={`script-comments${scriptCommentsOpen ? ' open' : ''}`}>
+            <button
+              type="button"
+              className="script-comments-toggle"
+              aria-expanded={scriptCommentsOpen}
+              onClick={() => setScriptCommentsOpen((open) => !open)}
+            >
+              <span>批注 ({turnComments.length})</span>
+              <span aria-hidden="true">{scriptCommentsOpen ? '⌄' : '⌃'}</span>
+            </button>
+            {scriptCommentsOpen && (
+              <div className="script-comments-body">
+                {comments.loading ? (
+                  <div className="comment-empty">正在读取批注…</div>
+                ) : (
+                  <CommentList
+                    comments={turnComments}
+                    saving={comments.saving}
+                    onNavigate={navigateComment}
+                    onDelete={comments.remove}
+                  />
+                )}
+                {comments.error && (
+                  <div className="comment-error">
+                    {comments.error}
+                    <button type="button" onClick={comments.reload}>
+                      重试
+                    </button>
+                  </div>
+                )}
+                <CommentComposer
+                  anchor={turnAnchor}
+                  saving={comments.saving}
+                  onSubmit={comments.create}
+                />
+              </div>
+            )}
+          </section>
 
           <div className="split-2" style={{ marginTop: 12 }}>
             <ExamPointPanel summary={examPoints} onJump={jumpTo} />
@@ -375,12 +476,24 @@ function QuestionsTab({
   blueprint,
   view,
   onJump,
+  selectedQuestion,
+  commentCounts,
+  onSelectQuestion,
+  comments,
+  commentsState,
+  onNavigateComment,
 }: {
   state: ReturnType<typeof useMaterialQuestions>
   missing: ReturnType<typeof explainMissingQuestions>
   blueprint: MaterialRecord['blueprint']
   view: ReturnType<typeof joinFromRecord> | null
   onJump: (turnIndex: number) => void
+  selectedQuestion: number | null
+  commentCounts: ReadonlyMap<number, number>
+  onSelectQuestion: (questionNumber: number) => void
+  comments: ReturnType<typeof useMaterialComments>['comments']
+  commentsState: ReturnType<typeof useMaterialComments>
+  onNavigateComment: (anchor: CommentAnchor) => void
 }) {
   if (state.loading) {
     return <div className="panel panel-pad">正在读取题目…</div>
@@ -402,7 +515,49 @@ function QuestionsTab({
 
   const pkg = state.data?.questions
   if (pkg) {
-    return <QuestionPreviewPanel pkg={pkg} blueprint={blueprint} view={view} onJump={onJump} />
+    return (
+      <div className="question-comments-layout">
+        <QuestionPreviewPanel
+          pkg={pkg}
+          blueprint={blueprint}
+          view={view}
+          onJump={onJump}
+          selectedQuestion={selectedQuestion}
+          commentCounts={commentCounts}
+          onSelectQuestion={onSelectQuestion}
+        />
+        <aside className="question-comments-panel">
+          <div className="comment-panel-head">批注 ({comments.length})</div>
+          {commentsState.loading ? (
+            <div className="comment-empty">正在读取批注…</div>
+          ) : (
+            <CommentList
+              comments={comments}
+              saving={commentsState.saving}
+              onNavigate={onNavigateComment}
+              onDelete={commentsState.remove}
+            />
+          )}
+          {commentsState.error && (
+            <div className="comment-error">
+              {commentsState.error}
+              <button type="button" onClick={commentsState.reload}>
+                重试
+              </button>
+            </div>
+          )}
+          <CommentComposer
+            anchor={
+              selectedQuestion === null
+                ? null
+                : { type: 'question', index: selectedQuestion }
+            }
+            saving={commentsState.saving}
+            onSubmit={commentsState.create}
+          />
+        </aside>
+      </div>
+    )
   }
 
   if (!missing) {

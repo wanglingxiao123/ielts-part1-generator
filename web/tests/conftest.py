@@ -32,6 +32,7 @@ if str(REPO_ROOT) not in sys.path:
 from web.auth import AuthService, MemoryUserStore, SessionSigner  # noqa: E402
 from web.batch_history import BatchHistory  # noqa: E402
 from web.batch_store import InMemoryBatchStore  # noqa: E402
+from web.comment_store import CommentService, InMemoryCommentStore  # noqa: E402
 from web.runtime_client import SSE_CONTENT_TYPE  # noqa: E402
 from web.app import WebTier  # noqa: E402
 
@@ -299,9 +300,19 @@ def history(batch_store: InMemoryBatchStore) -> BatchHistory:
 
 
 @pytest.fixture
+def comment_store() -> InMemoryCommentStore:
+    return InMemoryCommentStore()
+
+
+@pytest.fixture
+def comments(comment_store: InMemoryCommentStore) -> CommentService:
+    return CommentService(comment_store)
+
+
+@pytest.fixture
 def tier(auth: AuthService, runtime: StubRuntimeClient, static_dir: Path,
-         history: BatchHistory) -> WebTier:
-    return WebTier(auth, runtime, str(static_dir), history=history)
+         history: BatchHistory, comments: CommentService) -> WebTier:
+    return WebTier(auth, runtime, str(static_dir), history=history, comments=comments)
 
 
 @pytest.fixture

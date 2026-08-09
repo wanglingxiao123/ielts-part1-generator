@@ -29,7 +29,12 @@ import pytest
 
 from backend.deterministic.crosscheck import CrossCheckResult
 from backend.orchestration import delivery as delivery_module
-from backend.orchestration.delivery import DeliveryBudget, run_request
+from backend.orchestration.delivery import (
+    HARD_LIMIT_SECONDS,
+    SAFETY_MARGIN_SECONDS,
+    DeliveryBudget,
+    run_request,
+)
 from backend.orchestration.loop import Candidate, MaterialResult
 from backend.orchestration.question_loop import QuestionCandidate, QuestionResult
 from backend.orchestration.slot_store import (
@@ -52,6 +57,15 @@ class FakeScenario:
         self.title_zh = "租房咨询"
         self.prompt_hint = "hint"
         self.default_count = 1
+
+
+def test_default_delivery_budget_uses_the_streaming_window():
+    """The SSE action must not inherit AgentCore's 15-minute synchronous limit."""
+    budget = DeliveryBudget(now=1000.0)
+
+    assert HARD_LIMIT_SECONDS == 3600
+    assert SAFETY_MARGIN_SECONDS == 300
+    assert budget.deadline == 1000.0 + 3300
 
 
 def memory_store() -> SlotStore:

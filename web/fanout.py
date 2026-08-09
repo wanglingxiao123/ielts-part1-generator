@@ -96,9 +96,10 @@ __all__ = [
 # and every one of these threads is parked on a socket read.
 FANOUT_CONCURRENCY = max(1, int(os.environ.get("WEB_FANOUT_CONCURRENCY", "6")))
 
-# The platform's synchronous wall on ONE invocation, which now carries ONE material. Used only to
-# report an honest `deadline_at`; the backend enforces its own budget inside each child.
-PER_MATERIAL_WALL_SECONDS = float(os.environ.get("WEB_PER_MATERIAL_WALL", "900"))
+# The application's working wall on ONE streaming invocation, which now carries ONE material. Used
+# only to report an honest `deadline_at`; the backend enforces its own budget inside each child.
+# ``generate_sets`` uses 55 minutes inside AgentCore's 60-minute streaming limit.
+PER_MATERIAL_WALL_SECONDS = float(os.environ.get("WEB_PER_MATERIAL_WALL", "3300"))
 
 # How long the merged stream may stay silent before it emits a keepalive.
 #

@@ -14,6 +14,10 @@ import type {
   SelectMaterialResponse,
 } from '@/contracts/api'
 import { request } from './http'
+import type {
+  CreateMaterialComment,
+  MaterialCommentsDocument,
+} from '@/contracts/comments'
 
 export const api = {
   createBatch: (body: CreateBatchRequest) =>
@@ -123,5 +127,24 @@ export const api = {
     request<MaterialQuestionsResponse>({
       method: 'GET',
       path: `/material-questions/${materialId}${batchId ? `?batch_id=${encodeURIComponent(batchId)}` : ''}`,
+    }),
+
+  materialComments: (materialId: string) =>
+    request<MaterialCommentsDocument>({
+      method: 'GET',
+      path: `/material-comments/${encodeURIComponent(materialId)}`,
+    }),
+
+  createMaterialComment: (materialId: string, body: CreateMaterialComment) =>
+    request<MaterialCommentsDocument>({
+      method: 'POST',
+      path: `/material-comments/${encodeURIComponent(materialId)}`,
+      body,
+    }),
+
+  deleteMaterialComment: (materialId: string, commentId: string) =>
+    request<MaterialCommentsDocument>({
+      method: 'DELETE',
+      path: `/material-comments/${encodeURIComponent(materialId)}/${encodeURIComponent(commentId)}`,
     }),
 }

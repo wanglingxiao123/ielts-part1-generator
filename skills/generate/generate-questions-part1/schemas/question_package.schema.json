@@ -175,8 +175,13 @@
         "structure": {
           "type": "object",
           "additionalProperties": false,
-          "description": "The layout layer's own labels, and the reason `title` cannot serve for all three. Which key is required depends on `layout`, checked in the validator rather than here so the message can name the layout: form and table need row labels, table also needs column labels, note needs its hierarchy. Missing labels are a content-accessibility failure (QR-015), not a visual-polish one -- a table whose columns are unlabelled cannot be answered, whereas its border style can be fixed after content review.",
+          "description": "The layout layer's own labels, and the reason `title` cannot serve for all three. Which key is required depends on `layout`, checked in the validator rather than here so the message can name the layout: form and table need row labels, table also needs column labels, and note needs note_sections with explicit question membership. Missing labels are a content-accessibility failure (QR-015), not a visual-polish one -- a table whose columns are unlabelled cannot be answered, whereas its border style can be fixed after content review.",
           "properties": {
+            "row_header_label": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Table only: the heading above the row-label column, rendered in the top-left cell. `column_labels` names only the content columns to its right."
+            },
             "row_labels": {
               "type": "array",
               "items": {
@@ -197,7 +202,36 @@
                 "type": "string",
                 "minLength": 1
               },
-              "description": "Note headings and sub-headings in printed order."
+              "description": "Legacy note headings in printed order. Kept readable for archived packages; new note groups must use note_sections so headings cannot be detached from their questions."
+            },
+            "note_sections": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "heading",
+                  "question_numbers"
+                ],
+                "properties": {
+                  "heading": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "question_numbers": {
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 10
+                    }
+                  }
+                }
+              },
+              "description": "Candidate-visible note sections in printed order. Each heading is rendered immediately above the questions listed in question_numbers; the validator requires an exact, non-overlapping cover of the note group's questions."
             }
           }
         }
@@ -228,7 +262,7 @@
         },
         "carrier_before": {
           "type": "string",
-          "description": "Printed text before the blank. May be empty for an initial blank, but not together with carrier_after: a blank with no context on either side is answerable only by guessing (QR-026)."
+          "description": "Printed text before the blank. It may be empty together with carrier_after when a form row label, or a table's real row and column labels, already supplies candidate-visible structural context. With no such labels, an isolated blank is invalid (QR-026)."
         },
         "blank": {
           "type": "string",

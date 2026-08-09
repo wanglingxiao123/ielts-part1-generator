@@ -1,12 +1,14 @@
 # IELTS Listening Part 1 材料生成系统
 
 这是一个面向 IELTS 出题人员的内部材料生产与审核系统。用户选择场景和数量后，系统生成候选
-听力对话及其信息点标注，执行程序校验和独立 AI 盲审，再将候选材料逐套返回浏览器。
+听力对话、十个信息点和对应题目，分别执行程序校验与独立 AI 盲审，再将完整套件逐套返回浏览器。
 
 系统的边界：
 
-- **自动生成流程交付文字材料**：对话稿、十个信息点、校验结果和审核结果。
-- **不自动生成题目或答案**：命题仍是后续人工环节。
+- **自动生成流程交付完整文字套件**：对话稿、十个信息点、两组共十道题、答案与证据、校验结果和
+  审核结果。
+- **材料和题目分别审核**：材料审核看不到生成者的 `blueprint`；题目审核看不到答案键，再由 Python
+  将独立重建结果交叉检查。
 - **不在生成流程中合成音频**：用户点击试听或选中材料后，系统才按需调用 Polly。
 
 本 README 面向开发、部署和运维人员。出题人员请阅读
@@ -26,19 +28,22 @@
 │   └── scenarios.yaml                # 场景分类、角色和场景说明
 ├── material/
 │   └── Part1_选材命制规范.md          # IELTS Part 1 选材与命制规范
-├── skills/                           # 两个技能池，各自独立；这个划分就是盲审边界
+├── skills/                           # 生成、审核与可行性检查 Skill；池划分就是盲审边界
 │   ├── generate/                     # 生成 Agent 的池
-│   │   └── generate-listening-part1/
-│   │       ├── SKILL.md              # 生成任务入口规范
-│   │       ├── references/specification.md
-│   │       ├── schemas/              # material、blueprint JSON Schema
-│   │       └── scripts/validate_part1.py # 生成结果的确定性校验器
+│   │   ├── generate-listening-part1/
+│   │   │   ├── SKILL.md              # 材料生成任务入口规范
+│   │   │   ├── references/specification.md
+│   │   │   ├── schemas/              # material、blueprint JSON Schema
+│   │   │   └── scripts/validate_part1.py
+│   │   └── generate-questions-part1/ # 题目生成、Schema 与 validator
 │   ├── audit/                        # 审核 Agent 的池；不含 blueprint schema
-│   │   └── audit-listening-part1/
-│   │       ├── SKILL.md              # 审核任务入口规范
-│   │       ├── references/audit-rubric.md
-│   │       ├── schemas/audit.schema.json
-│   │       └── scripts/audit_metrics.py  # 审核所需客观指标
+│   │   ├── audit-listening-part1/
+│   │   │   ├── SKILL.md              # 材料审核任务入口规范
+│   │   │   ├── references/audit-rubric.md
+│   │   │   ├── schemas/audit.schema.json
+│   │   │   └── scripts/audit_metrics.py
+│   │   └── audit-questions-part1/    # 不看答案键的题目审核
+│   ├── feasibility/                  # 材料能否承载十道公平题目的预检池
 │   └── shared/                       # 两侧都不激活的离线工具
 │       ├── cross_check.py            # 生成标注与盲审结果交叉检查
 │       └── tests/                    # Skill 契约回归测试
@@ -55,7 +60,9 @@
 │   ├── deterministic/                # 校验、指标、锚点与交叉检查包装
 │   ├── orchestration/
 │   │   ├── loop.py                   # 单套材料 Agent Loop
-│   │   ├── batch.py                  # 批次执行与事件输出
+│   │   ├── question_loop.py          # 单套题目生成、审核与最多两轮修改
+│   │   ├── delivery.py               # 完整套件、换材料、断点与精确数量交付
+│   │   ├── batch.py                  # 旧的仅材料 action 与测试入口
 │   │   ├── candidate_store.py        # 候选材料注册
 │   │   └── publish.py                # 选稿、试听和异步音频任务
 │   ├── scripts/                      # 部署、冒烟和 CI 门禁
@@ -74,6 +81,7 @@
 │   ├── runtime_client.py             # SigV4 AgentCore 客户端
 │   ├── auth.py                       # 登录、session 和用户存储
 │   ├── batch_store.py                # 批次持久化
+│   ├── comment_store.py              # `_comments/` 单人批注存储与校验
 │   └── tests/
 ├── frontend/                         # React + TypeScript + Vite 审阅界面
 │   ├── src/
@@ -112,7 +120,7 @@ flowchart LR
     RT["AgentCore Runtime<br/>生成与审核 Loop"]
     CI["AgentCore Code Interpreter<br/>隔离计算审核指标"]
     MODEL["Bedrock Mantle<br/>GPT-5.6"]
-    S3["S3<br/>材料、批次、用户、音频"]
+    S3["S3<br/>材料、题目、断点、批注、音频"]
     SSM["SSM<br/>Session Secret"]
     POLLY["Polly<br/>按需音频"]
 
@@ -130,13 +138,13 @@ flowchart LR
 
 | 组件 | 职责 |
 |---|---|
-| 浏览器 | 选择场景、显示逐套生成进度、审阅材料、发起试听或选稿 |
+| 浏览器 | 选择场景、显示逐套生成进度、审阅原文和题目、添加批注、发起试听或选稿 |
 | CloudFront + ALB | 提供稳定 HTTPS 地址，将动态请求转发到 Web 服务 |
 | Web / ECS | 登录与 session、批次历史、调用 Runtime、把多条结果流合并成 SSE |
-| AgentCore Runtime | 创建 Strands Agent，执行生成、校验、盲审、修改和按需音频 action；`PUBLIC` 网络模式用于访问 AWS 公网服务 |
+| AgentCore Runtime | 创建 Strands Agent，执行材料与题目的生成、校验、盲审、修改和按需音频 action；`PUBLIC` 网络模式用于访问 AWS 公网服务 |
 | AgentCore Code Interpreter | 在空白远程环境中运行审核指标脚本；只接收脚本和当前 `material` |
 | Bedrock Mantle | 承载生成、审核和修改所需的 GPT-5.6 调用 |
-| S3 | 保存候选材料、批次、用户数据、审核状态和按需生成的音频 |
+| S3 | 保存候选材料、题目包、批次、断点、用户数据、个人批注、审核状态和按需生成的音频 |
 | SSM | 保存 Web session 签名密钥，避免容器重启后用户集体掉线 |
 | Polly | 仅在用户主动试听或选稿后合成英式语音 |
 
@@ -145,12 +153,13 @@ flowchart LR
 1. 浏览器向 Web 服务提交场景和数量。
 2. `web/fanout.py` 为每套材料分别调用一次 AgentCore Runtime，并按
    `WEB_FANOUT_CONCURRENCY` 控制并发。
-3. Runtime 对每套材料执行第 3 节的 Agent Loop，只产出文字材料和质量信息。
+3. Runtime 对每个交付名额执行第 3 节的 Agent Loop，依次完成材料、可行性预检和十道题。
 4. Web 将多条 Runtime 流合并为一条 SSE；浏览器不必等待整个批次完成，可以逐套看到结果。
 5. Web 同时把批次索引和结果保存到 S3，供刷新页面和历史查询使用。
 
-这种 fan-out 让 AgentCore 的 15 分钟同步限制约束**单套材料**，而不是整个批次。Web 使用独立
-线程池承载阻塞式 boto3 长连接，避免占满 FastAPI/anyio 默认线程池。
+`generate_sets` 使用 SSE，因此适用 AgentCore 的 60 分钟流式上限，而不是 15 分钟同步上限。
+每套拥有独立的 Runtime invocation 和 55 分钟工作窗口；Web 使用独立线程池承载阻塞式 boto3
+长连接，避免占满 FastAPI/anyio 默认线程池。
 
 ### 2.3 音频为什么不在生成流程里
 
@@ -186,37 +195,48 @@ Runtime 立即返回 job id，浏览器通过 `audio_status` 轮询。合成完�
 ```mermaid
 flowchart LR
     Q["生成请求"] --> F["Web 并发拆分<br/>每套一个 Runtime"]
-    F --> G["生成 Agent<br/>选 Skill 并生成"]
+    F --> G["材料生成 Agent<br/>选 Skill 并生成"]
     G --> V{"Python 校验"}
     V -- "错误，最多 3 次" --> G
-    V -- "通过或次数用完" --> A["独立审核 Agent<br/>盲审原稿"]
+    V -- "通过或次数用完" --> A["材料审核 Agent<br/>盲审原稿"]
     A --> X{"Python 判断<br/>是否修改"}
     X -- "否" --> O["采用原稿"]
-    X -- "是" --> R["全新生成 Agent<br/>修改原稿"]
+    X -- "是" --> R["全新材料生成 Agent<br/>修改原稿"]
     R --> C{"Python 校验<br/>修改稿通过？"}
     C -- "否" --> O
-    C -- "是" --> E["全新审核 Agent<br/>复评修改稿"]
+    C -- "是" --> E["全新材料审核 Agent<br/>复评修改稿"]
     E --> B["Python<br/>原稿/修改稿择优"]
-    O --> D["交付文字材料"]
-    B --> D
+    O --> P{"题目可行性预检"}
+    B --> P
+    P -- "材料不适合出题" --> W["同一交付名额<br/>更换候选材料"]
+    W --> G
+    P -- "通过" --> T["题目生成 Agent<br/>生成两组十道题"]
+    T --> H{"Python 校验 +<br/>题目盲审"}
+    H -- "需修改，最多 2 轮" --> J["全新题目生成 Agent<br/>定向修改"]
+    J --> H
+    H -- "可交付" --> D["交付完整套件<br/>材料 + 题目"]
+    H -- "仍有硬问题" --> K{"同一材料<br/>重启题目阶段一次"}
+    K -- "首次失败" --> T
+    K -- "再次失败" --> W
 
     classDef ai fill:#fef3c7,stroke:#d97706,color:#78350f;
     classDef audit fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
     classDef code fill:#f3f4f6,stroke:#6b7280,color:#111827;
     classDef done fill:#dcfce7,stroke:#16a34a,color:#14532d;
-    class G,R ai;
-    class A,E audit;
-    class Q,F,V,X,C,B code;
+    class G,R,T,J ai;
+    class A,E,H audit;
+    class Q,F,V,X,C,B,P,K,W code;
     class O,D done;
 ```
 
-这张图描述的是**一套材料从收到请求到最终交付的完整过程**。黄色节点是负责写作或改稿的生成
-Agent，蓝色节点是独立审核 Agent，灰色节点是 Python 程序作出的确定性判断，绿色节点是最终
-采用和交付的结果。
+这张图描述的是**一个交付名额从收到请求到拿到完整套件的主线**。黄色节点是负责写作或改稿的
+生成 Agent，蓝色节点包含独立审核，灰色节点是 Python 控制的校验、预检和重试，绿色节点是采用
+或交付结果。图只表达整体方向；各层的重试边界和交付门槛在下文说明。
 
 整个流程可以按下面的顺序理解：
 
-1. **拆分任务**：Web 将批次拆成独立的 Runtime 请求并行执行，每套材料使用独立 Agent 会话。
+1. **拆分任务**：Web 按用户要求的数量创建交付名额（slot），每个名额对应一套最终交付物，并用
+   独立 Runtime 请求并行执行。slot 不是某份固定材料；候选材料不适合出题时，名额保留并换材料。
 2. **生成初稿**：生成 Agent 激活 Skill，读取规范和 Schema，产出对话稿 `material` 与信息点
    `blueprint`。
 3. **程序校验**：Python 检查格式、数量和标注；失败时携带报告重新生成，最多三次。次数用完后
@@ -226,38 +246,48 @@ Agent，蓝色节点是独立审核 Agent，灰色节点是 Python 程序作出�
 5. **决定修改**：结果干净则采用原稿；存在缺陷且时间充足则进入修改。
 6. **修改复评**：全新的生成 Agent 修改原稿。修改稿通过 Python 校验后，再由全新的审核 Agent
    从零复评；校验失败则回退原稿。
-7. **择优交付**：Python 比较两版审核结果并选择较优版本，只交付文字材料及质量信息。
+7. **材料择优**：Python 比较两版材料审核结果并选择较优版本。
+8. **题目可行性预检**：在正式出题前检查十个目标答案是否能进入标准 rubric、材料是否能够承载
+   十道公平题目；不适合时为同一个 slot 更换候选材料。
+9. **生成与盲审题目**：题目生成 Agent 根据最终材料和 `blueprint` 生成两组共十道题。Python
+   validator 检查版式、答案、证据和指令；题目审核 Agent 看不到答案键，独立重建答案，再由 Python
+   交叉检查。
+10. **定向修题**：存在问题时只修改题面、版式、答案键或证据锚点，不得改动已经确定的录音原文；
+    最多修改两轮，每轮都重新校验、盲审和交叉检查。
+11. **恢复与换材料**：题目阶段第一次不可交付时，保留合格材料并重新生成一套题；再次不可交付才
+    换候选材料，从材料 Loop 重新开始。
+12. **完整交付**：只有材料和十道题都已写入存储，这个 slot 才算完成。用户要求 N 套时，N 个
+    slot 全部完成才是 `succeeded`，少于 N 套不会被包装成成功。
 
 因此，这套系统不是让一个 AI 从头到尾自行决定下一步，而是
 “**Agent 执行需要理解语言的工作，Python 控制流程并验收结果**”：
 
-- Agent 负责激活 Skill、读取规范、生成、盲审和修改；
-- Python 负责拆分任务、控制重试、隔离盲审输入、运行外部校验、决定是否修改并选择最终版本。
+- Agent 负责激活 Skill、读取规范、生成材料与题目、盲审和修改；
+- Python 负责拆分任务、保存断点、控制两层重试、隔离盲审输入、运行外部校验、决定换材料并选择
+  最终版本。
 
 Agent 不能凭自己运行过 validator 就宣布通过。Python 会在 Agent 返回后重新校验真实产物。
 下面各小节沿着这条流程，说明每一步如何落到代码中。
 
-### 3.1 请求进入单套材料 Loop
+### 3.1 请求进入一个完整套件的 Loop
 
 一次请求的实际调用链如下：
 
 ```text
-浏览器 POST /api/invocations（action=generate）
+浏览器 POST /api/invocations（action=generate_sets）
   → web/app.py
   → web/fanout.py：按数量拆成一套一个 ChildPlan
   → web/runtime_client.py：每套使用新的 runtimeSessionId 调用 AgentCore
   → backend/app.py::invoke(payload)
-  → backend/request.py::parse_generate_request()
-  → backend/orchestration/batch.py::run_batch()
-  → backend/orchestration/loop.py::run_one()
-  → backend/steps/agent_steps.py::generate()
-  → backend/agents.py::build_generate_agent()
-  → Strands Agent.invoke_async()
+  → backend/request.py::parse_delivery_request()
+  → backend/orchestration/delivery.py::stream_request()
+  → backend/orchestration/loop.py::run_one()              # 材料阶段
+  → backend/orchestration/question_loop.py::run_questions() # 题目阶段
 ```
 
 Runtime 的 Python 入口是 `backend/app.py` 中的 `@app.entrypoint invoke()`。它读取 payload 的
-`action`：`generate` 进入生成流程，`list_scenarios`、`select`、`preview_audio` 等进入各自
-action。`backend/request.py` 再把场景 id 和数量展开成 `Scenario`。
+`action`：当前前端使用 `generate_sets` 生成完整材料与题目；旧的 `generate` 仍保留为仅材料路径和
+兼容入口。`list_scenarios`、`select`、`preview_audio` 等进入各自 action。
 
 Python 最终传给生成 Agent 的不是整套命制规范，而是明确的任务和场景，例如：
 
@@ -289,12 +319,15 @@ Agent(
 创建新实例是为了隔离会话：不同材料、生成重试、第一次盲审和修改后复评都不共享对话历史或
 Skill 激活状态。
 
-系统有两类 Agent、两个 Skill 池：
+系统沿用“生成侧 / 审核侧分池”的边界，并按任务创建不同 Agent：
 
 | Agent | Skill 池 | 工具 | 用途 |
 |---|---|---|---|
-| 生成 Agent | `skills/generate/` | `skills`、`file_read`、`shell` | 初稿生成与修改 |
-| 审核 Agent | `skills/audit/` | `skills`、`file_read`；**无 shell** | 原稿盲审与修改稿复评 |
+| 材料生成 Agent | `skills/generate/` | `skills`、`file_read`、`shell` | 材料初稿生成与修改 |
+| 材料审核 Agent | `skills/audit/` | `skills`、`file_read`；**无 shell** | 不看 blueprint 的材料盲审与复评 |
+| 题目生成 Agent | `skills/generate/` | `skills`、`file_read`、`shell` | 题目初稿与最多两轮定向修改 |
+| 题目审核 Agent | `skills/audit/` | `skills`、`file_read`；**无 shell** | 不看答案键的题目盲审与复评 |
+| 可行性 Agent | `skills/feasibility/` | 只读所需输入 | 判断最终材料能否承载十道公平题目 |
 
 修改没有单独的 Skill。修改步骤创建一个全新的生成 Agent，复用生成 Skill，因为修改稿仍须满足
 同一份 specification、Schema 和 validator。
@@ -321,7 +354,7 @@ Agent 先看到池内 Skill 的 name + description
 
 这些动作由模型通过工具调用完成，不是 Python 逐项强制的状态机。
 
-当前两个 Skill 的内容是：
+材料主线的两个 Skill 是：
 
 | | 生成 Skill | 审核 Skill |
 |---|---|---|
@@ -342,6 +375,10 @@ Agent 先看到池内 Skill 的 name + description
 
 `material` 是对话稿；`blueprint` 是生成者声明的十个信息点，包括答案、证据句、对话位置和适用
 题型。`agent_steps.py` 负责解析这个外壳，并补上模型无法可靠知道的真实模型 id 和 UTC 时间。
+
+题目阶段另有 `generate-questions-part1` 与 `audit-questions-part1`。生成侧返回
+`question_face + answer_key + evidence`；审核侧只接收材料、考生可见题面和客观指标，不接收
+`answer_key`，独立重建十个答案后由 Python 交叉检查。
 
 ### 3.4 生成与双层确定性校验
 
@@ -419,17 +456,45 @@ material + metrics
 第一次盲审和复评是同一种 Agent 配置，但不是同一个实例或会话。复评 Agent 看不到第一次审核结论
 和修改指令，避免只针对已知问题寻找证据。
 
-### 3.7 并发与时间预算
+### 3.7 题目生成、盲审与定向修改
+
+材料择优后，`delivery.py` 先运行可行性预检。通过后，`question_loop.py` 执行：
+
+1. 题目生成 Agent 输出两组共十道题、答案键和证据；
+2. Python validator 检查 Schema、题型结构、rubric、答案预算、证据和题面泄露；
+3. 题目审核 Agent 只看考生可见题面与材料，独立重建答案；
+4. Python 将重建答案与答案键交叉检查，识别分歧、竞争答案、泄露和证据锚点问题；
+5. 若仍有问题，题目生成 Agent 根据明确 finding 定向修改，最多两轮，每轮重新走完整检查。
+
+`CRITICAL`、`MAJOR`、答案泄露、同等成立的竞争答案、答案分歧和 validator error 都是硬阻断。
+只有 `MINOR` 或允许保留的提示时可以作为 `WARNING` 交付。题目修改不得改录音原文；如果 Agent
+返回了改写后的 script，整轮修改会被拒绝。
+
+### 3.8 精确数量、重启与换材料
+
+`delivery.py` 把用户要求的每一套表示为一个 slot。slot 是交付名额，不是材料 id：
+
+- 材料通过审核和可行性预检后先写入 `material_done` 断点，再开始出题；
+- 题目阶段第一次崩溃或不可交付，保留该材料并完整重启题目阶段一次；
+- 同一材料第二次仍不可交付，才消耗一次 `candidate_swap`，为这个 slot 更换候选材料；
+- 所有阶段状态写入 S3；Runtime 中断时可以从最后完成的阶段继续，而不是重做已通过内容；
+- 请求 N 套时，只有 N 个 slot 都达到 `complete` 才返回 `succeeded`。
+
+### 3.9 并发与时间预算
 
 生产环境由 `web/fanout.py` 为每套材料发起一个独立 Runtime invocation，每个请求使用新的
 `runtimeSessionId`。`WEB_FANOUT_CONCURRENCY=6` 表示同时最多运行 6 套，不是每批最多 6 套：
 第一个任务完成后，队列中的下一套立即开始。这个数是可调的流量保护值，不是 AgentCore 硬限制；
 出现 429 时应下调。
 
-单个 Runtime invocation 只处理一套材料，因此 Runtime 内部并发实际为 1；AgentCore 的 15 分钟
-同步限制约束单套材料。时间不足时可以跳过可选修改，但不会中断已经完成审核的原稿。
+单个 Runtime invocation 只处理一个 slot，因此 Runtime 内部并发实际为 1。`generate_sets` 是
+SSE 流式调用，适用 AgentCore 60 分钟上限：Runtime 使用 3600 秒硬上限、预留 300 秒收尾，工作
+窗口为 3300 秒；Web 的单套墙钟同为 3300 秒，Runtime read timeout 为 3450 秒。
 
-### 3.8 核心代码索引
+开始材料或题目阶段前，Python 会确认剩余时间足以覆盖该阶段的保守耗时。若不足则保存断点并诚实
+返回 `incomplete`，不会把少于请求数量的结果标为成功。
+
+### 3.10 核心代码索引
 
 | 路径 | 作用 |
 |---|---|
@@ -437,8 +502,11 @@ material + metrics
 | `web/runtime_client.py` | SigV4 调用 AgentCore，创建独立 session |
 | `backend/app.py` | AgentCore Python 入口和 action 路由 |
 | `backend/request.py` | 把场景 id、数量和自定义场景解析为 slot |
-| `backend/orchestration/batch.py` | 单次 Runtime 的时间预算、补生成和事件输出 |
 | `backend/orchestration/loop.py` | 单套材料的重试、校验、盲审、修改、复评和择优 |
+| `backend/orchestration/question_loop.py` | 十道题的生成、校验、盲审、交叉检查和最多两轮修改 |
+| `backend/orchestration/delivery.py` | slot 状态、可行性预检、题目重启、换材料、断点和精确数量交付 |
+| `backend/orchestration/slot_store.py` | `_slots/` 与 `_questions/` 的 S3 持久化 |
+| `backend/orchestration/batch.py` | 旧的仅材料 `generate` action 与测试入口 |
 | `backend/agents.py` | Strands Agent、Skill 池、工具和只读 Skill sandbox |
 | `backend/steps/agent_steps.py` | 三类模型调用的消息与输入输出边界 |
 | `backend/deterministic/anchors.py` | 可确定修复的 blueprint 锚点同步 |
@@ -446,7 +514,7 @@ material + metrics
 | `backend/deterministic/crosscheck.py` | blueprint 与盲审信息图交叉检查 |
 | `backend/sandboxed_metrics.py` | Code Interpreter session 与白名单文件上传 |
 
-### 3.9 如何扩展到其他 IELTS 能力
+### 3.11 如何扩展到其他 IELTS 能力
 
 **增加采用同类工作流的 Skill**：在对应池中增加一个包含 `SKILL.md` 的目录，并提供它声明的
 references、Schema 和 scripts。`Skill.from_directory()` 会自动发现 Skill，无需在 `agents.py`
@@ -974,8 +1042,8 @@ origin-facing 托管前缀列表和自定义 header 校验；现有脚本未实�
 | `USER_STORE_S3_KEY` | `web/users.json` | 用户文件 key |
 | `WEB_FANOUT_CONCURRENCY` | `6` | 同时运行的 Runtime 调用数；429 时下调 |
 | `WEB_SSE_HEARTBEAT` | `15` | SSE 心跳秒数 |
-| `WEB_RUNTIME_READ_TIMEOUT` | `900` | Runtime 读取超时 |
-| `WEB_PER_MATERIAL_WALL` | `900` | 单套材料墙上时钟预算 |
+| `WEB_RUNTIME_READ_TIMEOUT` | `3450` | 单套流式 Runtime 读取超时；高于工作窗口、低于平台上限 |
+| `WEB_PER_MATERIAL_WALL` | `3300` | 单个 slot 的 Web 墙上时钟预算 |
 
 ### 6.4 Runtime 参数
 
@@ -987,11 +1055,14 @@ origin-facing 托管前缀列表和自定义 header 校验；现有脚本未实�
 | `IELTS_CODE_INTERPRETER_REGION` | `AWS_REGION` | 审核指标 Code Interpreter 区域 |
 | `IELTS_CODE_INTERPRETER_ID` | `aws.codeinterpreter.v1` | 内置 Code Interpreter identifier |
 | `IELTS_CONCURRENCY` | `6` | Runtime 内并发槽；Web 单套调用时实际夹到 1 |
-| `IELTS_HARD_LIMIT` | `900` | 平台同步上限 |
+| `IELTS_HARD_LIMIT` | `3600` | `generate_sets` 的平台流式上限 |
 | `IELTS_P95_PER_MATERIAL` | `240` | 预算估算值 |
+| `IELTS_P95_QUESTIONS` | `420` | 开始题目阶段前要求保留的预算 |
 | `IELTS_REVISION_COST` | `120` | 修改与复评预算 |
-| `IELTS_SAFETY_MARGIN` | `90` | 收尾余量 |
-| `IELTS_MAX_REFILL_ROUNDS` | `2` | 批次缺项后的补生成轮数 |
+| `IELTS_SAFETY_MARGIN` | `300` | 保存断点、汇总状态和关闭流的收尾余量 |
+| `IELTS_MAX_CANDIDATE_SWAPS` | `2` | 一个 slot 放弃旧材料并更换候选材料的上限 |
+| `IELTS_MAX_QUESTION_RESTARTS` | `1` | 同一合格材料完整重启题目阶段的次数 |
+| `IELTS_MAX_REPLACEMENT_SLOTS` | `2` | 一个交付位置可创建的替代 slot 代数 |
 | `IELTS_SCRIPT_TIMEOUT` | `60` | 确定性脚本超时 |
 
 前端运行时配置位于 `frontend/public/config.json`。
@@ -1014,12 +1085,19 @@ s3://ielts-part1-materials-{account}/
 ├── _batches/{batch_id}/
 │   ├── index.json
 │   └── materials/{material_id}.json
+├── _slots/{request_id}/
+│   ├── request.json
+│   └── slot-*.json
+├── _questions/{material_id}.json
+├── _comments/{material_id}.json
 ├── _candidates/{material_id}.json
 ├── _candidates/{material_id}.job.json
 ├── _claims/{group_key}.json
 └── web/users.json
 ```
 
+- `_slots/` 保存每个交付名额的阶段、重启和换材料状态，`_questions/` 只保存通过交付门槛的题目包。
+- `_comments/` 保存材料阅读页上的个人批注，与材料和题目产物分开。
 - 自动生成结束后，候选信息写入 `_candidates/` 和批次空间；不会自动出现音频。
 - 未选候选保留 30 天，期间可以跨日审阅和提交；过期后不再允许选稿。
 - 用户试听或选稿后才创建 `audio/`。`manifest.json` 最后写入，是“音频完整”的哨兵；没有

@@ -57,6 +57,31 @@ QR027_MAX_SAME_CATEGORY = 3
 # is the trap: it makes the postcode `BT14 9BJ` read as numeric when it is plainly something the
 # candidate must spell. Same class of error as `address` sitting in NUMERIC_TYPES below.
 NUMERIC_TOKEN_RE = re.compile(r"^[£$€]?\d+(?:[.,:/]\d+)*(?:st|nd|rd|th|am|pm|a\.m\.|p\.m\.)?$", re.I)
+# The closed set of standard IELTS rubrics, ordered strictest to loosest, each as
+# (max lexical words, permitted purely-numeric tokens). The question stage owns the *choice* of
+# rubric per group; this stage owns only the question "does any rubric exist that could carry this
+# target at all", and it lives here because both stages must answer it with one arithmetic.
+#
+# Why a blueprint-stage check at all: the question stage may not replace a blueprint target (the ten
+# information points are given input) and may not touch the Script (SR-021). So a target that fits no
+# rubric is unfixable there -- the question agent can only cycle. Measured, 2026-08-08: a
+# `service-refund` blueprint carried target `9 and 1` from "The driver calls between 9 and 1.", which
+# costs 1 lexical word + 2 numeric tokens. No rubric permits 2 numbers, so every attempt failed on
+# AR-002/QR-017; rewriting it as `9-1` failed "not blueprint item 7's target"; loosening one group's
+# rubric failed "the paper and the marking key would be different tests". The material spent its
+# whole 810s budget cycling between those three walls and delivered nothing.
+#
+# The widest rubric is therefore the admissibility bound for a single target, and it is deliberately
+# NOT a per-group choice here: which of the six a group prints depends on its other nine answers and
+# is the question stage's decision.
+WORD_LIMITS = (
+    ("ONE WORD ONLY", 1, 0),
+    ("ONE WORD AND/OR A NUMBER", 1, 1),
+    ("NO MORE THAN TWO WORDS", 2, 0),
+    ("NO MORE THAN TWO WORDS AND/OR A NUMBER", 2, 1),
+    ("NO MORE THAN THREE WORDS", 3, 0),
+    ("NO MORE THAN THREE WORDS AND/OR A NUMBER", 3, 1),
+)
 # Part 1 delivers Form / Note / Table completion only. `multiple_choice` was removed when the
 # client narrowed the brief; `type: "option"` in DETAIL_TYPES below is a different dimension --
 # it names the KIND of detail (a preference or chosen alternative) and remains a fine completion
@@ -228,6 +253,35 @@ def derive_response_form(target: str) -> str:
     return "word" if len(tokens) == 1 else "phrase"
 
 
+def budget_of(target: str) -> tuple[int, int]:
+    """(lexical word count, purely-numeric token count) for one answer.
+
+    Third derivation off the same tokens, and separate from the other two for the same reason they
+    are separate from each other: this one splits on what a *rubric* charges for. A purely numeric
+    token is charged against the "AND/OR A NUMBER" allowance rather than the word count, and a
+    hyphenated compound stays one word (AR-014), so `two-bedroom` costs one word and `9 and 1` costs
+    one word plus two numbers.
+    """
+    tokens = answer_tokens(target)
+    numeric = sum(1 for token in tokens if NUMERIC_TOKEN_RE.match(token))
+    return (len(tokens) - numeric, numeric)
+
+
+def widest_rubric() -> tuple[str, int, int]:
+    """The loosest standard rubric, i.e. the admissibility bound for any single answer."""
+    return WORD_LIMITS[-1]
+
+
+def fits_any_rubric(target: str) -> bool:
+    """Whether SOME standard rubric could carry this answer.
+
+    Not "which rubric" -- that needs the group's other answers and belongs to the question stage.
+    """
+    lexical, numeric = budget_of(target)
+    return any(lexical <= max_words and numeric <= allowance
+               for _name, max_words, allowance in WORD_LIMITS)
+
+
 def derive_qr027_class(target: str) -> str:
     """Internal quantity, by CHARACTER COMPOSITION. Feeds the QR-027 counts and is never persisted.
 
@@ -265,6 +319,21 @@ def validate_v2_item_fields(item: dict, label: str, first_end: int, errors: list
             errors.append(
                 f"{label}.response_form declares {declared_form!r} but {target!r} derives {computed!r}"
             )
+
+    # Answerability under some standard rubric. Caught here because the question stage cannot fix it:
+    # it may not replace this target and may not edit the Script, so its only move is to cycle until
+    # the clock runs out (see WORD_LIMITS for the measured case). The fix belongs to whoever chose the
+    # information point -- here, while the material is still being written.
+    if isinstance(target, str) and target.strip() and not fits_any_rubric(target):
+        lexical, numeric = budget_of(target)
+        widest, max_words, allowance = widest_rubric()
+        errors.append(
+            f"{label}.target {target!r} costs {lexical} word(s) and {numeric} number(s), which no "
+            f"standard rubric permits -- the loosest is {widest!r} at {max_words} word(s) plus "
+            f"{allowance} number(s). The question stage may not replace a target or edit the script, "
+            "so this point has to be narrowed now: pick the part of it a candidate writes in the gap "
+            "(one endpoint of a range, not the range) and leave the rest in the carrier"
+        )
 
     category = item.get("answer_category")
     if category not in ANSWER_CATEGORIES:

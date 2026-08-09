@@ -172,22 +172,47 @@ export interface Group {
    */
   signposts: string[]
   /**
-   * The layout layer's own labels, and the reason `title` cannot serve for all three. Which key is required depends on `layout`, checked in the validator rather than here so the message can name the layout: form and table need row labels, table also needs column labels, note needs its hierarchy. Missing labels are a content-accessibility failure (QR-015), not a visual-polish one -- a table whose columns are unlabelled cannot be answered, whereas its border style can be fixed after content review.
+   * The layout layer's own labels, and the reason `title` cannot serve for all three. Which key is required depends on `layout`, checked in the validator rather than here so the message can name the layout: form and table need row labels, table also needs column labels, and note needs note_sections with explicit question membership. Missing labels are a content-accessibility failure (QR-015), not a visual-polish one -- a table whose columns are unlabelled cannot be answered, whereas its border style can be fixed after content review.
    */
   structure: {
+    /**
+     * Table only: the heading above the row-label column, rendered in the top-left cell. `column_labels` names only the content columns to its right.
+     */
+    row_header_label?: string
     row_labels?: string[]
     column_labels?: string[]
     /**
-     * Note headings and sub-headings in printed order.
+     * Legacy note headings in printed order. Kept readable for archived packages; new note groups must use note_sections so headings cannot be detached from their questions.
      */
     hierarchy?: string[]
+    /**
+     * Candidate-visible note sections in printed order. Each heading is rendered immediately above the questions listed in question_numbers; the validator requires an exact, non-overlapping cover of the note group's questions.
+     *
+     * @minItems 1
+     */
+    note_sections?: [
+      {
+        heading: string
+        /**
+         * @minItems 1
+         */
+        question_numbers: [number, ...number[]]
+      },
+      ...{
+        heading: string
+        /**
+         * @minItems 1
+         */
+        question_numbers: [number, ...number[]]
+      }[]
+    ]
   }
 }
 export interface Question {
   number: number
   group_id: string
   /**
-   * Printed text before the blank. May be empty for an initial blank, but not together with carrier_after: a blank with no context on either side is answerable only by guessing (QR-026).
+   * Printed text before the blank. Both carriers may be empty when form/table labels already provide candidate-visible structural context; an unlabelled isolated blank remains invalid (QR-026).
    */
   carrier_before: string
   /**

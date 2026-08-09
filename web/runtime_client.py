@@ -40,11 +40,10 @@ SSE_CONTENT_TYPE = "text/event-stream"
 # would kill a child that was working perfectly, mid-stream, and that is exactly the intermittency
 # the client saw: nothing in the log, no throttling, no `material_failed` from the backend.
 #
-# So the read timeout has to bound the same thing the PLATFORM bounds -- one material's whole
-# invocation -- and that is 900s (`fanout.PER_MATERIAL_WALL_SECONDS`). Duplicated as a number rather
-# than imported to keep this module free of a dependency on the fan-out; `test_runtime_client.py`
-# asserts the two agree.
-READ_TIMEOUT_SECONDS = float(os.environ.get("WEB_RUNTIME_READ_TIMEOUT", "900"))
+# Keep this above the backend's 3300s working window, while still below AgentCore's 3600s streaming
+# maximum. Duplicated as a number rather than imported to keep this module free of a dependency on
+# the fan-out; `test_runtime_client.py` asserts the ordering.
+READ_TIMEOUT_SECONDS = float(os.environ.get("WEB_RUNTIME_READ_TIMEOUT", "3450"))
 
 # Connecting is not the same as waiting for a material: a TCP connect that takes more than 10s is a
 # network fault, not a slow model, and failing fast there is right.

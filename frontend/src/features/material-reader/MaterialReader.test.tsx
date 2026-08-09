@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import userEvent from '@testing-library/user-event'
 import { render, screen } from '@testing-library/react'
 import { joinFromRecord } from '@/domain/joinArtifacts'
 import { buildRecord } from '@/mocks/fixtures'
@@ -9,6 +10,27 @@ const view = (kind: Parameters<typeof buildRecord>[0], id: string) =>
   joinFromRecord(buildRecord(kind, { ...O, materialId: id }))
 
 describe('MaterialReader', () => {
+  it('marks comment counts and selects a whole turn as the comment anchor', async () => {
+    const onSelectCommentTurn = vi.fn()
+    render(
+      <MaterialReader
+        view={view('balanced', 'bal')}
+        commentCounts={new Map([[4, 2]])}
+        onSelectCommentTurn={onSelectCommentTurn}
+      />,
+    )
+    const turn = document.querySelector('[data-turn="4"]')!
+    expect(turn.className).toContain('has-comments')
+    expect(turn.querySelector('.comment-count-badge')?.textContent).toBe('2')
+    await userEvent.click(turn)
+    expect(onSelectCommentTurn).toHaveBeenCalledWith(4)
+
+    onSelectCommentTurn.mockClear()
+    ;(turn as HTMLElement).focus()
+    await userEvent.keyboard('{Enter}')
+    expect(onSelectCommentTurn).toHaveBeenCalledWith(4)
+  })
+
   /**
    * 说话人标签就是材料 JSON 里的 speaker 编号。
    *

@@ -857,6 +857,62 @@ def test_v2_declarations_are_recomputed() -> None:
           "items[1]" in result.stdout, result.stdout)
 
 
+def test_target_must_fit_some_rubric() -> None:
+    """A target no standard rubric can carry is rejected here, where it can still be fixed.
+
+    Measured, 2026-08-08: a blueprint carried target `9 and 1` (1 word + 2 numbers) from "The driver
+    calls between 9 and 1." The question stage may neither replace a blueprint target nor edit the
+    Script, so it had no legal move: every rubric rejected the answer, narrowing it to `9-1` broke
+    blueprint fidelity, and loosening the group's rubric broke the marking key. The material spent its
+    entire time budget cycling and delivered nothing. Two numbers is the case to assert because it is
+    the one the loosest rubric refuses while the *word* count still looks harmless.
+    """
+    print("blueprint targets must fit some standard rubric")
+    sys.path.insert(0, str(VALIDATE.parent))
+    import validate_part1 as vp
+
+    for target, want in (
+        ("9 and 1", False),                 # 1 word + 2 numbers: no rubric permits two numbers
+        ("9-1", True),                      # the same range as one token
+        ("between 9 and 1 o'clock", False),
+        ("three words plus 7", True),       # exactly the loosest rubric's bound
+        ("four whole words plus 7", False),  # one word over it
+        ("two-bedroom", True),              # hyphen is one word (AR-014)
+        ("Tuesdays at 6 p.m.", True),
+    ):
+        got = vp.fits_any_rubric(target)
+        check(f"{target!r} fits a rubric: {want}", got == want,
+              f"got {got}; budget {vp.budget_of(target)}")
+
+    widest, max_words, allowance = vp.widest_rubric()
+    check("the widest rubric is the loosest entry of WORD_LIMITS",
+          (widest, max_words, allowance) == vp.WORD_LIMITS[-1] and allowance == 1,
+          f"got {vp.widest_rubric()}")
+
+    def unfittable_target(bp: dict) -> None:
+        # Keep the target inside its own evidence, so the failure under test is the rubric budget and
+        # not the anchor check firing first.
+        bp["items"][6]["target"] = "9 and 1"
+        bp["items"][6]["evidence"] = "calls between 9 and 1 every day"
+        bp["items"][6]["response_form"] = "phrase"
+
+    result = validate_mutated(unfittable_target)
+    check("a target that fits no rubric is rejected at the blueprint stage",
+          result.returncode == 1 and "no standard rubric permits" in result.stdout, result.stdout)
+    check("the error names the item, the cost and the widest rubric",
+          "items[6]" in result.stdout and "1 word(s) and 2 number(s)" in result.stdout
+          and "NO MORE THAN THREE WORDS AND/OR A NUMBER" in result.stdout, result.stdout)
+
+    # The arithmetic must be the SAME arithmetic the question stage prices rubrics with. Two copies
+    # would let a target pass here and fail there, which is the loop this check exists to break.
+    sys.path.insert(0, str(QUESTION_VALIDATE.parent))
+    import validate_questions_part1 as vq
+
+    check("the question validator imports this budget rather than keeping its own",
+          vq.budget_of is vp.budget_of and vq.WORD_LIMITS is vp.WORD_LIMITS,
+          "validate_questions_part1 must not redefine budget_of/WORD_LIMITS")
+
+
 def test_group_constraints_are_distinguishable() -> None:
     """Five constraints, five distinct messages. Asserting text, not returncode.
 
@@ -2008,11 +2064,14 @@ _QUESTION_GROUPS = (
      "1", "NO MORE THAN TWO WORDS"),
     ("G2", 1, "form", None, [], {"row_labels": ["Street", "Postcode", "Mobile"]},
      "2-4", "NO MORE THAN TWO WORDS AND/OR A NUMBER"),
-    ("G3", 1, "note", "Family background", [], {"hierarchy": ["Child's education"]},
+    ("G3", 1, "note", "Family background", [],
+     {"note_sections": [{"heading": "Child's education", "question_numbers": [5]}]},
      "5", "NO MORE THAN TWO WORDS"),
     ("G4", 2, "note", "Property preferences", ["Requirements for the new home are discussed next"],
-     {"hierarchy": ["Location and lifestyle"]}, "6-7", "ONE WORD ONLY"),
-    ("G5", 2, "table", None, [], {"row_labels": ["Size", "Extra space", "Other"],
+     {"note_sections": [{"heading": "Location and lifestyle", "question_numbers": [6, 7]}]},
+     "6-7", "ONE WORD ONLY"),
+    ("G5", 2, "table", None, [], {"row_header_label": "Category",
+                                  "row_labels": ["Size", "Extra space", "Other"],
                                   "column_labels": ["Requirement", "Notes"]},
      "8-10", "NO MORE THAN TWO WORDS"),
 )
@@ -2241,10 +2300,31 @@ def test_question_validator_catches_the_stage_defects() -> None:
             if group["group_id"] == "G3":
                 group.pop("title")
 
+    def note_without_sections(package: dict) -> None:
+        for group in package["question_face"]["groups"]:
+            if group["group_id"] == "G4":
+                group["structure"].pop("note_sections")
+
+    def note_with_duplicate_assignment(package: dict) -> None:
+        for group in package["question_face"]["groups"]:
+            if group["group_id"] == "G4":
+                group["structure"]["note_sections"] = [
+                    {"heading": "Location", "question_numbers": [6]},
+                    {"heading": "Property", "question_numbers": [6]},
+                ]
+
     def table_without_columns(package: dict) -> None:
         for group in package["question_face"]["groups"]:
             if group["group_id"] == "G5":
-                group["structure"] = {"row_labels": ["Size", "Extra space", "Other"]}
+                group["structure"] = {
+                    "row_header_label": "Category",
+                    "row_labels": ["Size", "Extra space", "Other"],
+                }
+
+    def table_without_row_header(package: dict) -> None:
+        for group in package["question_face"]["groups"]:
+            if group["group_id"] == "G5":
+                group["structure"].pop("row_header_label")
 
     def no_signpost(package: dict) -> None:
         for group in package["question_face"]["groups"]:
@@ -2290,6 +2370,9 @@ def test_question_validator_catches_the_stage_defects() -> None:
         ("a quote in its turn AND in a neighbour", ambiguous_quote, "identifies no single sentence"),
         # QR-031 / QR-015 / QR-026.
         ("a note group with no title", note_without_title, "QR-031"),
+        ("a note group with no explicit sections", note_without_sections, "note_sections"),
+        ("a note question assigned twice", note_with_duplicate_assignment, "exactly once"),
+        ("a table with an unnamed row-label column", table_without_row_header, "row_header_label"),
         ("a table group with no column labels", table_without_columns, "column_labels"),
         ("a window with no blank-free signpost", no_signpost, "signpost"),
         # A package that reports its own AL-018 failure.
@@ -2306,6 +2389,61 @@ def test_question_validator_catches_the_stage_defects() -> None:
         matched = [error for error in report["errors"] if needle in error]
         check("validator catches: %s" % label, report["ok"] is False and bool(matched),
               "wanted %r among %r" % (needle, report["errors"][:4]))
+
+
+def test_question_structural_context_and_position_guidelines() -> None:
+    """Labels are context; position variety must not manufacture parenthetical filler."""
+    print("question validator: structural context and position guidelines")
+
+    def bare_labelled_form(package: dict) -> None:
+        question = package["question_face"]["questions"][0]
+        question.update({"carrier_before": "", "carrier_after": "", "blank_position": "final"})
+
+    form = _validate_questions(bare_labelled_form)
+    check("a labelled form row needs no carrier filler", form["ok"] is True,
+          repr(form["errors"])[:500])
+
+    def bare_labelled_table(package: dict) -> None:
+        question = package["question_face"]["questions"][7]
+        question.update({"carrier_before": "", "carrier_after": "", "blank_position": "final"})
+
+    table = _validate_questions(bare_labelled_table)
+    check("a table cell with real row and column labels needs no carrier filler",
+          table["ok"] is True, repr(table["errors"])[:500])
+
+    def bare_unlabelled_note(package: dict) -> None:
+        question = package["question_face"]["questions"][4]
+        question.update({"carrier_before": "", "carrier_after": "", "blank_position": "medial"})
+
+    note = _validate_questions(bare_unlabelled_note)
+    check("an unlabelled blank with no carrier is still rejected",
+          any("no form/table label" in error for error in note["errors"]),
+          repr(note["errors"])[:500])
+
+    def all_final(package: dict) -> None:
+        for question in package["question_face"]["questions"]:
+            question.update({
+                "carrier_before": "Recorded value:",
+                "carrier_after": "",
+                "blank_position": "final",
+            })
+
+    final_only = _validate_questions(all_final)
+    check("natural position imbalance is a warning rather than a generation blocker",
+          final_only["ok"] is True
+          and any("do not invent carrier text" in warning for warning in final_only["warnings"])
+          and any("guideline 7" in warning for warning in final_only["warnings"]),
+          "errors=%r warnings=%r" % (final_only["errors"], final_only["warnings"]))
+
+    authoring = (QUESTION_VALIDATE.parents[1] / "references" / "question-rules.md").read_text(
+        encoding="utf-8")
+    audit = (QUESTION_AUDIT_SCHEMAS.parent / "references" / "question-audit-rules.md").read_text(
+        encoding="utf-8")
+    check("authoring rules preserve a necessary day/month qualifier",
+          "(day and month)" in authoring)
+    check("authoring and audit rules reject spelling/process metadiscourse",
+          "(as spelt)" in authoring and "(as mentioned)" in authoring
+          and "(as spelt)" in audit and "(as mentioned)" in audit)
 
 
 def test_question_ar003_tiers_follow_the_canonical() -> None:
@@ -2723,6 +2861,7 @@ def main() -> int:
         test_v1_leniency_is_scoped_to_the_layout_enum,
         test_response_form_derivation,
         test_v2_declarations_are_recomputed,
+        test_target_must_fit_some_rubric,
         test_group_constraints_are_distinguishable,
         test_item_labels_are_zero_based_indices,
         test_qr027_counts_are_reported_not_enforced,
@@ -2749,6 +2888,7 @@ def main() -> int:
         test_answer_category_decision_table,
         test_question_package_schema_contract,
         test_question_validator_catches_the_stage_defects,
+        test_question_structural_context_and_position_guidelines,
         test_question_ar003_tiers_follow_the_canonical,
         test_question_blank_number_is_matched_as_a_whole_numeral,
         test_question_audit_schema_contract,

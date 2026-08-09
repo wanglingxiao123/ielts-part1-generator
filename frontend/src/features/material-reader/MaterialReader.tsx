@@ -76,6 +76,8 @@ interface Props {
   /** Lets the parent (e.g. a finding click) drive the scroll + flash. */
   jumpToTurn?: { turnIndex: number; nonce: number } | null
   showQuestionTypePanel?: boolean
+  commentCounts?: ReadonlyMap<number, number>
+  onSelectCommentTurn?: (turnIndex: number) => void
 }
 
 const ANN_COL_WIDTH = 336
@@ -94,6 +96,8 @@ export function MaterialReader({
   onPlayTurn,
   unplayableTurns,
   jumpToTurn,
+  commentCounts,
+  onSelectCommentTurn,
 }: Props) {
   // 没传就跟随 `narrow`——单篇页（narrow=false）照旧显示旁注，并排视图（narrow=true）照旧不显示。
   const annotationsVisible = showAnnotations ?? !narrow
@@ -185,6 +189,8 @@ export function MaterialReader({
               registerTurnRef={layout.registerTurnRef}
               onlyAnnotated={state.onlyAnnotated}
               unplayableTurns={unplayableTurns}
+              commentCounts={commentCounts}
+              onSelectCommentTurn={onSelectCommentTurn}
             />
           </div>
 

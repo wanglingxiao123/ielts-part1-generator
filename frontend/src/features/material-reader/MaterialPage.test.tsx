@@ -59,6 +59,12 @@ vi.mock('@/api/endpoints', () => ({
       questionCalls.push([id, batchId])
       return Promise.resolve(questions)
     },
+    materialComments: (id: string) =>
+      Promise.resolve({ material_id: id, comments: [] }),
+    createMaterialComment: (id: string) =>
+      Promise.resolve({ material_id: id, comments: [] }),
+    deleteMaterialComment: (id: string) =>
+      Promise.resolve({ material_id: id, comments: [] }),
   },
 }))
 
@@ -258,6 +264,17 @@ describe('返回批次', () => {
 /* ── 标题下的两个页签 ────────────────────────────────────────────────────── */
 
 describe('MaterialPage 页签', () => {
+  it('选择对话 Turn 后展开批注面板并显示锚点', async () => {
+    renderPage()
+    const toggle = await screen.findByRole('button', { name: /批注 \(0\)/ })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+
+    await userEvent.click(document.querySelector('[data-turn="4"]') as HTMLElement)
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('位置：Turn 4')).toBeInTheDocument()
+  })
+
   it('标题下有 [对话原文] 与 [题目预览]，默认停在对话原文', async () => {
     renderPage()
     const script = await screen.findByRole('tab', { name: '对话原文' })
@@ -300,7 +317,7 @@ describe('MaterialPage 页签', () => {
     expect(screen.getByRole('button', { name: /生成音频/ })).toBeInTheDocument()
   })
 
-  it('有题时画出真实版式，答案默认可见', async () => {
+  it('有题时画出真实版式，答案默认隐藏', async () => {
     questions = {
       material_id: MATERIAL_ID,
       questions: QUESTION_PACKAGE,
@@ -312,7 +329,8 @@ describe('MaterialPage 页签', () => {
     await userEvent.click(screen.getByRole('tab', { name: '题目预览' }))
     await waitFor(() => expect(document.querySelector('.qp-table')).not.toBeNull())
     expect(document.querySelectorAll('.qp-form').length).toBe(2)
-    expect(screen.getByRole('checkbox', { name: /显示答案和证据/ })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: /显示答案和证据/ })).not.toBeChecked()
+    expect(document.querySelector('.qp-reveals')).toBeNull()
   })
 
   /**
@@ -329,6 +347,7 @@ describe('MaterialPage 页签', () => {
     renderPage()
     await screen.findByRole('tab', { name: '题目预览' })
     await userEvent.click(screen.getByRole('tab', { name: '题目预览' }))
+    await userEvent.click(screen.getByRole('checkbox', { name: /显示答案和证据/ }))
     await waitFor(() => expect(document.querySelector('.qp-turn')).not.toBeNull())
     await userEvent.click(document.querySelectorAll('.qp-turn')[0] as HTMLElement)
     await waitFor(() =>

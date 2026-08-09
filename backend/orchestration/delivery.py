@@ -130,8 +130,11 @@ MAX_QUESTION_RESTARTS = int(os.environ.get("IELTS_MAX_QUESTION_RESTARTS", "1"))
 # because the right number comes from the timing table once the chain has run end to end.
 QUESTION_P95_SECONDS = float(os.environ.get("IELTS_P95_QUESTIONS", "420"))
 
-HARD_LIMIT_SECONDS = float(os.environ.get("IELTS_HARD_LIMIT", "900"))
-SAFETY_MARGIN_SECONDS = float(os.environ.get("IELTS_SAFETY_MARGIN", "90"))
+# ``generate_sets`` is an SSE invocation, so AgentCore's 60-minute streaming limit applies rather
+# than its 15-minute synchronous-request limit. Reserve five minutes for the current stage to stop,
+# persist its checkpoint, emit the terminal summary and close the stream cleanly.
+HARD_LIMIT_SECONDS = float(os.environ.get("IELTS_HARD_LIMIT", "3600"))
+SAFETY_MARGIN_SECONDS = float(os.environ.get("IELTS_SAFETY_MARGIN", "300"))
 P95_PER_MATERIAL = float(os.environ.get("IELTS_P95_PER_MATERIAL", "240"))
 REVISION_COST_SECONDS = float(os.environ.get("IELTS_REVISION_COST", "120"))
 

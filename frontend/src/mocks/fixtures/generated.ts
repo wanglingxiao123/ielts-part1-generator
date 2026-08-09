@@ -1044,8 +1044,13 @@ export const QUESTION_PACKAGE_VALID: QuestionPackage = {
         "layout": "note",
         "signposts": [],
         "structure": {
-          "hierarchy": [
-            "Child's education"
+          "note_sections": [
+            {
+              "heading": "Child's education",
+              "question_numbers": [
+                5
+              ]
+            }
           ]
         },
         "title": "Family background"
@@ -1058,8 +1063,14 @@ export const QUESTION_PACKAGE_VALID: QuestionPackage = {
           "Requirements for the new home are discussed next"
         ],
         "structure": {
-          "hierarchy": [
-            "Location and lifestyle"
+          "note_sections": [
+            {
+              "heading": "Location and lifestyle",
+              "question_numbers": [
+                6,
+                7
+              ]
+            }
           ]
         },
         "title": "Property preferences"
@@ -1070,6 +1081,7 @@ export const QUESTION_PACKAGE_VALID: QuestionPackage = {
         "layout": "table",
         "signposts": [],
         "structure": {
+          "row_header_label": "Category",
           "row_labels": [
             "Size",
             "Extra space",

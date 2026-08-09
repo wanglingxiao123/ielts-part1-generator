@@ -7,13 +7,21 @@
  *     而不是十张一模一样的问答卡片。
  *   · **命题人的复核台**——所以答案、证据原文、轮次编号、题解都要能看到。
  *
- * 「显示答案和证据」这个开关就是这两者之间的切换，内部审核默认开着。关掉之后不是少画几个 div：
+ * 「显示答案和证据」这个开关就是这两者之间的切换，首次进入时默认保持考生视角。打开之后才把
+ * 内部审核信息带进页面；关闭时也不只是少画几个 div：
  * `buildQuestionPreview` 拿到的 `showAnswers` 为假时根本不把 `answer_key` / `evidence` 挂进返回值
  * （见 domain/questionPreview.ts），所以这个组件手上就没有答案可泄露。blueprint 同理——它只喂给
  * 题解事实的计算，而关掉开关时 `facts` 是空数组。
  *
  * 题解只搬运后端已有的字段。后端没有一段自由文本的「解析」，所以一道题没有任何可搬的事实时，
  * 「查看题解」整块不出现——宁可少一块，也不由前端编一段命题人会当成后端结论去信的话。
+ *
+ * **考生题面上只有考生该读的东西。** 版式名（Form / Note / Table）和旁白窗口编号是内部字段：前者
+ * 是这一组怎么排的说明，后者是「考生被告知读到这里换一组」的位置。它们对复核很有用，对考生毫无
+ * 意义——真实试卷上没有哪一组的标题旁边印着「表格」。所以这两样连同 group_id 都挪进 `qp-audit`
+ * 这一条独立的审核带，只在「显示答案和证据」开着时出现；关掉开关以后，这一页从上到下就只剩
+ * `Questions n-m` → 标准 instruction → 标题 → 题目，与考生手里那张纸的顺序一致。`signposts`
+ * 是生成和复核使用的录音定位元数据，不作为试卷旁白印给考生，也只进入审核带。
  */
 import { useMemo, useState } from 'react'
 import type { Blueprint, QuestionPackage } from '@/contracts'
@@ -28,11 +36,22 @@ export interface QuestionPreviewPanelProps {
   /** 用来把 evidence 的 turn_index 翻成「对话第 N 轮」，并支持跳到原文那一句。 */
   view: ViewMaterial | null
   onJump?: (turnIndex: number) => void
+  selectedQuestion?: number | null
+  commentCounts?: ReadonlyMap<number, number>
+  onSelectQuestion?: (questionNumber: number) => void
 }
 
-export function QuestionPreviewPanel({ pkg, blueprint, view, onJump }: QuestionPreviewPanelProps) {
-  // 内部审核页面，默认开启。
-  const [showAnswers, setShowAnswers] = useState(true)
+export function QuestionPreviewPanel({
+  pkg,
+  blueprint,
+  view,
+  onJump,
+  selectedQuestion,
+  commentCounts,
+  onSelectQuestion,
+}: QuestionPreviewPanelProps) {
+  // 首次进入时保持考生视角，审核信息由用户主动开启。
+  const [showAnswers, setShowAnswers] = useState(false)
   const preview = useMemo(
     () => buildQuestionPreview(pkg, blueprint, showAnswers),
     [pkg, blueprint, showAnswers],
@@ -51,11 +70,13 @@ export function QuestionPreviewPanel({ pkg, blueprint, view, onJump }: QuestionP
         </label>
         <div className="qp-bar-facts">
           <span className="flag flag-neutral">共 {preview.count} 题</span>
-          {preview.layouts.map((layout) => (
-            <span className="flag flag-neutral" key={layout}>
-              {LAYOUT_LABEL[layout]}
-            </span>
-          ))}
+          {/* 版式清单也是内部信息，跟着开关走：盲看时页面上不该有任何一处写着这是表格还是笔记。 */}
+          {showAnswers &&
+            preview.layouts.map((layout) => (
+              <span className="flag flag-neutral" key={layout}>
+                {LAYOUT_LABEL[layout]}
+              </span>
+            ))}
           {/* 十道题是这一套的定义（schema 要求恰好十道）。少于十说明拿到的包不完整，
               说出来，而不是安静地画九道。 */}
           {preview.count !== 10 && (
@@ -78,6 +99,9 @@ export function QuestionPreviewPanel({ pkg, blueprint, view, onJump }: QuestionP
           view={view}
           onJump={onJump}
           showAnswers={showAnswers}
+          selectedQuestion={selectedQuestion}
+          commentCounts={commentCounts}
+          onSelectQuestion={onSelectQuestion}
         />
       ))}
     </div>
@@ -89,38 +113,55 @@ function GroupBlock({
   view,
   onJump,
   showAnswers,
+  selectedQuestion,
+  commentCounts,
+  onSelectQuestion,
 }: {
   group: PreviewGroup
   view: ViewMaterial | null
   onJump?: (turnIndex: number) => void
   showAnswers: boolean
+  selectedQuestion?: number | null
+  commentCounts?: ReadonlyMap<number, number>
+  onSelectQuestion?: (questionNumber: number) => void
 }) {
   const instruction = group.instruction
   return (
     <section className="panel panel-pad qp-group">
-      <header className="qp-group-head">
-        <span className="flag flag-neutral">{LAYOUT_LABEL[group.group.layout]}</span>
-        {instruction && <span className="mono muted">Questions {instruction.question_range}</span>}
-        {/* 题组落在哪个旁白窗口，是考生被告知「读到这里换一组」的位置，也是跨窗口错误唯一
-            看得出来的地方。 */}
-        <span className="muted">旁白窗口 {group.group.narrator_window_id}</span>
-      </header>
-
-      {/* rubric 逐字照印：印在纸上的那句话才是考生遵守的那一句，字数限制也在里面。 */}
-      {instruction && <p className="qp-rubric">{instruction.instruction_text}</p>}
-
-      {group.group.title && <h4 className="qp-title">{group.group.title}</h4>}
-
-      {/* 定位句。不带空格、用来让考生找位置，所以印在题面之上而不是混进题里。 */}
-      {group.group.signposts.length > 0 && (
-        <ul className="qp-signposts">
+      {/* 内部审核带：版式、旁白窗口、group_id。跟着「显示答案和证据」一起消失，因为它们和答案
+          一样是考生看不到的东西。放在最上面而不是插在题面中间，正是为了不打断下面那张纸。 */}
+      {showAnswers && (
+        <div className="qp-audit">
+          <span className="qp-audit-tag">审核信息</span>
+          <span className="flag flag-neutral">{LAYOUT_LABEL[group.group.layout]}</span>
+          <span className="muted">旁白窗口 {group.group.narrator_window_id}</span>
+          <span className="mono muted">{group.group.group_id}</span>
           {group.group.signposts.map((line, i) => (
-            <li key={`${line}-${i}`}>{line}</li>
+            <span className="muted" key={`${line}-${i}`}>
+              定位：{line}
+            </span>
           ))}
-        </ul>
+        </div>
       )}
 
-      <GroupFace group={group} />
+      {/* 以下是考生手里那张纸，顺序即印刷顺序：题号范围 → 标准 instruction → 标题 → 题目。 */}
+      <div className="qp-paper">
+        {instruction && (
+          <p className="qp-range mono">Questions {instruction.question_range}</p>
+        )}
+
+        {/* rubric 逐字照印：印在纸上的那句话才是考生遵守的那一句，字数限制也在里面。 */}
+        {instruction && <p className="qp-rubric">{instruction.instruction_text}</p>}
+
+        {group.group.title && <h4 className="qp-title">{group.group.title}</h4>}
+
+        <GroupFace
+          group={group}
+          selectedQuestion={selectedQuestion}
+          commentCounts={commentCounts}
+          onSelectQuestion={onSelectQuestion}
+        />
+      </div>
 
       {showAnswers && (
         <div className="qp-reveals">

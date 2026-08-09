@@ -44,7 +44,7 @@ against the process working directory and returns "No files found" — measured.
 
 Read both before reviewing anything:
 
-- `references/question-audit-rules.md` — the eleven judgements, the reconstruction procedure, the
+- `references/question-audit-rules.md` — the fifteen judgements, the reconstruction procedure, the
   per-dimension tolerances, and the grading table.
 - `schemas/audit_questions.schema.json` — the output contract.
 
@@ -70,6 +70,27 @@ Read nothing else.
    carriers in printed order. Ask whether these ten lines are really one form, one note and one table —
    or ten unrelated sentences that happen to validate (SC-015 / QR-026). You will need this reading
    again in step 6, and it is much harder to do honestly once you know the answers.
+
+   Four things are decidable here, from the page alone, before you know a single answer — take them
+   now while the reading is still innocent (rules §2, dimensions 12–15):
+   - **a label and its carrier naming the same field twice** — read the row exactly as printed:
+     `Arrival date | Arrival date: ....`, or the near-synonym `Family name | Surname: ....`
+     (SC-015 / QR-026 natural record structure);
+   - **parenthetical filler rather than record content** — keep a necessary, source-consistent unit
+     or scope limit such as `(day and month)`, but flag commentary on speaking, spelling or answering
+     such as `(as spelt)` / `(as mentioned)` under naturalness. A labelled form field needs no
+     carrier merely to stop the two carrier strings being empty;
+   - **a `table` with no real comparison axis** — judge both axes and whether each column compares
+     like with like. A two-column table can be valid; column count and filler headings such as
+     `Detail` / `Notes` / `Information` are warning signs, not verdicts (SC-015 / QR-026);
+   - **a navigation line that names nothing** — apply the transfer test: could it be copied unchanged
+     onto a completely different Part 1 material? "Details are confirmed" can (QR-034);
+   - **layouts alternating where the dialogue does not change mode** (SC-015).
+
+   Also read what is *on* the page that should not be: a layout or question-type badge, a narrator
+   window number, a group id, an internal range other than the instruction's own `Questions n–m`.
+   Those belong to the internal audit region. Keeping them off the candidate face is this project's
+   paper convention; report them as presentation findings rather than inventing a customer rule id.
 
 4. **Rebuild each answer independently.** The core product.
    For each item: find the turn that *settles* it — which may be a later confirmation rather than the
@@ -103,6 +124,10 @@ Read nothing else.
    never an automatic verdict); single interpretation, controllable locating burden, no transcription
    order (QR-003 / QR-034 / QR-037); and whether the script signposts its own answers or supports two
    mutually exclusive ones (SR-006 / SR-007).
+
+   Gap position belongs here only as naturalness, never as arithmetic: the distribution and the
+   7-of-10 cap arrived with the counts. "6 of 10 gaps are line-final" is not a finding; "this row was
+   inverted into a sentence purely to move its gap, and now reads oddly" is.
 
 8. **Write the findings.**
    One rule id per finding, from SC / QR / AR / AL / LG / SR. Each carries the shortest evidence that

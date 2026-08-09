@@ -2723,6 +2723,278 @@ h3 {
   gap: 12px;
 }
 
+/* ── 单人材料批注 ───────────────────────────────────────────────────────── */
+
+.question-comments-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 14px;
+  align-items: start;
+}
+
+.question-comments-panel {
+  position: sticky;
+  top: 8px;
+  display: grid;
+  grid-template-rows: auto minmax(80px, 1fr) auto auto;
+  max-height: calc(100vh - 24px);
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.comment-panel-head,
+.script-comments-toggle {
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #403294;
+  background: #f4f1ff;
+  border-bottom: 1px solid #d8d1f3;
+}
+
+.comment-list {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  overflow-y: auto;
+}
+
+.comment-empty {
+  padding: 16px 12px;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.comment-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 26px;
+  border: 1px solid var(--line);
+  border-left-width: 4px;
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.comment-card.severity-critical {
+  border-left-color: #de350b;
+}
+
+.comment-card.severity-major {
+  border-left-color: #d69e00;
+}
+
+.comment-card.severity-minor {
+  border-left-color: #00875a;
+}
+
+.comment-card-body {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 9px 4px 9px 10px;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.comment-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-3);
+  font-size: 10px;
+}
+
+.comment-card-meta strong {
+  color: #403294;
+  font-size: 11px;
+}
+
+.comment-card-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.comment-severity-tag,
+.comment-severity-choice {
+  border-radius: 3px;
+  padding: 2px 6px;
+  font-size: 10px;
+}
+
+.severity-critical.comment-severity-tag,
+.comment-severity-choice.severity-critical {
+  color: #de350b;
+  background: #ffebe6;
+}
+
+.severity-major.comment-severity-tag,
+.comment-severity-choice.severity-major {
+  color: #856404;
+  background: #fff3cd;
+}
+
+.severity-minor.comment-severity-tag,
+.comment-severity-choice.severity-minor {
+  color: #006644;
+  background: #e3fcef;
+}
+
+.comment-delete {
+  align-self: start;
+  margin: 5px 5px 0 0;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+  font-size: 17px;
+  line-height: 20px;
+}
+
+.comment-composer {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.comment-anchor {
+  min-height: 18px;
+  font-size: 11px;
+  color: #403294;
+}
+
+.comment-severity {
+  display: flex;
+  gap: 6px;
+}
+
+.comment-severity-choice {
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+
+.comment-severity-choice.selected {
+  border-color: currentColor;
+  box-shadow: 0 0 0 1px currentColor;
+}
+
+.comment-composer textarea {
+  width: 100%;
+  min-width: 0;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 8px;
+  font: inherit;
+}
+
+.comment-submit {
+  justify-self: end;
+}
+
+.comment-error {
+  padding: 6px 10px;
+  color: var(--bad);
+  font-size: 11px;
+}
+
+.comment-error button {
+  margin-left: 6px;
+}
+
+.qp-question-anchor,
+.turn {
+  position: relative;
+}
+
+.qp-question-anchor {
+  cursor: pointer;
+}
+
+.qp-question-anchor:focus-visible,
+.turn[role='button']:focus-visible {
+  outline: 2px solid #6554c0;
+  outline-offset: 2px;
+}
+
+.qp-question-anchor.has-comments,
+.turn.has-comments {
+  box-shadow: inset 3px 0 0 #6554c0;
+}
+
+.qp-question-anchor.selected {
+  background: #f4f1ff;
+}
+
+.comment-count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 9px;
+  color: #fff;
+  background: #6554c0;
+  font-size: 10px;
+  line-height: 18px;
+  vertical-align: middle;
+}
+
+.turn .comment-count-badge {
+  float: right;
+}
+
+.script-comments {
+  margin-top: 10px;
+  border: 1px solid #d8d1f3;
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.script-comments-toggle {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  border: 0;
+  cursor: pointer;
+}
+
+.script-comments-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+}
+
+.script-comments-body .comment-list {
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(240px, 320px);
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+@media (max-width: 900px) {
+  .question-comments-layout,
+  .script-comments-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .question-comments-panel {
+    position: static;
+    max-height: none;
+  }
+}
+
 /* 顶栏。sticky 是因为「显示答案和证据」在往下翻十道题的时候仍然要能关掉——盲看这件事
    通常是读到一半才想做的。 */
 .qp-bar {
@@ -2765,12 +3037,35 @@ h3 {
   gap: 10px;
 }
 
-.qp-group-head {
+/* 内部审核带：靠左一条竖线 + 灰底，与下面那张「纸」在视觉上分开。它不是题面的一部分，所以
+   刻意不跟 rubric 用同一种底色。 */
+.qp-audit {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+  padding: 4px 0 4px 9px;
+  border-left: 2px solid var(--line);
   font-size: 12px;
+}
+
+.qp-audit-tag {
+  color: var(--ink-2);
+  font-size: 11px;
+  letter-spacing: 0;
+}
+
+/* 考生题面。四层各自的间距在这里一次定清楚，而不是靠 .qp-group 的统一 gap——题号范围与 rubric
+   属于同一块（贴紧），标题与它下面的题目属于同一块（贴紧），两块之间才留白。 */
+.qp-paper {
+  display: grid;
+  gap: 0;
+}
+
+.qp-range {
+  margin: 0 0 3px;
+  font-size: 12px;
+  color: var(--ink-2);
 }
 
 /* rubric 是印在纸上的那句话，所以用衬线、居中偏窄，读起来像试卷而不像界面文案。 */
@@ -2783,16 +3078,19 @@ h3 {
   color: var(--ink);
 }
 
+/* 标题是这一块的层级顶点，所以比 rubric 大一号、加粗、离上面的 rubric 远、离下面的题目近。 */
 .qp-title {
-  margin: 2px 0 0;
-  font-size: 13.5px;
+  margin: 14px 0 6px;
+  font-size: 14.5px;
+  font-weight: 600;
+  letter-spacing: 0;
 }
 
-.qp-signposts {
-  margin: 0;
-  padding-left: 18px;
-  color: var(--ink-2);
-  font-size: 12.5px;
+/* 标题缺失时（form / table 组允许无标题），题目仍要与 rubric 拉开距离。 */
+.qp-rubric + .qp-form,
+.qp-rubric + .qp-note,
+.qp-rubric + .qp-table {
+  margin-top: 12px;
 }
 
 /* 印刷行。`inline` 而不是 flex：题面是一句话，允许在空格前后自然换行，用 flex 会把
@@ -2802,10 +3100,25 @@ h3 {
 }
 
 .qp-blank {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 128px;
   font-family: var(--mono);
   color: var(--ink-2);
-  margin: 0 2px;
   white-space: nowrap;
+}
+
+.qp-blank-number {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.qp-blank-line {
+  display: inline-block;
+  width: 108px;
+  border-bottom: 1px solid currentColor;
+  transform: translateY(-2px);
 }
 
 /* 绿色正确答案，就印在空格后面——复核的人读的是「这一行填进去通不通」。 */
@@ -2818,22 +3131,34 @@ h3 {
   font-weight: 500;
 }
 
-/* form：左标签右题面。标签列不设固定宽（不同组的标签长度差得远），靠 max-content 收紧。 */
+/* form：稳定的双列表单网格。外框、列线和行线都保留，让标签和值的关系一眼可见。 */
 .qp-form {
   display: grid;
-  gap: 2px;
+  border: 1px solid var(--line);
 }
 
 .qp-form-row {
   display: grid;
-  grid-template-columns: minmax(80px, max-content) 1fr;
-  gap: 10px;
-  padding: 3px 0;
-  border-bottom: 1px solid var(--line-2);
+  grid-template-columns: minmax(112px, 30%) minmax(0, 1fr);
+  border-bottom: 1px solid var(--line);
+}
+
+.qp-form-row:last-child {
+  border-bottom: 0;
 }
 
 .qp-form-label {
+  padding: 8px 10px;
+  border-right: 1px solid var(--line);
+  background: var(--bg);
   color: var(--ink-2);
+  font-weight: 500;
+}
+
+.qp-form-value,
+.qp-form-full {
+  min-width: 0;
+  padding: 8px 10px;
 }
 
 .qp-form-full {
@@ -2844,6 +3169,16 @@ h3 {
   font-weight: 500;
   color: var(--ink);
   margin-top: 2px;
+}
+
+.qp-note {
+  display: grid;
+  gap: 8px;
+}
+
+.qp-note-section {
+  display: grid;
+  gap: 2px;
 }
 
 .qp-note-list {

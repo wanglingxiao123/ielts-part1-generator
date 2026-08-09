@@ -31,7 +31,7 @@ terminological tidiness — it decides which field goes where:
 | Layer | Fields | Why here |
 |---|---|---|
 | completion | `instruction_text`, `word_limit`, `numeral_allowance` | Identical in kind for all three layouts: the candidate is told what to write and how much of it, regardless of shape. |
-| layout | `title`, `structure.row_labels`, `structure.column_labels`, `structure.hierarchy` | Shape-specific. A table's axes and a note's heading hierarchy are not the same object. |
+| layout | `title`, `structure.row_header_label`, `structure.row_labels`, `structure.column_labels`, `structure.note_sections` | Shape-specific. A table's axes and a note's heading-to-question mapping are not the same object. |
 
 Put one on the wrong layer and a table group acquires a note's title structure.
 
@@ -67,9 +67,36 @@ Cut the ten items, in number order, into consecutive groups. All five are checke
 | 5 | A group sits entirely inside one narrator question-number window. It may not straddle or merge windows (SC-019 / QR-022). |
 
 **Group count is not pre-set.** One window may hold several consecutive groups, and one package may
-mix form, note and table freely as long as each group is itself homogeneous. Let the script decide:
-personal details taken in sequence are a form; preferences discussed in prose are notes;
-requirements compared along two axes are a table.
+mix form, note and table as long as each group is itself homogeneous.
+
+**The script's own structure picks the layout — not a wish for variety.**
+
+| Layout | Use it when | Do not use it when |
+|---|---|---|
+| **form** | The dialogue fills in a record field by field: name, date, number, selection. Each item is one labelled slot. | The items are a discussion rather than a record being filled in. |
+| **note** | The information is hierarchical or narrative: a topic with points under it, explanations, preferences talked through. This is the default when the material is not a record and has no comparison axis. | Nothing — note is the honest fallback. |
+| **table** | Both axes carry real meaning, and reading down each content column compares like with like. A two-column table can be valid when its row and column dimensions are genuine. | The headings are filler words (`Detail`, `Details`, `Notes`, `Information`, `Answer`), row and cell wording repeat one another, or unrelated facts have merely been placed behind borders. |
+
+A table is a **pseudo-table** when its printed axes do not organise or compare the information,
+regardless of the raw column count. Column count and generic headings are triage signals, not an
+automatic verdict. Ask whether the grid communicates a relationship that a form or note would not
+express more naturally. Mixing layouts is legitimate only where the script really changes mode — a
+record being taken, then requirements being discussed. Alternating layout group by group to look
+varied is forced mixing, and the auditor reports it.
+
+`structure.row_header_label` names the left column above `row_labels`. `column_labels` names only
+the content columns to its right. A two-column table therefore uses one of each:
+
+```json
+{
+  "row_header_label": "Volunteer topic",
+  "row_labels": ["Young volunteers", "Time commitment"],
+  "column_labels": ["Project arrangement"]
+}
+```
+
+Do not put `Volunteer topic` into `column_labels`; that declares an empty corner plus two content
+columns even though each row supplies only one content value.
 
 Constraint 4 needs no turn-distance threshold. Once numbers are contiguous, evidence strictly
 increases and no group crosses a window, "no other group's point in between" is decidable as it
@@ -93,26 +120,131 @@ systematic end-of-line blanking QR-026 limits.
 
 Requirements:
 
-- All three positions should appear across the ten items.
-- End-of-line blanks: **at most 7 of 10**. If the form or table structure genuinely does not admit
-  variation, the reason has to be recorded.
-- Never leave a blank with no context on either side.
+- All three positions are desirable across the ten items, and they should appear **because the lines
+  are written differently**, not because one line was bent out of shape to fill a quota. A form row
+  whose natural print is `Arrival date: ....` stays final; the variation comes from the items that
+  really are sentences. Absence of a position is a review warning, not a generation error.
+- End-of-line blanks: **7 of 10 is a review guideline, not a hard cap**. A genuine labelled form or
+  table may naturally exceed it; do not add prose to move those gaps.
+- Never leave a blank with neither carrier text nor candidate-visible structural context. A form row
+  label, or a table's real row and column labels, already supplies that context.
 
 Carriers may re-word the script minimally and naturally, and may retain a locating signpost that
 does not give the answer away (QR-024, QR-034). What they may not do is mirror the evidence sentence
 so closely that the item is answerable from the page.
 
+### Row label and carrier: one job each
+
+In a form group the row label and the carrier are printed **side by side on the same line**. They
+therefore may not say the same thing:
+
+```
+BAD    row_label: Arrival date   carrier_before: "Arrival date:"     -> prints the words twice
+BAD    row_label: Nightly charge carrier_before: "Nightly charge:"
+GOOD   row_label: Arrival date   carrier_before: "" carrier_after: " (day and month)"
+GOOD   row_label: Room chosen    carrier_before: "" carrier_after: " room"
+```
+
+The division of labour:
+
+- the **row label** names the field — it is the left column, and it is the only place the field is
+  named;
+- the **carrier** carries whatever the *line* needs beyond its name: a unit, a short qualifier, or
+  nothing. A form row is a record field, not an instruction to the candidate.
+
+An empty carrier in a labelled form row is normal and correct: the label already did that work.
+`Surname | ....` is a complete record field. A blank is rejected only when it has neither carrier
+text nor structural labels. Whether a label such as `Preferences` is specific enough is a semantic
+QR-010 judgement for the blind auditor, not a deterministic reason to force carrier prose.
+
+What is never correct is repeating the label, or restating it as a near-synonym (`Family name` /
+`Surname:`) — the duplication is the finding, not the exact wording. The same applies to a table's
+row and column headings against the cell text, and to a note's heading against the line beneath it.
+
+Do not repair duplication by replacing it with a full instruction sentence:
+
+```
+BAD    Surname       | Please record .... for correspondence
+BAD    Flat size     | Accommodation consists of ....
+GOOD   Surname       | ....
+GOOD   Monthly rent  | £ .... per month
+```
+
+Parentheses are permitted only when all four checks pass:
+
+1. removing the text would create a real ambiguity or lose the required answer scope;
+2. the limit agrees with the recording or the simulated record's format;
+3. it is natural, non-redundant record text, not commentary on speaking, spelling or answering;
+4. it does not reveal the answer or eliminate all same-level rivals without listening.
+
+`(day and month)` can pass when the field genuinely asks for only those parts. `(as spelt)`,
+`(as mentioned)` and normally `(in block capitals)` fail because they describe the recording or the
+candidate's behaviour rather than the information being recorded. Do not add parentheses merely to
+change `blank_position`.
+
+A labelled row with no carrier ends at the gap and classifies as **final**. A genuine qualifier after
+the gap can change that classification; an invented qualifier may not be used to manufacture
+position variety.
+
 ## 5. Titles and Signposts
 
-- A **note** group must have a short, specific, non-leaking scenario or topic title (QR-031). It must
-  not contain the canonical answer, a unique answer word, or a category hint that narrows the blank
-  to one candidate. Form and table groups carry their identity in their labels; a title there is
-  optional.
-- Every **narrator window** needs at least one blank-free, specific, script-grounded navigation line
-  (QR-026). Counted per window, not per group: a one-item group inside a well-signposted window
-  needs no line of its own.
-- "Requirements for the new home are discussed next" locates the candidate. "Information" does not —
-  a line that could sit on any material of this kind is not a signpost.
+**Titles.** QR-031 requires a short, specific, non-leaking scenario title for note groups. This
+project applies the same title convention to form and table groups for a consistent paper: that
+extension and the use of capitals are project authoring conventions, not additional claims about
+QR-031. The title tells the candidate which part of the conversation this block belongs to:
+
+```
+GOOD   HOTEL BOOKING          ARRIVAL AND FACILITIES        CHILD'S EDUCATION
+BAD    Hotel booking form     TABLE: Hotel information      Questions 6-10 (window 2)
+BAD    Information            Details                        Section B
+```
+
+A title must not contain:
+
+- the question type or layout name (`form`, `table`, `notes`, `completion`);
+- a question range or a narrator window number — those are printed by the instruction, or belong to
+  the internal audit region, never to the heading;
+- the canonical answer, a unique answer word, or a category hint that narrows a blank to one
+  candidate.
+
+**Note hierarchy: two levels at most.** As a project authoring convention, a note group's
+`structure.hierarchy` may go one level deep under the title — a main item and its sub-items. Deeper
+nesting on a Part 1 page is a structure the candidate has to decode rather than read. Level names are
+concrete and drawn from the conversation (`Room`, `Meals`, `Getting in`), never generic (`Point 1`,
+`Other`, `Details`).
+
+Use `structure.note_sections` to record the relationship explicitly:
+
+```json
+[
+  {"heading": "Deposit", "question_numbers": [6]},
+  {"heading": "Household provision", "question_numbers": [7]},
+  {"heading": "Transport", "question_numbers": [8, 9]}
+]
+```
+
+The sections must cover every question in the group exactly once. Do not emit several headings and
+then a detached list of questions; each heading is rendered immediately above the items it governs.
+`hierarchy` remains readable only for archived packages and is not sufficient for new generation.
+
+**Signposts.** `signposts` is internal navigation and audit metadata. It helps reviewers connect a
+group to the recording, but it is not prose to print on the candidate paper. Every **narrator
+window** needs at least one blank-free, specific, script-grounded navigation line (QR-026). Counted
+per window, not per group: a one-item group inside a well-signposted window needs no line of its own.
+
+A signpost must name **what is being talked about** at that point in the recording. Generalised
+meta-discourse about the questions themselves is not a signpost and is a finding:
+
+```
+GOOD   "Requirements for the new home are discussed next"
+GOOD   "The receptionist goes through what the rate includes"
+BAD    "Details are confirmed"        <- true of any material; names nothing
+BAD    "Information is given"         <- ditto
+BAD    "The following details apply"  <- talks about the page, not the recording
+```
+
+The test: could this line be copied unchanged onto a completely different Part 1 material? If yes it
+carries no navigation value. Ground it in the script's own subject matter instead.
 
 Content structure is a content-review gate; border style, font, spacing and non-destructive
 pagination are not (QR-015). Missing row or column labels, a missing note hierarchy, an unreadable
@@ -169,6 +301,28 @@ against the answers. Print the chosen string **verbatim** inside `instruction_te
 printed rubric is the one the candidate obeys, and a rubric that disagrees with the machine-readable
 field is unanswerable. Restate the same limit on each of that group's answer-key entries, because
 marking reads that block alone.
+
+**`instruction_text` uses the standard IELTS wording and nothing else**, one sentence naming the
+layout plus the rubric sentence:
+
+```
+Complete the form below.
+Complete the notes below.
+Complete the table below.
+
+Write <WORD LIMIT> for each answer.
+```
+
+so, joined: `Complete the notes below. Write NO MORE THAN TWO WORDS AND/OR A NUMBER for each answer.`
+The layout word must be the group's actual `layout` (`form` / `notes` / `table` — note takes the
+plural). Do not describe the content in it: `Complete the booking record.` and `Complete the hotel
+information table below.` are both non-standard, and the second also says in the rubric what the
+title already says.
+
+**Exactly one instruction per group, printed once at the head of the group.** Do not repeat it above
+individual items, and do not restate it in a signpost or a title. Two adjacent groups that happen to
+share the same rubric still get one instruction each — the instruction is what carries the group's
+`Questions n–m` range — but neither repeats itself.
 
 The validator re-derives the strictest fitting rubric and reports a group that printed a looser one.
 A loose limit is not generosity: it accepts responses your own key marks wrong.
@@ -246,8 +400,12 @@ uniqueness by substituting every same-level candidate (AR-012, QR-010); paraphra
 QR-024); proposition-level alignment (AL-018); semantic leakage (QR-040's second half, SC-012);
 grammatical and semantic fit once the answer is inserted (QR-009, AL-015); naturalness, register and
 unnecessary lexical difficulty (LG-001/002/003/005/015); spelling burden (QR-043); whether the ten
-items really form a form, note or table rather than ten disconnected sentences (SC-015, QR-026); and
-whether the script itself signposts its answers (SR-006, SR-007).
+items really form a form, note or table rather than ten disconnected sentences (SC-015, QR-026);
+whether a row label and its carrier print the same thing twice (SC-015 / QR-026 natural record
+structure); whether a `table` has a real comparison axis or is a pseudo-table (SC-015 / QR-026);
+whether a signpost names the recording or is generalised meta-discourse (QR-034); whether the layout
+mix follows the script or is forced (SC-015); and whether the script itself signposts its answers
+(SR-006, SR-007).
 
 Run the validator to zero errors. Then reread the question face **without** the key beside it and ask
 what a candidate would: can each blank be filled from the recording, and can any of them be filled

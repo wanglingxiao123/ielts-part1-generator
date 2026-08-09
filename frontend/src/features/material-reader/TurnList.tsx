@@ -24,6 +24,8 @@ interface Props {
   registerTurnRef: (turnIndex: number, el: HTMLDivElement | null) => void
   onlyAnnotated?: boolean
   unplayableTurns?: number[]
+  commentCounts?: ReadonlyMap<number, number>
+  onSelectCommentTurn?: (turnIndex: number) => void
 }
 
 function TurnText({ turn, onSelectItem }: { turn: ViewTurn; onSelectItem: Props['onSelectItem'] }) {
@@ -70,6 +72,8 @@ export function TurnList({
   registerTurnRef,
   onlyAnnotated,
   unplayableTurns,
+  commentCounts,
+  onSelectCommentTurn,
 }: Props) {
   const turns = onlyAnnotated
     ? view.turns.filter((t) => t.items.length > 0 || t.findings.length > 0)
@@ -81,20 +85,37 @@ export function TurnList({
         const isSelected =
           selectedTurn === turn.index ||
           (selectedItem !== null && turn.items.some((i) => i.number === selectedItem))
+        const commentCount = commentCounts?.get(turn.index) ?? 0
         return (
           <div
             key={turn.index}
             ref={(el) => registerTurnRef(turn.index, el)}
             data-turn={turn.index}
+            role={onSelectCommentTurn ? 'button' : undefined}
+            tabIndex={onSelectCommentTurn ? 0 : undefined}
             className={
               'turn' +
               (turn.speaker === 'speaker1' ? ' narration' : '') +
               (turn.items.length > 0 ? ' has-item' : '') +
               (isSelected ? ' selected' : '') +
               (flashTurn === turn.index ? ' flash' : '') +
-              (playingTurn === turn.index ? ' playing' : '')
+              (playingTurn === turn.index ? ' playing' : '') +
+              (commentCount > 0 ? ' has-comments' : '')
             }
-            onClick={() => onSelectTurn(turn.index)}
+            onClick={() => {
+              onSelectTurn(turn.index)
+              onSelectCommentTurn?.(turn.index)
+            }}
+            onKeyDown={(event) => {
+              if (
+                onSelectCommentTurn &&
+                (event.key === 'Enter' || event.key === ' ')
+              ) {
+                event.preventDefault()
+                onSelectTurn(turn.index)
+                onSelectCommentTurn(turn.index)
+              }
+            }}
           >
             <div className="tno">{turn.index}</div>
             {/* 标签就是材料 JSON 里的 speaker 编号。speaker1 额外标一句「旁白」——它不参与对话、
@@ -116,6 +137,7 @@ export function TurnList({
               )}
             </div>
             <div className="text">
+              {commentCount > 0 && <span className="comment-count-badge">{commentCount}</span>}
               <TurnText turn={turn} onSelectItem={onSelectItem} />
               {turn.findings.map((f, i) => (
                 <span

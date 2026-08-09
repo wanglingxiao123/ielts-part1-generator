@@ -11,7 +11,7 @@ What is left is everything a count cannot see, and it is the whole reason this r
 ## Contents
 
 1. Your position, and why it is the strong one
-2. The eleven dimensions
+2. The fifteen dimensions
 3. Reconstruction: how to arrive at an answer
 4. Same-level rivals, and what counts as one
 5. Leakage from the page
@@ -45,7 +45,7 @@ genuine review.
 
 ---
 
-## 2. The Eleven Dimensions
+## 2. The Fifteen Dimensions
 
 Each row is a judgement, the rule id that owns it, and the observable that decides it. One id per
 finding: a finding citing three rules cannot be fixed once.
@@ -58,11 +58,20 @@ finding: a finding citing three rules cannot be fixed once.
 | 4 | **Semantic leakage** | QR-040 (second half), SC-012 | A near-restatement of the same fact in different words gives the answer away as effectively as the word itself. Word-level hits were already caught; the paraphrase is yours. See §5. |
 | 5 | **Fit after insertion** | QR-009, AL-015 | Write your answer into the gap and read the whole line. It must be grammatical and mean what the evidence means — number agreement, article, preposition, and the sense of the finished line. |
 | 6 | **Is the gap a real information unit** | QR-010 | The gap should take one meaningful piece of information. A gap over a function word, over half a compound, or over a stretch a listener never hears as a unit is a defect however cleanly it validates. |
-| 7 | **Naturalness, register, lexical load** | LG-001, LG-002, LG-003, LG-005, LG-015 | The printed page reads as an ordinary form, note or table someone would really fill in. Flag stilted phrasing, a register that drifts academic, and vocabulary made harder than the point requires. |
+| 7 | **Naturalness, register, lexical load** | LG-001, LG-002, LG-003, LG-005, LG-015 | The printed page reads as an ordinary form, note or table someone would really fill in. Flag stilted phrasing, a register that drifts academic, vocabulary made harder than the point requires, and instruction sentences used as form values (`Surname | Please record ...`). A parenthetical unit or answer-scope qualifier is allowed only when removing it creates real ambiguity, it agrees with the recording/record format, and it is non-redundant and non-leaking. Commentary on speaking, spelling or answering such as `(as spelt)` and `(as mentioned)` is a naturalness finding; parentheses alone are not. |
 | 8 | **Spelling burden** | QR-043 | A one-word answer with an avoidable orthographic trap, where an equally valid low-risk alternative existed in the same evidence. **Word rarity is a triage signal for a human, never an automatic verdict** — no frequency threshold decides this, and low frequency alone is not a finding. |
-| 9 | **Do the ten really form one form / note / table** | SC-015, QR-026 | Read the page as a page. A form's rows belong to one record; a note's headings hold a real hierarchy; a table's axes mean something in both directions. Ten grammatically sound sentences that share no structure is a finding, not a pass. |
+| 9 | **Do the ten really form one form / note / table** | SC-015, QR-026 | Read the page as a page. A form's rows belong to one record; a note's headings hold a real hierarchy and each heading is immediately followed by its items; a table's axes mean something in both directions. A detached run of note headings followed by a separate run of questions is a finding. Ten grammatically sound sentences that share no structure is not a pass. |
 | 10 | **Single reading, controllable locating burden, no transcription order** | QR-003, QR-034, QR-037 | Each carrier has exactly one plausible interpretation. The listener can find the place from the printed cue without holding the whole script in memory. Items are not answerable merely by writing down what is heard in order. |
 | 11 | **Does the script itself give the answers away** | SR-006, SR-007 | Two mutually exclusive answers equally supported by the decisive evidence is a defect in the item (SR-006). A script that signposts its own answers — "and the *answer* is", an unnatural pause-and-repeat around every key word — is SR-007. Both are reported; neither is fixed by editing the recording. |
+| 12 | **Label and carrier saying the same thing twice** | SC-015, QR-026 | In a form row the label and the carrier print side by side. Read the line as printed: `Arrival date | Arrival date: ....` names the field twice, and so does the near-synonym version (`Family name | Surname: ....`). The label names the field; the carrier adds only what the line needs beyond its name. Same test for a table's row/column heading against its cell text, and a note heading against the line under it. **The finding is the duplication, not the wording** — the fix is to empty or repurpose the carrier, not to re-synonymise it. This is a natural-record-structure judgement, not a QR-015 accessibility claim. |
+| 13 | **Pseudo-table** | SC-015, QR-026 | Judge the printed axes, not a mechanical column minimum. A two-column table can be valid when both dimensions are meaningful and each column compares like with like. The left row-label column needs its own `row_header_label`; `column_labels` names only columns to its right. A filler heading (`Detail`, `Details`, `Notes`, `Information`, `Answer`), repeated row/cell wording, or unrelated facts placed behind borders are warning signs. Call it a pseudo-table only when the grid communicates no real relationship and a form or note expresses the material more naturally. |
+| 14 | **Generalised signpost** | QR-034 | A navigation line must name what is being talked about at that point in the recording. Apply the transfer test: could this line be copied unchanged onto a completely different Part 1 material? "Details are confirmed", "Information is given", "The following details apply" all pass that test and therefore carry no navigation value. Vacuous metadiscourse about the page rather than the recording is the QR-034 defect. |
+| 15 | **Forced layout mixing** | SC-015 | Layout follows the script's own mode: a record being filled in is a form, information talked through is notes, a real two-axis comparison is a table. Layouts alternating group by group with no corresponding change in the conversation is variety for its own sake, and it makes the candidate re-learn the page shape for no reason. Say which group's layout does not match its dialogue, and which layout does. |
+
+**Where the defect is the page's shape, the fix is the page.** Dimensions 12–15 are all repaired
+without touching a single answer, a single item's evidence or the question numbering: a carrier
+emptied, a `table` rewritten as notes, a signpost re-grounded in the dialogue. A finding here that
+proposes changing which point an item tests has mis-diagnosed itself.
 
 **The script is never a fix.** Audible text is frozen once the material is final (SR-021). Where the
 script is the cause, say so and put the repair on the page — a carrier limit, a different gap
@@ -192,6 +201,10 @@ Severity is by real impact, never by how much work the fix is (severity.md 2).
 | No script evidence for a gap at all | MAJOR; CRITICAL if it runs through the set |
 | Candidate-visible text exposes an answer | MAJOR for one item; CRITICAL when systematic |
 | Structure broken — group not one real form/note/table, evidence outside its window | MAJOR |
+| A `table` with no real comparison axis (pseudo-table) | MINOR; MAJOR when the false structure leaves a cell unanswerable or dominates the whole page |
+| Label and carrier printing the same field twice | MINOR; MAJOR when the duplication is every row of the group |
+| A signpost that names nothing (generalised metadiscourse) | MINOR; MAJOR when no window has a real one, since the set then has no navigation at all |
+| Layout mixing that does not follow the dialogue | MINOR |
 | Avoidable spelling burden with an equally valid low-risk alternative | MINOR; MAJOR if it alone makes fair marking unreliable, or if several items together shift the construct towards orthography |
 | Spelling, punctuation or formatting that does not change how an answer is marked | MINOR |
 | Wording that is merely less natural, the original being correct and clear | INFO at most |
@@ -229,6 +242,14 @@ required content is a content finding under QR-015 instead.
   contiguity, word limits, the one-token/multi-token answer tiers, quote presence, evidence
   monotonicity, word-level leakage. All decided before you were called, and re-litigating an
   arithmetic result adds noise the writer has to read past.
+
+  This includes the **gap-final total**: `question_metrics` already carries the distribution, and the
+  7-of-10 cap is enforced upstream. What is yours is dimension 3's neighbours — whether a line's gap
+  position is *natural* for that line — never the tally. "6 of 10 gaps are line-final" is not a
+  finding; "this row was inverted into a sentence purely to move its gap, and now reads oddly" is.
+- **A layout you would personally have chosen differently.** Dimensions 13 and 15 are about the page
+  contradicting itself — a grid with nothing to compare, a shape that changes where the dialogue does
+  not. A form that could arguably have been notes, where both would read naturally, is INFO at most.
 - **A preference between two correct phrasings.** INFO at most, and usually nothing.
 - **A word being uncommon.** Only an avoidable burden with a demonstrated equally valid alternative
   in the same evidence is QR-043.

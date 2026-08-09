@@ -269,6 +269,18 @@ Two names changed with v2. Write `completion_layout_coverage`; `question_type_co
 name and must not be written. Never write both — a record carrying both leaves a reader no way to
 know which to trust, and it is rejected outright.
 
+**Every `target` must fit a standard rubric.** The six rubrics a paper may print run from
+`ONE WORD ONLY` to `NO MORE THAN THREE WORDS AND/OR A NUMBER`, so the widest answer any of them
+accepts is three lexical words plus **one** bare number. A target over that budget is rejected here,
+at the blueprint, because no later stage can repair it: the question stage may neither replace a
+blueprint target (the ten information points are its given input) nor touch the script (SR-021), and
+loosening one group's rubric would make the paper and the marking key different tests. Measured,
+2026-08-08: a `service-refund` blueprint carried `9 and 1` — one word plus two numbers — from "The
+driver calls between 9 and 1." Every attempt failed one of those three walls in turn and the material
+burned its entire 810s budget without delivering. Write one endpoint (`9`) as the target and leave
+`between … and 1` in the carrier sentence. A hyphenated compound is one word, so `two-bedroom` is
+within budget.
+
 Three fields are required on every item in v2:
 
 - **`response_form`** — `numeric | word | phrase`, the shape of the recordable answer **by token

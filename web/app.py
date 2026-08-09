@@ -12,6 +12,7 @@ Route map:
     GET  /api/batch-history/{id}             one historical batch, with its materials' artifacts
     GET  /api/batch-history-material/{id}    one material by id alone, for the reader page
     GET  /api/material-questions/{id}        the delivered question set, for the 题目预览 tab
+    GET/POST/DELETE /api/material-comments/* personal material comments
     POST /api/batch-history/{id}/submit      records the 已提交 status
     POST /api/batch-history/{id}/withdraw    undoes it, wholly or per material
     GET  /login                   a server-rendered form, because the SPA has no local login UI
@@ -79,6 +80,7 @@ from .auth import (
     build_auth,
 )
 from .batch_history import BatchHistory, BatchRecorder, new_batch_id
+from .comment_store import CommentError, CommentService
 from .fanout import (
     FANOUT_CONCURRENCY,
     HEARTBEAT,
@@ -196,7 +198,8 @@ class WebTier:
                  static_dir: str, *, cookie_secure: bool = False,
                  fanout_concurrency: int = FANOUT_CONCURRENCY,
                  history: Optional[BatchHistory] = None,
-                 slot_state: Optional[SlotStateReader] = None) -> None:
+                 slot_state: Optional[SlotStateReader] = None,
+                 comments: Optional[CommentService] = None) -> None:
         self.auth = auth
         self.runtime = runtime
         self.static_dir = static_dir
@@ -208,6 +211,7 @@ class WebTier:
         # Batch history. Injectable so a test can hand in an in-memory store; the default builds
         # itself lazily on first use, so a tier that never sees a batch constructs no AWS client.
         self.history = history if history is not None else BatchHistory()
+        self.comments = comments if comments is not None else CommentService()
         # email -> (runtimeSessionId, minted_at). Per-user so two reviewers do not share a
         # microVM, and so one user's long batch does not reset another's idle timer.
         #
@@ -457,6 +461,58 @@ class WebTier:
                     body["slot"] = state.get("slot")
                     body["request_status"] = state.get("request_status")
             return JSONResponse(body)
+
+        # ── personal material comments ─────────────────────────────────────
+
+        @app.get("/api/material-comments/{material_id}")
+        async def list_material_comments(material_id: str) -> JSONResponse:
+            from starlette.concurrency import run_in_threadpool
+
+            try:
+                document = await run_in_threadpool(self.comments.list, material_id)
+            except CommentError as exc:
+                return JSONResponse(_error_body(exc.code, exc.message), status_code=exc.status)
+            except Exception as exc:  # noqa: BLE001
+                return JSONResponse(
+                    _infra_error_body(
+                        "COMMENTS_UNAVAILABLE", "评论暂时读取不到，请稍后重试。", exc),
+                    status_code=502,
+                )
+            return JSONResponse(document)
+
+        @app.post("/api/material-comments/{material_id}")
+        async def create_material_comment(material_id: str, request: Request) -> JSONResponse:
+            from starlette.concurrency import run_in_threadpool
+
+            body = await _json_body(request)
+            try:
+                document = await run_in_threadpool(self.comments.create, material_id, body)
+            except CommentError as exc:
+                return JSONResponse(_error_body(exc.code, exc.message), status_code=exc.status)
+            except Exception as exc:  # noqa: BLE001
+                return JSONResponse(
+                    _infra_error_body(
+                        "COMMENT_SAVE_FAILED", "评论没有保存成功，请稍后重试。", exc),
+                    status_code=502,
+                )
+            return JSONResponse(document, status_code=201)
+
+        @app.delete("/api/material-comments/{material_id}/{comment_id}")
+        async def delete_material_comment(material_id: str, comment_id: str) -> JSONResponse:
+            from starlette.concurrency import run_in_threadpool
+
+            try:
+                document = await run_in_threadpool(
+                    self.comments.delete, material_id, comment_id)
+            except CommentError as exc:
+                return JSONResponse(_error_body(exc.code, exc.message), status_code=exc.status)
+            except Exception as exc:  # noqa: BLE001
+                return JSONResponse(
+                    _infra_error_body(
+                        "COMMENT_DELETE_FAILED", "评论没有删除成功，请稍后重试。", exc),
+                    status_code=502,
+                )
+            return JSONResponse(document)
 
         @app.post("/api/batch-history/{batch_id}/submit")
         async def submit_batch(batch_id: str, request: Request) -> JSONResponse:

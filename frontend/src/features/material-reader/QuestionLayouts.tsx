@@ -20,14 +20,63 @@
  */
 import type { PreviewGroup, PreviewQuestion } from '@/domain/questionPreview'
 
+export interface QuestionInteraction {
+  selectedQuestion?: number | null
+  commentCounts?: ReadonlyMap<number, number>
+  onSelectQuestion?: (questionNumber: number) => void
+}
+
+function questionClass(q: PreviewQuestion, interaction: QuestionInteraction): string {
+  const count = interaction.commentCounts?.get(q.number) ?? 0
+  return (
+    ' qp-question-anchor' +
+    (count > 0 ? ' has-comments' : '') +
+    (interaction.selectedQuestion === q.number ? ' selected' : '')
+  )
+}
+
+function QuestionCount({
+  q,
+  interaction,
+}: {
+  q: PreviewQuestion
+  interaction: QuestionInteraction
+}) {
+  const count = interaction.commentCounts?.get(q.number) ?? 0
+  return count > 0 ? <span className="comment-count-badge">{count}</span> : null
+}
+
+function AnswerBlank({ text }: { text: string }) {
+  const number = text.match(/\d+/)?.[0]
+
+  return (
+    <span className="qp-blank" aria-label={number ? `Question ${number} answer blank` : 'Answer blank'}>
+      {number && <span className="qp-blank-number">{number}</span>}
+      <span className="qp-blank-line" aria-hidden="true" />
+    </span>
+  )
+}
+
 /** 一道题的印刷行：空前文 + 带题号的空格 + 空后文，答案开启时在空格后补一个绿色答案。 */
 function FaceLine({ q }: { q: PreviewQuestion }) {
+  const before = q.face.carrier_before
+  const after = q.face.carrier_after
+  const spaceBeforeBlank = before !== '' && !/\s$/.test(before)
+  const spaceBeforeAfter = after !== '' && !/^[\s,.;:!?)]/.test(after)
+
   return (
     <span className="qp-line">
-      {q.face.carrier_before && <span>{q.face.carrier_before}</span>}
-      <span className="qp-blank">{q.face.blank}</span>
-      {q.reveal && <span className="qp-inline-answer">{q.reveal.canonical}</span>}
-      {q.face.carrier_after && <span>{q.face.carrier_after}</span>}
+      {before && <span>{before}</span>}
+      {spaceBeforeBlank && ' '}
+      <AnswerBlank text={q.face.blank} />
+      {q.reveal && (
+        <>
+          {' '}
+          <span className="qp-inline-answer">{q.reveal.canonical}</span>
+        </>
+      )}
+      {spaceBeforeAfter && ' '}
+      {after && <span>{after}</span>}
     </span>
   )
 }
@@ -35,29 +84,53 @@ function FaceLine({ q }: { q: PreviewQuestion }) {
 /**
  * form：一行一个 `标签: ______`。
  *
- * 左列走 `structure.row_labels`，右列是印刷行。这两处常常说同一句话（参考包里 row_label 是
- * `Street`，而 `carrier_before` 是 `Street:`），因为行标签本来就是印在那一行开头的字——重复印两遍
- * 会让人以为产物出了错。所以标签与空前文实为同一句时，这一行合成一格只印一次；两者都不删。
+ * 左列走 `structure.row_labels`，右列是印刷行。行标签与空前文各有一份职责、不得重复：标签负责
+ * 命名字段，空前文只补这一行在名字之外还需要的东西（单位、限定、句子的其余部分，或者什么都不补）。
+ * 这条现在写在出题规则里（question-rules.md §4「Row label and carrier: one job each」），也是审核
+ * Agent 的第 12 项判断。
+ *
+ * 所以这里**照印**，不再把重复的两格合成一格。早先的合并是想让页面好看一点，代价是把
+ * `row_label: Street` + `carrier_before: "Street:"` 这种重复藏了起来——审核要读的正是「这一行印出来
+ * 长什么样」，前端替它去重，等于替产物打了个补丁，然后让人在补丁上做复核。没有标签的行仍然整行铺满。
  */
-function FormLayout({ group }: { group: PreviewGroup }) {
+function FormLayout({
+  group,
+  interaction,
+}: {
+  group: PreviewGroup
+  interaction: QuestionInteraction
+}) {
   const labels = group.group.structure.row_labels ?? []
   return (
     <div className="qp-form">
       {group.questions.map((q, i) => {
         const label = labels[i] ?? ''
-        const carrier = q.face.carrier_before.trim().replace(/[:：]\s*$/, '')
-        const sameThing = label !== '' && carrier === label.trim()
         return (
-          <div className="qp-form-row" key={q.number}>
-            {sameThing || label === '' ? (
+          <div
+            className={`qp-form-row${questionClass(q, interaction)}`}
+            key={q.number}
+            data-question={q.number}
+            role="button"
+            tabIndex={0}
+            onClick={() => interaction.onSelectQuestion?.(q.number)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault()
+                interaction.onSelectQuestion?.(q.number)
+              }
+            }}
+          >
+            {label === '' ? (
               <div className="qp-form-full">
                 <FaceLine q={q} />
+                <QuestionCount q={q} interaction={interaction} />
               </div>
             ) : (
               <>
                 <div className="qp-form-label">{label}</div>
                 <div className="qp-form-value">
                   <FaceLine q={q} />
+                  <QuestionCount q={q} interaction={interaction} />
                 </div>
               </>
             )}
@@ -79,25 +152,57 @@ function FormLayout({ group }: { group: PreviewGroup }) {
 /**
  * note：层级标题 + 其下的笔记行。
  *
- * `hierarchy` 是「按印刷顺序的标题与子标题」，但包里没有说哪道题挂在哪个标题下，所以标题按声明
- * 顺序先印，题目行缩进跟在后面——不猜归属。
+ * 新包用 `note_sections[].question_numbers` 明确题目归属。旧包只有 `hierarchy`、无法证明归属时，
+ * 宁可退化成一个普通项目列表，也不把标题按数组下标硬配给错误的题目。
  */
-function NoteLayout({ group }: { group: PreviewGroup }) {
-  const hierarchy = group.group.structure.hierarchy ?? []
+function NoteLayout({
+  group,
+  interaction,
+}: {
+  group: PreviewGroup
+  interaction: QuestionInteraction
+}) {
+  const byNumber = new Map(group.questions.map((q) => [q.number, q]))
+  const declared = group.group.structure.note_sections ?? []
+  const sections =
+    declared.length > 0
+      ? declared.map((section) => ({
+          heading: section.heading,
+          questions: section.question_numbers.flatMap((number) => {
+            const question = byNumber.get(number)
+            return question ? [question] : []
+          }),
+        }))
+      : [{ heading: undefined, questions: group.questions }]
+
   return (
     <div className="qp-note">
-      {hierarchy.map((line, i) => (
-        <div className="qp-note-head" key={`${line}-${i}`} style={{ paddingLeft: i * 14 }}>
-          {line}
+      {sections.map((section, i) => (
+        <div className="qp-note-section" key={`${section.heading ?? 'items'}-${i}`}>
+          {section.heading && <div className="qp-note-head">{section.heading}</div>}
+          <ul className="qp-note-list">
+            {section.questions.map((q) => (
+              <li
+                key={q.number}
+                className={questionClass(q, interaction)}
+                data-question={q.number}
+                role="button"
+                tabIndex={0}
+                onClick={() => interaction.onSelectQuestion?.(q.number)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault()
+                    interaction.onSelectQuestion?.(q.number)
+                  }
+                }}
+              >
+                <FaceLine q={q} />
+                <QuestionCount q={q} interaction={interaction} />
+              </li>
+            ))}
+          </ul>
         </div>
       ))}
-      <ul className="qp-note-list">
-        {group.questions.map((q) => (
-          <li key={q.number}>
-            <FaceLine q={q} />
-          </li>
-        ))}
-      </ul>
     </div>
   )
 }
@@ -108,7 +213,14 @@ function NoteLayout({ group }: { group: PreviewGroup }) {
  * 表头左上角留空——那一格在真实试卷上就是空的，列标签只管内容列。题面横跨全部内容列，因为包里
  * 没有单元格坐标（见文件顶部第三条）。
  */
-function TableLayout({ group }: { group: PreviewGroup }) {
+function TableLayout({
+  group,
+  interaction,
+}: {
+  group: PreviewGroup
+  interaction: QuestionInteraction
+}) {
+  const rowHeader = group.group.structure.row_header_label
   const rows = group.group.structure.row_labels ?? []
   const cols = group.group.structure.column_labels ?? []
   const span = Math.max(1, cols.length)
@@ -117,7 +229,7 @@ function TableLayout({ group }: { group: PreviewGroup }) {
       {cols.length > 0 && (
         <thead>
           <tr>
-            {rows.length > 0 && <th className="qp-table-corner" />}
+            {rows.length > 0 && <th className="qp-table-corner">{rowHeader ?? ''}</th>}
             {cols.map((col, i) => (
               <th key={`${col}-${i}`}>{col}</th>
             ))}
@@ -126,10 +238,23 @@ function TableLayout({ group }: { group: PreviewGroup }) {
       )}
       <tbody>
         {group.questions.map((q, i) => (
-          <tr key={q.number}>
+          <tr
+            key={q.number}
+            className={questionClass(q, interaction)}
+            data-question={q.number}
+            tabIndex={0}
+            onClick={() => interaction.onSelectQuestion?.(q.number)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault()
+                interaction.onSelectQuestion?.(q.number)
+              }
+            }}
+          >
             {rows.length > 0 && <th scope="row">{rows[i] ?? ''}</th>}
             <td colSpan={span}>
               <FaceLine q={q} />
+              <QuestionCount q={q} interaction={interaction} />
             </td>
           </tr>
         ))}
@@ -146,9 +271,12 @@ function TableLayout({ group }: { group: PreviewGroup }) {
   )
 }
 
-export function GroupFace({ group }: { group: PreviewGroup }) {
+export function GroupFace({
+  group,
+  ...interaction
+}: { group: PreviewGroup } & QuestionInteraction) {
   const layout = group.group.layout
-  if (layout === 'note') return <NoteLayout group={group} />
-  if (layout === 'table') return <TableLayout group={group} />
-  return <FormLayout group={group} />
+  if (layout === 'note') return <NoteLayout group={group} interaction={interaction} />
+  if (layout === 'table') return <TableLayout group={group} interaction={interaction} />
+  return <FormLayout group={group} interaction={interaction} />
 }

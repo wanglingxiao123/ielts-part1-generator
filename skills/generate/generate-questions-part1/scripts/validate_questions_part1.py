@@ -40,8 +40,10 @@ from validate_part1 import (  # noqa: E402
     FIRST_RANGE_RE,
     NUMERIC_TOKEN_RE,
     SECOND_RANGE_RE,
+    WORD_LIMITS,
     anchor_ok,
     answer_tokens,
+    budget_of,
     derive_qr027_class,
     derive_response_form,
     exact_keys,
@@ -55,19 +57,12 @@ FACE_KEYS = {"instructions", "groups", "questions"}
 ITEM_COUNT = 10
 LAYOUTS = {"form", "note", "table"}
 
-# The closed set of standard rubrics, ordered from strictest to loosest. Each maps to
-# (max lexical words, permitted purely-numeric tokens). Decision §6.4 #3: there is no global default
-# limit -- the validator derives the strictest entry every canonical in a group satisfies and reports
-# a group that declared a looser one, because a loose rubric silently accepts answers the key marks
-# wrong.
-WORD_LIMITS = (
-    ("ONE WORD ONLY", 1, 0),
-    ("ONE WORD AND/OR A NUMBER", 1, 1),
-    ("NO MORE THAN TWO WORDS", 2, 0),
-    ("NO MORE THAN TWO WORDS AND/OR A NUMBER", 2, 1),
-    ("NO MORE THAN THREE WORDS", 3, 0),
-    ("NO MORE THAN THREE WORDS AND/OR A NUMBER", 3, 1),
-)
+# `WORD_LIMITS` and `budget_of` are imported, not defined: the material stage now rejects a blueprint
+# target that fits no rubric at all, so the same six rubrics and the same word/number arithmetic decide
+# admissibility there and rubric *choice* here. Two copies would let a target pass one stage and fail
+# the other. Decision §6.4 #3: there is no global default limit -- the validator derives the strictest
+# entry every canonical in a group satisfies and reports a group that declared a looser one, because a
+# loose rubric silently accepts answers the key marks wrong.
 LIMIT_INDEX = {name: position for position, (name, _w, _n) in enumerate(WORD_LIMITS)}
 LIMIT_BUDGET = {name: (max_words, allowance) for name, max_words, allowance in WORD_LIMITS}
 NUMBER_PHRASE = "AND/OR A NUMBER"
@@ -142,18 +137,6 @@ def classify_blank(before: str, after: str) -> str:
     if len(before_content) <= 1 and norm(after):
         return "initial"
     return "medial"
-
-
-def budget_of(canonical: str) -> tuple:
-    """(lexical word count, purely-numeric token count) for one canonical.
-
-    Whitespace splits tokens and a hyphenated compound stays one word (AR-014), so `two-bedroom`
-    costs one word rather than two. A purely numeric token is charged against the rubric's number
-    allowance instead of its word count, which is what "AND/OR A NUMBER" means.
-    """
-    tokens = answer_tokens(canonical)
-    numeric = sum(1 for token in tokens if NUMERIC_TOKEN_RE.match(token))
-    return (len(tokens) - numeric, numeric)
 
 
 def strictest_limit(canonicals: list) -> str:
@@ -395,7 +378,7 @@ def validate_groups(numbers: list, questions: dict, groups: dict, instructions: 
                 errors.append("group %r declares question_range %r but covers %s; the printed "
                               "range is what the candidate reads"
                               % (key, norm(instruction.get("question_range")), expected))
-        validate_layout_structure(key, group, errors)
+        validate_layout_structure(key, group, present, errors)
 
     # Constraint 4: walk the items in evidence order; each group must occupy one unbroken run.
     ordered = sorted((number for number in numbers
@@ -415,7 +398,7 @@ def validate_groups(numbers: list, questions: dict, groups: dict, instructions: 
     return members
 
 
-def validate_layout_structure(key: str, group: dict, errors: list) -> None:
+def validate_layout_structure(key: str, group: dict, members: list, errors: list) -> None:
     """QR-015 content accessibility, and QR-031 for note groups.
 
     Content only. Border style, font and pagination are visual polish and are deliberately not
@@ -424,30 +407,77 @@ def validate_layout_structure(key: str, group: dict, errors: list) -> None:
     """
     layout = group.get("layout")
     structure = group.get("structure") if isinstance(group.get("structure"), dict) else {}
+    row_header = structure.get("row_header_label")
     rows = structure.get("row_labels")
     columns = structure.get("column_labels")
     hierarchy = structure.get("hierarchy")
+    note_sections = structure.get("note_sections")
     if layout == "note":
         if not norm(group.get("title")):
             errors.append("note group %r has no title; QR-031 requires a short, specific, "
                           "non-leaking scenario heading" % key)
-        if not isinstance(hierarchy, list) or not hierarchy:
-            errors.append("note group %r declares no structure.hierarchy; a note without headings "
-                          "is a list of sentences, not a record structure" % key)
+        if not isinstance(note_sections, list) or not note_sections:
+            errors.append("note group %r declares no structure.note_sections; headings need an "
+                          "explicit question_numbers mapping so the renderer does not guess" % key)
+        else:
+            assigned = [
+                number
+                for section in note_sections
+                if isinstance(section, dict)
+                for number in (section.get("question_numbers") or [])
+                if isinstance(number, int) and not isinstance(number, bool)
+            ]
+            if sorted(assigned) != sorted(members):
+                errors.append("note group %r note_sections assign questions %s, but the group "
+                              "contains %s; every question must appear exactly once"
+                              % (key, assigned, members))
     elif layout == "form":
         if not isinstance(rows, list) or not rows:
             errors.append("form group %r declares no structure.row_labels; a form's labels are "
                           "what tell the candidate which detail goes where" % key)
     elif layout == "table":
-        missing = [name for name, value in (("row_labels", rows), ("column_labels", columns))
-                   if not isinstance(value, list) or not value]
+        missing = []
+        if not norm(row_header):
+            missing.append("row_header_label")
+        missing.extend(
+            name
+            for name, value in (("row_labels", rows), ("column_labels", columns))
+            if not isinstance(value, list) or not value
+        )
         if missing:
             errors.append("table group %r declares no structure.%s; an unlabelled axis makes the "
                           "cell unanswerable" % (key, " and no structure.".join(missing)))
 
 
-def validate_questions(numbers: list, questions: dict, answers: dict, errors: list,
-                       warnings: list) -> dict:
+def has_structural_context(number: int, questions: dict, groups: dict, members: dict) -> bool:
+    """Whether a blank is already identified by candidate-visible form/table labels.
+
+    This is deliberately structural, not semantic. A vague label such as ``Preferences`` still
+    exists on the page; whether it narrows the item enough is QR-010 work for the blind auditor.
+    """
+    key = norm(questions[number].get("group_id"))
+    group = groups.get(key)
+    group_numbers = sorted(members.get(key) or [])
+    if not isinstance(group, dict) or number not in group_numbers:
+        return False
+    structure = group.get("structure") if isinstance(group.get("structure"), dict) else {}
+    rows = structure.get("row_labels")
+    index = group_numbers.index(number)
+    row_label = rows[index] if isinstance(rows, list) and index < len(rows) else ""
+    if group.get("layout") == "form":
+        return bool(norm(row_label))
+    if group.get("layout") == "table":
+        columns = structure.get("column_labels")
+        return bool(
+            norm(row_label)
+            and isinstance(columns, list)
+            and any(norm(column) for column in columns)
+        )
+    return False
+
+
+def validate_questions(numbers: list, questions: dict, answers: dict, groups: dict, members: dict,
+                       errors: list, warnings: list) -> dict:
     """Per-question face checks: the blank, its recomputed position, and the QR-026 distribution."""
     positions: dict = {}
     for number in numbers:
@@ -458,10 +488,14 @@ def validate_questions(numbers: list, questions: dict, answers: dict, errors: li
             errors.append("Q%d's blank %r does not carry its own question number as a whole "
                           "numeral; the number is how an answer sheet is matched to an item"
                           % (number, blank))
-        if not norm(before) and not norm(after):
+        structural_context = has_structural_context(number, questions, groups, members)
+        if not norm(before) and not norm(after) and not structural_context:
             errors.append("Q%d has no carrier text on either side of the blank; an isolated blank "
-                          "is answerable only by guessing" % number)
-        computed = classify_blank(before, after)
+                          "with no form/table label is answerable only by guessing" % number)
+        # A labelled bare field ends at the blank on the printed row. Treating it as medial merely
+        # because the carrier strings are empty is what previously forced "(as spelt)"-style filler.
+        computed = "final" if structural_context and not norm(before) and not norm(after) else \
+            classify_blank(before, after)
         positions[number] = computed
         if norm(question.get("blank_position")) != computed:
             errors.append("Q%d declares blank_position %r but its carriers make it %r (classified "
@@ -477,11 +511,14 @@ def validate_questions(numbers: list, questions: dict, answers: dict, errors: li
     if positions:
         absent = sorted(name for name, count in counts.items() if not count)
         if absent:
-            errors.append("blank positions do not cover %s; QR-026 asks for initial, medial and "
-                          "final blanks across the ten items (found %s)" % (absent, counts))
+            warnings.append("blank positions do not cover %s (found %s); inspect whether the "
+                            "printed layouts are naturally varied, but do not invent carrier text "
+                            "to fill a position quota" % (absent, counts))
         if counts["final"] > MAX_FINAL_BLANKS:
-            errors.append("%d of %d blanks sit at the end of their line; QR-026 caps end-of-line "
-                          "blanking at %d" % (counts["final"], len(positions), MAX_FINAL_BLANKS))
+            warnings.append("%d of %d blanks sit at the end of their line (guideline %d); this is "
+                            "allowed for genuine labelled form/table fields, but should be checked "
+                            "for avoidable monotony" % (counts["final"], len(positions),
+                                                       MAX_FINAL_BLANKS))
         elif counts["final"] == MAX_FINAL_BLANKS:
             warnings.append("end-of-line blanks are at the QR-026 ceiling (%d of %d); one more "
                             "would fail" % (counts["final"], len(positions)))
@@ -715,8 +752,12 @@ def validate_leakage(members: dict, questions: dict, answers: dict, groups: dict
         structure = group.get("structure") if isinstance(group.get("structure"), dict) else {}
         visible = [norm(group.get("title"))]
         visible += [str(value) for value in (group.get("signposts") or [])]
+        visible.append(str(structure.get("row_header_label") or ""))
         for name in ("row_labels", "column_labels", "hierarchy"):
             visible += [str(value) for value in (structure.get(name) or [])]
+        for section in (structure.get("note_sections") or []):
+            if isinstance(section, dict):
+                visible.append(str(section.get("heading") or ""))
         for number in members[key]:
             question = questions.get(number, {})
             visible += [str(question.get("carrier_before") or ""),
@@ -804,7 +845,8 @@ def main() -> int:
     metrics["groups"] = len(members)
     metrics["layouts"] = sorted({str(groups[key].get("layout")) for key in members
                                  if isinstance(groups.get(key), dict)})
-    metrics["blank_positions"] = validate_questions(numbers, questions, answers, errors, warnings)
+    metrics["blank_positions"] = validate_questions(
+        numbers, questions, answers, groups, members, errors, warnings)
     validate_answers(numbers, questions, answers, groups, instructions, members, errors)
     if turns:
         validate_evidence(numbers, questions, answers, evidence, items, turns, first_end, ranges,

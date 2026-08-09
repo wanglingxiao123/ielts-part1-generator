@@ -71,19 +71,57 @@ Read nothing else. Everything you need is in this skill's own directory and in t
    - all ten items belong to a group; no floating point.
 
    Group **count is not pre-set**: one window may hold several consecutive groups, and one package
-   may mix form, note and table as long as each group is itself homogeneous. Let the script's own
-   structure decide — personal details are a form, preferences discussed in prose are notes,
-   requirements compared along two axes are a table.
+   may mix form, note and table as long as each group is itself homogeneous.
 
-3. **Write the carriers and budget the blank positions.** Aim for all three positions across the ten
-   items and keep end-of-line blanks at seven or fewer (QR-026). Position is judged by content words
-   either side of the blank, not by character offset: a bare `Name: ____` counts as final. No blank
-   may sit with no context on either side.
+   **The script's own structure picks each layout**, and it is the only thing that does:
+   - **form** — the dialogue fills in a record field by field (name, date, number, selection);
+   - **note** — hierarchical or narrative information: a topic with points under it, preferences
+     talked through. This is the fallback when neither of the other two fits;
+   - **table** — only where both axes carry real meaning and each column compares like with like down
+     its length. A two-column table can be valid; column count alone decides nothing. A filler heading
+     such as `Detail` / `Notes` / `Information`, repeated row/cell wording, or unrelated facts placed
+     behind borders are warning signs that the content is really a form or note. The auditor judges
+     the printed structure as a whole.
 
-4. **Write the titles and signposts.** A note group must have a short, specific, non-leaking
-   scenario title (QR-031). Every window needs at least one blank-free, specific, script-grounded
-   navigation line (QR-026) — "Requirements for the new home are discussed next" locates the
-   candidate; "Information" does not.
+     Name the left row-label column with `structure.row_header_label`; put only the content-column
+     headings to its right in `structure.column_labels`. For a two-column table, use one row-header
+     label and one content-column label, not two `column_labels` plus an empty corner.
+
+   Do not alternate layouts to look varied. Mix them only where the script really changes mode.
+
+3. **Write the carriers and budget the blank positions.** Keep end-of-line blanks at seven or fewer
+   and let all three positions appear (QR-026) — but from lines that are genuinely written
+   differently, not by bending a form row out of shape to fill a quota. Position is judged by content
+   words either side of the blank, not by character offset: a bare labelled `Name | ____` counts as
+   final. A form row label, or a table's real row and column labels, is context; do not add filler
+   carrier text merely to make one of those fields non-empty. A blank with neither carrier text nor
+   structural labels is still invalid.
+
+   In a form group the **row label and the carrier print side by side, so they may not say the same
+   thing**. The label names the field; the carrier adds only what the line needs beyond its name — a
+   unit, a short qualifier, or nothing. Do not turn a form value into an instruction sentence:
+   `Surname | Please record ____ for correspondence` is not a natural form row. `row_label: Arrival date` with
+   `carrier_before: "Arrival date:"` prints the words twice; leave `carrier_before` empty instead. A
+   near-synonym restatement (`Family name` / `Surname:`) is the same defect. Parentheses are allowed
+   only when removing them would create a real ambiguity or lose a source-supported record-format
+   limit. They must be natural, non-redundant, non-leaking and not commentary on speaking, spelling
+   or answering: `(day and month)` may be useful; `(as spelt)` and `(as mentioned)` are not.
+
+4. **Write the titles and signposts.** As this project's paper convention, every group gets a short,
+   specific, non-leaking scenario title in **capitals** — `HOTEL BOOKING`, `ARRIVAL AND FACILITIES`.
+   QR-031 makes this a customer requirement for note groups; applying it to form and table groups is
+   the project's consistency rule. The title carries no layout name, question range or narrator
+   window number. Also by project convention, a note group's `structure.hierarchy` goes at most one
+   level under the title (main item + sub-items), with concrete names taken from the conversation.
+   Write `structure.note_sections` with one object per visible heading. Each object carries
+   `heading` and the exact `question_numbers` rendered immediately below it. Together the sections
+   cover every question in the group exactly once; never emit a detached heading list.
+
+   `signposts` is audit/navigation metadata, not candidate-facing prose. Every window needs at least
+   one blank-free, specific, script-grounded navigation line (QR-026),
+   naming **what is talked about** at that point: "The receptionist goes through what the rate
+   includes" locates the candidate; "Details are confirmed" or "Information is given" does not. If the
+   line could be copied unchanged onto a different material, it is not a signpost.
 
 5. **Write the answer key.** The canonical is the blueprint item's target, in the script's own
    wording. AR-003 applies in tiers, and **which tier applies is decided by tokenising the canonical
@@ -98,6 +136,20 @@ Read nothing else. Everything you need is in this skill's own directory and in t
    standard rubric that every one of that group's canonicals satisfies, print it verbatim inside
    `instruction_text`, and restate it on each of that group's answer-key entries. A looser rubric
    than the answers need accepts responses your own key marks wrong.
+
+   `instruction_text` uses the **standard IELTS wording only** — the layout sentence plus the rubric
+   sentence, and nothing describing the content:
+
+   ```
+   Complete the form below. Write NO MORE THAN TWO WORDS AND/OR A NUMBER for each answer.
+   Complete the notes below. Write ONE WORD ONLY for each answer.
+   Complete the table below. Write NO MORE THAN THREE WORDS for each answer.
+   ```
+
+   `Complete the booking record.` and `Complete the hotel information table below.` are both wrong.
+   The layout word must be the group's own `layout`, with `note` printed as `notes`. Exactly one
+   instruction per group, at the head of the group; never repeated above an item, in a signpost, or in
+   a title.
 
 7. **Write the evidence**: the turn index, the shortest sufficient verbatim quote from that turn, the
    window, how the carrier relates to it, and the AL-018 alignment fields. The decisive evidence may

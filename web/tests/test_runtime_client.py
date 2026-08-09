@@ -58,13 +58,14 @@ def test_the_read_timeout_bounds_a_whole_material_not_botocore_default():
     50.8s -- so a slightly slower model call would kill a healthy child at any point in the batch.
 
     So the read timeout must bound the same thing the platform bounds: ONE material's invocation.
-    Asserted against `fanout.PER_MATERIAL_WALL_SECONDS` rather than against 900 so the two cannot
+    Asserted against `fanout.PER_MATERIAL_WALL_SECONDS` so the two cannot
     drift apart -- a read timeout below the wall means the web tier gives up before the platform
     does, which is the bug.
     """
     from web.fanout import PER_MATERIAL_WALL_SECONDS
 
     assert READ_TIMEOUT_SECONDS >= PER_MATERIAL_WALL_SECONDS
+    assert READ_TIMEOUT_SECONDS < 3600, "AgentCore ends the streaming invocation at 60 minutes"
     assert READ_TIMEOUT_SECONDS > 60, "botocore's default is shorter than one material"
     # Connecting is a different question: a slow TCP connect is a network fault, not a slow model.
     assert CONNECT_TIMEOUT_SECONDS < READ_TIMEOUT_SECONDS

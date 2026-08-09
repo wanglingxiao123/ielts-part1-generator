@@ -21,6 +21,10 @@ import type {
   SelectMaterialResponse,
   SseEvent,
 } from '@/contracts/api'
+import type {
+  CreateMaterialComment,
+  MaterialCommentsDocument,
+} from '@/contracts/comments'
 import { ApiError, setTransport, type RequestSpec } from '@/api/http'
 import { estimateBatchSeconds } from '@/domain/batchEstimate'
 import { setSseFetch } from '@/api/sseClient'
@@ -58,6 +62,7 @@ export function getMockOptions(): MockOptions {
 
 const batches = new Map<string, MockBatch>()
 const standaloneMaterials = new Map<string, MaterialRecord>()
+const materialComments = new Map<string, MaterialCommentsDocument>()
 
 /**
  * 音频任务与选定记录。都存在 sessionStorage 里，理由和 batch plan 一样（见下方 PLAN_KEY）：
@@ -918,6 +923,37 @@ const mockTransport = async (spec: RequestSpec): Promise<unknown> => {
     return materialQuestions(id, new URLSearchParams(spec.path.split('?')[1] ?? '').get('batch_id'))
   }
 
+  if (resource === 'material-comments' && id) {
+    const document = materialComments.get(id) ?? { material_id: id, comments: [] }
+    if (spec.method === 'GET' && !sub) return structuredClone(document)
+    if (spec.method === 'POST' && !sub) {
+      const body = spec.body as CreateMaterialComment
+      const next: MaterialCommentsDocument = {
+        material_id: id,
+        comments: [
+          ...document.comments,
+          {
+            id: crypto.randomUUID(),
+            created_at: new Date().toISOString(),
+            anchor: body.anchor,
+            severity: body.severity,
+            text: body.text.trim(),
+          },
+        ],
+      }
+      materialComments.set(id, next)
+      return structuredClone(next)
+    }
+    if (spec.method === 'DELETE' && sub) {
+      const next = {
+        material_id: id,
+        comments: document.comments.filter((comment) => comment.id !== sub),
+      }
+      materialComments.set(id, next)
+      return structuredClone(next)
+    }
+  }
+
   throw new ApiError(404, 'NOT_FOUND', `mock 未实现的端点：${spec.method} ${spec.path}`)
 }
 
@@ -1118,6 +1154,7 @@ export function resetMocks() {
   standaloneMaterials.clear()
   audioJobs.clear()
   selected.clear()
+  materialComments.clear()
   persistAudio()
   persistSelected()
 }

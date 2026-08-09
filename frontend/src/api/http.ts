@@ -51,7 +51,7 @@ export function userMessage(err: unknown, fallback: string): string {
 }
 
 export interface RequestSpec {
-  method: 'GET' | 'POST'
+  method: 'GET' | 'POST' | 'DELETE'
   /** Path relative to apiBaseUrl, e.g. `/batches/abc`. */
   path: string
   body?: unknown
