@@ -75,6 +75,9 @@ Read nothing else.
    First test whether Q1-Q10 form one natural candidate-visible structure. Flag a boundary created
    only at the narrator midpoint when the same record and layout continue on both sides. Do not
    prefer one group mechanically: a real change in record structure still justifies a split.
+   Groups should normally contain at least three questions. Treat a one- or two-question group as
+   a forced-split finding unless it represents a genuinely independent information structure that
+   cannot naturally join either adjacent group.
 
    Four things are decidable here, from the page alone, before you know a single answer — take them
    now while the reading is still innocent (rules §2, dimensions 12–15):
@@ -95,6 +98,14 @@ Read nothing else.
      than Table. In particular, `Service stage / Arrangement` with rows for `Driver visit`,
      `Collection slot`, charges, included service, and paperwork has no comparison axis and must be
      flagged as a pseudo-table. Do not recommend manufacturing a third column;
+     Reject a sparse diagonal matrix padded with `—`, `-`, `N/A`, empty cells, or equivalent
+     placeholders. Every ordinary cell needs meaningful fixed information or a blank, and a column
+     that applies to only one row is not a shared comparison dimension. Do not recommend inventing
+     text to fill the holes;
+   - **a false `form`** — Form labels must be fields of one real record being completed. If the
+     lines instead explain requirements, preferences, procedures, facilities, advice, reasons, or
+     arrangements under a topic, they are Note even when a writer can invent a short label for each
+     line. Flag the semantic misclassification; do not request Note merely for visual variety;
    - **a navigation line that names nothing** — apply the transfer test: could it be copied unchanged
      onto a completely different Part 1 material? "Details are confirmed" can (QR-034);
    - **layouts alternating where the dialogue does not change mode** (SC-015).

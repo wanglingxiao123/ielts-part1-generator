@@ -356,27 +356,18 @@ describe('batch estimate models concurrency, not serial execution', () => {
     expect(six).toEqual([WAVE_SECONDS[0], WAVE_SECONDS[1]])
   })
 
-  it('predicts about 3–4 minutes for a single wave, matching the measured batch', () => {
-    // Measured on AWS: a real 4-material batch ran 182–230s end to end.
+  it('predicts 18–40 minutes for one complete-generation wave', () => {
+    // Complete material + question batches measured about 18–39 minutes on AWS.
     for (const total of [2, 4, 6]) {
       const [min, max] = estimateBatchSeconds(total)
-      expect(min).toBe(182)
-      expect(max).toBe(230)
-      expect(describeBatchEstimate(total)).toBe('约 3–4 分钟')
+      expect(min).toBe(18 * 60)
+      expect(max).toBe(40 * 60)
+      expect(describeBatchEstimate(total)).toBe('约 18–40 分钟')
     }
   })
 
-  /**
-   * The bug this replaces: `total * 100/60 … total * 160/60` told a user
-   * "7–11 分钟" for the batch that was actually measured at 182–230s. A user who
-   * believes that trims scenarios they could in fact afford to submit.
-   */
-  it('never reports the serial figure the old formula produced', () => {
-    const serialMin = Math.round((4 * 100) / 60) // 7
-    const [min] = estimateBatchSeconds(4)
-    expect(Math.round(min / 60)).toBeLessThan(serialMin)
-    expect(describeBatchEstimate(4)).not.toContain('7')
-    expect(describeBatchEstimate(4)).not.toContain('11')
+  it('does not retain the obsolete material-only 3–4 minute promise', () => {
+    expect(describeBatchEstimate(4)).not.toBe('约 3–4 分钟')
   })
 
   it('reports a range rather than false precision, and nothing at all for an empty batch', () => {
@@ -385,7 +376,7 @@ describe('batch estimate models concurrency, not serial execution', () => {
     // A lower concurrency (the backend's IELTS_CONCURRENCY can be lowered on
     // 429s) means more waves, and the estimate has to follow.
     expect(waveCount(6, 3)).toBe(2)
-    expect(estimateBatchSeconds(6, 3)).toEqual([364, 460])
+    expect(estimateBatchSeconds(6, 3)).toEqual([36 * 60, 80 * 60])
   })
 })
 

@@ -419,7 +419,7 @@ export function ComparePage() {
                 jumpToTurn={jump[record.material_id] ?? null}
               />
 
-              {/* 能否成表格/表单题。补充信息，所以放在最底部。自带 panel 外壳。 */}
+              {/* 能否组成 Form / Note / Table 完成题。补充信息，所以放在最底部。自带 panel 外壳。 */}
               <QuestionTypePanel analysis={side.groups} />
             </div>
           )

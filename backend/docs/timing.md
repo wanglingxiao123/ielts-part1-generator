@@ -175,7 +175,7 @@ probe_sync alive at 900.5s of 1000.0s    ← 最后一行
 ```
 exception : botocore.exceptions.ReadTimeoutError      ← botocore 本地异常，不是服务端错误
 message   : Read timeout on endpoint URL: "https://bedrock-agentcore.us-east-1.amazonaws.com
-            /runtimes/arn%3Aaws%3Abedrock-agentcore%3Aus-east-1%3A907488872981%3Aruntime
+            /runtimes/arn%3Aaws%3Abedrock-agentcore%3Aus-east-1%3A<aws-account-id>%3Aruntime
             %2Fielts_part1_probe-hAXrU75Hx4/invocations"
 RequestId : 无 —— ReadTimeoutError 不带 .response，无 RequestId 可对 CloudWatch
 ```

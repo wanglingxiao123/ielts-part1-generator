@@ -65,21 +65,33 @@ Cut the ten items, in number order, into consecutive candidate-visible groups:
 | 3 | A group's question numbers are contiguous. |
 | 4 | A group's items are contiguous **in the ordered evidence sequence** — no other group's point falls between two of yours. |
 
-**Group count is not pre-set or preferred.** Before creating any boundary, first test whether
-Q1-Q10 together form one natural candidate-visible Form, Note, or Table. If they do, use one group
-across both narrator windows. If they do not, split only where the visible record structure genuinely
-changes. One, two, or three groups are all valid outcomes; there is no quota or target distribution.
-Narrator windows are listening/read-ahead boundaries, not printed-layout boundaries, so the midpoint
-cue alone is never a reason to split. Each item's decisive evidence must still stay inside its own
-announced window, and the ten evidence points must still advance with the question numbers.
+**Group count was decided by the blueprint and must be preserved.** It contains one, two, or three
+natural `form_group` values, with no quota or target distribution. The material stage already tested
+whether Q1-Q10 form one continuous candidate-visible structure and placed boundaries only where the
+record structure changes. The question stage must not create, remove, or move those boundaries.
+Narrator windows remain listening/read-ahead boundaries rather than printed-layout boundaries. Each
+item's decisive evidence must stay inside its announced window, and the ten evidence points must
+still advance with the question numbers.
 
-**The script's own structure picks the layout — not a wish for variety.**
+**Preserve each blueprint point's `item_form` and `form_group`.** They record the information
+relationship and natural printed grouping approved with the material. A final group may contain
+only points whose `item_form` equals that group's `layout`. One blueprint `form_group` must map to
+one printed group, and one printed group must map to one blueprint `form_group`; the validator
+rejects silent reclassification, splitting, and merging. The question stage renders this plan
+rather than re-planning it.
+
+**The blueprint layout reflects the script's structure — not a wish for variety. Render it using
+these meanings; none is a default or fallback.**
 
 | Layout | Use it when | Do not use it when |
 |---|---|---|
-| **form** | The dialogue fills in a record field by field: name, date, number, selection. Each item is one labelled slot. | The items are a discussion rather than a record being filled in. |
-| **note** | The information is hierarchical or narrative: a topic with points under it, explanations, preferences talked through. This is the default when the material is not a record and has no comparison axis. | Nothing — note is the honest fallback. |
-| **table** | Both axes carry real meaning, columns compare like with like, and the information naturally forms a rectangular grid. Multiple blanks may occur in one row. | The headings are filler words (`Detail`, `Details`, `Notes`, `Information`, `Answer`), row and cell wording repeat one another, or unrelated facts have merely been placed behind borders. |
+| **form** | The dialogue completes fields of one real application, booking, order, membership, registration, or similar record. | The labels are headings invented after the fact for thematic explanatory points. |
+| **note** | Meaningful topic headings organise requirements, preferences, procedures, facilities, advice, reasons, arrangements, or other explanatory points. | The lines are fields of one real record, or repeated entities belong on shared comparison axes. |
+| **table** | Repeated entities are compared using shared dimensions; both axes carry real meaning and the information naturally forms a dense rectangular grid. Multiple blanks may occur in one row. | The headings are filler words (`Detail`, `Details`, `Notes`, `Information`, `Answer`), row and cell wording repeat one another, or unrelated facts have merely been placed behind borders. |
+
+A list is not Form merely because every line can be assigned a short label. Apply the relationship
+test: actual record fields → Form; repeated entities with shared dimensions → Table; thematic
+explanatory points → Note. Do not select or avoid a layout to create variety.
 
 A table is a **pseudo-table** when its printed axes do not organise or compare the information,
 regardless of the raw column count. Column count and generic headings are triage signals, not an
@@ -122,6 +134,12 @@ once, and references run in ascending printed order:
 `row_header_label` and `row_labels` remain readable only for archived packages. They are not an
 alternative generation shape. If the information is naturally field/value pairs rather than a
 multi-axis grid, choose Form instead of manufacturing a two-column Table.
+
+Every ordinary matrix cell must contain meaningful fixed information or a question blank. Do not
+create a column for a fact that applies to only one row and pad all other rows with `—`, `-`, `N/A`,
+empty strings or similar placeholders. That diagonal sparse shape is unrelated field/value
+information wearing Table borders, not a comparison. Reclassify it as Form or Note; do not invent
+fixed text merely to make the matrix dense.
 
 Constraint 4 needs no turn-distance threshold. Once numbers are contiguous and evidence strictly
 increases, "no other group's point in between" is decidable as it stands. Whether a group's span

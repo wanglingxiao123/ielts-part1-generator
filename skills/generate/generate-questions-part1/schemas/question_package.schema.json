@@ -40,7 +40,7 @@
         "instructions": {
           "type": "array",
           "minItems": 1,
-          "maxItems": 10,
+          "maxItems": 3,
           "items": {
             "$ref": "#/definitions/instruction"
           },
@@ -49,7 +49,7 @@
         "groups": {
           "type": "array",
           "minItems": 1,
-          "maxItems": 10,
+          "maxItems": 3,
           "items": {
             "$ref": "#/definitions/group"
           },
@@ -198,7 +198,7 @@
             "table_rows": {
               "type": "array",
               "minItems": 1,
-              "description": "Table only: candidate-visible rows in printed order. Every cell is either fixed text or one question reference. The validator requires rectangular rows and an exact, ordered cover of the table group's questions.",
+              "description": "Table only: candidate-visible rows in printed order. Every ordinary cell is either meaningful fixed information or one question reference; placeholder padding such as dashes or N/A is invalid. The validator requires rectangular rows and an exact, ordered cover of the table group's questions.",
               "items": {
                 "$ref": "#/definitions/tableRow"
               }
@@ -344,6 +344,7 @@
             "duration",
             "price",
             "quantity",
+            "job_title",
             "service",
             "facility",
             "requirement",

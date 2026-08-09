@@ -25,7 +25,7 @@
     },
     "category_semantics_ok": {
       "type": "boolean",
-      "description": "Whether every item's answer_category is semantically true of its answer. The validator already checked the values are among the 13 permitted strings; only a reader of both script and plan can check they are correct."
+      "description": "Whether every item's answer_category is semantically true of its answer. The validator already checked the values are among the 14 permitted strings; only a reader of both script and plan can check they are correct."
     },
     "qr027_exception": {
       "type": "object",

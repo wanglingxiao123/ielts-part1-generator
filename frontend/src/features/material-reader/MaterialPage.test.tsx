@@ -328,7 +328,7 @@ describe('MaterialPage 页签', () => {
     await screen.findByRole('tab', { name: '题目预览' })
     await userEvent.click(screen.getByRole('tab', { name: '题目预览' }))
     await waitFor(() => expect(document.querySelector('.qp-table')).not.toBeNull())
-    expect(document.querySelectorAll('.qp-form').length).toBe(2)
+    expect(document.querySelectorAll('.qp-form').length).toBe(1)
     expect(screen.getByRole('checkbox', { name: /显示答案和证据/ })).not.toBeChecked()
     expect(document.querySelector('.qp-reveals')).toBeNull()
   })

@@ -60,13 +60,18 @@ Read nothing else. Everything you need is in this skill's own directory and in t
    once; the answer is **unique** (no second value in the script would also be correct); and the
    answer fits into a gap as a word, a number, or a short phrase.
 
+   Then verify the declared `item_form` and `form_group` describe the information relationship that
+   the script actually supports: fields of one real record → Form; thematic explanatory points →
+   Note; repeated entities with shared dimensions → Table. Reject a pseudo-Form, pseudo-Table, or
+   unnatural group boundary here, because the question stage must preserve this approved plan.
+
 3. Review each item's `answer_category` **semantically**. The validator already checked that each
-   value is one of the 13 permitted strings; it cannot check whether the value is *true of the
+   value is one of the 14 permitted strings; it cannot check whether the value is *true of the
    answer*. That is your job, and it is the reason this step exists at all. Judge the nature of the
    answer, not the wording of the sentence that carries it. There is **no catch-all category**: a
-   point that fits none of the 13 is a material problem, not a labelling problem — report it.
+   point that fits none of the 14 is a material problem, not a labelling problem — report it.
 
-   **Where two values both look defensible, do not weigh them — run the rubric's seven ordered
+   **Where two values both look defensible, do not weigh them — run the rubric's eight ordered
    rules and stop at the first that fires.** Then hold yourself to two checks before rejecting:
    the label is not in the decision table's worked cases (if it is, that case is the answer), and
    your objection names the rule number it rests on. State that rule number in the `reasons` entry.
@@ -95,7 +100,7 @@ Read nothing else. Everything you need is in this skill's own directory and in t
   number and the concrete problem. `"not feasible"` is not a reason; `"item 6's target `park`
   appears twice in the script with different referents, so the answer is not unique"` is. A
   `category_semantics_ok: false` reason must additionally name the decision rule it rests on, as in
-  `"item 8: rule 5 (performed or merely present) makes Riverside Brasserie a facility, not a
+  `"item 8: rule 6 (performed or merely present) makes Riverside Brasserie a facility, not a
   service — the venue exists with nobody serving in it"`.
 - When everything is fine, say so plainly: `feasible: true`, `category_semantics_ok: true`, and
   `reasons` may be empty. A clean pass is a result. Inventing a problem to look thorough costs a

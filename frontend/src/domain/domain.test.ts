@@ -7,6 +7,7 @@ import { summariseExamPoints } from './examPoints'
 import { analyseFormGroups } from './formGroups'
 import { buildFacts, compareCandidates } from './compare'
 import { assessUsability } from './usability'
+import { summariseValidationNotes } from './validationNotes'
 import { CONTENT_RULES, contentFacts, distractionMap, distractionOf } from './pointFacts'
 import { buildPlaylist, entryForTurn, nextPlayable } from './playlist'
 import { buildRecord, mockManifest } from '@/mocks/fixtures'
@@ -508,6 +509,19 @@ describe('formGroups', () => {
     expect(gBal.hasViableQuestionGroup).toBe(true)
   })
 
+  it('treats a homogeneous Note group as a viable completion layout', () => {
+    const bp = structuredClone(balanced.blueprint) as Blueprint
+    for (const item of bp.items) {
+      item.item_form = 'note'
+      item.form_group = 'NOTES'
+    }
+    bp.completion_layout_coverage = { form: [], table: [], note: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] }
+    const analysis = analyseFormGroups(viewWith(bp), T)
+    expect(analysis.groups).toHaveLength(1)
+    expect(analysis.groups[0]!.canFormQuestion).toBe(true)
+    expect(analysis.hasViableQuestionGroup).toBe(true)
+  })
+
   it('names the specific item numbers when the two views disagree', () => {
     const bp = structuredClone(balanced.blueprint) as Blueprint
     bp.items[9]!.item_form = 'note' // coverage still lists 10 under `table`
@@ -648,6 +662,16 @@ describe('formGroups', () => {
     expect(g.consistency.coversAllTen).toBe(false)
     // 题组分析照常给：它只看 items，不依赖 coverage，未知版本下仍是可读的事实。
     expect(g.groups.length).toBeGreaterThan(0)
+  })
+})
+
+describe('validation note wording', () => {
+  it('recognises the Form/Note/Table grouping error from the current validator', () => {
+    const summary = summariseValidationNotes([
+      'blueprint needs one homogeneous form/note/table form_group with 3+ items to support a coherent completion layout; largest is 2',
+    ])
+    expect(summary.notes[0]!.text).toContain('Form、Note 或 Table')
+    expect(summary.notes[0]!.text).not.toContain('blueprint needs')
   })
 })
 

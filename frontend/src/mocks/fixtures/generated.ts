@@ -297,7 +297,7 @@ export const BLUEPRINT_VALID: Blueprint = {
       "evidence": "still in primary school",
       "turn_index": 20,
       "item_form": "note",
-      "form_group": "C",
+      "form_group": "D",
       "distractor": true,
       "confirmed": false,
       "response_form": "phrase",
@@ -637,7 +637,7 @@ export const BLUEPRINT_BAD_ANCHOR: Blueprint = {
       "evidence": "still in primary school",
       "turn_index": 20,
       "item_form": "note",
-      "form_group": "C",
+      "form_group": "D",
       "distractor": true,
       "confirmed": false,
       "response_form": "phrase",
@@ -977,30 +977,16 @@ export const QUESTION_PACKAGE_VALID: QuestionPackage = {
     "instructions": [
       {
         "group_id": "G1",
-        "question_range": "1",
-        "instruction_text": "Complete the notes below. Write NO MORE THAN TWO WORDS for each answer.",
-        "word_limit": "NO MORE THAN TWO WORDS",
-        "numeral_allowance": 0
-      },
-      {
-        "group_id": "G2",
-        "question_range": "2-4",
+        "question_range": "1-4",
         "instruction_text": "Complete the notes below. Write NO MORE THAN TWO WORDS AND/OR A NUMBER for each answer.",
         "word_limit": "NO MORE THAN TWO WORDS AND/OR A NUMBER",
         "numeral_allowance": 1
       },
       {
         "group_id": "G3",
-        "question_range": "5",
+        "question_range": "5-7",
         "instruction_text": "Complete the notes below. Write NO MORE THAN TWO WORDS for each answer.",
         "word_limit": "NO MORE THAN TWO WORDS",
-        "numeral_allowance": 0
-      },
-      {
-        "group_id": "G4",
-        "question_range": "6-7",
-        "instruction_text": "Complete the notes below. Write ONE WORD ONLY for each answer.",
-        "word_limit": "ONE WORD ONLY",
         "numeral_allowance": 0
       },
       {
@@ -1014,35 +1000,27 @@ export const QUESTION_PACKAGE_VALID: QuestionPackage = {
     "groups": [
       {
         "group_id": "G1",
-        "narrator_window_id": 1,
         "layout": "form",
         "signposts": [
           "Personal details taken by phone"
         ],
         "structure": {
           "row_labels": [
-            "Full name"
-          ]
-        }
-      },
-      {
-        "group_id": "G2",
-        "narrator_window_id": 1,
-        "layout": "form",
-        "signposts": [],
-        "structure": {
-          "row_labels": [
+            "Full name",
             "Street",
             "Postcode",
             "Mobile"
           ]
-        }
+        },
+        "narrator_window_id": 1
       },
       {
         "group_id": "G3",
-        "narrator_window_id": 1,
         "layout": "note",
-        "signposts": [],
+        "signposts": [
+          "The caller gives the minimum age for the child.",
+          "Requirements for the new home are discussed next"
+        ],
         "structure": {
           "note_sections": [
             {
@@ -1050,20 +1028,7 @@ export const QUESTION_PACKAGE_VALID: QuestionPackage = {
               "question_numbers": [
                 5
               ]
-            }
-          ]
-        },
-        "title": "Family background"
-      },
-      {
-        "group_id": "G4",
-        "narrator_window_id": 2,
-        "layout": "note",
-        "signposts": [
-          "Requirements for the new home are discussed next"
-        ],
-        "structure": {
-          "note_sections": [
+            },
             {
               "heading": "Location and lifestyle",
               "question_numbers": [
@@ -1073,11 +1038,10 @@ export const QUESTION_PACKAGE_VALID: QuestionPackage = {
             }
           ]
         },
-        "title": "Property preferences"
+        "title": "Family and property requirements"
       },
       {
         "group_id": "G5",
-        "narrator_window_id": 2,
         "layout": "table",
         "signposts": [],
         "structure": {
@@ -1117,7 +1081,8 @@ export const QUESTION_PACKAGE_VALID: QuestionPackage = {
               ]
             }
           ]
-        }
+        },
+        "narrator_window_id": 2
       }
     ],
     "questions": [
@@ -1133,7 +1098,7 @@ export const QUESTION_PACKAGE_VALID: QuestionPackage = {
       },
       {
         "number": 2,
-        "group_id": "G2",
+        "group_id": "G1",
         "carrier_before": "Street:",
         "blank": "2 ................",
         "carrier_after": ", Ballysillan",
@@ -1143,7 +1108,7 @@ export const QUESTION_PACKAGE_VALID: QuestionPackage = {
       },
       {
         "number": 3,
-        "group_id": "G2",
+        "group_id": "G1",
         "carrier_before": "Postcode:",
         "blank": "3 ................",
         "carrier_after": "",
@@ -1153,7 +1118,7 @@ export const QUESTION_PACKAGE_VALID: QuestionPackage = {
       },
       {
         "number": 4,
-        "group_id": "G2",
+        "group_id": "G1",
         "carrier_before": "Mobile:",
         "blank": "4 ................",
         "carrier_after": "",
@@ -1173,7 +1138,7 @@ export const QUESTION_PACKAGE_VALID: QuestionPackage = {
       },
       {
         "number": 6,
-        "group_id": "G4",
+        "group_id": "G3",
         "carrier_before": "Would like a",
         "blank": "6 ................",
         "carrier_after": "nearby for son to play",
@@ -1183,7 +1148,7 @@ export const QUESTION_PACKAGE_VALID: QuestionPackage = {
       },
       {
         "number": 7,
-        "group_id": "G4",
+        "group_id": "G3",
         "carrier_before": "Prefers a",
         "blank": "7 ................",
         "carrier_after": "rather than a flat",
@@ -1228,8 +1193,8 @@ export const QUESTION_PACKAGE_VALID: QuestionPackage = {
       "number": 1,
       "canonical": "Anna Woods",
       "alternatives": [],
-      "word_limit": "NO MORE THAN TWO WORDS",
-      "numeral_allowance": 0,
+      "word_limit": "NO MORE THAN TWO WORDS AND/OR A NUMBER",
+      "numeral_allowance": 1,
       "counting_rule": "whitespace splits tokens; a hyphenated compound counts as one word"
     },
     {
@@ -1268,7 +1233,7 @@ export const QUESTION_PACKAGE_VALID: QuestionPackage = {
       "number": 6,
       "canonical": "park",
       "alternatives": [],
-      "word_limit": "ONE WORD ONLY",
+      "word_limit": "NO MORE THAN TWO WORDS",
       "numeral_allowance": 0,
       "counting_rule": "whitespace splits tokens; a hyphenated compound counts as one word"
     },
@@ -1276,7 +1241,7 @@ export const QUESTION_PACKAGE_VALID: QuestionPackage = {
       "number": 7,
       "canonical": "house",
       "alternatives": [],
-      "word_limit": "ONE WORD ONLY",
+      "word_limit": "NO MORE THAN TWO WORDS",
       "numeral_allowance": 0,
       "counting_rule": "whitespace splits tokens; a hyphenated compound counts as one word"
     },

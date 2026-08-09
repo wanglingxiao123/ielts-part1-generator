@@ -83,7 +83,15 @@ plan is worth nothing, and the failure is silent: the score simply comes out too
    - For each, quote concise evidence, classify its type, record the `turn_index` it sits at, and note whether it is clear, confirmed, corrected, indirect, or potentially ambiguous.
    - Do not invent questions or an answer key. The map measures whether the script can support later item writing.
    - Require 8-10 usable details, normally 10. Verify strict first-occurrence order, separate micro-cycles, at least four detail types, and alignment with the narrator's two question ranges.
-   - Also judge whether the details could be organised into real question types: a set of comparable details supports a table or form, and every detail must be answerable by writing a word, number or short phrase into a gap. Part 1 delivers Form / Note / Table completion only. Ten scattered gap-fills are a finding, not a pass — the material exists to support item writing.
+   - Also judge whether the details can form at least one natural candidate-visible completion
+     structure: fields of one real record support Form; thematic explanatory points such as
+     requirements, preferences, procedures, facilities, advice, reasons, or arrangements support
+     Note; repeated entities with shared comparison dimensions support Table. A list is not Form
+     merely because labels can be invented for its lines. Form, Note and Table are equally legal;
+     do not require a Form/Table group when the material naturally supports Note. Every detail must
+     be answerable by writing a word, number or short phrase into a gap. Ten scattered gap-fills
+     with no coherent structure are a finding, not a pass — the material exists to support item
+     writing.
 
 6. Audit difficulty and naturalness.
    - Require at least one spelling sequence, numeric detail, clear final-value correction, and true dialogue-internal indirect confirmation.

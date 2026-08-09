@@ -42,57 +42,16 @@ export interface IELTSListeningPart1QuestionPackage {
      * Exactly one entry per group. The completion layer: what the candidate is told to write and how much of it.
      *
      * @minItems 1
-     * @maxItems 10
+     * @maxItems 3
      */
-    instructions:
-      | [Instruction]
-      | [Instruction, Instruction]
-      | [Instruction, Instruction, Instruction]
-      | [Instruction, Instruction, Instruction, Instruction]
-      | [Instruction, Instruction, Instruction, Instruction, Instruction]
-      | [Instruction, Instruction, Instruction, Instruction, Instruction, Instruction]
-      | [Instruction, Instruction, Instruction, Instruction, Instruction, Instruction, Instruction]
-      | [Instruction, Instruction, Instruction, Instruction, Instruction, Instruction, Instruction, Instruction]
-      | [
-          Instruction,
-          Instruction,
-          Instruction,
-          Instruction,
-          Instruction,
-          Instruction,
-          Instruction,
-          Instruction,
-          Instruction
-        ]
-      | [
-          Instruction,
-          Instruction,
-          Instruction,
-          Instruction,
-          Instruction,
-          Instruction,
-          Instruction,
-          Instruction,
-          Instruction,
-          Instruction
-        ]
+    instructions: [Instruction] | [Instruction, Instruction] | [Instruction, Instruction, Instruction]
     /**
      * The layout layer. Group count is never pre-set: it follows the candidate-visible task and natural record structure. A continuous layout may cross a narrator read-ahead window; a real change of layout or information structure may create another group. A set may mix form / note / table as long as each group is itself homogeneous.
      *
      * @minItems 1
-     * @maxItems 10
+     * @maxItems 3
      */
-    groups:
-      | [Group]
-      | [Group, Group]
-      | [Group, Group, Group]
-      | [Group, Group, Group, Group]
-      | [Group, Group, Group, Group, Group]
-      | [Group, Group, Group, Group, Group, Group]
-      | [Group, Group, Group, Group, Group, Group, Group]
-      | [Group, Group, Group, Group, Group, Group, Group, Group]
-      | [Group, Group, Group, Group, Group, Group, Group, Group, Group]
-      | [Group, Group, Group, Group, Group, Group, Group, Group, Group, Group]
+    groups: [Group] | [Group, Group] | [Group, Group, Group]
     /**
      * @minItems 10
      * @maxItems 10
@@ -190,7 +149,7 @@ export interface Group {
     row_labels?: string[]
     column_labels?: string[]
     /**
-     * Table only: candidate-visible rows in printed order. Every cell is either fixed text or one question reference. The validator requires rectangular rows and an exact, ordered cover of the table group's questions.
+     * Table only: candidate-visible rows in printed order. Every ordinary cell is either meaningful fixed information or one question reference; placeholder padding such as dashes or N/A is invalid. The validator requires rectangular rows and an exact, ordered cover of the table group's questions.
      *
      * @minItems 1
      */
@@ -256,6 +215,7 @@ export interface Question {
     | 'duration'
     | 'price'
     | 'quantity'
+    | 'job_title'
     | 'service'
     | 'facility'
     | 'requirement'

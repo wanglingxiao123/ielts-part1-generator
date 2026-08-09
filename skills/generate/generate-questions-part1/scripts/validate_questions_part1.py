@@ -321,6 +321,51 @@ def validate_blueprint_fidelity(numbers: list, questions: dict, answers: dict, i
                           "feasibility preflight approved" % (number, declared, number, planned))
 
 
+def validate_layout_fidelity(numbers: list, questions: dict, groups: dict, items: dict,
+                             errors: list) -> None:
+    """Require printed layouts and group boundaries to preserve the approved blueprint plan."""
+    blueprint_to_printed: dict[str, set[str]] = {}
+    printed_to_blueprint: dict[str, set[str]] = {}
+    for number in numbers:
+        item = items.get(number)
+        question = questions.get(number)
+        if not isinstance(item, dict) or not isinstance(question, dict):
+            continue
+        group_id = norm(question.get("group_id"))
+        group = groups.get(group_id)
+        if not isinstance(group, dict):
+            continue
+        planned = norm(item.get("item_form"))
+        printed = norm(group.get("layout"))
+        if planned in LAYOUTS and printed != planned:
+            errors.append(
+                "Q%d is planned as %r in blueprint item_form but its printed group %r declares "
+                "layout %r; Form, Note and Table encode different information relationships and "
+                "the question stage may not silently reclassify them"
+                % (number, planned, group_id, printed)
+            )
+        blueprint_group = norm(item.get("form_group"))
+        if blueprint_group:
+            blueprint_to_printed.setdefault(blueprint_group, set()).add(group_id)
+            printed_to_blueprint.setdefault(group_id, set()).add(blueprint_group)
+
+    for blueprint_group, printed_groups in sorted(blueprint_to_printed.items()):
+        if len(printed_groups) > 1:
+            errors.append(
+                "blueprint form_group %r is split across printed groups %s; the material plan "
+                "already defines one natural candidate-visible structure and the question stage "
+                "may not invent another boundary"
+                % (blueprint_group, sorted(printed_groups))
+            )
+    for printed_group, blueprint_groups in sorted(printed_to_blueprint.items()):
+        if len(blueprint_groups) > 1:
+            errors.append(
+                "printed group %r merges blueprint form_groups %s; distinct planned records or "
+                "topics may not be collapsed merely because they share a layout"
+                % (printed_group, sorted(blueprint_groups))
+            )
+
+
 def validate_groups(numbers: list, questions: dict, groups: dict, instructions: dict,
                     evidence: dict, first_end: int, errors: list) -> dict:
     """Validate printed group structure, minus homogeneity -- which the schema makes structural.
@@ -466,6 +511,15 @@ def validate_layout_structure(key: str, group: dict, members: list, errors: list
                     continue
                 keys = set(cell)
                 if keys == {"text"} and isinstance(cell["text"], str) and norm(cell["text"]):
+                    text = norm(cell["text"])
+                    if re.fullmatch(
+                            r"(?:[-–—]+|n\s*/?\s*a|not applicable|tbd|unknown)", text, re.I):
+                        errors.append(
+                            "table group %r row %d cell %d uses placeholder-only text %r; every "
+                            "ordinary matrix cell must contain meaningful fixed information or a "
+                            "question blank, not padding for a sparse diagonal table"
+                            % (key, row_index, cell_index, cell["text"])
+                        )
                     continue
                 number = cell.get("question_number")
                 if keys == {"question_number"} and isinstance(number, int) \
@@ -898,6 +952,8 @@ def main() -> int:
     if items:
         validate_blueprint_fidelity(numbers, questions, answers, items, errors)
     members = validate_groups(numbers, questions, groups, instructions, evidence, first_end, errors)
+    if items:
+        validate_layout_fidelity(numbers, questions, groups, items, errors)
     metrics["groups"] = len(members)
     metrics["layouts"] = sorted({str(groups[key].get("layout")) for key in members
                                  if isinstance(groups.get(key), dict)})

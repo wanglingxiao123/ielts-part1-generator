@@ -42,8 +42,11 @@ A meaningful audit requires a readable, non-empty listening script whose narrato
 - Slight half imbalance, awkward phrasing, weak confirmation, or a topic cue that could be clearer.
 - Nonessential metadata style inconsistency that does not break the contract.
 - Fewer than three confirmed details, or no confirmation on a spelled name or numeric value.
-- Details cannot be organised into varied question types: no set of comparable details able to
-  support a table or form.
+- Details cannot form a coherent candidate-visible Form, Note, or Table. Form records fields of one
+  real record; Note organises thematic explanatory points such as requirements, preferences,
+  procedures, facilities, advice, reasons, or arrangements; Table compares repeated entities across
+  shared dimensions. A list is not Form merely because labels can be invented for every line. All
+  three are equally legal, so an otherwise coherent Note-only material is not a finding.
 - A detail is not answerable by writing a word, number or short phrase into a gap. Part 1
   delivers Form / Note / Table completion only.
 

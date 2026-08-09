@@ -99,7 +99,10 @@ Assign each point an `item_form` (`form`, `table`, or `note`). `item_form` names
 layout**, not the IELTS question type — Part 1 has exactly one question type (completion) and these
 three are its layouts. **Every point must also carry a non-empty `form_group`**: a point that
 belongs to no group is a scattered gap-fill, which is the shape this whole section exists to
-prevent. A single-point group is legal; an absent group is not.
+prevent. The contract can represent a one- or two-point group, but new material should normally
+use at least three questions per group. A smaller group needs a genuinely independent information
+structure that cannot naturally join an adjacent group; a narrator window, the Q5/Q6 midpoint, or
+a desire for layout variety is not such a reason.
 
 Choose groups with this decision procedure:
 
@@ -108,24 +111,49 @@ Choose groups with this decision procedure:
    evidence lies in two narrator windows.
 3. If they do not, split only where the candidate-visible record structure genuinely changes.
 
-Choose Form versus Table from the relationship among the facts:
+Choose Form, Note, or Table from the relationship among the facts. None is a default or fallback:
 
-- A **Form** records independent named fields and their values, one field/value pair per row.
+- A **Form** records fields in one real-world record, one field/value pair per row. Its labels would
+  naturally be printed before the conversation on an application, booking, order, membership, or
+  registration form: `Name`, `Arrival date`, `Membership type`, `Order quantity`.
+- A **Note** organises explanatory information under meaningful topic headings. Use it for
+  requirements, preferences, procedures, facilities, advice, reasons, or arrangements discussed as
+  related points rather than entered into one record. Examples include `Course requirements` with
+  `Equipment` and `Assessment`, or `Visitor information` with `Transport` and `Facilities`.
+  A list does not become Form merely because the writer can invent a short label for every line.
 - A **Table** has at least two comparable data dimensions: its axes organise like-with-like
   information so that the row/column relationship conveys meaning beyond a list of labels.
 - Column count is not the test. A genuine two-column comparison is legal, and no third column may
   be invented merely to make a Table look substantial.
+- A Table must be a meaningful information matrix: every ordinary row/column intersection can hold
+  useful fixed information or an answer blank. Do not plan row-specific columns that apply to only
+  one entity and require `—`, `-`, `N/A`, empty strings, or invented filler in the other rows.
 - `Service stage / Arrangement` with rows such as `Driver visit`, `Collection slot`, `Student
   service charge`, `Included service`, and `Destination paperwork` is a pure field/value list and
   must be planned as Form, not Table.
+
+Use this boundary test before assigning `item_form`:
+
+1. Would the candidate recognise the lines as fields of one actual record being completed? Use Form.
+2. Are several repeated entities compared using dimensions that apply meaningfully to each entity?
+   Use Table.
+3. Otherwise, if the points explain one or more topics through requirements, preferences,
+   procedures, facilities, advice, reasons, or arrangements, use Note.
+
+Do not run these as a preference order: each condition describes a different information
+relationship. In particular, do not relabel a thematic Note as Form by inventing field names, and
+do not reserve Note for the rare case where no label at all can be written.
 
 Group count is content-driven and may be one, two, or three. There is no target distribution and no
 preference for two groups. The midpoint narrator cue is never, by itself, evidence of a structure
 change. Additional requirements:
 
-- at least one `form_group` containing 3 or more points, **all sharing the same `item_form`**,
-  and that form must be `form` or `table` — a group of `note` points cannot become a table,
-  and a group mixing forms cannot become one question;
+- each group should normally contain at least three points. A one- or two-point exception must
+  represent a genuinely independent information structure that cannot naturally join an adjacent
+  group;
+- at least one `form_group` containing 3 or more points, **all sharing the same `item_form`**.
+  Form, Note and Table are equally valid completion layouts; a homogeneous Note group satisfies
+  this requirement, while a group mixing layouts cannot become one candidate-visible question;
 - a group's **item numbers must be contiguous** (`5, 6, 7`, never `5, 7, 9`);
 - a group's points must be **contiguous in the ordered evidence sequence** — no other group's point
   may fall between them. Since evidence positions strictly increase, this means one group's points
@@ -313,9 +341,10 @@ Three fields are required on every item in v2:
   `target` text and nothing else — `118 Fordyce` is a `phrase` even though its `type` is `address`,
   and `BT14 9BJ` is a `phrase` because "contains a digit" is not the same as "is a number".
 - **`answer_category`** — which micro-category of information the answer is. Used to check that the
-  ten items do not test the same micro-category three or more times. The 13 values are
-  `person_name`, `contact`, `location`, `date`, `time`, `duration`, `price`, `quantity`, `service`,
-  `facility`, `requirement`, `preference`, `document`. **There is no catch-all.** A point that fits
+  ten items do not test the same micro-category three or more times. The 14 values are
+  `person_name`, `contact`, `location`, `date`, `time`, `duration`, `price`, `quantity`, `job_title`,
+  `service`, `facility`, `requirement`, `preference`, `document`. **There is no catch-all.** A
+  point that fits
   none of them is not a categorisation problem, it is a material problem — take it back to the
   script rather than forcing a label. **Judge the nature of the answer, not the wording of the
   sentence** — an answer reached through "we definitely need a two-bedroom property" is still a
@@ -339,26 +368,30 @@ axis. So the axis is now fixed and ranked.
    currency amount, or a count/measure, that settles it — `person_name`, `date`, `time`, `duration`,
    `price`, `quantity`. No judgement about the setting gets a vote. `date`, `time` and `duration`
    never merge, and `price` is currency only, so `10 lessons` is `quantity`.
-2. **An artefact beats the thing it governs.** An answer naming an artefact or record identifier that is
+2. **A named occupation or role is a `job_title`.** Use this for the name of employment, a vacancy,
+   or a role a person performs, such as `warehouse assistant`, `receptionist`, or `volunteer
+   coordinator`. It describes what the person is engaged as, not a `facility` where they work or a
+   `service` they perform.
+3. **An artefact beats the thing it governs.** An answer naming an artefact or record identifier that is
    issued, carried, shown, signed, quoted or presented is a `document` — a `parking permit` is a `document` even though parking is a
    facility and issuing it is a service. The answer is the artefact.
-3. **`contact` is a route to a person.** Only a token by which someone is *reached* — a phone number,
+4. **`contact` is a route to a person.** Only a token by which someone is *reached* — a phone number,
    an extension, an email address. A reference, booking or property code is **not** `contact`: quoting
-   `KJ47` reaches nobody, it identifies a record, so it is a `document` under rule 2.
-4. **`location` is a position.** An address, a postcode, or a place name given as *where* something
+   `KJ47` reaches nobody, it identifies a record, so it is a `document` under rule 3.
+5. **`location` is a position.** An address, a postcode, or a place name given as *where* something
    is. This outranks `facility`: the same name is a `location` when the item asks where and a
    `facility` when the item asks what is there. The item decides which was asked.
-5. **Performed, or merely present?** This is the `service`/`facility` axis. Would the answer still
+6. **Performed, or merely present?** This is the `service`/`facility` axis. Would the answer still
    exist with nobody performing it? Yes → `facility`. No, it needs someone to do something →
    `service`. So `breakfast` is a `service` (someone serves it) whether it is charged for or included
    in the rate, and a named restaurant is a `facility` (the room is there regardless) even though a
    service happens inside it. Charged-versus-included is not the axis.
-6. **`preference` requires named alternatives.** Only when the dialogue names two or more
+7. **`preference` requires named alternatives.** Only when the dialogue names two or more
    alternatives and settles on one. Otherwise a condition asked for or satisfied is a `requirement` —
    `furnished` states a flat's existing attribute against no stated alternative, so it is a
    `requirement`, not a `preference`. `requirement` likewise covers what is *asked for* (a `guest
    room` the caller wants) where `facility` covers what already exists (a `park` nearby).
-7. **No catch-all.** Report it, per the paragraph above.
+8. **No catch-all.** Report it, per the paragraph above.
 
 `skills/feasibility/feasibility-listening-part1/references/answer-category-decisions.json` carries
 this procedure in machine-readable form with the worked cases, and is what the feasibility reviewer
@@ -385,8 +418,12 @@ The `distractor` booleans must be a complete census, not merely selected example
 - [ ] Only 2-3 deliberate distractor cycles.
 - [ ] Dialogue is 450-750 words and 20-48 turns; each half has at least 8 turns.
 - [ ] Every `turn_index` points at the turn that actually carries its evidence.
-- [ ] Every point carries a non-empty `form_group`; one group holds 3+ points, all sharing
-      `item_form` `form` or `table`.
+- [ ] Every point carries a non-empty `form_group`; one group holds 3+ points, all sharing the same
+      `item_form` (`form`, `note`, or `table`).
+- [ ] Every group normally holds at least 3 points; any 1-2 point exception is a genuinely
+      independent information structure that cannot naturally join an adjacent group.
+- [ ] Each layout follows the relationship test: real record fields → Form; thematic explanatory
+      points → Note; repeated entities with shared dimensions → Table. Note is not a fallback.
 - [ ] Each group's item numbers are contiguous and its points are not interleaved with another
       group's; Q1-Q10 was first evaluated as one natural layout, and any split follows a genuine
       printed-structure change rather than a narrator-window boundary.

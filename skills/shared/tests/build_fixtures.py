@@ -150,7 +150,7 @@ ITEM_SPECS = [
     ("address", "118 Fordyce", "It's 118 Fordyce.", "form", "A", False, True, "location", "phrase"),
     ("number", "BT14 9BJ", "It's BT14 9BJ.", "form", "A", False, True, "location", "phrase"),
     ("number", "07840051963", "It's 07840051963.", "form", "A", False, True, "contact", "numeric"),
-    ("option", "primary school", "still in primary school", "note", "C", True, False, "facility", "phrase"),
+    ("option", "primary school", "still in primary school", "note", "D", True, False, "facility", "phrase"),
     # `type` stays "option" -- it names the KIND of detail (a preference or chosen alternative),
     # which is still a perfectly good completion answer ("Property type: ______"). Only the
     # dropped item_form was about the multiple-choice question type. Two dimensions, one deleted.
@@ -314,7 +314,7 @@ def main() -> None:
     broken["items"][2]["turn_index"] = broken["items"][2]["turn_index"] + 4
     write("blueprint_bad_anchor.json", broken)
 
-    # Defect 2: no form_group large enough to support a table or form question.
+    # Defect 2: no form_group large enough to support a coherent completion layout.
     ungrouped = json.loads(json.dumps(blueprint))
     for item in ungrouped["items"]:
         item["form_group"] = None

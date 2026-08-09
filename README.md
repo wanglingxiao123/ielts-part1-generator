@@ -5,7 +5,7 @@
 
 系统的边界：
 
-- **自动生成流程交付完整文字套件**：对话稿、十个信息点、两组共十道题、答案与证据、校验结果和
+- **自动生成流程交付完整文字套件**：对话稿、十个信息点、自然题组中的十道题、答案与证据、校验结果和
   审核结果。
 - **材料和题目分别审核**：材料审核看不到生成者的 `blueprint`；题目审核看不到答案键，再由 Python
   将独立重建结果交叉检查。
@@ -43,7 +43,7 @@
 │   │   │   ├── schemas/audit.schema.json
 │   │   │   └── scripts/audit_metrics.py
 │   │   └── audit-questions-part1/    # 不看答案键的题目审核
-│   ├── feasibility/                  # 材料能否承载十道公平题目的预检池
+│   ├── feasibility/                  # 出题前检查十个预选答案点是否可听出、唯一且可填空
 │   └── shared/                       # 两侧都不激活的离线工具
 │       ├── cross_check.py            # 生成标注与盲审结果交叉检查
 │       └── tests/                    # Skill 契约回归测试
@@ -77,7 +77,7 @@
 ├── web/                              # 面向浏览器的 FastAPI 服务
 │   ├── Dockerfile                    # Web + 前端静态资源镜像
 │   ├── app.py                        # API、静态文件与认证入口
-│   ├── fanout.py                     # 每套一次 Runtime 调用，合并为 SSE
+│   ├── fanout.py                     # 每套一次 Runtime invocation，合并为 SSE
 │   ├── runtime_client.py             # SigV4 AgentCore 客户端
 │   ├── auth.py                       # 登录、session 和用户存储
 │   ├── batch_store.py                # 批次持久化
@@ -151,9 +151,9 @@ flowchart LR
 ### 2.2 一次生成请求如何流转
 
 1. 浏览器向 Web 服务提交场景和数量。
-2. `web/fanout.py` 为每套材料分别调用一次 AgentCore Runtime，并按
-   `WEB_FANOUT_CONCURRENCY` 控制并发。
-3. Runtime 对每个交付名额执行第 3 节的 Agent Loop，依次完成材料、可行性预检和十道题。
+2. `web/fanout.py` 为每套材料向同一个已部署的 AgentCore Runtime 发起一次独立 invocation，
+   每次使用不同的 `runtimeSessionId`，并按 `WEB_FANOUT_CONCURRENCY` 控制并发。
+3. 每次 invocation 为一套结果执行第 3 节的 Agent Loop，依次完成材料、可行性预检和十道题。
 4. Web 将多条 Runtime 流合并为一条 SSE；浏览器不必等待整个批次完成，可以逐套看到结果。
 5. Web 同时把批次索引和结果保存到 S3，供刷新页面和历史查询使用。
 
@@ -195,7 +195,7 @@ Runtime 立即返回 job id，浏览器通过 `audio_status` 轮询。合成完�
 ```mermaid
 %%{init: {"flowchart": {"curve": "stepAfter", "nodeSpacing": 28, "rankSpacing": 42}}}%%
 flowchart TB
-    Q["生成请求"] --> F["Web 并发拆分<br/>每套一个 Runtime"]
+    Q["生成请求"] --> F["Web 按套数拆分<br/>多套同时生成"]
 
     subgraph MATERIAL["模块一 · 听力材料生成"]
         direction LR
@@ -218,8 +218,8 @@ flowchart TB
 
     subgraph QUESTIONS["模块二 · 题目生成"]
         direction LR
-        P{"题目可行性预检"}
-        P -- "通过" --> T["题目生成 Agent<br/>生成两组十道题"]
+        P{"预选答案点<br/>是否可出题"}
+        P -- "通过" --> T["题目生成 Agent<br/>生成十道题"]
         T --> H{"Python 校验 +<br/>独立题目盲审"}
         H -- "需修改，最多 2 轮" --> J["全新题目生成 Agent<br/>定向修改"]
         J --> H
@@ -251,29 +251,19 @@ flowchart TB
 
 整个流程可以按下面的顺序理解：
 
-1. **拆分任务**：Web 按用户要求的数量创建交付名额（slot），每个名额对应一套最终交付物，并用
-   独立 Runtime 请求并行执行。slot 不是某份固定材料；候选材料不适合出题时，名额保留并换材料。
-2. **生成初稿**：生成 Agent 激活 Skill，读取规范和 Schema，产出对话稿 `material` 与信息点
-   `blueprint`。
-3. **程序校验**：Python 检查格式、数量和标注；失败时携带报告重新生成，最多三次。次数用完后
-   保留最后一稿和校验报告，继续审核。
-4. **独立盲审**：审核 Agent 只接收对话稿和客观指标，独立评价并重建信息点。Python 再将结果
-   与 `blueprint` 交叉检查。
-5. **决定修改**：结果干净则采用原稿；存在缺陷且时间充足则进入修改。
-6. **修改复评**：全新的生成 Agent 修改原稿。修改稿通过 Python 校验后，再由全新的审核 Agent
-   从零复评；校验失败则回退原稿。
-7. **材料择优**：Python 比较两版材料审核结果并选择较优版本。
-8. **题目可行性预检**：在正式出题前检查十个目标答案是否能进入标准 rubric、材料是否能够承载
-   十道公平题目；不适合时为同一个 slot 更换候选材料。
-9. **生成与盲审题目**：题目生成 Agent 根据最终材料和 `blueprint` 生成两组共十道题。Python
-   validator 检查版式、答案、证据和指令；题目审核 Agent 看不到答案键，独立重建答案，再由 Python
-   交叉检查。
-10. **定向修题**：存在问题时只修改题面、版式、答案键或证据锚点，不得改动已经确定的录音原文；
-    最多修改两轮，每轮都重新校验、盲审和交叉检查。
-11. **恢复与换材料**：题目阶段第一次不可交付时，保留合格材料并重新生成一套题；再次不可交付才
-    换候选材料，从材料 Loop 重新开始。
-12. **完整交付**：只有材料和十道题都已写入存储，这个 slot 才算完成。用户要求 N 套时，N 个
-    slot 全部完成才是 `succeeded`，少于 N 套不会被包装成成功。
+1. **并行生成**：Web 按用户要求的套数拆分任务，每套任务在独立的 Session 中运行，彼此互不影响。
+2. **生成初稿**：生成 Agent 产出对话稿和十个信息点的蓝图。
+3. **程序校验**：Python 检查格式与标注；失败时带着报告重试，最多三次。
+4. **独立盲审**：审核 Agent 看不到蓝图，独立评价并重建信息点；Python 再与蓝图交叉检查。
+5. **修改复评**：有缺陷时由新 Agent 修改，再由新审核 Agent 从零复评；Python 在原稿和修改稿
+   之间择优。
+6. **可行性预检**：在写题前逐项检查十个预选答案是否能从录音中听出、是否只有一个正确答案，
+   以及是否能自然填入 Form、Note 或 Table；任一点不成立就更换材料并重新开始。
+7. **题目生成与盲审**：题目 Agent 生成十道题；Python 校验后，题目审核 Agent 在不看答案键的
+   情况下独立重建答案，再由 Python 交叉检查。
+8. **定向修题与恢复**：有问题时只修改题面、答案键和证据，不动录音原文，最多两轮。仍不可交付
+   时先重启一次题目阶段，再失败则更换材料。
+9. **完整交付**：每套必须同时包含材料和十道题才算完成；要求 N 套时，N 套全部完成才算成功。
 
 因此，这套系统不是让一个 AI 从头到尾自行决定下一步，而是
 “**Agent 执行需要理解语言的工作，Python 控制流程并验收结果**”：
@@ -343,7 +333,7 @@ Skill 激活状态。
 | 材料审核 Agent | `skills/audit/` | `skills`、`file_read`；**无 shell** | 不看 blueprint 的材料盲审与复评 |
 | 题目生成 Agent | `skills/generate/` | `skills`、`file_read`、`shell` | 题目初稿与最多两轮定向修改 |
 | 题目审核 Agent | `skills/audit/` | `skills`、`file_read`；**无 shell** | 不看答案键的题目盲审与复评 |
-| 可行性 Agent | `skills/feasibility/` | 只读所需输入 | 判断最终材料能否承载十道公平题目 |
+| 可行性 Agent | `skills/feasibility/` | 只读 | 正式出题前检查十个信息点是否都适合出题 |
 
 修改没有单独的 Skill。修改步骤创建一个全新的生成 Agent，复用生成 Skill，因为修改稿仍须满足
 同一份 specification、Schema 和 validator。
@@ -474,9 +464,12 @@ material + metrics
 
 ### 3.7 题目生成、盲审与定向修改
 
-材料择优后，`delivery.py` 先运行可行性预检。通过后，`question_loop.py` 执行：
+材料择优后，`delivery.py` 先运行可行性预检。这个 Agent 同时读取定稿材料和蓝图，但不生成题目，
+也不重新评价材料整体质量；它只确认十个预选答案点都能被听出、唯一作答并自然填入
+Form / Note / Table，同时检查蓝图的题型和分组符合材料的信息关系。通过后，题目生成 Agent 才将
+这些已确认的答案点写成正式题面，`question_loop.py` 执行：
 
-1. 题目生成 Agent 输出两组共十道题、答案键和证据；
+1. 题目生成 Agent 输出十道题、答案键和证据；题组数量和边界由材料蓝图中的自然信息结构决定；
 2. Python validator 检查 Schema、题型结构、rubric、答案预算、证据和题面泄露；
 3. 题目审核 Agent 只看考生可见题面与材料，独立重建答案；
 4. Python 将重建答案与答案键交叉检查，识别分歧、竞争答案、泄露和证据锚点问题；
@@ -503,9 +496,10 @@ material + metrics
 第一个任务完成后，队列中的下一套立即开始。这个数是可调的流量保护值，不是 AgentCore 硬限制；
 出现 429 时应下调。
 
-单个 Runtime invocation 只处理一个 slot，因此 Runtime 内部并发实际为 1。`generate_sets` 是
-SSE 流式调用，适用 AgentCore 60 分钟上限：Runtime 使用 3600 秒硬上限、预留 300 秒收尾，工作
-窗口为 3300 秒；Web 的单套墙钟同为 3300 秒，Runtime read timeout 为 3450 秒。
+单次 Runtime invocation 只处理一个交付位置，内部生成流程串行执行；实际并发来自 Web 同时发起
+多个独立 invocation。`generate_sets` 是 SSE 流式调用，适用 AgentCore 60 分钟上限：Runtime
+使用 3600 秒硬上限、预留 300 秒收尾，工作窗口为 3300 秒；Web 的单套墙钟同为 3300 秒，
+Runtime read timeout 为 3450 秒。
 
 开始材料或题目阶段前，Python 会确认剩余时间足以覆盖该阶段的保守耗时。若不足则保存断点并诚实
 返回 `incomplete`，不会把少于请求数量的结果标为成功。
@@ -515,7 +509,7 @@ SSE 流式调用，适用 AgentCore 60 分钟上限：Runtime 使用 3600 秒硬
 | 路径 | 作用 |
 |---|---|
 | `web/fanout.py` | 将批次拆成每套一次 Runtime 调用，限制并发并合并 SSE |
-| `web/runtime_client.py` | SigV4 调用 AgentCore，创建独立 session |
+| `web/runtime_client.py` | SigV4 调用 AgentCore，为每次调用设置独立 `runtimeSessionId` |
 | `backend/app.py` | AgentCore Python 入口和 action 路由 |
 | `backend/request.py` | 把场景 id、数量和自定义场景解析为 slot |
 | `backend/orchestration/loop.py` | 单套材料的重试、校验、盲审、修改、复评和择优 |

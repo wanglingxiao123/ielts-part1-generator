@@ -1,5 +1,5 @@
 {
-  "$comment": "Canonical answer_category decisions. Read by the feasibility skill when a label is arguable, and by skills/shared/tests/run_tests.py, which asserts this table is internally consistent and that every rule it cites exists. One file rather than a table in each of the rubric and the specification, because the production defect this exists to fix WAS a drift defect: nothing stated the tie-break, so the agent invented one per call and contradicted itself between calls. `doc_phrase` is the phrase each rule is stated under in the prose surfaces; the test asserts the prose states all seven in this order, so a reordering edit to either document fails here rather than silently giving the reviewer two different rankings.",
+  "$comment": "Canonical answer_category decisions. Read by the feasibility skill when a label is arguable, and by skills/shared/tests/run_tests.py, which asserts this table is internally consistent and that every rule it cites exists. One file rather than a table in each of the rubric and the specification, because the production defect this exists to fix WAS a drift defect: nothing stated the tie-break, so the agent invented one per call and contradicted itself between calls. `doc_phrase` is the phrase each rule is stated under in the prose surfaces; the test asserts the prose states all eight in this order, so a reordering edit to either document fails here rather than silently giving the reviewer two different rankings.",
   "version": 1,
   "categories": [
     "person_name",
@@ -10,6 +10,7 @@
     "duration",
     "price",
     "quantity",
+    "job_title",
     "service",
     "facility",
     "requirement",
@@ -33,8 +34,18 @@
       "note": "Decided by what the answer IS, before any judgement about the setting. date/time/duration never merge; price is currency only, so '10 lessons' is quantity."
     },
     {
-      "rule": "artefact_beats_the_thing_it_governs",
+      "rule": "named_occupation_or_role",
       "order": 2,
+      "doc_phrase": "named occupation or role",
+      "test": "The answer is the name of employment, a vacancy, or a role a person performs.",
+      "decides": [
+        "job_title"
+      ],
+      "note": "A job title describes what a person is engaged as. It is not the facility where the person works or the service they perform."
+    },
+    {
+      "rule": "artefact_beats_the_thing_it_governs",
+      "order": 3,
       "doc_phrase": "artefact beats the thing it governs",
       "test": "The answer names an official artefact or record identifier that is issued, carried, shown, signed, quoted or presented.",
       "decides": [
@@ -44,7 +55,7 @@
     },
     {
       "rule": "contact_is_a_route_to_a_person",
-      "order": 3,
+      "order": 4,
       "doc_phrase": "is a route to a person",
       "test": "The answer is a token used to REACH a person or organisation: a phone number, an extension, an email address.",
       "decides": [
@@ -54,7 +65,7 @@
     },
     {
       "rule": "location_is_a_position",
-      "order": 4,
+      "order": 5,
       "doc_phrase": "is a position",
       "test": "The answer says WHERE something is: an address, a postcode, a place name used as a position.",
       "decides": [
@@ -64,7 +75,7 @@
     },
     {
       "rule": "performed_or_merely_present",
-      "order": 5,
+      "order": 6,
       "doc_phrase": "Performed, or merely present",
       "test": "Would the answer still exist with nobody performing it? Yes -> facility. No, it needs someone to do something -> service.",
       "decides": [
@@ -75,7 +86,7 @@
     },
     {
       "rule": "preference_needs_named_alternatives",
-      "order": 6,
+      "order": 7,
       "doc_phrase": "requires named alternatives",
       "test": "Did the dialogue name two or more alternatives and settle on this one? Only then is it preference. A condition the caller asks for, or must satisfy, is requirement.",
       "decides": [
@@ -86,14 +97,23 @@
     },
     {
       "rule": "no_catch_all",
-      "order": 7,
+      "order": 8,
       "doc_phrase": "No catch-all",
-      "test": "The answer fits none of the 13.",
+      "test": "The answer fits none of the 14.",
       "decides": [],
       "note": "Not a categorisation problem: a material problem. Report it in reasons rather than forcing the closest label."
     }
   ],
   "cases": [
+    {
+      "answer": "warehouse assistant",
+      "context": "An employment agency names the vacancy being advertised.",
+      "category": "job_title",
+      "rule": "named_occupation_or_role",
+      "not": "facility",
+      "why": "It names the role the applicant would perform, not the workplace or a service supplied there.",
+      "source": "production 2026-08-09, employment-vacancy feasibility rejection"
+    },
     {
       "answer": "breakfast",
       "context": "A hotel receptionist lists what the nightly rate includes.",
@@ -118,7 +138,7 @@
       "category": "document",
       "rule": "artefact_beats_the_thing_it_governs",
       "not": "contact",
-      "why": "Rule 3 excludes contact -- quoting a code reaches no person -- and rule 2 is what assigns the label: a record identifier is quoted the way an artefact is presented. The two rules do different jobs, and only the one that assigns is cited here.",
+      "why": "Rule 4 excludes contact -- quoting a code reaches no person -- and rule 3 is what assigns the label: a record identifier is quoted the way an artefact is presented. The two rules do different jobs, and only the one that assigns is cited here.",
       "source": "production 2026-08-07, accommodation-rental, item 7 rejection"
     },
     {

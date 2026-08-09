@@ -37,13 +37,13 @@ ITEM_KEYS = {"number", "group", "type", "target", "evidence", "turn_index", "ite
 V2_ITEM_KEYS = {"response_form", "answer_category", "narrator_window_id"}
 RESPONSE_FORMS = {"numeric", "word", "phrase"}
 # Internal closed taxonomy, NOT a client-supplied enum. QR-027 only asks for an answer category per
-# item and offers location / price / service as examples; these 13 values exist so the "no
+# item and offers location / price / service as examples; these 14 values exist so the "no
 # micro-category tested by 3+ items" rule can be counted deterministically. There is deliberately no
 # `other`: a catch-all would collide unrelated points into one bucket and misfire that count, and it
 # would hand the model a "when unsure, pick other" escape hatch that removes the field's only value.
 ANSWER_CATEGORIES = {
     "person_name", "contact", "location", "date", "time", "duration", "price",
-    "quantity", "service", "facility", "requirement", "preference", "document",
+    "quantity", "job_title", "service", "facility", "requirement", "preference", "document",
 }
 # QR-027 thresholds. Counting uses `derive_qr027_class`, not the persisted `response_form`: the two
 # split on different axes (token count vs character composition), so `Room 4B` is a `phrase` whose
@@ -92,7 +92,6 @@ ITEM_FORMS = {"form", "table", "note"}
 # to ITEM_FORMS alone. Use `item_forms_for(version)` rather than testing this set directly -- the
 # leniency has to be keyed on version, or it leaks into the write path.
 V1_LEGACY_ITEM_FORMS = ITEM_FORMS | {"multiple_choice"}
-TABLE_FORMS = {"form", "table"}
 DETAIL_TYPES = {"name", "number", "address", "price", "datetime", "quantity", "condition", "option"}
 SPELLED_TYPES = {"name"}
 NUMERIC_TYPES = {"number", "price", "datetime", "quantity", "address"}
@@ -413,20 +412,19 @@ def validate_group_relations(items: list[dict], groups: dict, first_end: int, er
 
 def validate_grouping(items: list[dict], coverage: object, errors: list[str], warnings: list[str],
                       version: int = 1, first_end: int = 0, coverage_key: str = V1_COVERAGE_KEY) -> None:
-    """Check the material can actually support a table or form layout.
+    """Check the material can support a coherent completion layout.
 
     Ten scattered gap-fills pass every other check but leave item writers unable to
-    build a table question, which is what the spec's 题型适配 requirement is about.
+    build a candidate-visible Form, Note, or Table.
 
     v2 raises this from one threshold to five relational constraints (§5.5). Each has its own
     distinct message: a single error covering all five could not tell a reviewer which property
     the blueprint actually broke, and a test asserting only "returncode == 1" against it would be
     vacuous -- that is exactly how stage 1's grouping test managed to pass while testing nothing.
     """
-    # Key groups by (item_form, form_group), not form_group alone. Counting a shared group label
-    # says nothing about whether a table can be built from it: ten note points that happen to
-    # share a label, or a "group" mixing form/table/note, would otherwise pass while leaving an
-    # item writer unable to lay out a single table.
+    # Key groups by (item_form, form_group), not form_group alone. A group mixing layouts cannot
+    # become one candidate-visible completion task. A homogeneous Note group is fully valid:
+    # Form, Note, and Table are peer layouts, not a Table/Form hierarchy.
     groups: dict[tuple, list[int]] = {}
     labels: dict[str, set] = {}
     # `blueprint.items[N]` is a **0-based array index** everywhere else in this validator
@@ -460,17 +458,22 @@ def validate_grouping(items: list[dict], coverage: object, errors: list[str], wa
         if len(forms) > 1:
             errors.append(
                 f"form_group {group!r} mixes item_form values {sorted(map(str, forms))}; "
-                "a group must be homogeneous to become one table or form question"
+                "a group must be homogeneous to become one Form, Note, or Table question"
             )
 
     if version == 2:
         validate_group_relations(items, groups, first_end, errors)
+        if len(labels) > 3:
+            errors.append(
+                "blueprint declares %d form_groups; Part 1 supports 1-3 natural candidate-visible "
+                "Form, Note, or Table groups" % len(labels)
+            )
 
-    largest = max((len(v) for (form, _), v in groups.items() if form in TABLE_FORMS), default=0)
+    largest = max((len(v) for (form, _), v in groups.items() if form in ITEM_FORMS), default=0)
     if largest < MIN_GROUPED_ITEMS:
         errors.append(
-            "blueprint needs one homogeneous form/table form_group with %d+ items to support a "
-            "table or form question; largest is %d" % (MIN_GROUPED_ITEMS, largest)
+            "blueprint needs one homogeneous form/note/table form_group with %d+ items to support "
+            "a coherent completion layout; largest is %d" % (MIN_GROUPED_ITEMS, largest)
         )
 
     # A group spread across most of the script makes candidates hold answers for half the

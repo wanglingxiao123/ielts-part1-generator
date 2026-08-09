@@ -8,7 +8,7 @@ items. Read this before judging; `SKILL.md` carries the boundaries and the outpu
 1. What this rubric decides, and what it does not
 2. Item-writability: the three tests
 3. The three v2 blueprint fields
-4. `answer_category`: the 13 values and their boundaries
+4. `answer_category`: the 14 values and their boundaries
 5. Answer variety and the exception
 6. Reporting
 
@@ -57,9 +57,14 @@ The answer can be written into a gap as a word, a number, or a short phrase. Not
 choice between options, not a yes/no. If the natural item for a point would be a true/false or a
 multiple choice, that point does not belong in a Part 1 completion set.
 
-Also consider the set as a whole: comparable details grouped together support a form or a table.
-Ten unrelated gap-fills are a real finding — the material exists to support item writing, and a set
-with no organisable structure produces a worse test than the same ten facts arranged in a form.
+Also consider the set as a whole. Fields of one real record support Form. Thematic explanatory
+points such as requirements, preferences, procedures, facilities, advice, reasons, or arrangements
+support Note. Repeated entities with shared comparison dimensions support Table. A list is not Form
+merely because labels can be invented for every line. Form, Note and Table are equally legal
+completion layouts; do not reject a coherent Note-only plan merely because it is not a Form or
+Table. Ten unrelated gap-fills are a real finding — the material exists to support item writing,
+and a set with no organisable structure produces a worse test than the same ten facts arranged into
+a natural completion layout.
 
 ## 3. The Three v2 Blueprint Fields
 
@@ -85,14 +90,14 @@ You are judging **semantics**, not the enum. The validator already rejected any 
 permitted strings and already recomputed the window. What it cannot check is whether a permitted
 value is *true of this answer* — that is what you add.
 
-## 4. `answer_category`: The 13 Values and Their Boundaries
+## 4. `answer_category`: The 14 Values and Their Boundaries
 
-`person_name`, `contact`, `location`, `date`, `time`, `duration`, `price`, `quantity`, `service`,
-`facility`, `requirement`, `preference`, `document`.
+`person_name`, `contact`, `location`, `date`, `time`, `duration`, `price`, `quantity`, `job_title`,
+`service`, `facility`, `requirement`, `preference`, `document`.
 
-**There is no catch-all.** A point that fits none of the 13 is not a categorisation problem, it is a
-material problem: report it in `reasons` rather than forcing a label. Do not invent a fourteenth
-value, and do not pick the closest fit as a way of avoiding the report.
+**There is no catch-all.** A point that fits none of the 14 is not a categorisation problem, it is a
+material problem: report it in `reasons` rather than forcing a label. Do not invent another value,
+and do not pick the closest fit as a way of avoiding the report.
 
 **Judge the nature of the answer, not the wording of the sentence.** An answer reached through "we
 definitely need a two-bedroom property" is still a `quantity`, because `two-bedroom` is a
@@ -112,23 +117,26 @@ service". Both conclusions were right, but the axis you reasoned from ("purchasa
    count/measure → `person_name`, `date`, `time`, `duration`, `price`, `quantity`. Nothing about the
    setting overrides this. `date`/`time`/`duration` never merge; `price` is currency only, so
    `10 lessons` is `quantity`.
-2. **An artefact beats the thing it governs** — an artefact or record identifier that is issued,
+2. **A named occupation or role is a `job_title`** — use it for the name of employment, a vacancy,
+   or a role a person performs, such as `warehouse assistant`. It is not the `facility` where the
+   person works or the `service` they perform.
+3. **An artefact beats the thing it governs** — an artefact or record identifier that is issued,
    carried, shown, signed, quoted or presented → `document`. A `parking permit` is a `document`, not the `facility` it admits you to.
-3. **`contact` is a route to a person** — a phone number, extension, email address. A reference,
+4. **`contact` is a route to a person** — a phone number, extension, email address. A reference,
    booking or property code is **not** `contact`; `KJ47` identifies a record and reaches nobody, so
-   rule 2 makes it a `document`.
-4. **`location` is a position** — an address, postcode, or place name given as *where* something is.
+   rule 3 makes it a `document`.
+5. **`location` is a position** — an address, postcode, or place name given as *where* something is.
    Outranks `facility`: one name is a `location` when the item asks where, a `facility` when the item
    asks what is there.
-5. **Performed, or merely present?** — the `service`/`facility` axis. Would it still exist with nobody
+6. **Performed, or merely present?** — the `service`/`facility` axis. Would it still exist with nobody
    performing it? Yes → `facility`; no → `service`. `breakfast` is a `service` charged or included; a
    named restaurant is a `facility` even with a service running inside it. Charged-versus-included is
    **not** the axis.
-6. **`preference` requires named alternatives** — the script must name two or more and settle on one.
+7. **`preference` requires named alternatives** — the script must name two or more and settle on one.
    Otherwise a condition asked for or satisfied is a `requirement`: `furnished` states an existing
    attribute against no stated alternative, so `requirement`. `requirement` is also what is *asked
    for* (a `guest room`) where `facility` is what already exists (a `park` nearby).
-7. **No catch-all** — report it, per the paragraph above.
+8. **No catch-all** — report it, per the paragraph above.
 
 **You may not reach opposite conclusions on inputs that the same rule decides.** Before you set
 `category_semantics_ok: false`, name the rule number your objection rests on and check the worked
@@ -163,7 +171,7 @@ silently.
 
 - `feasible` — `false` when any of the ten points fails any test in §2.
 - `category_semantics_ok` — `false` when any `answer_category` is not true of its answer, or when a
-  point fits none of the 13.
+  point fits none of the 14.
 - `reasons` — **required non-empty whenever either boolean is `false`.** One entry per problem,
   each naming the **item number**, the **test or category** it fails, and the **concrete reason**.
   A rejection nobody can act on is worse than no rejection: a `false` costs a full material

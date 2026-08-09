@@ -67,14 +67,8 @@ describe('buildQuestionPreview 的三块分离', () => {
 describe('buildQuestionPreview 的题组与版式', () => {
   it('按题组分，版式取自题组自己声明的 layout', () => {
     const preview = buildQuestionPreview(pkg, BASE_BLUEPRINT, true)
-    expect(preview.groups.map((g) => g.group.group_id)).toEqual(['G1', 'G2', 'G3', 'G4', 'G5'])
-    expect(preview.groups.map((g) => g.group.layout)).toEqual([
-      'form',
-      'form',
-      'note',
-      'note',
-      'table',
-    ])
+    expect(preview.groups.map((g) => g.group.group_id)).toEqual(['G1', 'G3', 'G5'])
+    expect(preview.groups.map((g) => g.group.layout)).toEqual(['form', 'note', 'table'])
     // 去重后按出现顺序。页顶那行标签用的就是它。
     expect(preview.layouts).toEqual(['form', 'note', 'table'])
     for (const layout of preview.layouts) expect(LAYOUT_LABEL[layout]).toBeTruthy()
@@ -88,9 +82,9 @@ describe('buildQuestionPreview 的题组与版式', () => {
 
   it('rubric 与字数限制挂在 instruction 上，逐字取自包里', () => {
     const preview = buildQuestionPreview(pkg, BASE_BLUEPRINT, true)
-    const g2 = preview.groups.find((g) => g.group.group_id === 'G2')!
-    expect(g2.instruction?.question_range).toBe('2-4')
-    expect(g2.instruction?.instruction_text).toBe(pkg.question_face.instructions[1]!.instruction_text)
+    const g1 = preview.groups.find((g) => g.group.group_id === 'G1')!
+    expect(g1.instruction?.question_range).toBe('1-4')
+    expect(g1.instruction?.instruction_text).toBe(pkg.question_face.instructions[0]!.instruction_text)
   })
 
   it('题面文字原样保留，包括空格里那串点和题号', () => {
@@ -120,7 +114,7 @@ describe('题解事实只搬运后端已有的字段', () => {
     const first = preview.questions[0]!
     const type = first.facts.find((f) => f.key === 'type')
     expect(type).toBeDefined()
-    // `answer_category` 是 13 类答案微类别，不是规范 §4B-3 的八类考点；印错会说出规范里没有的词。
+    // `answer_category` 是 14 类答案微类别，不是规范 §4B-3 的八类考点；印错会说出规范里没有的词。
     expect(type!.text).not.toBe(pkg.question_face.questions[0].answer_category)
   })
 

@@ -38,7 +38,7 @@ export interface FormGroupSummary {
   /** Turn-index span. Wide span = candidate must recall across half the audio. */
   turnSpan: number
   spanWarn: boolean
-  /** A table/form question needs >= 3 homogeneous points. */
+  /** A coherent Form, Note, or Table completion group needs >= 3 homogeneous points. */
   canFormQuestion: boolean
 }
 
@@ -83,7 +83,7 @@ export interface FormGroupAnalysis {
   groups: FormGroupSummary[]
   rows: CoverageRow[]
   consistency: CoverageConsistency
-  /** True when at least one group of >= 3 homogeneous form/table points exists. */
+  /** True when at least one group of >= 3 homogeneous completion-layout points exists. */
   hasViableQuestionGroup: boolean
 }
 
@@ -106,7 +106,7 @@ export function analyseFormGroups(
   const turnOf = (item: (typeof items)[number]) => shown.get(item.number) ?? item.turn_index
 
   // Composite key (item_form, form_group) — skill-contract design §7 D2: counting
-  // labels alone lets ten note points sharing a label pass as a table.
+  // labels alone lets a group mixing several layouts masquerade as one printable task.
   //
   // The two separators are written as `\u0000` / `\u0001` escapes rather than as the literal
   // bytes. Identical string at runtime, but a literal NUL in the source makes git classify the
@@ -152,7 +152,7 @@ export function analyseFormGroups(
         !ungrouped &&
         list.length >= 3 &&
         homogeneous &&
-        (first.item_form === 'form' || first.item_form === 'table'),
+        CURRENT_LAYOUTS.some((layout) => layout === first.item_form),
     })
   }
   groups.sort((a, b) => a.turnStart - b.turnStart)

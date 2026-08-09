@@ -163,7 +163,7 @@ export function compareCandidates(
     decide(
       4,
       favour,
-      `${worse.label} 出不了表格/表单题——同类信息点凑不满 3 个`,
+      `${worse.label} 出不了成组完成题——同类信息点凑不满 3 个`,
     )
   } else {
     const spanA = widestGroupSpan(a)

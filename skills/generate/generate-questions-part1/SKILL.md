@@ -61,11 +61,10 @@ Read nothing else. Everything you need is in this skill's own directory and in t
 1. Read the rules reference and the schema. Read the material's narration and note where it tells
    candidates which questions to look at: those are the question-number windows.
 
-2. **Choose the candidate-visible groups**, keeping the existing number order. First test whether
-   all ten points form one natural Form, Note, or Table. If they do, use one group for Q1-Q10 even
-   though its evidence crosses the midpoint cue. Split only where the visible record structure
-   genuinely changes. The constraints are
-   relational, and all of them are checked:
+2. **Render the blueprint's candidate-visible groups**, keeping its number order, `item_form`, and
+   `form_group` partition. The material stage already tested whether all ten points form one natural
+   layout and placed boundaries only where the visible record structure changes. Do not repeat that
+   planning here. The constraints are relational, and all of them are checked:
    - each group is homogeneous — one `layout`, declared once on the group;
    - narrator windows constrain each item's decisive evidence, not the printed layout boundary:
      a natural continuous group may span a window cue, but Q1-5 evidence must remain in the first
@@ -74,20 +73,37 @@ Read nothing else. Everything you need is in this skill's own directory and in t
      another group's in the evidence order;
    - all ten items belong to a group; no floating point.
 
-   Group **count is not pre-set or preferred**. It may be one, two, or three, derived from the
+   The blueprint's group count is one, two, or three. Preserve it. It was derived from the
    candidate-visible task and record structure rather than the narrator split or a desire for
    variety. A package may use one continuous layout or mix form, note and table as long as every
-   group is itself homogeneous.
+   group is itself homogeneous. Groups should normally contain at least three questions; if the
+   approved blueprint has a one- or two-question group, preserve it but verify that it represents
+   a genuinely independent information structure that cannot naturally join an adjacent group.
+   Do not create, enlarge, or disguise such a fragment at the question stage.
 
-   **The script's own structure picks each layout**, and it is the only thing that does:
-   - **form** — the dialogue fills in a record field by field (name, date, number, selection);
-   - **note** — hierarchical or narrative information: a topic with points under it, preferences
-     talked through. This is the fallback when neither of the other two fits;
-   - **table** — only where both axes carry real meaning and each column compares like with like down
-     its length. A filler heading
+   **Preserve each blueprint point's `item_form` and `form_group`.** They record the layout and
+   natural candidate-visible grouping approved with the material. The validator rejects a final
+   group whose layout differs from any member point, a blueprint group split into several printed
+   groups, or several blueprint groups merged into one. The question stage renders the approved
+   structure; it does not re-plan it.
+
+   **Interpret and render the blueprint layout through the script's structure**, with no default or
+   fallback:
+   - **form** — fields of one real record being completed, such as an application, booking, order,
+     membership, or registration. The row labels must be fields that would naturally exist on that
+     record, not headings invented to turn any list into a form;
+   - **note** — explanatory points organised under meaningful topic headings: requirements,
+     preferences, procedures, facilities, advice, reasons, or arrangements. These are discussed as
+     related points rather than entered as fields of one record;
+   - **table** — repeated entities compared against shared dimensions, where both axes carry real
+     meaning and each column compares like with like down its length. A filler heading
      such as `Detail` / `Notes` / `Information`, repeated row/cell wording, or unrelated facts placed
      behind borders are warning signs that the content is really a form or note. The auditor judges
      the printed structure as a whole.
+
+   A list is not Form merely because every line can be given a short label. Apply the boundary test:
+   actual record fields → Form; repeated entities with shared dimensions → Table; thematic
+   explanatory points → Note. Never select or avoid a layout to create variety.
 
      Column count does not decide the layout. A two-column Table is legal when its axes express at
      least two comparable data dimensions. Conversely, a pure field/value list is always Form:
@@ -100,6 +116,11 @@ Read nothing else. Everything you need is in this skill's own directory and in t
      either `{"text": "candidate-visible fixed text"}` or
      `{"question_number": 6}`; never both. Every member question appears in exactly one cell, and
      flattened question references follow ascending printed order. Multiple blanks may share a row.
+     Every ordinary matrix cell must contain meaningful fixed information or a question blank.
+     Never create a sparse diagonal grid and pad nonexistent row/column relationships with `—`,
+     `-`, `N/A`, empty strings, or similar placeholders. If a proposed column applies to only one
+     row, it is usually an unrelated fact rather than a shared comparison dimension; use Form or
+     Note instead of manufacturing columns or filler text.
      `row_header_label` / `row_labels` are legacy read fields and are invalid for new Table output.
 
    Do not alternate layouts to look varied. Mix them only where the script really changes mode.

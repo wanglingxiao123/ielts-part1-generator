@@ -121,9 +121,9 @@ const RULES: Array<{ match: RegExp; text: (m: RegExpMatchArray) => string }> = [
     text: () => '信息点类型不足四类。题型适配会受影响——表格题需要可分条比较的同类信息。',
   },
   {
-    match: /blueprint needs one homogeneous form\/table form_group|form_group .* mixes item_form/,
-    text: () => '没有一组同类信息可以摆成表格或表单。十道题里通常要留出这样一组，' +
-      '出题时看看哪几个点能并到一起。',
+    match: /blueprint needs one homogeneous form(?:\/note)?\/table form_group|form_group .* mixes item_form/,
+    text: () => '没有一组同类信息可以组成自然的 Form、Note 或 Table。十道题里至少要有一组' +
+      '共享同一版面结构；不能只靠相同组名把不同布局拼在一起。',
   },
   {
     match: /blueprint must record at least one (\S+) item|at least one (\S+) item must be confirmed/,

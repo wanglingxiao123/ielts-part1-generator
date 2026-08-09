@@ -28,6 +28,7 @@ frontend/dist/
 material/归档/
 material/归档.zip
 material/*.html
+material/真题/
 
 # Zips are the delivery envelope, not the source. `material/listening/` holds the seven client rule
 # files unpacked and IS committed -- the archive is the same bytes with no diff and no blame.

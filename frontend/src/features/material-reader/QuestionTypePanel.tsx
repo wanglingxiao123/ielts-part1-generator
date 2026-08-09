@@ -99,7 +99,7 @@ export function QuestionTypePanel({ analysis }: { analysis: FormGroupAnalysis })
           </span>
         )}
         <span>
-          表格/表单题：
+          成组完成题（Form / Note / Table）：
           {analysis.hasViableQuestionGroup ? (
             <span className="flag flag-good">可以出</span>
           ) : (

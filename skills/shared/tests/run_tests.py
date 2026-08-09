@@ -637,7 +637,7 @@ def test_remaining_rules_do_not_reject_real_papers() -> None:
 
 
 def test_grouping_cannot_be_faked() -> None:
-    """A shared group label must not stand in for a constructible table (D2)."""
+    """A shared group label must name one coherent completion layout (D2)."""
     print("question-type grouping cannot be faked")
     import copy
     import tempfile
@@ -657,9 +657,8 @@ def test_grouping_cannot_be_faked() -> None:
         payload["completion_layout_coverage"] = coverage
         return payload
 
-    # `note` is now the only non-table item_form, so "a shared label on points that cannot become
-    # a table" and "the group is made of notes" are the same case -- they were two only while
-    # multiple_choice existed. Merged rather than kept as synonyms.
+    # Note is a first-class completion layout. An all-Note blueprint must not be forced to add a
+    # Form/Table merely to satisfy the grouping gate.
     notes_only = copy.deepcopy(base)
     for item in notes_only["items"]:
         item["item_form"] = "note"
@@ -670,15 +669,27 @@ def test_grouping_cannot_be_faked() -> None:
         item["item_form"], item["form_group"] = form, "A"
     recover(mixed)
 
+    too_many_groups = copy.deepcopy(base)
+    for item in too_many_groups["items"]:
+        item["form_group"] = ("A" if item["number"] <= 4 else
+                              "B" if item["number"] <= 7 else
+                              "C" if item["number"] <= 9 else "D")
+    recover(too_many_groups)
+
     # Assert on the REASON, not just returncode 1. Every mutation here also happens to be
     # rejectable on other grounds, so a bare exit-code check would keep passing even if
     # validate_grouping stopped working -- this test was already passing vacuously once, when
     # multiple_choice was deleted from ITEM_FORMS and the enum check began doing its job for it.
+    note_path = scratch / "notes-blueprint.json"
+    note_path.write_text(json.dumps(notes_only, ensure_ascii=False), encoding="utf-8")
+    note_result = run(VALIDATE, str(FIXTURES / "material_valid.json"),
+                      "--blueprint", str(note_path))
+    check("accepted: one homogeneous Note group can cover all ten items",
+          note_result.returncode == 0, note_result.stdout)
+
     for label, payload, expected in (
-        ("no form/table group exists, only labelled notes", notes_only,
-         "needs one homogeneous form/table form_group"),
-        ("form_group mixes item_form values", mixed,
-         "mixes item_form values"),
+        ("form_group mixes item_form values", mixed, "mixes item_form values"),
+        ("more than three natural groups", too_many_groups, "supports 1-3 natural"),
     ):
         path = scratch / "blueprint.json"
         path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -2034,19 +2045,19 @@ def test_feasibility_schema_qr027_exception() -> None:
 _QUESTION_ROWS = (
     (1, "G1", "Full name:", "", "final", "phrase", 4, "It's Anna Woods.", "exact",
      "the caller's full name", "the name she gives"),
-    (2, "G2", "Street:", ", Ballysillan", "initial", "phrase", 8, "It's 118 Fordyce.", "exact",
+    (2, "G1", "Street:", ", Ballysillan", "initial", "phrase", 8, "It's 118 Fordyce.", "exact",
      "her current street", "the street she states"),
-    (3, "G2", "Postcode:", "", "final", "phrase", 10, "It's BT14 9BJ.", "exact",
+    (3, "G1", "Postcode:", "", "final", "phrase", 10, "It's BT14 9BJ.", "exact",
      "her postcode", "the postcode she states"),
-    (4, "G2", "Mobile:", "", "final", "numeric", 12, "It's 07840051963.", "exact",
+    (4, "G1", "Mobile:", "", "final", "numeric", 12, "It's 07840051963.", "exact",
      "her contact number", "the mobile number she gives"),
     (5, "G3", "Son currently attends:", "", "final", "phrase", 20,
      "He is still in primary school.", "paraphrase", "the son's current stage of education",
      "the stage she confirms after correcting herself"),
-    (6, "G4", "Would like a", "nearby for son to play", "initial", "word", 29,
+    (6, "G3", "Would like a", "nearby for son to play", "initial", "word", 29,
      "he'd love a park nearby", "paraphrase", "the outdoor amenity the family wants",
      "the amenity she says her son would love"),
-    (7, "G4", "Prefers a", "rather than a flat", "initial", "word", 32,
+    (7, "G3", "Prefers a", "rather than a flat", "initial", "word", 32,
      "we've always lived in a house", "paraphrase", "the property kind preferred",
      "the kind she says they stick with"),
     (8, "G5", "Property size required:", "property", "medial", "word", 35,
@@ -2062,16 +2073,16 @@ _QUESTION_ROWS = (
 
 # group_id -> (window, layout, title or None, signposts, structure, question_range, word_limit)
 _QUESTION_GROUPS = (
-    ("G1", 1, "form", None, ["Personal details taken by phone"], {"row_labels": ["Full name"]},
-     "1", "NO MORE THAN TWO WORDS"),
-    ("G2", 1, "form", None, [], {"row_labels": ["Street", "Postcode", "Mobile"]},
-     "2-4", "NO MORE THAN TWO WORDS AND/OR A NUMBER"),
-    ("G3", 1, "note", "Family background", [],
-     {"note_sections": [{"heading": "Child's education", "question_numbers": [5]}]},
-     "5", "NO MORE THAN TWO WORDS"),
-    ("G4", 2, "note", "Property preferences", ["Requirements for the new home are discussed next"],
-     {"note_sections": [{"heading": "Location and lifestyle", "question_numbers": [6, 7]}]},
-     "6-7", "ONE WORD ONLY"),
+    ("G1", 1, "form", None, ["Personal details taken by phone"],
+     {"row_labels": ["Full name", "Street", "Postcode", "Mobile"]},
+     "1-4", "NO MORE THAN TWO WORDS AND/OR A NUMBER"),
+    ("G3", None, "note", "Family and property requirements", [
+        "The caller gives the minimum age for the child.",
+        "Requirements for the new home are discussed next",
+     ], {"note_sections": [
+         {"heading": "Child's education", "question_numbers": [5]},
+         {"heading": "Location and lifestyle", "question_numbers": [6, 7]},
+     ]}, "5-7", "NO MORE THAN TWO WORDS"),
     ("G5", 2, "table", None, [], {
         "column_labels": ["Category", "Requirement"],
         "table_rows": [
@@ -2091,8 +2102,10 @@ def _question_package() -> dict:
 
     groups, instructions, limit_of = [], [], {}
     for group_id, window, layout, title, signposts, structure, question_range, limit in _QUESTION_GROUPS:
-        group = {"group_id": group_id, "narrator_window_id": window, "layout": layout,
+        group = {"group_id": group_id, "layout": layout,
                  "signposts": list(signposts), "structure": copy.deepcopy(structure)}
+        if window is not None:
+            group["narrator_window_id"] = window
         if title is not None:
             group["title"] = title
         groups.append(group)
@@ -2208,6 +2221,12 @@ def test_question_package_schema_contract() -> None:
                      if group["layout"] == "table")
         table["structure"]["table_rows"][0]["cells"][0]["text"] = ""
 
+    def four_printed_groups(payload: dict) -> None:
+        payload["question_face"]["groups"].append(
+            copy.deepcopy(payload["question_face"]["groups"][0]))
+        payload["question_face"]["instructions"].append(
+            copy.deepcopy(payload["question_face"]["instructions"][0]))
+
     for label, mutate in (
         # The separation is what the schema is for: block A must be unable to carry block B or C.
         ("an answer inside the question face", leak_answer),
@@ -2233,6 +2252,7 @@ def test_question_package_schema_contract() -> None:
         ("an empty accepted alternative", lambda p: p["answer_key"][0].update({"alternatives": [""]})),
         ("a table cell containing both fixed text and a question", table_cell_with_text_and_question),
         ("an empty fixed-text table cell", empty_fixed_table_cell),
+        ("more than three printed groups", four_printed_groups),
         ("an unknown key inside a structure",
          lambda p: p["question_face"]["groups"][0]["structure"].update({"unknown_cells": []})),
     ):
@@ -2249,33 +2269,14 @@ def test_question_validator_catches_the_stage_defects() -> None:
     print("question validator")
 
     def merge_note_group_across_windows(package: dict) -> None:
-        face = package["question_face"]
-        g3 = next(group for group in face["groups"] if group["group_id"] == "G3")
-        g4 = next(group for group in face["groups"] if group["group_id"] == "G4")
-        g3.pop("narrator_window_id")
-        g3["title"] = "Family and property requirements"
-        g3["signposts"] = [
-            "The caller gives the minimum age for the child.",
-            *g4["signposts"],
-        ]
-        g3["structure"]["note_sections"].append({
-            "heading": "Location and lifestyle", "question_numbers": [6, 7]})
-        face["groups"] = [group for group in face["groups"] if group["group_id"] != "G4"]
-        for question in face["questions"]:
-            if question["number"] in (6, 7):
-                question["group_id"] = "G3"
-        instruction = next(row for row in face["instructions"] if row["group_id"] == "G3")
-        instruction["question_range"] = "5-7"
-        face["instructions"] = [row for row in face["instructions"] if row["group_id"] != "G4"]
-        for answer in package["answer_key"]:
-            if answer["number"] in (6, 7):
-                answer["word_limit"] = "NO MORE THAN TWO WORDS"
+        # The reference package already uses one natural Note group across both windows.
+        return None
 
     clean = _validate_questions()
     check("the reference package passes clean", clean["ok"] is True,
           repr(clean["errors"])[:600])
     check("metrics report the measured group and position counts",
-          clean["metrics"].get("groups") == 5
+          clean["metrics"].get("groups") == 3
           and clean["metrics"].get("blank_positions", {}).get("final") == 4,
           repr(clean["metrics"]))
     check("layouts are reported as the mix actually used",
@@ -2338,7 +2339,7 @@ def test_question_validator_catches_the_stage_defects() -> None:
 
     def loosen_limit(package: dict) -> None:
         for instruction in package["question_face"]["instructions"]:
-            if instruction["group_id"] == "G4":
+            if instruction["group_id"] == "G3":
                 instruction["word_limit"] = "NO MORE THAN THREE WORDS"
                 instruction["instruction_text"] = (
                     "Complete the notes below. Write NO MORE THAN THREE WORDS for each answer.")
@@ -2348,7 +2349,7 @@ def test_question_validator_catches_the_stage_defects() -> None:
 
     def leak_in_title(package: dict) -> None:
         for group in package["question_face"]["groups"]:
-            if group["group_id"] == "G4":
+            if group["group_id"] == "G3":
                 group["title"] = "Park and house preferences"
 
     def leak_inflected(package: dict) -> None:
@@ -2395,12 +2396,25 @@ def test_question_validator_catches_the_stage_defects() -> None:
 
     def note_without_sections(package: dict) -> None:
         for group in package["question_face"]["groups"]:
-            if group["group_id"] == "G4":
+            if group["group_id"] == "G3":
                 group["structure"].pop("note_sections")
+
+    def suppress_note_as_form(package: dict) -> None:
+        group = next(
+            row for row in package["question_face"]["groups"] if row["group_id"] == "G3")
+        group["layout"] = "form"
+        group["structure"] = {
+            "row_labels": ["Education", "Nearby facility", "Property preference"]
+        }
+
+    def replan_blueprint_group_boundaries(package: dict) -> None:
+        question = next(
+            row for row in package["question_face"]["questions"] if row["number"] == 4)
+        question["group_id"] = "G3"
 
     def note_with_duplicate_assignment(package: dict) -> None:
         for group in package["question_face"]["groups"]:
-            if group["group_id"] == "G4":
+            if group["group_id"] == "G3":
                 group["structure"]["note_sections"] = [
                     {"heading": "Location", "question_numbers": [6]},
                     {"heading": "Property", "question_numbers": [6]},
@@ -2462,6 +2476,38 @@ def test_question_validator_catches_the_stage_defects() -> None:
             if group["group_id"] == "G5":
                 group["structure"]["table_rows"][0]["cells"][0] = {"label": "Size"}
 
+    def sparse_vacancy_table_with_dash_padding(package: dict) -> None:
+        group = next(
+            row for row in package["question_face"]["groups"] if row["group_id"] == "G5")
+        group["structure"] = {
+            "column_labels": ["Vacancy", "Workplace", "Start time", "Hourly pay"],
+            "table_rows": [
+                {"cells": [
+                    {"text": "Cafe assistant"},
+                    {"question_number": 8},
+                    {"text": "—"},
+                    {"text": "—"},
+                ]},
+                {"cells": [
+                    {"text": "Grounds assistant"},
+                    {"text": "—"},
+                    {"question_number": 9},
+                    {"text": "—"},
+                ]},
+                {"cells": [
+                    {"text": "Evening sorter"},
+                    {"text": "—"},
+                    {"text": "—"},
+                    {"question_number": 10},
+                ]},
+            ],
+        }
+
+    def table_with_textual_placeholder(package: dict) -> None:
+        group = next(
+            row for row in package["question_face"]["groups"] if row["group_id"] == "G5")
+        group["structure"]["table_rows"][0]["cells"][0] = {"text": "TBD"}
+
     def leak_in_fixed_table_cell(package: dict) -> None:
         for group in package["question_face"]["groups"]:
             if group["group_id"] == "G5":
@@ -2469,7 +2515,7 @@ def test_question_validator_catches_the_stage_defects() -> None:
 
     def no_signpost(package: dict) -> None:
         for group in package["question_face"]["groups"]:
-            if group["group_id"] == "G4":
+            if group["group_id"] == "G3":
                 group["signposts"] = []
 
     def self_reported_failure(package: dict) -> None:
@@ -2514,6 +2560,10 @@ def test_question_validator_catches_the_stage_defects() -> None:
         # QR-031 / QR-015 / QR-026.
         ("a note group with no title", note_without_title, "QR-031"),
         ("a note group with no explicit sections", note_without_sections, "note_sections"),
+        ("blueprint Note points silently reclassified as Form", suppress_note_as_form,
+         "may not silently reclassify"),
+        ("blueprint group boundaries replanned by the question stage",
+         replan_blueprint_group_boundaries, "blueprint form_group"),
         ("a note question assigned twice", note_with_duplicate_assignment, "exactly once"),
         ("a table group with no column labels", table_without_columns, "column_labels"),
         ("a legacy table with no cell mapping", legacy_table_without_cell_mapping, "table_rows"),
@@ -2526,6 +2576,10 @@ def test_question_validator_catches_the_stage_defects() -> None:
          "ascending printed order"),
         ("a table cell containing text and a question", table_cell_with_both_variants,
          "exactly one"),
+        ("a sparse table padded with dash cells", sparse_vacancy_table_with_dash_padding,
+         "placeholder-only text"),
+        ("a table padded with a textual placeholder", table_with_textual_placeholder,
+         "placeholder-only text"),
         ("a boolean used as a table question number", table_cell_with_boolean_question,
          "booleans are invalid"),
         ("a table cell with an unknown key", table_cell_with_unknown_key, "exactly one"),
@@ -2616,6 +2670,88 @@ def test_form_table_semantics_are_consistent_across_agents() -> None:
         text = " ".join(path.read_text(encoding="utf-8").lower().split())
         check("%s keeps the production field/value counterexample" % label,
               "service stage / arrangement" in text)
+
+    material_audit_skill = (
+        SKILLS / "audit" / "audit-listening-part1" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    material_audit_rubric = (
+        SKILLS / "audit" / "audit-listening-part1" / "references" / "audit-rubric.md"
+    ).read_text(encoding="utf-8")
+    for label, text in (
+        ("material audit skill", material_audit_skill),
+        ("material audit rubric", material_audit_rubric),
+    ):
+        normalised = " ".join(text.lower().split())
+        check("%s treats Note as a peer completion layout" % label,
+              "form, note and table are equally legal" in normalised
+              or "all three are equally legal" in normalised,
+              normalised[:600])
+        check("%s does not require a table or form" % label,
+              "support a table or form" not in normalised,
+              normalised[:600])
+
+    feasibility_rubric = (
+        FEASIBILITY_SCHEMAS.parent / "references" / "feasibility-rubric.md"
+    ).read_text(encoding="utf-8")
+    normalised = " ".join(feasibility_rubric.lower().split())
+    check("feasibility rubric treats Note as a peer completion layout",
+          "form, note and table are equally legal" in normalised,
+          normalised[:600])
+    check("feasibility rubric does not require a form or table",
+          "support a form or a table" not in normalised,
+          normalised[:600])
+
+    material_skill = (
+        SKILLS / "generate" / "generate-listening-part1" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    material_spec = (
+        SKILLS / "generate" / "generate-listening-part1" / "references" / "specification.md"
+    ).read_text(encoding="utf-8")
+    question_skill = (
+        SKILLS / "generate" / "generate-questions-part1" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    question_audit = (
+        SKILLS / "audit" / "audit-questions-part1" / "references" /
+        "question-audit-rules.md"
+    ).read_text(encoding="utf-8")
+    for label, text in (
+        ("material generation skill", material_skill),
+        ("material specification", material_spec),
+        ("question generation skill", question_skill),
+        ("question audit rules", question_audit),
+    ):
+        normalised = " ".join(text.lower().split())
+        check("%s gives Note a positive thematic criterion" % label,
+              "requirements" in normalised
+              and "preferences" in normalised
+              and "procedures" in normalised,
+              normalised[:900])
+        check("%s does not make Note a fallback" % label,
+              "note is a fallback" not in normalised
+              and "this is the fallback" not in normalised,
+              normalised[:900])
+        check("%s keeps the three-question group preference" % label,
+              "at least three" in normalised
+              and "genuinely independent" in normalised
+              and "cannot naturally join" in normalised,
+              normalised[:900])
+
+    normalised = " ".join(question_skill.lower().split())
+    check("question writer must preserve blueprint item_form",
+          "preserve each blueprint point's `item_form`" in normalised,
+          normalised[:900])
+    question_rules = (
+        SKILLS / "generate" / "generate-questions-part1" / "references" /
+        "question-rules.md"
+    ).read_text(encoding="utf-8")
+    normalised = " ".join(question_rules.lower().split())
+    check("authoritative question rules do not call Note a default or fallback",
+          "note is the honest fallback" not in normalised
+          and "this is the default" not in normalised,
+          normalised[:900])
+    check("authoritative question rules preserve blueprint item_form",
+          "preserve each blueprint point's `item_form`" in normalised,
+          normalised[:900])
 
 
 def test_question_ar003_tiers_follow_the_canonical() -> None:
@@ -2927,8 +3063,8 @@ def test_answer_category_decision_table() -> None:
 
     So the fix is an ORDER, and an order is only worth having if a later edit cannot quietly break
     it. Three things are asserted: the table decides every case it carries by the rule it names, the
-    ranking is a total order over the 13 values with no value orphaned or claimed twice, and the two
-    prose surfaces state the same seven rules in the same sequence. The last one is the real
+    ranking is a total order over the 14 values with no value orphaned or claimed twice, and the two
+    prose surfaces state the same eight rules in the same sequence. The last one is the real
     regression guard -- the reviewer reads the prose, not this JSON, so prose that drifts out of
     order reinstates exactly the defect above while every other check here still passes.
     """
@@ -2942,9 +3078,36 @@ def test_answer_category_decision_table() -> None:
     # would leave the new value with no rule to decide it -- and no test would say so.
     enum = json.loads(_schema("blueprint.read.schema.json").read_text(
         encoding="utf-8"))["definitions"]["item"]["properties"]["answer_category"]["enum"]
-    check("the table's 13 values are the schema's enum, in the same order",
+    check("the table's 14 values are the schema's enum, in the same order",
           categories == enum, "%r vs %r" % (categories, enum))
+    question_enum = json.loads((QUESTION_SCHEMAS / "question_package.schema.json").read_text(
+        encoding="utf-8"))["definitions"]["question"]["properties"]["answer_category"]["enum"]
+    check("the question package carries the same closed category enum",
+          question_enum == categories, "%r vs %r" % (question_enum, categories))
+    vp = __import__("validate_part1")
+    check("the deterministic validator carries the same closed category enum",
+          vp.ANSWER_CATEGORIES == set(categories),
+          "%r vs %r" % (sorted(vp.ANSWER_CATEGORIES), sorted(categories)))
     check("there is no catch-all value", "other" not in categories)
+
+    blueprint = json.loads((FIXTURES / "blueprint_valid.json").read_text(encoding="utf-8"))
+    blueprint["items"][0]["answer_category"] = "job_title"
+    for label, schema in (
+        ("write-side blueprint schema", "blueprint.schema.json"),
+        ("read-side blueprint schema", "blueprint.read.schema.json"),
+    ):
+        errors = _schema_errors(schema, blueprint)
+        check("%s accepts job_title" % label, errors == [], "; ".join(errors[:3]))
+    result = validate_mutated(
+        lambda payload: payload["items"][0].update(answer_category="job_title"))
+    check("the deterministic blueprint validator accepts job_title",
+          result.returncode == 0, result.stdout[:600])
+
+    package = _question_package()
+    package["question_face"]["questions"][0]["answer_category"] = "job_title"
+    errors = _schema_errors("question_package.schema.json", package)
+    check("the question package schema accepts job_title",
+          errors == [], "; ".join(errors[:3]))
 
     check("the procedure is numbered 1..N in file order",
           [rule["order"] for rule in procedure] == list(range(1, len(procedure) + 1)),
@@ -2983,6 +3146,9 @@ def test_answer_category_decision_table() -> None:
           "%s vs %s" % (breakfast["rule"], venue["rule"]))
     check("a reference code is a document rather than a contact",
           (by_answer["KJ47"]["category"], by_answer["KJ47"]["not"]) == ("document", "contact"))
+    check("a vacancy role is a job title rather than a facility",
+          (by_answer["warehouse assistant"]["category"],
+           by_answer["warehouse assistant"]["not"]) == ("job_title", "facility"))
     check("an attribute with no alternative offered is a requirement rather than a preference",
           (by_answer["furnished"]["category"], by_answer["furnished"]["not"])
           == ("requirement", "preference"))
@@ -2997,7 +3163,7 @@ def test_answer_category_decision_table() -> None:
         text = path.read_text(encoding="utf-8")
         positions = [text.find(phrase) for phrase in phrases]
         missing = [phrase for phrase, at in zip(phrases, positions) if at < 0]
-        check("%s states all seven rules" % label, missing == [], repr(missing))
+        check("%s states all eight rules" % label, missing == [], repr(missing))
         check("%s states them in the table's order" % label,
               missing == [] and positions == sorted(positions),
               repr(list(zip(phrases, positions))))

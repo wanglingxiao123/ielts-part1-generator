@@ -64,7 +64,7 @@ describe('题目预览的真实版式', () => {
   it('三种版式各按自己的结构画，不统一成十张问答卡片', () => {
     renderPanel()
     // form：左列行标签 + 右列印刷行。
-    expect(document.querySelectorAll('.qp-form').length).toBe(2)
+    expect(document.querySelectorAll('.qp-form').length).toBe(1)
     // note：层级标题 + 笔记行。
     expect(document.querySelectorAll('.qp-note-list').length).toBe(2)
     // table：真的 <table>，有表头。
@@ -111,20 +111,19 @@ describe('题目预览的真实版式', () => {
     renderPanel()
     const forms = [...document.querySelectorAll('.qp-form')]
     expect(forms[0]!.textContent).toContain('Full name')
-    const streetCells = [...forms[1]!.querySelectorAll('.qp-form-label')].map((n) => n.textContent)
-    expect(streetCells).toEqual(['Street', 'Postcode', 'Mobile'])
+    const labels = [...forms[0]!.querySelectorAll('.qp-form-label')].map((n) => n.textContent)
+    expect(labels).toEqual(['Full name', 'Street', 'Postcode', 'Mobile'])
     // 两处都在页面上：标签一处，carrier 一处。重复是产物的问题，不是渲染的问题。
-    expect(forms[1]!.textContent).toContain('Street:')
-    expect(forms[1]!.textContent).toContain('Postcode:')
+    expect(forms[0]!.textContent).toContain('Street:')
+    expect(forms[0]!.textContent).toContain('Postcode:')
   })
 
   it('note 按 note_sections 的显式映射印标题，并显示题组 title', () => {
     renderPanel()
     const heads = [...document.querySelectorAll('.qp-note-head')].map((n) => n.textContent)
-    // 顺序是包里的声明顺序：G3 的 `Child's education` 在 G4 的 `Location and lifestyle` 之前。
+    // 顺序是 G3 的显式 section 声明顺序。
     expect(heads).toEqual(["Child's education", 'Location and lifestyle'])
-    expect(screen.getByText('Family background')).toBeInTheDocument()
-    expect(screen.getByText('Property preferences')).toBeInTheDocument()
+    expect(screen.getByText('Family and property requirements')).toBeInTheDocument()
   })
 
   it('note 标题与声明的题目保持在同一个 section', () => {
@@ -208,9 +207,9 @@ describe('题目预览的真实版式', () => {
   it('rubric 与题号范围逐字取自 instruction', () => {
     renderPanel()
     expect(
-      screen.getByText(pkg.question_face.instructions[1]!.instruction_text),
+      screen.getByText(pkg.question_face.instructions[0]!.instruction_text),
     ).toBeInTheDocument()
-    expect(screen.getByText('Questions 2-4')).toBeInTheDocument()
+    expect(screen.getByText('Questions 1-4')).toBeInTheDocument()
     expect(screen.getByText('共 10 题')).toBeInTheDocument()
   })
 
