@@ -193,45 +193,62 @@ Runtime 立即返回 job id，浏览器通过 `audio_status` 轮询。合成完�
 ## 3. 生成流程（Agent Loop）
 
 ```mermaid
-flowchart LR
+flowchart TB
     Q["生成请求"] --> F["Web 并发拆分<br/>每套一个 Runtime"]
-    F --> G["材料生成 Agent<br/>选 Skill 并生成"]
-    G --> V{"Python 校验"}
-    V -- "错误，最多 3 次" --> G
-    V -- "通过或次数用完" --> A["材料审核 Agent<br/>盲审原稿"]
-    A --> X{"Python 判断<br/>是否修改"}
-    X -- "否" --> O["采用原稿"]
-    X -- "是" --> R["全新材料生成 Agent<br/>修改原稿"]
-    R --> C{"Python 校验<br/>修改稿通过？"}
-    C -- "否" --> O
-    C -- "是" --> E["全新材料审核 Agent<br/>复评修改稿"]
-    E --> B["Python<br/>原稿/修改稿择优"]
-    O --> P{"题目可行性预检"}
+
+    subgraph MATERIAL["模块一 · 听力材料生成"]
+        direction LR
+        M["听力材料"] --> G["生成 Agent<br/>选 Skill 并生成"]
+        G --> V{"Python 校验"}
+        V -- "错误，最多 3 次" --> G
+        V -- "通过或次数用完" --> A["独立审核 Agent<br/>盲审原稿"]
+        A --> X{"是否修改"}
+        X -- "否" --> O["采用原稿"]
+        X -- "是" --> R["全新生成 Agent<br/>修改原稿"]
+        R --> C{"修改稿校验"}
+        C -- "不通过" --> O
+        C -- "通过" --> E["全新审核 Agent<br/>复评修改稿"]
+        E --> B["原稿 / 修改稿择优"]
+    end
+
+    F --> M
+    O --> P
     B --> P
-    P -- "材料不适合出题" --> W["同一交付名额<br/>更换候选材料"]
-    W --> G
-    P -- "通过" --> T["题目生成 Agent<br/>生成两组十道题"]
-    T --> H{"Python 校验 +<br/>题目盲审"}
-    H -- "需修改，最多 2 轮" --> J["全新题目生成 Agent<br/>定向修改"]
-    J --> H
-    H -- "可交付" --> D["交付完整套件<br/>材料 + 题目"]
-    H -- "仍有硬问题" --> K{"同一材料<br/>重启题目阶段一次"}
-    K -- "首次失败" --> T
-    K -- "再次失败" --> W
+
+    subgraph QUESTIONS["模块二 · 题目生成"]
+        direction LR
+        P{"题目可行性预检"}
+        P -- "通过" --> T["题目生成 Agent<br/>生成两组十道题"]
+        T --> H{"Python 校验 +<br/>独立题目盲审"}
+        H -- "需修改，最多 2 轮" --> J["全新题目生成 Agent<br/>定向修改"]
+        J --> H
+        H -- "可交付" --> D["交付完整套件<br/>材料 + 题目"]
+        H -- "仍有硬问题" --> K{"同一材料<br/>重启题目阶段一次"}
+        K -- "首次失败" --> T
+        K -- "再次失败" --> W["更换候选材料<br/>重新进入上方模块"]
+        P -- "材料不适合出题" --> W
+    end
+
+    W -. "返回材料生成" .-> G
 
     classDef ai fill:#fef3c7,stroke:#d97706,color:#78350f;
     classDef audit fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
     classDef code fill:#f3f4f6,stroke:#6b7280,color:#111827;
     classDef done fill:#dcfce7,stroke:#16a34a,color:#14532d;
+    classDef moduleLabel fill:#fde68a,stroke:#b45309,color:#78350f,font-weight:bold;
+    class M moduleLabel;
     class G,R,T,J ai;
     class A,E,H audit;
     class Q,F,V,X,C,B,P,K,W code;
     class O,D done;
+    style MATERIAL fill:#fff8e8,stroke:#d97706,stroke-width:2px;
+    style QUESTIONS fill:#eff6ff,stroke:#2563eb,stroke-width:2px;
 ```
 
-这张图描述的是**一个交付名额从收到请求到拿到完整套件的主线**。黄色节点是负责写作或改稿的
-生成 Agent，蓝色节点包含独立审核，灰色节点是 Python 控制的校验、预检和重试，绿色节点是采用
-或交付结果。图只表达整体方向；各层的重试边界和交付门槛在下文说明。
+这张图先按上下两个大模块表达系统结构：上方暖色区域生成并审核听力材料，下方蓝色区域生成并
+审核对应题目。区域内部，黄色节点是负责写作或改稿的生成 Agent，蓝色节点是独立审核，灰色节点
+是 Python 控制的校验、预检和重试，绿色节点是采用或交付结果。图只表达整体方向；各层的重试
+边界和交付门槛在下文说明。
 
 整个流程可以按下面的顺序理解：
 
