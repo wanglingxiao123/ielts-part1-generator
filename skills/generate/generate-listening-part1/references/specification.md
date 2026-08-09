@@ -99,7 +99,18 @@ Assign each point an `item_form` (`form`, `table`, or `note`). `item_form` names
 layout**, not the IELTS question type — Part 1 has exactly one question type (completion) and these
 three are its layouts. **Every point must also carry a non-empty `form_group`**: a point that
 belongs to no group is a scattered gap-fill, which is the shape this whole section exists to
-prevent. A single-point group is legal; an absent group is not. Requirements:
+prevent. A single-point group is legal; an absent group is not.
+
+Choose groups with this decision procedure:
+
+1. First test whether Q1-Q10 together form one natural candidate-visible Form, Note, or Table.
+2. If they do, use one shared `item_form` and `form_group` across all ten points, even though their
+   evidence lies in two narrator windows.
+3. If they do not, split only where the candidate-visible record structure genuinely changes.
+
+Group count is content-driven and may be one, two, or three. There is no target distribution and no
+preference for two groups. The midpoint narrator cue is never, by itself, evidence of a structure
+change. Additional requirements:
 
 - at least one `form_group` containing 3 or more points, **all sharing the same `item_form`**,
   and that form must be `form` or `table` — a group of `note` points cannot become a table,
@@ -366,7 +377,8 @@ The `distractor` booleans must be a complete census, not merely selected example
 - [ ] Every point carries a non-empty `form_group`; one group holds 3+ points, all sharing
       `item_form` `form` or `table`.
 - [ ] Each group's item numbers are contiguous and its points are not interleaved with another
-      group's; groups follow natural printed structure rather than narrator-window boundaries.
+      group's; Q1-Q10 was first evaluated as one natural layout, and any split follows a genuine
+      printed-structure change rather than a narrator-window boundary.
 - [ ] Every `item_form` is `form`, `table` or `note` — no non-completion layouts.
 - [ ] `completion_layout_coverage` flattens to 1-10 exactly once and agrees with each `item_form`;
       the v1 name `question_type_coverage` is absent.

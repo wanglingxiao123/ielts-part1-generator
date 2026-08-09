@@ -449,6 +449,12 @@ def validate_layout_structure(key: str, group: dict, members: list, errors: list
         if missing:
             errors.append("table group %r declares no structure.%s; an unlabelled axis makes the "
                           "cell unanswerable" % (key, " and no structure.".join(missing)))
+        elif len(columns) != 1:
+            errors.append(
+                "table group %r declares %d content columns in structure.column_labels; the "
+                "current question package has no question-to-cell mapping, so generated tables "
+                "must declare exactly one content column" % (key, len(columns))
+            )
 
 
 def has_structural_context(number: int, questions: dict, groups: dict, members: dict) -> bool:

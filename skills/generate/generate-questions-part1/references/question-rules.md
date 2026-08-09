@@ -65,11 +65,13 @@ Cut the ten items, in number order, into consecutive candidate-visible groups:
 | 3 | A group's question numbers are contiguous. |
 | 4 | A group's items are contiguous **in the ordered evidence sequence** — no other group's point falls between two of yours. |
 
-**Group count is not pre-set.** Narrator windows are listening/read-ahead boundaries, not mandatory
-printed-layout boundaries. Do not split a continuous form, note or table merely because the narrator
-pauses between question ranges, and do not merge genuinely different structures merely to reduce
-the count. Each item's decisive evidence must still stay inside its own announced window, and the
-ten evidence points must still advance with the question numbers.
+**Group count is not pre-set or preferred.** Before creating any boundary, first test whether
+Q1-Q10 together form one natural candidate-visible Form, Note, or Table. If they do, use one group
+across both narrator windows. If they do not, split only where the visible record structure genuinely
+changes. One, two, or three groups are all valid outcomes; there is no quota or target distribution.
+Narrator windows are listening/read-ahead boundaries, not printed-layout boundaries, so the midpoint
+cue alone is never a reason to split. Each item's decisive evidence must still stay inside its own
+announced window, and the ten evidence points must still advance with the question numbers.
 
 **The script's own structure picks the layout — not a wish for variety.**
 
@@ -77,7 +79,7 @@ ten evidence points must still advance with the question numbers.
 |---|---|---|
 | **form** | The dialogue fills in a record field by field: name, date, number, selection. Each item is one labelled slot. | The items are a discussion rather than a record being filled in. |
 | **note** | The information is hierarchical or narrative: a topic with points under it, explanations, preferences talked through. This is the default when the material is not a record and has no comparison axis. | Nothing — note is the honest fallback. |
-| **table** | Both axes carry real meaning, and reading down each content column compares like with like. A two-column table can be valid when its row and column dimensions are genuine. | The headings are filler words (`Detail`, `Details`, `Notes`, `Information`, `Answer`), row and cell wording repeat one another, or unrelated facts have merely been placed behind borders. |
+| **table** | Both axes carry real meaning, and reading down the content column compares like with like. The current schema supports one row-header column plus exactly one content column. | The headings are filler words (`Detail`, `Details`, `Notes`, `Information`, `Answer`), row and cell wording repeat one another, unrelated facts have merely been placed behind borders, or multiple content columns are declared without question-to-cell coordinates. |
 
 A table is a **pseudo-table** when its printed axes do not organise or compare the information,
 regardless of the raw column count. Column count and generic headings are triage signals, not an
@@ -87,7 +89,8 @@ record being taken, then requirements being discussed. Alternating layout group 
 varied is forced mixing, and the auditor reports it.
 
 `structure.row_header_label` names the left column above `row_labels`. `column_labels` names only
-the content columns to its right. A two-column table therefore uses one of each:
+the content columns to its right. The current package has no question-to-cell mapping, so it can
+represent exactly one content column. A two-column table therefore uses one of each:
 
 ```json
 {

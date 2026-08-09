@@ -2074,7 +2074,7 @@ _QUESTION_GROUPS = (
      "6-7", "ONE WORD ONLY"),
     ("G5", 2, "table", None, [], {"row_header_label": "Category",
                                   "row_labels": ["Size", "Extra space", "Other"],
-                                  "column_labels": ["Requirement", "Notes"]},
+                                  "column_labels": ["Requirement"]},
      "8-10", "NO MORE THAN TWO WORDS"),
 )
 
@@ -2265,6 +2265,14 @@ def test_question_validator_catches_the_stage_defects() -> None:
     check("layouts are reported as the mix actually used",
           clean["metrics"].get("layouts") == ["form", "note", "table"],
           repr(clean["metrics"].get("layouts")))
+    reference_table = next(
+        group for group in _question_package()["question_face"]["groups"]
+        if group["group_id"] == "G5"
+    )
+    check("a table with one content column passes",
+          reference_table["structure"]["column_labels"] == ["Requirement"]
+          and clean["ok"] is True,
+          repr(reference_table["structure"]))
     spanning = _validate_questions(merge_note_group_across_windows)
     check("one natural note group may cover Q5-Q7 across the narrator midpoint",
           spanning["ok"] is True, repr(spanning["errors"])[:600])
@@ -2318,7 +2326,8 @@ def test_question_validator_catches_the_stage_defects() -> None:
         for group in package["question_face"]["groups"]:
             if group["group_id"] == "G5":
                 group["structure"] = {"row_labels": ["Size", "Rooms for guests", "Other"],
-                                      "column_labels": ["Requirement", "Notes"]}
+                                      "row_header_label": "Category",
+                                      "column_labels": ["Requirement"]}
 
     def drop_evidence(package: dict) -> None:
         package["evidence"].pop()
@@ -2368,6 +2377,11 @@ def test_question_validator_catches_the_stage_defects() -> None:
         for group in package["question_face"]["groups"]:
             if group["group_id"] == "G5":
                 group["structure"].pop("row_header_label")
+
+    def table_with_two_content_columns(package: dict) -> None:
+        for group in package["question_face"]["groups"]:
+            if group["group_id"] == "G5":
+                group["structure"]["column_labels"] = ["Regular lesson", "First lesson"]
 
     def no_signpost(package: dict) -> None:
         for group in package["question_face"]["groups"]:
@@ -2419,6 +2433,8 @@ def test_question_validator_catches_the_stage_defects() -> None:
         ("a note question assigned twice", note_with_duplicate_assignment, "exactly once"),
         ("a table with an unnamed row-label column", table_without_row_header, "row_header_label"),
         ("a table group with no column labels", table_without_columns, "column_labels"),
+        ("a table with two content columns but no cell mapping", table_with_two_content_columns,
+         "no question-to-cell mapping"),
         ("a window with no blank-free signpost", no_signpost, "signpost"),
         # A package that reports its own AL-018 failure.
         ("a self-reported alignment failure", self_reported_failure, "not_aligned"),

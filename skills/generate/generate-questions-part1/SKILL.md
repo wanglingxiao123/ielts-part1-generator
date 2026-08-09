@@ -61,7 +61,10 @@ Read nothing else. Everything you need is in this skill's own directory and in t
 1. Read the rules reference and the schema. Read the material's narration and note where it tells
    candidates which questions to look at: those are the question-number windows.
 
-2. **Cut the ten points into groups**, keeping the existing number order. The constraints are
+2. **Choose the candidate-visible groups**, keeping the existing number order. First test whether
+   all ten points form one natural Form, Note, or Table. If they do, use one group for Q1-Q10 even
+   though its evidence crosses the midpoint cue. Split only where the visible record structure
+   genuinely changes. The constraints are
    relational, and all of them are checked:
    - each group is homogeneous — one `layout`, declared once on the group;
    - narrator windows constrain each item's decisive evidence, not the printed layout boundary:
@@ -71,23 +74,26 @@ Read nothing else. Everything you need is in this skill's own directory and in t
      another group's in the evidence order;
    - all ten items belong to a group; no floating point.
 
-   Group **count is not pre-set**. Derive it from candidate-visible task and record structure, not
-   from the narrator split and not from a desire for variety. A package may use one continuous
-   layout or mix form, note and table as long as every group is itself homogeneous.
+   Group **count is not pre-set or preferred**. It may be one, two, or three, derived from the
+   candidate-visible task and record structure rather than the narrator split or a desire for
+   variety. A package may use one continuous layout or mix form, note and table as long as every
+   group is itself homogeneous.
 
    **The script's own structure picks each layout**, and it is the only thing that does:
    - **form** — the dialogue fills in a record field by field (name, date, number, selection);
    - **note** — hierarchical or narrative information: a topic with points under it, preferences
      talked through. This is the fallback when neither of the other two fits;
    - **table** — only where both axes carry real meaning and each column compares like with like down
-     its length. A two-column table can be valid; column count alone decides nothing. A filler heading
+     its length. Under the current schema, use exactly one content column because there is no
+     question-to-cell mapping. A filler heading
      such as `Detail` / `Notes` / `Information`, repeated row/cell wording, or unrelated facts placed
      behind borders are warning signs that the content is really a form or note. The auditor judges
      the printed structure as a whole.
 
      Name the left row-label column with `structure.row_header_label`; put only the content-column
-     headings to its right in `structure.column_labels`. For a two-column table, use one row-header
-     label and one content-column label, not two `column_labels` plus an empty corner.
+     headings to its right in `structure.column_labels`. Use one row-header label and exactly one
+     content-column label. Declaring two content columns is invalid until every question can identify
+     its cell.
 
    Do not alternate layouts to look varied. Mix them only where the script really changes mode.
 

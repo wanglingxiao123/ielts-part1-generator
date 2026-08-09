@@ -72,6 +72,10 @@ Read nothing else.
    or ten unrelated sentences that happen to validate (SC-015 / QR-026). You will need this reading
    again in step 6, and it is much harder to do honestly once you know the answers.
 
+   First test whether Q1-Q10 form one natural candidate-visible structure. Flag a boundary created
+   only at the narrator midpoint when the same record and layout continue on both sides. Do not
+   prefer one group mechanically: a real change in record structure still justifies a split.
+
    Four things are decidable here, from the page alone, before you know a single answer — take them
    now while the reading is still innocent (rules §2, dimensions 12–15):
    - **a label and its carrier naming the same field twice** — read the row exactly as printed:
@@ -81,9 +85,11 @@ Read nothing else.
      or scope limit such as `(day and month)`, but flag commentary on speaking, spelling or answering
      such as `(as spelt)` / `(as mentioned)` under naturalness. A labelled form field needs no
      carrier merely to stop the two carrier strings being empty;
-   - **a `table` with no real comparison axis** — judge both axes and whether each column compares
-     like with like. A two-column table can be valid; column count and filler headings such as
-     `Detail` / `Notes` / `Information` are warning signs, not verdicts (SC-015 / QR-026);
+   - **an unsupported or false `table`** — judge both axes and whether its content column compares
+     like with like. The current package supports one row-header column plus one content column;
+     more than one `column_labels` entry is a structural defect because no question-to-cell mapping
+     exists. Filler headings such as `Detail` / `Notes` / `Information` remain warning signs rather
+     than verdicts (SC-015 / QR-026);
    - **a navigation line that names nothing** — apply the transfer test: could it be copied unchanged
      onto a completely different Part 1 material? "Details are confirmed" can (QR-034);
    - **layouts alternating where the dialogue does not change mode** (SC-015).
