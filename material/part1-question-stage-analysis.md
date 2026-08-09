@@ -18,6 +18,11 @@
 > 其中**两处此前的结论被推翻**：「达上限交付一套带 findings 的题目」这个兜底出口已取消（§8.2）；
 > 「交付保障与 `batch.py` 现有 refill 同源」的判断是错的，`batch.py` 恰恰是反向设计（§8.1）。
 > 修正与定案清单见 §0。
+>
+> **第四轮产品澄清（2026-08-09，覆盖本文所有旧表述）**：SC-019/QR-022 的 narrator
+> 窗口是不可破坏的**逐题证据边界**，不是候选人页面的 Form/Note/Table 边界。Q1–5
+> 的决定性证据不得延后到第二窗口，Q6–10 的证据不得提前；但一个自然连续的页面题组
+> 可以覆盖两个窗口。题组数量继续不预设，不因窗口机械拆组，也不为减少组数合并不同结构。
 
 ---
 
@@ -28,7 +33,7 @@
 | # | 初版的错误 | 修正 | 落在本文档 |
 |---|---|---|---|
 | 1 | 把 `DETAIL_TYPES` 里的 `option` 当作选择题的兄弟项一并删除 | **`option` 必须保留。** 它是**信息点类别**，表示偏好、方案或选择结果（如某人最终选择的服务类型），这类信息完全可以成为 Form/Note/Table 的答案。删除的只有 `item_form` 与 `question_type_coverage` 里的 `multiple_choice` | §2.1, §2.3 |
-| 2 | 写成「每个 narrator window 对应一个题目结构」「整套 1–3 个结构」 | **两者都不是客户规则。** SC-019/QR-022/AL-017 只规定题组不跨 window、每题证据在所属 window 内、无拆分时可自由分组。**一个 window 内可以有多个连续题组**，题组总数不预设 | §1.3, §2.2(a), §5.1, §6.3 问题 2 |
+| 2 | 把 narrator window 与页面题组数量绑定，并写成「整套 1–3 个结构」 | **两者都不是客户规则。** SC-019/QR-022/AL-017 约束每题证据必须在所属 window；页面题组由自然任务和版式决定，可以跨 window，题组总数不预设 | §1.3, §2.2(a), §5.1, §6.3 问题 2 |
 | 3 | 写成题目阶段「从 blueprint 里选十个点并按 QR-027 预算重排」 | **必须用全部 10 个点，保持编号与证据顺序，不得删除、替换或重排。** 某点不适合出题 → 出题前检查发现 → 退回材料生成/重生成该 slot | §1.4, §5.1, §5.4 |
 | 4 | 把 AR-003 写成「canonical 必须等于 evidence 中的一个 token」 | **分档：**一词答案查完整 token 同形；多词答案查组成答案的完整词/短语确实来自决定性证据且满足词数限制；**不得要求多词答案等于一个 token**；连字符词按 AR-014 保持完整 | §5.3 检查 5 |
 | 5 | 「材料阶段 warning、题目阶段一律 error」 | QR-027 **明确允许 Script 缺替代证据时保留并记录理由**。改为 **feasibility preflight**：blueprint 增加真实的 `response_form`/`answer_category`（**按实际 target 判定，不能凭 `type` 推断**）→ 材料完成后、正式出题前预检 → 无合理例外且明显不满足则**阻止进入题目生成并重生成该 slot** → 有规则允许的理由则继续但记录。**同时必须保证「请求多少套就交付多少套」** | §2.2(b), §5.4 |
@@ -58,7 +63,7 @@
 | 定案 | 内容 | 取代了 | 落在本文档 |
 |---|---|---|---|
 | **preflight 三出口** | `PASS` / `PASS_WITH_JUSTIFICATION` / `REGENERATE_MATERIAL`。**`REGENERATE_MATERIAL` 不是最终交付失败，只是内部 slot 需要补位** | 我用的 `PASS_WITH_RATIONALE` / `BLOCK` 命名，以及「BLOCK = 一次 refill」的含糊表述 | §5.4 |
-| **题型与题组** | **顶层题型统一为 completion**，`layout ∈ {form, note, table}`。可只用一种也可混用两三种；组内 layout 一致；题号连续，且 ordered evidence points 中不插入其他 group；组不跨 narrator window；一个 window 可有多个 group | §6.3 问题 2 的「允许混用」建议；新增的是「顶层 completion / layout 三选」这一层次划分 | §1.3, §5.5, §6.3 |
+| **题型与题组** | **顶层题型统一为 completion**，`layout ∈ {form, note, table}`。可只用一种也可混用；组内 layout 一致、题号连续，且 ordered evidence points 中不插入其他 group。页面组可自然跨 narrator window，逐题证据不可跨 | §6.3 问题 2 的「允许混用」建议；第四轮进一步解耦页面组与证据窗口 | §1.3, §5.5, §6.3 |
 | **交付量语义** | 达到重试上限 → 放弃该 candidate、**创建 replacement slot**；只有收集到 N 套合格结果才能标记成功；**不得把少于 N 套标记为成功**；**不设「总尝试耗尽后少量交付」的正常出口**；接近 Runtime 生命周期上限时**存 checkpoint 由下次 invoke 继续**；基础设施永久故障时保持任务未完成或报告系统故障，**不得伪装成完整交付** | 我在 §5.4/§6.3 问题 9 写的「达上限交付一套带 findings 的题目」——**该出口被明确取消** | §8 |
 | **题目循环触发与择优** | validator error / 盲审 CRITICAL·MAJOR / 答案无法重建·不唯一·不一致 / 证据·window·命题不一致 → 修题；仅 MINOR·INFO → 原则保留原题。交叉检查**严格门槛：10/10 独立重建 + 答案·证据·顺序·window·命题全过**，任一关键不一致即非 clean。择优字典序：**硬校验通过 → 交叉检查通过题数 → CRITICAL/MAJOR 数 → MINOR 数 → 其他指标**；硬校验失败者不得因综合分高而胜出 | §6.3 问题 5 的「三项待定义」 | §8.3 |
 | **Runtime 时限事实修正** | **AgentCore 没有「单次 invocation 15 分钟硬上限」。** 官方语义只有 `idleRuntimeSessionTimeout=900`（空闲回收 microVM）与 `maxLifetime=28800`（单 microVM 8h），且 Session 可在新 microVM 上继续。`deploy/runtime.sh` 的配置正确；900s 是**项目自设**的业务/网络限制 | 本文档 §6.2 的旧拆分理由，以及全仓库 40+ 处把 900s 当作平台硬限的叙述（`README.md`:975、`batch.py`:3–8/119–134、`web/fanout.py`:98–99 等） | §7 |
@@ -100,7 +105,7 @@ Part 1 只生成三种题型：**Form completion / Note completion / Table compl
 |---|---|---|---|
 | 1 | 每套 10 题，题号与录音证据顺序一致 | 是 | SC-003/006, QR-004, AL-003 |
 | 2 | 十题构成自然的 Form/Note/Table，不是十个割裂句子 | 部分（结构可查，"自然"要 Agent） | SC-015, QR-026 |
-| 3 | 题组不得跨 narrator 题号窗口；每题决定性证据落在所属 window 内 | 是 | SC-019, QR-022, AL-017 |
+| 3 | 每题决定性证据落在所属 narrator window 内；页面题组可以自然跨窗口 | 是（证据归属）；页面结构由 Agent 审核 | SC-019, QR-022, AL-017 |
 | 3b | `[第三轮]` 组内 layout 一致；组内题号连续，且对应 ordered evidence points 中不得插入其他 group 的考点；一个 window 可含多个 group | 是 | SC-019, QR-022（见 §5.5） |
 | 4 | blank 覆盖前/中/末，句末 blank 原则上 ≤7/10 | 是 | QR-026 |
 | 5 | 纯数字/时间/金额答案默认 ≤4/10；有客户规则允许的明确理由时可例外 | 是（默认门槛，可例外） | QR-027 |
@@ -256,7 +261,7 @@ schema 为准。`backend/docs/sample/blueprint.json` 同属实况样例，处置
 
 正确设计见 §5.4：**材料生成完成后、正式出题前的 feasibility preflight**。
 
-**(c) narrator 窗口目前只被当作"split 校验"，没被当作结构边界。** `validate_part1.py`:465 用 `FIRST_RANGE_RE`/`SECOND_RANGE_RE` 解析 narrator 的题号范围，只用来校验 `blueprint.split_after` 一致。SC-019/QR-022/AL-017 要求它是**不可破坏的结构边界**：题组不得跨窗口、每题决定性证据和标签必须落在本窗口内。窗口解析逻辑可复用，但要提升为题目阶段的一等约束，并从 blueprint 传递到 question package（新增 `narrator_window_id`）。
+**(c) narrator 窗口必须成为逐题证据边界。** `validate_part1.py`:465 用 `FIRST_RANGE_RE`/`SECOND_RANGE_RE` 解析 narrator 的题号范围。SC-019/QR-022/AL-017 要求每题决定性证据和标签位于本窗口；它不限制页面题组边界。窗口解析逻辑可复用，并通过 item/evidence 的 `narrator_window_id` 交叉校验。
 
 **(d) `[修订]` `cross_check.py` 不能直接复用，容差也不能原样移植。** 它比对的是 `blueprint.items` ↔ `audit.blind_information_map`（信息点是否可复原）。题目阶段要比对的是**审核方独立重建的答案** ↔ **生成方的 answer key + evidence**，语义不同，所以要新建 `cross_check_questions.py` 而不是改这个文件。
 
@@ -503,7 +508,7 @@ QR-008 的主体针对选项和 matching（`compatible_options_without_audio` �
 |---|---|---|
 | **答案文本**（重建答案 vs canonical，归一化后） | **严格匹配，无容差** | 答案对不对不存在"差一点" |
 | **事实命题**（AL-018：主体/对象/地点/时间/关系是否同一命题） | **严格匹配，无容差** | 命题错位就是 AL-018 失败，与 turn 距离无关 |
-| **narrator window 归属** | **严格匹配，无容差** | SC-019 称之为「不可破坏的结构边界」；跨窗口即 AL-017 失败 |
+| **narrator window 归属** | **严格匹配，无容差** | SC-019 将其定义为逐题证据边界；证据跨窗口即 AL-017 失败 |
 | **evidence quote 是否真实存在于声明的 turn** | **严格，无容差** | 复用 `anchor_ok`；quote 不在那个 turn 里就是 AL-007 失败 |
 | **turn_index 位置**（重建锚点 vs 声明锚点） | **有条件 ±1** | 仅当满足下面全部三个前提 |
 
@@ -549,10 +554,11 @@ QR-008 的主体针对选项和 matching（`compatible_options_without_audio` �
 
 **工作流**：
 
-1. **解析 narrator 窗口** → 得到 1..n 个不可破坏的题号窗口（无拆分时视为单一窗口，题组边界可依证据结构自由设定）。
+1. **解析 narrator 窗口** → 得到 1..n 个不可破坏的逐题证据窗口；页面题组边界独立按自然任务与版式结构设定。
 2. `[修订]` **划分题组**：把 10 个点按**已有的题号顺序**切成若干连续题组，每组分配一个结构（Form / Note / Table）。约束是关系式的：
    - 每组内部结构**同质**；
-   - 每组**完整落在单一 window 内**，不跨窗口、不合并窗口（SC-019 / QR-022）；
+   - 页面组可在自然结构连续时跨 window；每题决定性证据必须留在自己的 window
+     （SC-019 / QR-022 / AL-017）；
    - 组内题号**连续**，十题**全部有归属**，无游离点；
    - **题组数量不预设**——一个 window 内可以有多个连续题组；一套内允许 Form/Note/Table **混用**，只要每组自身同质。
 3. `[修订]` **使用全部 10 个 blueprint 点，保持编号与证据顺序**。不删除、不替换、不重排（§1.4）。QR-027 的答案形式配比**已在 §5.4 的 preflight 中确认可行**——题目阶段不通过挑点来满足它，而是通过**为既定的点选择恰当的作答形式与 carrier 写法**来满足。若走到这一步才发现不可行，说明 preflight 漏判，应退回材料阶段（不改 Script，SR-021）。
@@ -586,13 +592,13 @@ QR-008 的主体针对选项和 matching（`compatible_options_without_audio` �
 | # | 检查 | 规则 |
 |---|---|---|
 | 1 | 题数 = 10；题号 1–10 唯一连续 | SC-003 |
-| 2 | task_type ∈ {form, note, table}；**组内 structure 同质；组完整落在单一 window 内；组内题号连续；十题全部有题组归属。不校验题组总数，也不校验每 window 的题组数** `[修订]` | SC-007/015/019, QR-001, QR-022 |
+| 2 | task_type ∈ {form, note, table}；**组内 structure 同质；组内题号连续；十题全部有题组归属；页面组可自然跨 window。不校验题组总数，也不按 window 推导题组数** `[第四轮]` | SC-007/015/019, QR-001, QR-022 |
 | 3 | answer_key 每题存在、非空、非 TBD/空串/审稿注释 | AR-013 |
 | 4 | word_limit 声明存在，且 canonical 满足（按词数基线：连字符 1 词整 token、数字计入允许数量、空格分词、斜杠不算一个答案、报告须写明所用计数规则） | AR-002, QR-017 |
 | 5 | **`[修订]` AR-003 分档校验**（详见下方） | AR-003, AR-014 |
 | 6 | evidence.turn_index 指向的 turn 文本确实含 quote（复用 `anchor_ok`） | AL-007 |
 | 7 | evidence 顺序单调不倒退 | QR-004, AL-003 |
-| 8 | narrator 窗口解析（复用 `FIRST_RANGE_RE`/`SECOND_RANGE_RE`）→ 每题证据落在本题号窗口内；题组不跨窗口 | SC-019, QR-022, AL-017 |
+| 8 | narrator 窗口解析（复用 `FIRST_RANGE_RE`/`SECOND_RANGE_RE`）→ 每题证据落在本题号窗口内；页面题组可自然跨窗口 | SC-019, QR-022, AL-017 |
 | 9 | blank 位置分类（沿用 QR-025 的实义词判据：前部 = blank 前 ≤1 实义词且后有内容；末尾 = blank 后无实义词且前有内容；其余为中部）→ 三类覆盖 + 句末 ≤7 | QR-026 |
 | 10 | 纯数值答案 ≤4；拼写型（≥2 字母，排除单字母与通用缩写）≥4 | QR-027 |
 | 11 | 同一 answer_category <3 | QR-027 |
@@ -806,10 +812,10 @@ question_type = completion          ← 顶层，Part 1 只有这一种
 | 2 | 组内 `layout` 一致 | 不变（`validate_part1.py`:158–163 已有同质检查） |
 | 3 | 组的**题号连续** | 不变 |
 | 4 | 组内 item 在十个 ordered evidence points 中连续，不得插入其他 group 的考点 | 明确“连续”是考点序列连续，不是 turn 距离硬阈值 |
-| 5 | 组不跨 narrator window；一个 window 可含多个 group | 不变 |
+| 5 | 页面组可自然跨 narrator window；逐题证据仍不可跨 | 第四轮产品澄清 |
 | — | 所有 group 完整覆盖 Q1–Q10 | 不变（`question_type_coverage` 已有等价检查） |
 
-**约束 4 不需要 turn-span 阈值。** 题号连续、全局 evidence 严格递增、group 不跨 window 后，
+**约束 4 不需要 turn-span 阈值。** 题号连续、全局 evidence 严格递增后，
 “ordered evidence points 中不插入其他 group”可以确定性判断。`MAX_GROUP_SPAN = 14` 没有客户规则依据，
 继续保留为 advisory warning；题组是否因跨度过大而显得不自然，由材料审核 Agent 判断，不升级为 Python error。
 
@@ -832,7 +838,7 @@ question_type = completion          ← 顶层，Part 1 只有这一种
 |---|---|---|---|
 | **0** | **时限叙述修正 + read timeout / hard limit 方案定案**（§7），含一次长 invoke 实测 | 一次 >900s 的 invoke 能正常返回 | 中。**必须最先做**：后面每一步的时间预算都建立在它上面 |
 | **1** | **删 multiple choice**：validator 5 处 + schema 3 处 + SKILL 1 处 + spec 5 处 + 审核侧 2 处 + 测试 fixtures + 前端 6 文件。**`option` 不动**（§2.3） | `run_tests.py` + 一次真实材料生成 | 低。纯收窄，且删的是一条 error |
-| **2** | **Blueprint v2 合同与题组关系化**（§5.5）：`form_group` 必填；新增 `response_form` / `answer_category` / `narrator_window_id`；`MIN_GROUPED_ITEMS` 改为完整覆盖、组内同质、考点序列连续、不跨 window；`MAX_GROUP_SPAN` 保持 warning | v1/v2 兼容单测 + v2 fixtures | 中。新生成严格写 v2，历史 v1 兼容读取 |
+| **2** | **Blueprint v2 合同与题组关系化**（§5.5）：`form_group` 必填；新增 `response_form` / `answer_category` / `narrator_window_id`；`MIN_GROUPED_ITEMS` 改为完整覆盖、组内同质、考点序列连续；逐题 evidence 严格按 window；`MAX_GROUP_SPAN` 保持 warning | v1/v2 兼容单测 + v2 fixtures | 中。新生成严格写 v2，历史 v1 兼容读取 |
 | **3A** | `[2026-08-06 已完成]` **可行性预检聚合器 `question_feasibility_preflight.py`**（§5.4）：组合 Python 结构/统计结果与语义可行性结论；输出 `PASS` / `PASS_WITH_JUSTIFICATION` / `REGENERATE_MATERIAL`，另有三个「判不了」状态（见 §5.4 的 2026-08-06 补注）。语义结论本阶段只定契约与注入点 | 离线单测（+249 checks，九个套件）+ 二十轮变异测试（每轮均致死） | 中。确定性部分可离线测，语义结论不能伪装成纯 Python 推导 |
 | **3B** | `[2026-08-06 新增]` **非盲可行性审核 Agent + Skill + Schema + 编排接入**：真实产出 `feasibility` 语义结论。盲审守卫（`assert_blind` / `BLUEPRINT_ONLY_KEYS`）一字不动，不复用 `build_audit_payload` | 真实材料端到端跑通，且材料盲审行为逐字不变 | 中偏高。主要风险是这个 Agent 属于哪个 skill 池——放 `audit` 池会破坏「audit 池不含 plan schema」并直接撞上 ci_gates gate 1 |
 | **4** | **槽位持久化 `_slots/` + 两级尝试上限 + checkpoint**（§8.1–8.2）。这一步决定「必须交付 N 套」能不能成立 | 单测：耗尽上限 → 建 replacement slot；杀掉进程 → 下次 invoke 从 checkpoint 续 | **高。本方案最实质的结构改动**，且与 `batch.py` 现有三处「少交付优于 504」直接冲突 |
@@ -870,7 +876,7 @@ question_type = completion          ← 顶层，Part 1 只有这一种
 | 原问题 | 定案 | 展开 |
 |---|---|---|
 | 1 preflight 出口 | `PASS` / `PASS_WITH_JUSTIFICATION` / `REGENERATE_MATERIAL`；后者是内部补位不是交付失败 | §5.4 |
-| 2 题型与题组 | 顶层 completion + layout 三选可混用；组内 layout 一致、题号连续、ordered evidence points 中不插入其他 group、不跨 window、一 window 可多组 | §5.5 |
+| 2 题型与题组 | 顶层 completion + layout 三选可混用；组内 layout 一致、题号连续、ordered evidence points 中不插入其他 group；页面组可自然跨 window，逐题 evidence 不可跨 | §5.5 |
 | 5 题目循环 | 修题触发条件、10/10 严格交叉检查门槛、五级字典序择优 | §8.3 |
 | 9 refill 上限 | 换 candidate → replacement slot → checkpoint 续跑；**取消「少量交付」出口** | §8.1, §8.2 |
 

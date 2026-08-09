@@ -130,12 +130,8 @@ def find_anchor(turns: list[dict], phrase: str) -> int:
 # Ordered by first occurrence in the script; the narration split falls between items 5 and 6.
 #
 # v2 grouping. Every item belongs to a group, groups are homogeneous, their item numbers are
-# contiguous, they are not interleaved in the evidence sequence, and none crosses the narrator
-# window (split_after=5, so window 1 is Q1-5 and window 2 is Q6-10). The three note points cannot
-# form ONE group for that last reason: Q5 sits in window 1 and Q6/Q7 in window 2, so they split
-# into C and D. Turning Q5 into a `form` and folding it into A was the alternative, and it was
-# rejected -- A's turn span would become 4..20 = 16, over MAX_GROUP_SPAN, so the fixture that is
-# supposed to be the valid example would start emitting a span warning.
+# contiguous, and they are not interleaved in the evidence sequence. Narrator windows constrain
+# each item's evidence but do not force a printed-group split.
 #
 # `answer_category` classifies the nature of the ANSWER, not the wording of the sentence:
 #   - BT14 9BJ is a postcode, i.e. a locator, so `location` rather than `contact`.
@@ -407,7 +403,8 @@ def main() -> None:
     # interruption. See design.md D10.
     variant("blueprint_bad_group_split.json",
             lambda bp: bp["items"][1].update(form_group="E"))
-    # Group constraint 5: group D would hold Q5 (window 1) and Q6/Q7 (window 2).
+    # Positive cross-window case: group D holds Q5 (window 1) and Q6/Q7 (window 2).
+    # The legacy filename is retained because tests and archived references already point to it.
     variant("blueprint_bad_group_window.json",
             lambda bp: bp["items"][4].update(form_group="D"))
 

@@ -76,7 +76,9 @@ Part 1 是四部分中**难度最低**的一段，考查在**日常/社会生活
    > "That is the end of section one / Part 1. You now have half a minute / one minute to check your answers. Now turn to section two."
    >
 
-**分组要求**：10 题分两组（如 1–5 / 6–10 或 1–6 / 7–10）；对话切分点清晰，前后段各自完整覆盖对应题组。
+**录音窗口要求**：10 题的证据分布在两个旁白窗口（如 1–5 / 6–10 或 1–6 / 7–10）；
+对话切分点清晰，前后段各自完整覆盖对应题号。该切分控制答案证据出现的时机，不强制
+候选人页面上的 Form/Note/Table 在同一点拆成两个题组。
 
 **篇幅与对话量要求**（基于 20 套实测）：
 

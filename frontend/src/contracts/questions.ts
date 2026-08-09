@@ -10,7 +10,7 @@
  *
  * TWO LAYERS, and which field sits on which is load-bearing. Part 1 has exactly one question_type (completion); form / note / table are its LAYOUTS. `instruction_text`, `word_limit` and `numeral_allowance` belong to the completion layer and are therefore properties of an `instructions` entry, identical in kind across all three layouts. `title`, table row/column labels and note hierarchy belong to the layout layer and are therefore properties of a `groups` entry. Putting them on the wrong layer is how a table group acquires a note-style title structure.
  *
- * `layout` is declared ONCE, on the group. An `instructions` entry deliberately does NOT restate it: two authorities for one fact disagree eventually, and the group is the layer that owns it. Homogeneity within a group is then true by construction rather than by check -- which is why validate_questions_part1.py spends its group checks on the four constraints JSON Schema cannot express (contiguous question numbers, contiguity in the ordered evidence sequence, containment in one narrator window, and every question belonging to a declared group).
+ * `layout` is declared ONCE, on the group. An `instructions` entry deliberately does NOT restate it: two authorities for one fact disagree eventually, and the group is the layer that owns it. Homogeneity within a group is then true by construction rather than by check. The validator checks membership, contiguous question numbers and contiguity in the ordered evidence sequence. Narrator windows remain strict for each item's evidence, but they are listening/read-ahead boundaries rather than mandatory printed-layout boundaries.
  *
  * RECORDED CONSEQUENCE, so the next reader does not discover it at runtime: question_face.questions[] carries `answer_category` and `response_form`, and both strings are in backend/deterministic/guards.py's BLUEPRINT_ONLY_KEYS. A question face therefore CANNOT be passed through `assert_blind`, which exists to keep the generator's plan away from the MATERIAL auditor. The question audit needs its own guard over its own ANSWER_ONLY_KEYS (canonical / alternatives / quote / turn_index / blueprint); loosening BLUEPRINT_ONLY_KEYS to make the existing guard accept a question face would silently reopen the material-audit leak it was built for.
  *
@@ -69,7 +69,7 @@ export interface IELTSListeningPart1QuestionPackage {
           Instruction
         ]
     /**
-     * The layout layer. Group count is never pre-set: it follows the script's own evidence structure, one window may hold several groups, and a set may mix form / note / table as long as each group is itself homogeneous.
+     * The layout layer. Group count is never pre-set: it follows the candidate-visible task and natural record structure. A continuous layout may cross a narrator read-ahead window; a real change of layout or information structure may create another group. A set may mix form / note / table as long as each group is itself homogeneous.
      *
      * @minItems 1
      * @maxItems 10
@@ -156,9 +156,9 @@ export interface Instruction {
 export interface Group {
   group_id: string
   /**
-   * Which narrator question-number window this whole group sits in (SC-019). Recomputed from the parsed narration and the group's question numbers, then compared -- reading it back as "is it 1 or 2" would hand window attribution to the model's own say-so, which is the one thing this field exists to prevent.
+   * Legacy compatibility field for a group wholly inside one narrator window. New groups spanning both windows omit it because no single value is truthful. Item and evidence window fields remain mandatory and are independently recomputed.
    */
-  narrator_window_id: 1 | 2
+  narrator_window_id?: 1 | 2
   /**
    * Part 1 delivers completion only; these are its three layouts. Declared here and nowhere else.
    */
@@ -168,7 +168,7 @@ export interface Group {
    */
   title?: string
   /**
-   * Blank-free, specific, script-grounded navigation lines. QR-026 asks for at least one per narrator window, which is checked across the groups in that window rather than per group -- a window whose every line carries a blank gives the candidate nothing to locate against.
+   * Blank-free, specific, script-grounded navigation lines. QR-026 asks for at least one per narrator window. A group spanning multiple windows lists at least one line for each covered window in window order; one line is not counted for both.
    */
   signposts: string[]
   /**
@@ -212,7 +212,7 @@ export interface Question {
   number: number
   group_id: string
   /**
-   * Printed text before the blank. Both carriers may be empty when form/table labels already provide candidate-visible structural context; an unlabelled isolated blank remains invalid (QR-026).
+   * Printed text before the blank. It may be empty together with carrier_after when a form row label, or a table's real row and column labels, already supplies candidate-visible structural context. With no such labels, an isolated blank is invalid (QR-026).
    */
   carrier_before: string
   /**
@@ -283,7 +283,7 @@ export interface EvidenceEntry {
    */
   quote: string
   /**
-   * Checked three ways for agreement: against the window computed from the question number, against the window the declared turn actually falls in, and against the blueprint item. Crossing a window is AL-017 / SC-019 failure, and it has no tolerance -- the narration is where candidates are told to stop reading one group and start the next.
+   * Checked three ways for agreement: against the window computed from the question number, against the window the declared turn actually falls in, and against the blueprint item. Crossing a window is AL-017 / SC-019 failure, and it has no tolerance -- the narration is where candidates are told to stop answering one announced range and move to the next.
    */
   narrator_window_id: 1 | 2
   /**

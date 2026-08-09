@@ -85,7 +85,7 @@ def _tally(values: List[Any]) -> Dict[str, int]:
     return dict(sorted(counts.items()))
 
 
-def _groups(face: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _groups(face: Dict[str, Any], membership: Optional[Dict[str, int]] = None) -> List[Dict[str, Any]]:
     """One row per group: its shape and how much of the page it prints.
 
     Label and signpost counts rather than the labels themselves -- the auditor already has every
@@ -104,11 +104,21 @@ def _groups(face: Dict[str, Any]) -> List[Dict[str, Any]]:
     rows = []
     for group in groups:
         structure = group.get("structure") if isinstance(group.get("structure"), dict) else {}
+        question_numbers = sorted(members.get(group.get("group_id"), []))
+        occupied_windows = sorted({
+            membership[str(number)] for number in question_numbers
+            if membership is not None and str(number) in membership
+        })
+        if not occupied_windows and group.get("narrator_window_id") in {1, 2}:
+            occupied_windows = [group["narrator_window_id"]]
         rows.append({
             "group_id": group.get("group_id"),
             "layout": group.get("layout"),
+            # `window` is retained for old single-window consumers. `windows` is authoritative for
+            # candidate-visible groups, which may naturally continue across the midpoint cue.
             "window": group.get("narrator_window_id"),
-            "question_numbers": sorted(members.get(group.get("group_id"), [])),
+            "windows": occupied_windows,
+            "question_numbers": question_numbers,
             "word_limit": limit_of.get(group.get("group_id")),
             "has_title": bool(str(group.get("title") or "").strip()),
             "signposts": len([value for value in group.get("signposts") or []
@@ -155,11 +165,13 @@ def question_metrics(material: Dict[str, Any], question_face: Dict[str, Any]) ->
     questions = [item for item in face.get("questions") or [] if isinstance(item, dict)]
     numbers = _numbers(questions)
 
+    windows = _windows(validator, material if isinstance(material, dict) else {}, numbers)
+    membership = windows.get("membership") if windows is not None else None
     metrics: Dict[str, Any] = {
         "item_count": len(questions),
         "question_numbers": sorted(numbers),
         "blank_positions": _blank_positions(validator, questions),
-        "groups": _groups(face),
+        "groups": _groups(face, membership),
         # Both tallies are over face fields, so they describe the printed page rather than the answers.
         # See the module docstring: the validator's QR-027 counts split on the canonicals and are
         # deliberately not reused, and the spelling-burden tally has no face-side equivalent at all.
@@ -168,7 +180,6 @@ def question_metrics(material: Dict[str, Any], question_face: Dict[str, Any]) ->
     }
     metrics["final_blanks"] = metrics["blank_positions"].get("final", 0)
 
-    windows = _windows(validator, material if isinstance(material, dict) else {}, numbers)
     if windows is not None:
         metrics["narrator_windows"] = windows
     return metrics

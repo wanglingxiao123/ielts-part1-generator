@@ -100,7 +100,7 @@ export interface Item {
    */
   item_form: 'form' | 'table' | 'note' | 'multiple_choice'
   /**
-   * Points sharing a form_group combine into one table/form question. Nullable HERE because null is real v1 data meaning a standalone gap-fill; the v2 branch above and blueprint.schema.json both narrow it to a non-empty string. At least one group of >=3 points is required so the material can actually support a table or form question. v2 adds four more relational constraints, checked in validate_part1.py because JSON Schema cannot express them: contiguous item numbers, contiguity in the ordered evidence sequence, and no group spanning a narrator window.
+   * Points sharing a form_group combine into one printed form/note/table layout. Nullable HERE because null is real v1 data meaning a standalone gap-fill; the v2 branch above and blueprint.schema.json both narrow it to a non-empty string. At least one group of >=3 points is required so the material can actually support a table or form question. v2 also requires contiguous item numbers and contiguity in the ordered evidence sequence. Narrator windows constrain each item's evidence, not the printed layout boundary.
    */
   form_group: string | null
   /**
@@ -125,7 +125,7 @@ export interface Item {
     | 'preference'
     | 'document'
   /**
-   * v2 required (optional here only so v1 records validate; the v2 branch above requires it). Which narrator window this item falls in (SC-019). Its ONLY purpose is cross-checking: validate_part1.py reparses the narrator's stated ranges and recomputes the window from the item number, then compares. Implementing this as 'read the field, check it is 1 or 2' would hand window attribution back to the model's own say-so and make the field worthless. Redundant with group by construction; both are kept so the declaration can be contradicted and caught.
+   * v2 required (optional here only so v1 records validate; the v2 branch above requires it). Which narrator window this item's decisive evidence falls in. Its ONLY purpose is cross-checking: validate_part1.py reparses the narrator's stated ranges and recomputes the window from the item number, then compares. Implementing this as 'read the field, check it is 1 or 2' would hand window attribution back to the model's own say-so and make the field worthless.
    */
   narrator_window_id?: 1 | 2
   /**

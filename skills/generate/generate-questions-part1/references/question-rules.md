@@ -54,9 +54,9 @@ different points — it is done by choosing the right response form and carrier 
 you have. If a point genuinely cannot carry a reliable item, the preflight missed it, and the only
 compliant remedy is a new material. Report it and stop; do not improvise around it.
 
-## 3. Groups: The Five Constraints
+## 3. Groups: Printed Structure and Evidence Windows
 
-Cut the ten items, in number order, into consecutive groups. All five are checked deterministically:
+Cut the ten items, in number order, into consecutive candidate-visible groups:
 
 | # | Constraint |
 |---|---|
@@ -64,10 +64,12 @@ Cut the ten items, in number order, into consecutive groups. All five are checke
 | 2 | Each group is homogeneous — one `layout`, declared on the group. |
 | 3 | A group's question numbers are contiguous. |
 | 4 | A group's items are contiguous **in the ordered evidence sequence** — no other group's point falls between two of yours. |
-| 5 | A group sits entirely inside one narrator question-number window. It may not straddle or merge windows (SC-019 / QR-022). |
 
-**Group count is not pre-set.** One window may hold several consecutive groups, and one package may
-mix form, note and table as long as each group is itself homogeneous.
+**Group count is not pre-set.** Narrator windows are listening/read-ahead boundaries, not mandatory
+printed-layout boundaries. Do not split a continuous form, note or table merely because the narrator
+pauses between question ranges, and do not merge genuinely different structures merely to reduce
+the count. Each item's decisive evidence must still stay inside its own announced window, and the
+ten evidence points must still advance with the question numbers.
 
 **The script's own structure picks the layout — not a wish for variety.**
 
@@ -98,10 +100,9 @@ the content columns to its right. A two-column table therefore uses one of each:
 Do not put `Volunteer topic` into `column_labels`; that declares an empty corner plus two content
 columns even though each row supplies only one content value.
 
-Constraint 4 needs no turn-distance threshold. Once numbers are contiguous, evidence strictly
-increases and no group crosses a window, "no other group's point in between" is decidable as it
-stands. Whether a group's span *feels* too wide is a judgment for the question auditor, not an error
-here.
+Constraint 4 needs no turn-distance threshold. Once numbers are contiguous and evidence strictly
+increases, "no other group's point in between" is decidable as it stands. Whether a group's span
+*feels* too wide is a judgment for the question auditor, not an error here.
 
 ## 4. Carriers, Blanks and Blank Position
 
@@ -229,8 +230,10 @@ then a detached list of questions; each heading is rendered immediately above th
 
 **Signposts.** `signposts` is internal navigation and audit metadata. It helps reviewers connect a
 group to the recording, but it is not prose to print on the candidate paper. Every **narrator
-window** needs at least one blank-free, specific, script-grounded navigation line (QR-026). Counted
-per window, not per group: a one-item group inside a well-signposted window needs no line of its own.
+window** needs at least one blank-free, specific, script-grounded navigation line (QR-026). The
+validator derives the windows from the group's member questions rather than a group-level scalar;
+a continuous group spanning the midpoint lists at least one line for each covered window, in window
+order. One line is never counted for both windows.
 
 A signpost must name **what is being talked about** at that point in the recording. Generalised
 meta-discourse about the questions themselves is not a signpost and is a finding:

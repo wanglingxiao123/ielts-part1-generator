@@ -914,7 +914,7 @@ def test_target_must_fit_some_rubric() -> None:
 
 
 def test_group_constraints_are_distinguishable() -> None:
-    """Five constraints, five distinct messages. Asserting text, not returncode.
+    """Four printed-group constraints, plus a positive cross-window layout case.
 
     A single error covering all five would let this test pass while four of them were broken, which
     is how stage 1's grouping test managed to be vacuous. Note constraints 3 and 4 are asserted on
@@ -933,24 +933,26 @@ def test_group_constraints_are_distinguishable() -> None:
          "covers non-contiguous item numbers [1, 3, 4]"),
         ("4. a group must not be interrupted in the evidence sequence",
          "blueprint_bad_group_split.json", "are interrupted in the evidence sequence"),
-        ("5. a group must not cross a narrator window", "blueprint_bad_group_window.json",
-         "spans narrator windows [1, 2]"),
     ):
         result = validate(fixture)
         check(f"rejected: {label}", result.returncode == 1 and expected in result.stdout,
               result.stdout)
 
-    # The five messages must actually differ. Reusing one message for two constraints would make
+    crossing = validate("blueprint_bad_group_window.json")
+    check("a continuous blueprint group may cross the narrator evidence-window boundary",
+          crossing.returncode == 0, crossing.stdout)
+
+    # The four messages must actually differ. Reusing one message for two constraints would make
     # the assertions above pass while telling a reviewer nothing about which property broke.
     messages = set()
     for fixture in ("blueprint_bad_group_missing.json", "blueprint_bad_group_mixed.json",
-                    "blueprint_bad_group_split.json", "blueprint_bad_group_window.json"):
+                    "blueprint_bad_group_split.json"):
         for line in validate(fixture).stdout.splitlines():
             if line.startswith("ERROR:") and ("form_group" in line or "narrator windows" in line
                                               or "evidence sequence" in line):
                 messages.add(line.split("ERROR: ")[1][:40])
-    check("the group constraints report at least five distinct messages",
-          len(messages) >= 5, f"got {len(messages)}: {sorted(messages)}")
+    check("the group constraints report at least four distinct messages",
+          len(messages) >= 4, f"got {len(messages)}: {sorted(messages)}")
 
 
 def test_item_labels_are_zero_based_indices() -> None:
@@ -2229,6 +2231,30 @@ def test_question_validator_catches_the_stage_defects() -> None:
     supposed to fire stayed silent -- which is how a rule ends up never having worked.
     """
     print("question validator")
+
+    def merge_note_group_across_windows(package: dict) -> None:
+        face = package["question_face"]
+        g3 = next(group for group in face["groups"] if group["group_id"] == "G3")
+        g4 = next(group for group in face["groups"] if group["group_id"] == "G4")
+        g3.pop("narrator_window_id")
+        g3["title"] = "Family and property requirements"
+        g3["signposts"] = [
+            "The caller gives the minimum age for the child.",
+            *g4["signposts"],
+        ]
+        g3["structure"]["note_sections"].append({
+            "heading": "Location and lifestyle", "question_numbers": [6, 7]})
+        face["groups"] = [group for group in face["groups"] if group["group_id"] != "G4"]
+        for question in face["questions"]:
+            if question["number"] in (6, 7):
+                question["group_id"] = "G3"
+        instruction = next(row for row in face["instructions"] if row["group_id"] == "G3")
+        instruction["question_range"] = "5-7"
+        face["instructions"] = [row for row in face["instructions"] if row["group_id"] != "G4"]
+        for answer in package["answer_key"]:
+            if answer["number"] in (6, 7):
+                answer["word_limit"] = "NO MORE THAN TWO WORDS"
+
     clean = _validate_questions()
     check("the reference package passes clean", clean["ok"] is True,
           repr(clean["errors"])[:600])
@@ -2239,6 +2265,22 @@ def test_question_validator_catches_the_stage_defects() -> None:
     check("layouts are reported as the mix actually used",
           clean["metrics"].get("layouts") == ["form", "note", "table"],
           repr(clean["metrics"].get("layouts")))
+    spanning = _validate_questions(merge_note_group_across_windows)
+    check("one natural note group may cover Q5-Q7 across the narrator midpoint",
+          spanning["ok"] is True, repr(spanning["errors"])[:600])
+
+    def spanning_group_with_one_signpost(package: dict) -> None:
+        merge_note_group_across_windows(package)
+        face = package["question_face"]
+        group = next(row for row in face["groups"] if row["group_id"] == "G3")
+        group["signposts"] = group["signposts"][:1]
+
+    under_signposted = _validate_questions(spanning_group_with_one_signpost)
+    check("one signpost cannot satisfy both windows of a spanning group",
+          under_signposted["ok"] is False
+          and any("one specific line per covered window" in error
+                  for error in under_signposted["errors"]),
+          repr(under_signposted["errors"])[:600])
 
     def replace_point(package: dict) -> None:
         package["answer_key"][5]["canonical"] = "playground"
@@ -2246,8 +2288,9 @@ def test_question_validator_catches_the_stage_defects() -> None:
     def reorder_evidence(package: dict) -> None:
         package["evidence"][5]["turn_index"] = 3
 
-    def cross_window(package: dict) -> None:
-        package["question_face"]["questions"][5]["group_id"] = "G3"
+    def move_evidence_to_previous_window(package: dict) -> None:
+        package["evidence"][5]["turn_index"] = 20
+        package["evidence"][5]["quote"] = "He is still in primary school."
 
     def loosen_limit(package: dict) -> None:
         for instruction in package["question_face"]["instructions"]:
@@ -2356,9 +2399,11 @@ def test_question_validator_catches_the_stage_defects() -> None:
         # §1.4: the ten points are given input.
         ("a point replaced by a better-sounding one", replace_point, "may not be replaced"),
         ("a point's category relabelled", relabel_category, "answer_category"),
-        # §5.5 constraints 4 and 5.
+        # Printed-group evidence continuity.
         ("a group interrupted in the evidence sequence", reorder_evidence, "interrupted"),
-        ("a group straddling the narrator windows", cross_window, "spans narrator windows"),
+        # SC-019 remains a strict per-item evidence boundary even though printed groups may cross it.
+        ("Q6 evidence moved into the Q1-Q5 window", move_evidence_to_previous_window,
+         "outside window 2"),
         # §6.4 #3: strictest fitting rubric, per group.
         ("a rubric looser than the group's answers need", loosen_limit, "stricter"),
         # QR-040, both the exact word and an inflection.

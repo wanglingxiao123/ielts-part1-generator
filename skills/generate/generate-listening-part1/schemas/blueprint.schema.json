@@ -30,7 +30,7 @@
               "form_group": {
                 "type": "string",
                 "minLength": 1,
-                "description": "v2: a non-empty string on EVERY item. null was v1's way of saying 'standalone gap-fill'; v2 makes every point declare which question it belongs to, and validate_part1.py adds the relational constraints JSON Schema cannot express (contiguous item numbers, contiguity in the ordered evidence sequence, no group spanning a narrator window)."
+                "description": "v2: a non-empty string on EVERY item. null was v1's way of saying 'standalone gap-fill'; v2 makes every point declare which printed layout it belongs to, and validate_part1.py adds the relational constraints JSON Schema cannot express (contiguous item numbers and contiguity in the ordered evidence sequence). A continuous layout may cross a narrator window; each item's evidence window remains strict."
               },
               "item_form": {
                 "enum": [

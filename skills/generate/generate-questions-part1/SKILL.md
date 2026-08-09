@@ -64,14 +64,16 @@ Read nothing else. Everything you need is in this skill's own directory and in t
 2. **Cut the ten points into groups**, keeping the existing number order. The constraints are
    relational, and all of them are checked:
    - each group is homogeneous — one `layout`, declared once on the group;
-   - each group sits **entirely inside one window**; it may not straddle or merge windows
-     (SC-019 / QR-022);
+   - narrator windows constrain each item's decisive evidence, not the printed layout boundary:
+     a natural continuous group may span a window cue, but Q1-5 evidence must remain in the first
+     window and Q6-10 evidence in the second (SC-019 / QR-022 as clarified);
    - group question numbers are contiguous, and a group's points must not be interleaved with
      another group's in the evidence order;
    - all ten items belong to a group; no floating point.
 
-   Group **count is not pre-set**: one window may hold several consecutive groups, and one package
-   may mix form, note and table as long as each group is itself homogeneous.
+   Group **count is not pre-set**. Derive it from candidate-visible task and record structure, not
+   from the narrator split and not from a desire for variety. A package may use one continuous
+   layout or mix form, note and table as long as every group is itself homogeneous.
 
    **The script's own structure picks each layout**, and it is the only thing that does:
    - **form** — the dialogue fills in a record field by field (name, date, number, selection);
@@ -186,10 +188,11 @@ Read nothing else. Everything you need is in this skill's own directory and in t
      until further attempts stop making progress — a package the validator still complains about is
      delivered with those complaints attached, so a stuck loop is worse than an honest report.
    - Warnings are advice, not blockers. Do not restructure a compliant package to clear one.
-   - Recomputed fields are the usual first failures: `blank_position`, `response_form`,
-     `narrator_window_id` and `numeral_allowance` are all re-derived and compared, so when one is
-     reported, change the declaration to the computed value rather than arguing with it — or change
-     the carrier, if the computed value is the one you did not want.
+   - Recomputed item/evidence fields are the usual first failures: `blank_position`,
+     `response_form`, `narrator_window_id` and `numeral_allowance` are all re-derived and compared,
+     so when one is reported, change the declaration to the computed value rather than arguing with
+     it — or change the carrier, if the computed value is the one you did not want. A group spanning
+     both windows omits the legacy group-level `narrator_window_id`.
 
 9. After the validator is clean, reread the whole question face **without** the answer key beside it
    and ask the question a candidate would: can each blank be filled from the recording, and can any
@@ -217,8 +220,10 @@ an artifact that was never delivered.
   contract than the one the caller reads, and the reply is rejected.
 - Keep the three blocks separate. No answer, alternative, quote or turn index anywhere inside
   `question_face`; no carrier text inside `answer_key`.
-- Declare `blank_position`, `response_form`, `narrator_window_id` and `numeral_allowance` honestly.
-  They are recomputed, so a convenient value is reported rather than believed.
+- Declare item/evidence `blank_position`, `response_form`, `narrator_window_id` and
+  `numeral_allowance` honestly. They are recomputed, so a convenient value is reported rather than
+  believed. Omit the optional group-level `narrator_window_id` when that printed group spans both
+  windows.
 - Do not expose hidden chain-of-thought. The evidence fields are the reasoning that gets delivered.
 - Do not claim official IELTS or Cambridge approval, and do not reproduce proprietary question
   papers.

@@ -323,11 +323,12 @@ def validate_blueprint_fidelity(numbers: list, questions: dict, answers: dict, i
 
 def validate_groups(numbers: list, questions: dict, groups: dict, instructions: dict,
                     evidence: dict, first_end: int, errors: list) -> dict:
-    """§5.5's five group constraints, minus homogeneity -- which the schema makes structural.
+    """Validate printed group structure, minus homogeneity -- which the schema makes structural.
 
     `layout` is declared once, on the group, so "every item in a group shares a layout" cannot be
     false. What remains is what JSON Schema cannot express: membership, contiguous numbering,
-    contiguity in the ordered evidence sequence, and containment in one narrator window.
+    and contiguity in the ordered evidence sequence. Narrator windows constrain item evidence, not
+    the boundaries of a candidate-visible form, note or table.
     """
     members: dict = {}
     for number in numbers:
@@ -358,15 +359,16 @@ def validate_groups(numbers: list, questions: dict, groups: dict, instructions: 
         if present != list(range(present[0], present[0] + len(present))):
             errors.append("group %r covers non-contiguous question numbers %s; one printed "
                           "form/note/table has to hold consecutive items" % (key, present))
-        # Constraint 5, plus the declaration it is compared against.
+        # `narrator_window_id` is a legacy group-level declaration. It can describe a single-window
+        # group, but a continuous layout spanning both windows has no truthful scalar value.
         if first_end:
             computed = sorted({window_of(number, first_end) for number in present})
-            if len(computed) > 1:
-                errors.append("group %r spans narrator windows %s (questions %s, narration splits "
-                              "at 1-%d/%d-10); a group cannot straddle the point where candidates "
-                              "are told to move on" % (key, computed, present, first_end,
-                                                       first_end + 1))
-            elif group.get("narrator_window_id") != computed[0]:
+            declared_window = group.get("narrator_window_id")
+            if len(computed) > 1 and declared_window is not None:
+                errors.append("group %r spans narrator windows %s, so legacy group-level "
+                              "narrator_window_id must be omitted; each item's evidence retains its "
+                              "own strict window" % (key, computed))
+            elif len(computed) == 1 and declared_window is not None and declared_window != computed[0]:
                 errors.append("group %r declares narrator_window_id %r but its questions %s fall "
                               "in window %d" % (key, group.get("narrator_window_id"), present,
                                                 computed[0]))
@@ -787,7 +789,7 @@ def validate_leakage(members: dict, questions: dict, answers: dict, groups: dict
                                 % (number, canonical, key, hits))
 
 
-def validate_signposts(groups: dict, members: dict, errors: list) -> None:
+def validate_signposts(groups: dict, members: dict, first_end: int, errors: list) -> None:
     """QR-026: each narrator window needs at least one blank-free, script-grounded signpost.
 
     Counted per WINDOW rather than per group, because that is what the rule says and because a
@@ -798,9 +800,19 @@ def validate_signposts(groups: dict, members: dict, errors: list) -> None:
         group = groups.get(key)
         if not isinstance(group, dict):
             continue
-        window = group.get("narrator_window_id")
         signposts = [norm(value) for value in (group.get("signposts") or [])]
-        by_window.setdefault(window, []).extend(value for value in signposts if value)
+        signposts = [value for value in signposts if value]
+        windows = ({window_of(number, first_end) for number in members[key]}
+                   if first_end else {group.get("narrator_window_id")})
+        ordered_windows = sorted(windows, key=str)
+        if len(ordered_windows) > 1 and len(signposts) < len(ordered_windows):
+            errors.append("group %r spans narrator windows %s but has only %d blank-free "
+                          "signpost(s); provide at least one specific line per covered window"
+                          % (key, ordered_windows, len(signposts)))
+        for index, window in enumerate(ordered_windows):
+            # Spanning groups list one or more lines per covered window in window order.
+            allocated = signposts[index:index + 1] if len(ordered_windows) > 1 else signposts
+            by_window.setdefault(window, []).extend(allocated)
     for window in sorted(by_window, key=str):
         if not by_window[window]:
             errors.append("narrator window %r carries no blank-free signpost; QR-026 asks for at "
@@ -853,7 +865,7 @@ def main() -> int:
                           errors)
     metrics.update(validate_variety(numbers, questions, answers, errors))
     validate_leakage(members, questions, answers, groups, errors, warnings)
-    validate_signposts(groups, members, errors)
+    validate_signposts(groups, members, first_end, errors)
     return report(errors, warnings, metrics, args.json)
 
 

@@ -54,8 +54,9 @@ Read nothing else.
 
 1. **Read the narration and mark the two question-number windows.**
    The narration is in the script for exactly this reason. Every item's evidence must lie inside its
-   own window (SC-019 / AL-017), and a group may not straddle windows. Note where each window opens
-   and closes before you look at a single item.
+   own window (SC-019 / AL-017). A candidate-visible group may continue across the midpoint cue, so
+   audit evidence placement independently from printed layout boundaries. Note where each window
+   opens and closes before you look at a single item.
 
 2. **Take the counts as given. You do not run this step, and you cannot.**
    The request already carries the item count, printed numbering, gap-position classes, gap-final

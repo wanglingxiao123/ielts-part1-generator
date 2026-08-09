@@ -16,7 +16,8 @@
 - Use exactly two dialogue participants plus the exam narrator.
 - Make the exchange genuinely two-way. Usually the enquirer asks and chooses while the provider supplies organized factual details.
 - State that the recording is heard `once only`.
-- Internally design approximately ten testable details in two groups, although no questions or answers appear in the output.
+- Internally design ten testable details across the two narrator evidence windows, although no
+  questions or answers appear in the output. These audio windows do not predetermine printed groups.
 - Use original content only.
 
 ## 2. Script Architecture
@@ -107,9 +108,9 @@ prevent. A single-point group is legal; an absent group is not. Requirements:
 - a group's points must be **contiguous in the ordered evidence sequence** — no other group's point
   may fall between them. Since evidence positions strictly increase, this means one group's points
   are heard together rather than interleaved with another's;
-- a group **must not cross the narrator window boundary**. Candidates read questions 1-N during the
-  first pause and the rest during the second, so a group split across the boundary is a question
-  whose halves are read at different times. One window may hold several groups;
+- narrator windows constrain **when each point's evidence is heard**, not the boundary of the
+  candidate-visible layout. Do not split one continuous form/note/table merely at the midpoint cue,
+  and do not merge genuinely different structures merely to reduce the group count;
 - points in one `form_group` should sit reasonably close together; a group spanning most of the
   script forces candidates to hold answers across half the recording. This one is reported as
   advice rather than enforced, since the spec sets no span limit.
@@ -299,9 +300,9 @@ Three fields are required on every item in v2:
   `quantity`, because `two-bedroom` is a specification. Where two values both look defensible, the
   ordered procedure below decides; it is not a list of hints to weigh but a sequence, and the first
   rule that fires ends the decision.
-- **`narrator_window_id`** — `1` or `2`, which narrator window the item falls in. Redundant with
-  `group` by construction, and deliberately so: the window is recomputed from the narration and
-  compared against this declaration, so a wrong value is caught rather than believed.
+- **`narrator_window_id`** — `1` or `2`, which narrator window the item's decisive evidence falls
+  in. The window is recomputed from the narration and compared against this declaration, so a wrong
+  value is caught rather than believed. It is independent of the printed `form_group`.
 
 #### Deciding `answer_category`
 
@@ -364,8 +365,8 @@ The `distractor` booleans must be a complete census, not merely selected example
 - [ ] Every `turn_index` points at the turn that actually carries its evidence.
 - [ ] Every point carries a non-empty `form_group`; one group holds 3+ points, all sharing
       `item_form` `form` or `table`.
-- [ ] Each group's item numbers are contiguous, its points are not interleaved with another
-      group's, and no group crosses the narrator window boundary.
+- [ ] Each group's item numbers are contiguous and its points are not interleaved with another
+      group's; groups follow natural printed structure rather than narrator-window boundaries.
 - [ ] Every `item_form` is `form`, `table` or `note` — no non-completion layouts.
 - [ ] `completion_layout_coverage` flattens to 1-10 exactly once and agrees with each `item_form`;
       the v1 name `question_type_coverage` is absent.

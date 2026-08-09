@@ -73,6 +73,33 @@ describe('题目预览的真实版式', () => {
     expect(table.querySelector('thead')).not.toBeNull()
   })
 
+  it('审核信息按成员证据显示跨窗口题组，不渲染 undefined', async () => {
+    const spanning = structuredClone(pkg)
+    const first = spanning.question_face.groups[0]!
+    first.narrator_window_id = undefined
+    for (const question of spanning.question_face.questions) {
+      question.group_id = first.group_id
+    }
+    spanning.question_face.groups = [first]
+    spanning.question_face.instructions = [
+      {
+        ...spanning.question_face.instructions[0]!,
+        question_range: '1-10',
+      },
+    ]
+
+    render(
+      <QuestionPreviewPanel
+        pkg={spanning}
+        blueprint={BASE_BLUEPRINT}
+        view={view}
+      />,
+    )
+    await userEvent.click(toggle())
+    expect(document.querySelector('.qp-audit')?.textContent).toContain('旁白窗口 1–2')
+    expect(document.querySelector('.qp-audit')?.textContent).not.toContain('undefined')
+  })
+
   /**
    * 行标签与空前文重复时**照印**，不再合成一格。
    *

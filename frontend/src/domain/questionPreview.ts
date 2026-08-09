@@ -67,6 +67,8 @@ export interface PreviewGroup {
   group: QuestionGroup
   instruction: QuestionInstruction | null
   questions: PreviewQuestion[]
+  /** Derived from member evidence; unlike the legacy group scalar, this can truthfully be [1, 2]. */
+  narratorWindows: Array<1 | 2>
 }
 
 export interface QuestionPreview {
@@ -126,15 +128,29 @@ export function buildQuestionPreview(
     .map(build)
   const byNumber = new Map(questions.map((q) => [q.number, q]))
 
-  const groups: PreviewGroup[] = (face.groups ?? []).map((group) => ({
-    group,
-    instruction: instructionOf.get(group.group_id) ?? null,
-    questions: (face.questions ?? [])
+  const groups: PreviewGroup[] = (face.groups ?? []).map((group) => {
+    const groupQuestions = (face.questions ?? [])
       .filter((item) => item.group_id === group.group_id)
       .sort((a, b) => a.number - b.number)
       .map((item) => byNumber.get(item.number)!)
-      .filter(Boolean),
-  }))
+      .filter(Boolean)
+    const narratorWindows = [
+      ...new Set(
+        groupQuestions
+          .map((question) => byNumberEvidence.get(question.number)?.narrator_window_id)
+          .filter((window): window is 1 | 2 => window === 1 || window === 2),
+      ),
+    ].sort()
+    if (narratorWindows.length === 0 && group.narrator_window_id) {
+      narratorWindows.push(group.narrator_window_id)
+    }
+    return {
+      group,
+      instruction: instructionOf.get(group.group_id) ?? null,
+      questions: groupQuestions,
+      narratorWindows,
+    }
+  })
 
   return {
     groups,

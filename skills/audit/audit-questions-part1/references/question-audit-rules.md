@@ -200,7 +200,7 @@ Severity is by real impact, never by how much work the fix is (severity.md 2).
 | Two equally supported answers | MAJOR |
 | No script evidence for a gap at all | MAJOR; CRITICAL if it runs through the set |
 | Candidate-visible text exposes an answer | MAJOR for one item; CRITICAL when systematic |
-| Structure broken — group not one real form/note/table, evidence outside its window | MAJOR |
+| Structure broken — group not one real form/note/table, or item evidence outside its own window | MAJOR |
 | A `table` with no real comparison axis (pseudo-table) | MINOR; MAJOR when the false structure leaves a cell unanswerable or dominates the whole page |
 | Label and carrier printing the same field twice | MINOR; MAJOR when the duplication is every row of the group |
 | A signpost that names nothing (generalised metadiscourse) | MINOR; MAJOR when no window has a real one, since the set then has no navigation at all |

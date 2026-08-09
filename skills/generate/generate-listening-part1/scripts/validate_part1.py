@@ -379,12 +379,12 @@ def qr027_metrics(items: list[dict]) -> dict:
 
 
 def validate_group_relations(items: list[dict], groups: dict, first_end: int, errors: list[str]) -> None:
-    """v2 constraints 3, 4 and 5 (§5.5). One distinct message each, by design -- see AC5.
+    """Validate v2 group continuity without treating narrator windows as page boundaries.
 
     Constraint 4 needs no turn-span threshold of its own: once item numbers are contiguous, the ten
-    evidence turns are strictly increasing (already an error elsewhere) and no group crosses a
-    window, "the group's points are not interleaved with another group's" is decidable from the
-    ordered sequence alone.
+    evidence turns are strictly increasing (already an error elsewhere), so "the group's points are
+    not interleaved with another group's" is decidable from the ordered sequence alone. Narrator
+    windows still constrain each item's evidence, but do not split a continuous printed layout.
     """
     for (form, group), numbers in sorted(groups.items(), key=lambda kv: str(kv[0])):
         present = sorted(n for n in numbers if isinstance(n, int))
@@ -394,15 +394,6 @@ def validate_group_relations(items: list[dict], groups: dict, first_end: int, er
                 f"form_group {group!r} ({form}) covers non-contiguous item numbers {present}; "
                 "one question's rows have to be consecutive items"
             )
-        # Constraint 5.
-        windows = sorted({window_of(n, first_end) for n in present})
-        if len(windows) > 1:
-            errors.append(
-                f"form_group {group!r} ({form}) spans narrator windows {windows} (items {present}, "
-                f"narration splits at 1-{first_end}/{first_end + 1}-10); one question cannot "
-                "straddle the point where candidates are told to move on"
-            )
-
     # Constraint 4: walk the items in evidence order and check each group occupies one unbroken run.
     ordered = [item for item in items if isinstance(item.get("turn_index"), int)]
     ordered.sort(key=lambda item: item["turn_index"])

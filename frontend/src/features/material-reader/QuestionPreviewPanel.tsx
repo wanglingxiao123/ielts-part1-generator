@@ -134,7 +134,9 @@ function GroupBlock({
         <div className="qp-audit">
           <span className="qp-audit-tag">审核信息</span>
           <span className="flag flag-neutral">{LAYOUT_LABEL[group.group.layout]}</span>
-          <span className="muted">旁白窗口 {group.group.narrator_window_id}</span>
+          <span className="muted">
+            旁白窗口 {group.narratorWindows.length > 0 ? group.narratorWindows.join('–') : '未标注'}
+          </span>
           <span className="mono muted">{group.group.group_id}</span>
           {group.group.signposts.map((line, i) => (
             <span className="muted" key={`${line}-${i}`}>

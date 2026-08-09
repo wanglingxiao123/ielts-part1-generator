@@ -259,6 +259,23 @@ class TestTheQuestionMetricsAreFaceOnly:
             question["blank_position"] = "initial"
         assert question_metrics(material, tampered)["blank_positions"] == before
 
+    def test_a_printed_group_reports_both_windows_from_its_question_numbers(
+            self, material, question_face, clone):
+        """A page group can span the midpoint while each question keeps its evidence window."""
+        spanning = clone(question_face)
+        group_id = spanning["groups"][0]["group_id"]
+        spanning["groups"] = [spanning["groups"][0]]
+        spanning["groups"][0].pop("narrator_window_id", None)
+        spanning["instructions"] = [
+            instruction for instruction in spanning["instructions"]
+            if instruction["group_id"] == group_id]
+        for question in spanning["questions"]:
+            question["group_id"] = group_id
+
+        group_metrics = question_metrics(material, spanning)["groups"]
+        assert group_metrics[0]["window"] is None
+        assert group_metrics[0]["windows"] == [1, 2]
+
     def test_an_unparseable_narration_omits_the_windows_rather_than_guessing(self, material,
                                                                             question_face, clone):
         """A missing key beats a plausible wrong one.
