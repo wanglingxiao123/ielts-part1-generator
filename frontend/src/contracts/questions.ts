@@ -5,6 +5,14 @@
  * Source: skills/generate/generate-questions-part1/schemas/question_package.schema.json
  * Regenerate: npm run contracts:gen
  */
+export type TableCell =
+  | {
+      text: string
+    }
+  | {
+      question_number: number
+    }
+
 /**
  * The ten Part 1 completion items written for one already-finalised material, in THREE PHYSICALLY SEPARATED BLOCKS: question_face (candidate-visible, and the only block a question auditor may ever receive), answer_key (never to an auditor), evidence (never to an auditor). The separation is structural, not tidiness: a single object holding all three is eventually passed whole, and a blind audit that has seen the answer key produces a score that is merely too high -- there is no error and nothing in the delivered artifact to notice.
  *
@@ -172,15 +180,21 @@ export interface Group {
    */
   signposts: string[]
   /**
-   * The layout layer's own labels, and the reason `title` cannot serve for all three. Which key is required depends on `layout`, checked in the validator rather than here so the message can name the layout: form and table need row labels, table also needs column labels, and note needs note_sections with explicit question membership. Missing labels are a content-accessibility failure (QR-015), not a visual-polish one -- a table whose columns are unlabelled cannot be answered, whereas its border style can be fixed after content review.
+   * The layout layer's own labels. Which key is required depends on `layout`, checked in the validator so errors can name the layout: form needs row labels, new tables need column labels plus an explicit rectangular table_rows matrix, and notes need note_sections. Legacy table labels remain readable for archived packages but are not valid new output.
    */
   structure: {
     /**
-     * Table only: the heading above the row-label column, rendered in the top-left cell. `column_labels` names only the content columns to its right.
+     * Legacy Table only: the heading above the archived row-label column. New generated Tables put every printed heading in column_labels and use table_rows.
      */
     row_header_label?: string
     row_labels?: string[]
     column_labels?: string[]
+    /**
+     * Table only: candidate-visible rows in printed order. Every cell is either fixed text or one question reference. The validator requires rectangular rows and an exact, ordered cover of the table group's questions.
+     *
+     * @minItems 1
+     */
+    table_rows?: [TableRow, ...TableRow[]]
     /**
      * Legacy note headings in printed order. Kept readable for archived packages; new note groups must use note_sections so headings cannot be detached from their questions.
      */
@@ -207,6 +221,12 @@ export interface Group {
       }[]
     ]
   }
+}
+export interface TableRow {
+  /**
+   * @minItems 1
+   */
+  cells: [TableCell, ...TableCell[]]
 }
 export interface Question {
   number: number

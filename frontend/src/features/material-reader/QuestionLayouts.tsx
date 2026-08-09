@@ -14,9 +14,9 @@
  * **二、结构标签只按声明画，不补。** `structure` 里哪些键存在取决于 layout，由后端校验器判定；
  * 这里缺了就少画一列，不编一个占位标签——一个前端造出来的行标签会被当成后端的产物去复核。
  *
- * **三、题目与结构节点的对应关系，包里没有。** table 只声明行标签与列标签，note 只声明层级顺序，
- * 都没有「第 8 题在哪个单元格」。所以下面按顺序对齐，并且 table 的题面横跨内容列而不是挑一列
- * 放进去——挑一列就是在替后端断言一件它没说的事。
+ * **三、结构归属只按包里的坐标。** 新 table 用 `table_rows[].cells[]` 明确每道题所在单元格；
+ * note 用 `note_sections[].question_numbers` 明确标题归属。历史 table 没有坐标时才走旧的一题一行
+ * 兜底，前端不猜题目属于哪一列。
  */
 import type { PreviewGroup, PreviewQuestion } from '@/domain/questionPreview'
 
@@ -208,10 +208,7 @@ function NoteLayout({
 }
 
 /**
- * table：列标签作表头，行标签作首列。
- *
- * 表头左上角留空——那一格在真实试卷上就是空的，列标签只管内容列。题面横跨全部内容列，因为包里
- * 没有单元格坐标（见文件顶部第三条）。
+ * table：新包按二维单元格矩阵渲染；历史包保留旧的一题一行布局。
  */
 function TableLayout({
   group,
@@ -223,6 +220,57 @@ function TableLayout({
   const rowHeader = group.group.structure.row_header_label
   const rows = group.group.structure.row_labels ?? []
   const cols = group.group.structure.column_labels ?? []
+  const tableRows = group.group.structure.table_rows
+  const byNumber = new Map(group.questions.map((question) => [question.number, question]))
+
+  if (tableRows && tableRows.length > 0) {
+    return (
+      <table className="qp-table">
+        <thead>
+          <tr>
+            {cols.map((col, i) => (
+              <th key={`${col}-${i}`}>{col}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {tableRows.map((row, rowIndex) => (
+            <tr key={`row-${rowIndex}`}>
+              {row.cells.map((cell, cellIndex) => {
+                if ('text' in cell) {
+                  return <td key={`cell-${cellIndex}`}>{cell.text}</td>
+                }
+                const question = byNumber.get(cell.question_number)
+                if (!question) {
+                  return <td key={`cell-${cellIndex}`} className="muted">—</td>
+                }
+                return (
+                  <td
+                    key={`q-${question.number}`}
+                    className={questionClass(question, interaction)}
+                    data-question={question.number}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => interaction.onSelectQuestion?.(question.number)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        interaction.onSelectQuestion?.(question.number)
+                      }
+                    }}
+                  >
+                    <FaceLine q={question} />
+                    <QuestionCount q={question} interaction={interaction} />
+                  </td>
+                )
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    )
+  }
+
   const span = Math.max(1, cols.length)
   return (
     <table className="qp-table">

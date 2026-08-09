@@ -84,16 +84,17 @@ Read nothing else. Everything you need is in this skill's own directory and in t
    - **note** — hierarchical or narrative information: a topic with points under it, preferences
      talked through. This is the fallback when neither of the other two fits;
    - **table** — only where both axes carry real meaning and each column compares like with like down
-     its length. Under the current schema, use exactly one content column because there is no
-     question-to-cell mapping. A filler heading
+     its length. A filler heading
      such as `Detail` / `Notes` / `Information`, repeated row/cell wording, or unrelated facts placed
      behind borders are warning signs that the content is really a form or note. The auditor judges
      the printed structure as a whole.
 
-     Name the left row-label column with `structure.row_header_label`; put only the content-column
-     headings to its right in `structure.column_labels`. Use one row-header label and exactly one
-     content-column label. Declaring two content columns is invalid until every question can identify
-     its cell.
+     Put every printed heading, including the first column, in `structure.column_labels`. Then write
+     a rectangular `structure.table_rows` matrix with exactly that many cells per row. A cell is
+     either `{"text": "candidate-visible fixed text"}` or
+     `{"question_number": 6}`; never both. Every member question appears in exactly one cell, and
+     flattened question references follow ascending printed order. Multiple blanks may share a row.
+     `row_header_label` / `row_labels` are legacy read fields and are invalid for new Table output.
 
    Do not alternate layouts to look varied. Mix them only where the script really changes mode.
 

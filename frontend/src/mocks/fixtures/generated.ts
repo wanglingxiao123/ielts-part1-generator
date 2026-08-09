@@ -1081,15 +1081,41 @@ export const QUESTION_PACKAGE_VALID: QuestionPackage = {
         "layout": "table",
         "signposts": [],
         "structure": {
-          "row_header_label": "Category",
-          "row_labels": [
-            "Size",
-            "Extra space",
-            "Other"
-          ],
           "column_labels": [
-            "Requirement",
-            "Notes"
+            "Category",
+            "Requirement"
+          ],
+          "table_rows": [
+            {
+              "cells": [
+                {
+                  "text": "Size"
+                },
+                {
+                  "question_number": 8
+                }
+              ]
+            },
+            {
+              "cells": [
+                {
+                  "text": "Extra space"
+                },
+                {
+                  "question_number": 9
+                }
+              ]
+            },
+            {
+              "cells": [
+                {
+                  "text": "Other"
+                },
+                {
+                  "question_number": 10
+                }
+              ]
+            }
           ]
         }
       }

@@ -412,6 +412,7 @@ def validate_layout_structure(key: str, group: dict, members: list, errors: list
     row_header = structure.get("row_header_label")
     rows = structure.get("row_labels")
     columns = structure.get("column_labels")
+    table_rows = structure.get("table_rows")
     hierarchy = structure.get("hierarchy")
     note_sections = structure.get("note_sections")
     if layout == "note":
@@ -438,23 +439,46 @@ def validate_layout_structure(key: str, group: dict, members: list, errors: list
             errors.append("form group %r declares no structure.row_labels; a form's labels are "
                           "what tell the candidate which detail goes where" % key)
     elif layout == "table":
-        missing = []
-        if not norm(row_header):
-            missing.append("row_header_label")
-        missing.extend(
-            name
-            for name, value in (("row_labels", rows), ("column_labels", columns))
-            if not isinstance(value, list) or not value
-        )
-        if missing:
-            errors.append("table group %r declares no structure.%s; an unlabelled axis makes the "
-                          "cell unanswerable" % (key, " and no structure.".join(missing)))
-        elif len(columns) != 1:
-            errors.append(
-                "table group %r declares %d content columns in structure.column_labels; the "
-                "current question package has no question-to-cell mapping, so generated tables "
-                "must declare exactly one content column" % (key, len(columns))
-            )
+        if not isinstance(columns, list) or not columns:
+            errors.append("table group %r declares no structure.column_labels; an unlabelled axis "
+                          "makes the cells unanswerable" % key)
+        if not isinstance(table_rows, list) or not table_rows:
+            errors.append("table group %r declares no structure.table_rows; new tables require "
+                          "explicit question-to-cell coordinates (legacy row_labels are read-only)"
+                          % key)
+            return
+        width = len(columns) if isinstance(columns, list) else 0
+        references = []
+        for row_index, row in enumerate(table_rows, start=1):
+            cells = row.get("cells") if isinstance(row, dict) else None
+            if not isinstance(cells, list):
+                errors.append("table group %r row %d has no cells array" % (key, row_index))
+                continue
+            if len(cells) != width:
+                errors.append("table group %r row %d has %d cells but declares %d columns; table "
+                              "rows must be rectangular"
+                              % (key, row_index, len(cells), width))
+            for cell_index, cell in enumerate(cells, start=1):
+                if not isinstance(cell, dict):
+                    errors.append("table group %r row %d cell %d must be an object containing "
+                                  "exactly one of text or question_number"
+                                  % (key, row_index, cell_index))
+                    continue
+                keys = set(cell)
+                if keys == {"text"} and isinstance(cell["text"], str) and norm(cell["text"]):
+                    continue
+                number = cell.get("question_number")
+                if keys == {"question_number"} and isinstance(number, int) \
+                        and not isinstance(number, bool):
+                    references.append(number)
+                    continue
+                errors.append("table group %r row %d cell %d must contain exactly one non-empty "
+                              "text string or one integer question_number (booleans are invalid)"
+                              % (key, row_index, cell_index))
+        if references != members:
+            errors.append("table group %r table_rows reference questions %s, but the group contains "
+                          "%s; every member must appear exactly once in ascending printed order"
+                          % (key, references, members))
 
 
 def has_structural_context(number: int, questions: dict, groups: dict, members: dict) -> bool:
@@ -476,11 +500,18 @@ def has_structural_context(number: int, questions: dict, groups: dict, members: 
         return bool(norm(row_label))
     if group.get("layout") == "table":
         columns = structure.get("column_labels")
-        return bool(
-            norm(row_label)
-            and isinstance(columns, list)
-            and any(norm(column) for column in columns)
+        table_rows = structure.get("table_rows")
+        referenced = any(
+            isinstance(cell, dict)
+            and isinstance(cell.get("question_number"), int)
+            and not isinstance(cell.get("question_number"), bool)
+            and cell.get("question_number") == number
+            for row in (table_rows or [])
+            if isinstance(row, dict)
+            for cell in (row.get("cells") or [])
         )
+        return bool(referenced and isinstance(columns, list)
+                    and any(norm(column) for column in columns))
     return False
 
 
@@ -763,6 +794,13 @@ def validate_leakage(members: dict, questions: dict, answers: dict, groups: dict
         visible.append(str(structure.get("row_header_label") or ""))
         for name in ("row_labels", "column_labels", "hierarchy"):
             visible += [str(value) for value in (structure.get(name) or [])]
+        for row in (structure.get("table_rows") or []):
+            if isinstance(row, dict):
+                visible += [
+                    str(cell.get("text") or "")
+                    for cell in (row.get("cells") or [])
+                    if isinstance(cell, dict) and "text" in cell
+                ]
         for section in (structure.get("note_sections") or []):
             if isinstance(section, dict):
                 visible.append(str(section.get("heading") or ""))

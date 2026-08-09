@@ -155,13 +155,41 @@ describe('题目预览的真实版式', () => {
     expect(document.querySelectorAll('.qp-note .qp-blank')).toHaveLength(3)
   })
 
-  it('table 的行标题列和内容列都有明确表头', () => {
+  it('table 按矩阵渲染完整列标题和固定文字单元格', () => {
     renderPanel()
     const table = document.querySelector('.qp-table')!
     const headers = [...table.querySelectorAll('thead th')].map((n) => n.textContent)
-    expect(headers).toEqual(['Category', 'Requirement', 'Notes'])
-    const rowHeads = [...table.querySelectorAll('tbody th')].map((n) => n.textContent)
-    expect(rowHeads).toEqual(['Size', 'Extra space', 'Other'])
+    expect(headers).toEqual(['Category', 'Requirement'])
+    const firstCells = [...table.querySelectorAll('tbody tr:first-child td')].map(
+      (node) => node.textContent,
+    )
+    expect(firstCells[0]).toBe('Size')
+    expect(table.querySelector('[data-question="8"]')).not.toBeNull()
+  })
+
+  it('历史 table 没有单元格矩阵时仍按旧结构渲染', () => {
+    const legacy = structuredClone(pkg)
+    const tableGroup = legacy.question_face.groups.find((group) => group.group_id === 'G5')!
+    delete tableGroup.structure.table_rows
+    tableGroup.structure.row_header_label = 'Category'
+    tableGroup.structure.row_labels = ['Size', 'Extra space', 'Other']
+    tableGroup.structure.column_labels = ['Requirement']
+
+    render(
+      <QuestionPreviewPanel pkg={legacy} blueprint={BASE_BLUEPRINT} view={view} />,
+    )
+
+    const table = document.querySelector('.qp-table')!
+    expect([...table.querySelectorAll('thead th')].map((node) => node.textContent)).toEqual([
+      'Category',
+      'Requirement',
+    ])
+    expect([...table.querySelectorAll('tbody th')].map((node) => node.textContent)).toEqual([
+      'Size',
+      'Extra space',
+      'Other',
+    ])
+    expect(table.querySelector('[data-question="10"]')).not.toBeNull()
   })
 
   it('题面保留题号，并把数据里的点串渲染成实线答题位', () => {
@@ -589,6 +617,67 @@ describe('booking-hotel 回归夹具：修改前后对照', () => {
     const order = [...paper.children].map((el) => el.className.split(' ')[0])
     expect(order).toEqual(['qp-range', 'qp-rubric', 'qp-title', 'qp-form'])
     expect(paper.querySelector('.qp-range')!.textContent).toBe('Questions 1-2')
+  })
+})
+
+describe('多列表格矩阵', () => {
+  const matrixPackage = structuredClone(QUESTION_PACKAGE)
+  const matrixGroup = matrixPackage.question_face.groups.find((group) => group.group_id === 'G5')!
+  matrixGroup.structure = {
+    column_labels: ['Property size', 'Extra space', 'Other feature'],
+    table_rows: [
+      {
+        cells: [
+          { question_number: 8 },
+          { question_number: 9 },
+          { question_number: 10 },
+        ],
+      },
+    ],
+  }
+
+  it('按真实单元格渲染三列表头、固定文字和同一行的多个题号', () => {
+    render(
+      <QuestionPreviewPanel
+        pkg={matrixPackage}
+        blueprint={null}
+        view={null}
+      />,
+    )
+    const table = document.querySelector('.qp-table')!
+    expect([...table.querySelectorAll('thead th')].map((node) => node.textContent)).toEqual([
+      'Property size',
+      'Extra space',
+      'Other feature',
+    ])
+    expect(table.querySelectorAll('tbody tr')).toHaveLength(1)
+    expect(table.querySelector('[data-question="8"]')).not.toBeNull()
+    expect(table.querySelector('[data-question="9"]')).not.toBeNull()
+    expect(table.querySelector('[data-question="10"]')).not.toBeNull()
+  })
+
+  it('矩阵题格保留答案显示和评论选中交互', async () => {
+    const onSelectQuestion = vi.fn()
+    render(
+      <QuestionPreviewPanel
+        pkg={matrixPackage}
+        blueprint={null}
+        view={null}
+        commentCounts={new Map([[9, 2]])}
+        onSelectQuestion={onSelectQuestion}
+      />,
+    )
+    await userEvent.click(toggle())
+    const q9 = document.querySelector('[data-question="9"]')!
+    expect(q9.textContent).toContain('guest room')
+    expect(q9.querySelector('.comment-count-badge')?.textContent).toBe('2')
+    await userEvent.click(q9)
+    expect(onSelectQuestion).toHaveBeenCalledWith(9)
+
+    const q10 = document.querySelector<HTMLElement>('[data-question="10"]')!
+    q10.focus()
+    await userEvent.keyboard('{Enter}')
+    expect(onSelectQuestion).toHaveBeenCalledWith(10)
   })
 })
 

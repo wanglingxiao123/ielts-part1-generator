@@ -174,12 +174,12 @@
         "structure": {
           "type": "object",
           "additionalProperties": false,
-          "description": "The layout layer's own labels, and the reason `title` cannot serve for all three. Which key is required depends on `layout`, checked in the validator rather than here so the message can name the layout: form and table need row labels, table also needs column labels, and note needs note_sections with explicit question membership. Missing labels are a content-accessibility failure (QR-015), not a visual-polish one -- a table whose columns are unlabelled cannot be answered, whereas its border style can be fixed after content review.",
+          "description": "The layout layer's own labels. Which key is required depends on `layout`, checked in the validator so errors can name the layout: form needs row labels, new tables need column labels plus an explicit rectangular table_rows matrix, and notes need note_sections. Legacy table labels remain readable for archived packages but are not valid new output.",
           "properties": {
             "row_header_label": {
               "type": "string",
               "minLength": 1,
-              "description": "Table only: the heading above the row-label column, rendered in the top-left cell. `column_labels` names only the content columns to its right."
+              "description": "Legacy Table only: the heading above the archived row-label column. New generated Tables put every printed heading in column_labels and use table_rows."
             },
             "row_labels": {
               "type": "array",
@@ -193,6 +193,14 @@
               "items": {
                 "type": "string",
                 "minLength": 1
+              }
+            },
+            "table_rows": {
+              "type": "array",
+              "minItems": 1,
+              "description": "Table only: candidate-visible rows in printed order. Every cell is either fixed text or one question reference. The validator requires rectangular rows and an exact, ordered cover of the table group's questions.",
+              "items": {
+                "$ref": "#/definitions/tableRow"
               }
             },
             "hierarchy": {
@@ -235,6 +243,53 @@
           }
         }
       }
+    },
+    "tableRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cells"
+      ],
+      "properties": {
+        "cells": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/tableCell"
+          }
+        }
+      }
+    },
+    "tableCell": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "text"
+          ],
+          "properties": {
+            "text": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "question_number"
+          ],
+          "properties": {
+            "question_number": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10
+            }
+          }
+        }
+      ]
     },
     "question": {
       "type": "object",

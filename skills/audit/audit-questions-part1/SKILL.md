@@ -85,11 +85,11 @@ Read nothing else.
      or scope limit such as `(day and month)`, but flag commentary on speaking, spelling or answering
      such as `(as spelt)` / `(as mentioned)` under naturalness. A labelled form field needs no
      carrier merely to stop the two carrier strings being empty;
-   - **an unsupported or false `table`** — judge both axes and whether its content column compares
-     like with like. The current package supports one row-header column plus one content column;
-     more than one `column_labels` entry is a structural defect because no question-to-cell mapping
-     exists. Filler headings such as `Detail` / `Notes` / `Information` remain warning signs rather
-     than verdicts (SC-015 / QR-026);
+   - **a false or malformed `table`** — judge whether both axes organise comparable information.
+     Read `table_rows` as the printed matrix: headings must match the cell dimensions, fixed text and
+     blanks must occupy truthful cells, and every member question must appear once. Filler headings
+     such as `Detail` / `Notes` / `Information` remain warning signs rather than verdicts
+     (SC-015 / QR-026);
    - **a navigation line that names nothing** — apply the transfer test: could it be copied unchanged
      onto a completely different Part 1 material? "Details are confirmed" can (QR-034);
    - **layouts alternating where the dialogue does not change mode** (SC-015).

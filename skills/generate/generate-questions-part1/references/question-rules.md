@@ -79,7 +79,7 @@ announced window, and the ten evidence points must still advance with the questi
 |---|---|---|
 | **form** | The dialogue fills in a record field by field: name, date, number, selection. Each item is one labelled slot. | The items are a discussion rather than a record being filled in. |
 | **note** | The information is hierarchical or narrative: a topic with points under it, explanations, preferences talked through. This is the default when the material is not a record and has no comparison axis. | Nothing — note is the honest fallback. |
-| **table** | Both axes carry real meaning, and reading down the content column compares like with like. The current schema supports one row-header column plus exactly one content column. | The headings are filler words (`Detail`, `Details`, `Notes`, `Information`, `Answer`), row and cell wording repeat one another, unrelated facts have merely been placed behind borders, or multiple content columns are declared without question-to-cell coordinates. |
+| **table** | Both axes carry real meaning, columns compare like with like, and the information naturally forms a rectangular grid. Multiple blanks may occur in one row. | The headings are filler words (`Detail`, `Details`, `Notes`, `Information`, `Answer`), row and cell wording repeat one another, or unrelated facts have merely been placed behind borders. |
 
 A table is a **pseudo-table** when its printed axes do not organise or compare the information,
 regardless of the raw column count. Column count and generic headings are triage signals, not an
@@ -88,20 +88,32 @@ express more naturally. Mixing layouts is legitimate only where the script reall
 record being taken, then requirements being discussed. Alternating layout group by group to look
 varied is forced mixing, and the auditor reports it.
 
-`structure.row_header_label` names the left column above `row_labels`. `column_labels` names only
-the content columns to its right. The current package has no question-to-cell mapping, so it can
-represent exactly one content column. A two-column table therefore uses one of each:
+For every new Table, `structure.column_labels` contains every printed column heading and
+`structure.table_rows` supplies the exact rectangular matrix. Each cell contains either fixed
+candidate-visible `text` or one `question_number`, never both. Every question in the group appears
+once, and references run in ascending printed order:
 
 ```json
 {
-  "row_header_label": "Volunteer topic",
-  "row_labels": ["Young volunteers", "Time commitment"],
-  "column_labels": ["Project arrangement"]
+  "column_labels": ["Title of competition", "Instructions", "Feedback to Dan"],
+  "table_rows": [
+    {"cells": [
+      {"question_number": 5},
+      {"text": "A scene in the home"},
+      {"text": "The picture's composition was not good."}
+    ]},
+    {"cells": [
+      {"text": "'Beautiful Sunsets'"},
+      {"question_number": 6},
+      {"question_number": 7}
+    ]}
+  ]
 }
 ```
 
-Do not put `Volunteer topic` into `column_labels`; that declares an empty corner plus two content
-columns even though each row supplies only one content value.
+`row_header_label` and `row_labels` remain readable only for archived packages. They are not an
+alternative generation shape. If the information is naturally field/value pairs rather than a
+multi-axis grid, choose Form instead of manufacturing a two-column Table.
 
 Constraint 4 needs no turn-distance threshold. Once numbers are contiguous and evidence strictly
 increases, "no other group's point in between" is decidable as it stands. Whether a group's span

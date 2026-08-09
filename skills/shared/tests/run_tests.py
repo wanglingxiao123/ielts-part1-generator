@@ -2072,9 +2072,13 @@ _QUESTION_GROUPS = (
     ("G4", 2, "note", "Property preferences", ["Requirements for the new home are discussed next"],
      {"note_sections": [{"heading": "Location and lifestyle", "question_numbers": [6, 7]}]},
      "6-7", "ONE WORD ONLY"),
-    ("G5", 2, "table", None, [], {"row_header_label": "Category",
-                                  "row_labels": ["Size", "Extra space", "Other"],
-                                  "column_labels": ["Requirement"]},
+    ("G5", 2, "table", None, [], {
+        "column_labels": ["Category", "Requirement"],
+        "table_rows": [
+            {"cells": [{"text": "Size"}, {"question_number": 8}]},
+            {"cells": [{"text": "Extra space"}, {"question_number": 9}]},
+            {"cells": [{"text": "Other"}, {"question_number": 10}]},
+        ]},
      "8-10", "NO MORE THAN TWO WORDS"),
 )
 
@@ -2194,6 +2198,16 @@ def test_question_package_schema_contract() -> None:
     def other_category(payload: dict) -> None:
         payload["question_face"]["questions"][0]["answer_category"] = "other"
 
+    def table_cell_with_text_and_question(payload: dict) -> None:
+        table = next(group for group in payload["question_face"]["groups"]
+                     if group["layout"] == "table")
+        table["structure"]["table_rows"][0]["cells"][0]["question_number"] = 8
+
+    def empty_fixed_table_cell(payload: dict) -> None:
+        table = next(group for group in payload["question_face"]["groups"]
+                     if group["layout"] == "table")
+        table["structure"]["table_rows"][0]["cells"][0]["text"] = ""
+
     for label, mutate in (
         # The separation is what the schema is for: block A must be unable to carry block B or C.
         ("an answer inside the question face", leak_answer),
@@ -2217,8 +2231,10 @@ def test_question_package_schema_contract() -> None:
         ("proposition_alignment_result as free text",
          lambda p: p["evidence"][0].update({"proposition_alignment_result": "mostly"})),
         ("an empty accepted alternative", lambda p: p["answer_key"][0].update({"alternatives": [""]})),
+        ("a table cell containing both fixed text and a question", table_cell_with_text_and_question),
+        ("an empty fixed-text table cell", empty_fixed_table_cell),
         ("an unknown key inside a structure",
-         lambda p: p["question_face"]["groups"][0]["structure"].update({"cells": []})),
+         lambda p: p["question_face"]["groups"][0]["structure"].update({"unknown_cells": []})),
     ):
         check("schema rejects: %s" % label, errors(mutated(mutate)) != [])
 
@@ -2269,10 +2285,30 @@ def test_question_validator_catches_the_stage_defects() -> None:
         group for group in _question_package()["question_face"]["groups"]
         if group["group_id"] == "G5"
     )
-    check("a table with one content column passes",
-          reference_table["structure"]["column_labels"] == ["Requirement"]
+    check("a rectangular table with explicit question cells passes",
+          reference_table["structure"]["column_labels"] == ["Category", "Requirement"]
+          and [row["cells"][1]["question_number"]
+               for row in reference_table["structure"]["table_rows"]] == [8, 9, 10]
           and clean["ok"] is True,
           repr(reference_table["structure"]))
+
+    def authentic_three_column_table(package: dict) -> None:
+        group = next(
+            row for row in package["question_face"]["groups"] if row["group_id"] == "G5")
+        group["structure"] = {
+            "column_labels": ["Property size", "Extra space", "Other feature"],
+            "table_rows": [{
+                "cells": [
+                    {"question_number": 8},
+                    {"question_number": 9},
+                    {"question_number": 10},
+                ]
+            }],
+        }
+
+    three_column = _validate_questions(authentic_three_column_table)
+    check("a genuine three-column row may contain several question blanks",
+          three_column["ok"] is True, repr(three_column["errors"])[:600])
     spanning = _validate_questions(merge_note_group_across_windows)
     check("one natural note group may cover Q5-Q7 across the narrator midpoint",
           spanning["ok"] is True, repr(spanning["errors"])[:600])
@@ -2327,7 +2363,12 @@ def test_question_validator_catches_the_stage_defects() -> None:
             if group["group_id"] == "G5":
                 group["structure"] = {"row_labels": ["Size", "Rooms for guests", "Other"],
                                       "row_header_label": "Category",
-                                      "column_labels": ["Requirement"]}
+                                      "column_labels": ["Requirement"],
+                                      "table_rows": [
+                                          {"cells": [{"question_number": 8}]},
+                                          {"cells": [{"question_number": 9}]},
+                                          {"cells": [{"question_number": 10}]},
+                                      ]}
 
     def drop_evidence(package: dict) -> None:
         package["evidence"].pop()
@@ -2368,20 +2409,63 @@ def test_question_validator_catches_the_stage_defects() -> None:
     def table_without_columns(package: dict) -> None:
         for group in package["question_face"]["groups"]:
             if group["group_id"] == "G5":
+                group["structure"].pop("column_labels")
+
+    def legacy_table_without_cell_mapping(package: dict) -> None:
+        for group in package["question_face"]["groups"]:
+            if group["group_id"] == "G5":
                 group["structure"] = {
                     "row_header_label": "Category",
                     "row_labels": ["Size", "Extra space", "Other"],
+                    "column_labels": ["Requirement"],
                 }
 
-    def table_without_row_header(package: dict) -> None:
+    def table_with_ragged_row(package: dict) -> None:
         for group in package["question_face"]["groups"]:
             if group["group_id"] == "G5":
-                group["structure"].pop("row_header_label")
+                group["structure"]["table_rows"][0]["cells"].pop()
 
-    def table_with_two_content_columns(package: dict) -> None:
+    def table_with_duplicate_question(package: dict) -> None:
         for group in package["question_face"]["groups"]:
             if group["group_id"] == "G5":
-                group["structure"]["column_labels"] = ["Regular lesson", "First lesson"]
+                group["structure"]["table_rows"][1]["cells"][1] = {"question_number": 8}
+
+    def table_with_unknown_question(package: dict) -> None:
+        for group in package["question_face"]["groups"]:
+            if group["group_id"] == "G5":
+                group["structure"]["table_rows"][2]["cells"][1] = {"question_number": 7}
+
+    def table_with_out_of_order_questions(package: dict) -> None:
+        for group in package["question_face"]["groups"]:
+            if group["group_id"] == "G5":
+                rows = group["structure"]["table_rows"]
+                rows[0]["cells"][1], rows[1]["cells"][1] = (
+                    rows[1]["cells"][1], rows[0]["cells"][1])
+
+    def table_cell_with_both_variants(package: dict) -> None:
+        for group in package["question_face"]["groups"]:
+            if group["group_id"] == "G5":
+                group["structure"]["table_rows"][0]["cells"][0] = {
+                    "text": "Size",
+                    "question_number": 8,
+                }
+
+    def table_cell_with_boolean_question(package: dict) -> None:
+        for group in package["question_face"]["groups"]:
+            if group["group_id"] == "G5":
+                group["structure"]["table_rows"][0]["cells"][0] = {
+                    "question_number": True,
+                }
+
+    def table_cell_with_unknown_key(package: dict) -> None:
+        for group in package["question_face"]["groups"]:
+            if group["group_id"] == "G5":
+                group["structure"]["table_rows"][0]["cells"][0] = {"label": "Size"}
+
+    def leak_in_fixed_table_cell(package: dict) -> None:
+        for group in package["question_face"]["groups"]:
+            if group["group_id"] == "G5":
+                group["structure"]["table_rows"][0]["cells"][0]["text"] = "two-bedroom"
 
     def no_signpost(package: dict) -> None:
         for group in package["question_face"]["groups"]:
@@ -2431,10 +2515,22 @@ def test_question_validator_catches_the_stage_defects() -> None:
         ("a note group with no title", note_without_title, "QR-031"),
         ("a note group with no explicit sections", note_without_sections, "note_sections"),
         ("a note question assigned twice", note_with_duplicate_assignment, "exactly once"),
-        ("a table with an unnamed row-label column", table_without_row_header, "row_header_label"),
         ("a table group with no column labels", table_without_columns, "column_labels"),
-        ("a table with two content columns but no cell mapping", table_with_two_content_columns,
-         "no question-to-cell mapping"),
+        ("a legacy table with no cell mapping", legacy_table_without_cell_mapping, "table_rows"),
+        ("a table with a ragged row", table_with_ragged_row, "rectangular"),
+        ("a table with a duplicated question cell", table_with_duplicate_question,
+         "exactly once"),
+        ("a table with a question outside its group", table_with_unknown_question,
+         "exactly once"),
+        ("a table whose question cells are out of order", table_with_out_of_order_questions,
+         "ascending printed order"),
+        ("a table cell containing text and a question", table_cell_with_both_variants,
+         "exactly one"),
+        ("a boolean used as a table question number", table_cell_with_boolean_question,
+         "booleans are invalid"),
+        ("a table cell with an unknown key", table_cell_with_unknown_key, "exactly one"),
+        ("an answer printed in a fixed table cell", leak_in_fixed_table_cell,
+         "without listening"),
         ("a window with no blank-free signpost", no_signpost, "signpost"),
         # A package that reports its own AL-018 failure.
         ("a self-reported alignment failure", self_reported_failure, "not_aligned"),
