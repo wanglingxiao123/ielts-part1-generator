@@ -193,6 +193,7 @@ Runtime 立即返回 job id，浏览器通过 `audio_status` 轮询。合成完�
 ## 3. 生成流程（Agent Loop）
 
 ```mermaid
+%%{init: {"flowchart": {"curve": "stepAfter", "nodeSpacing": 28, "rankSpacing": 42}}}%%
 flowchart TB
     Q["生成请求"] --> F["Web 并发拆分<br/>每套一个 Runtime"]
 
@@ -225,11 +226,9 @@ flowchart TB
         H -- "可交付" --> D["交付完整套件<br/>材料 + 题目"]
         H -- "仍有硬问题" --> K{"同一材料<br/>重启题目阶段一次"}
         K -- "首次失败" --> T
-        K -- "再次失败" --> W["更换候选材料<br/>重新进入上方模块"]
+        K -- "再次失败" --> W["更换候选材料<br/>返回上方材料模块"]
         P -- "材料不适合出题" --> W
     end
-
-    W -. "返回材料生成" .-> G
 
     classDef ai fill:#fef3c7,stroke:#d97706,color:#78350f;
     classDef audit fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
