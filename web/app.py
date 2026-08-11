@@ -96,6 +96,11 @@ from .runtime_client import (
     new_session_id,
     read_json,
 )
+from .question_versions import (
+    QuestionVersionError,
+    QuestionVersionService,
+    build_question_version_service,
+)
 from .slot_state import SlotStateReader, build_reader
 
 LOG = logging.getLogger(__name__)
@@ -199,7 +204,8 @@ class WebTier:
                  fanout_concurrency: int = FANOUT_CONCURRENCY,
                  history: Optional[BatchHistory] = None,
                  slot_state: Optional[SlotStateReader] = None,
-                 comments: Optional[CommentService] = None) -> None:
+                 comments: Optional[CommentService] = None,
+                 question_versions: Optional[QuestionVersionService] = None) -> None:
         self.auth = auth
         self.runtime = runtime
         self.static_dir = static_dir
@@ -212,6 +218,10 @@ class WebTier:
         # itself lazily on first use, so a tier that never sees a batch constructs no AWS client.
         self.history = history if history is not None else BatchHistory()
         self.comments = comments if comments is not None else CommentService()
+        self.question_versions = (
+            question_versions if question_versions is not None
+            else build_question_version_service()
+        )
         # email -> (runtimeSessionId, minted_at). Per-user so two reviewers do not share a
         # microVM, and so one user's long batch does not reset another's idle timer.
         #
@@ -513,6 +523,146 @@ class WebTier:
                     status_code=502,
                 )
             return JSONResponse(document)
+
+        @app.get("/api/material-question-versions/{material_id}")
+        async def list_question_versions(material_id: str) -> JSONResponse:
+            from starlette.concurrency import run_in_threadpool
+
+            if self.question_versions is None:
+                return JSONResponse(
+                    _error_body("QUESTION_VERSIONS_UNAVAILABLE", "题目版本存储未配置。"),
+                    status_code=503,
+                )
+            try:
+                document = await run_in_threadpool(self.question_versions.list, material_id)
+            except QuestionVersionError as exc:
+                return JSONResponse(_error_body(exc.code, exc.message), status_code=exc.status)
+            except Exception as exc:
+                return JSONResponse(_infra_error_body(
+                    "QUESTION_VERSIONS_UNAVAILABLE", "题目版本暂时读取不到。", exc),
+                    status_code=502)
+            return JSONResponse(document)
+
+        @app.post("/api/material-question-versions/{material_id}/{version_id}/adopt")
+        async def adopt_question_version(
+            material_id: str, version_id: str, request: Request
+        ) -> JSONResponse:
+            from starlette.concurrency import run_in_threadpool
+
+            if self.question_versions is None:
+                return JSONResponse(
+                    _error_body("QUESTION_VERSIONS_UNAVAILABLE", "题目版本存储未配置。"),
+                    status_code=503)
+            user = request.scope.get(USER_SCOPE_KEY) or {}
+            try:
+                document = await run_in_threadpool(
+                    self.question_versions.adopt, material_id, version_id,
+                    str(user.get("email") or "reviewer"))
+            except QuestionVersionError as exc:
+                return JSONResponse(_error_body(exc.code, exc.message), status_code=exc.status)
+            except Exception as exc:
+                return JSONResponse(_infra_error_body(
+                    "QUESTION_VERSION_ADOPT_FAILED", "题目版本没有采用成功。", exc),
+                    status_code=502)
+            return JSONResponse(document)
+
+        @app.post("/api/material-question-revisions/{material_id}")
+        async def revise_material_questions(material_id: str, request: Request) -> Any:
+            """Snapshot question comments, then relay one Runtime revision as SSE."""
+            from starlette.concurrency import run_in_threadpool
+
+            if self.question_versions is None:
+                return JSONResponse(
+                    _error_body("QUESTION_VERSIONS_UNAVAILABLE", "题目版本存储未配置。"),
+                    status_code=503)
+            body = _as_dict(await _json_body(request))
+            base_version_id = str(body.get("base_version_id") or "")
+            if not base_version_id:
+                return JSONResponse(
+                    _error_body("bad_request", "base_version_id is required"), status_code=400)
+            user = request.scope.get(USER_SCOPE_KEY) or {}
+            actor = str(user.get("email") or "reviewer")
+            try:
+                comments_doc = await run_in_threadpool(self.comments.list, material_id)
+                requested = body.get("comment_ids")
+                requested_ids = (
+                    {str(value) for value in requested} if isinstance(requested, list) else None)
+                comments = [
+                    row for row in comments_doc.get("comments", [])
+                    if isinstance(row, dict)
+                    and (row.get("anchor") or {}).get("type") == "question"
+                    and (requested_ids is None or str(row.get("id")) in requested_ids)
+                ]
+                if requested_ids is not None and {
+                    str(row.get("id")) for row in comments
+                } != requested_ids:
+                    raise QuestionVersionError(
+                        "QUESTION_COMMENT_NOT_FOUND",
+                        "部分待修改批注已被删除，请刷新后重新提交。", 409)
+                if not comments:
+                    raise QuestionVersionError(
+                        "NO_QUESTION_COMMENTS", "请先添加至少一条题目批注。")
+                versions = await run_in_threadpool(self.question_versions.list, material_id)
+                if versions.get("active_version_id") != base_version_id:
+                    raise QuestionVersionError(
+                        "BASE_VERSION_NOT_ACTIVE", "只能基于当前采用版本提交修改。", 409)
+                base = await run_in_threadpool(
+                    self.question_versions.load, material_id, base_version_id)
+                material_record = await run_in_threadpool(
+                    self.history.get_material, material_id)
+                if not isinstance(material_record, dict):
+                    raise QuestionVersionError(
+                        "MATERIAL_NOT_FOUND", "没有找到这套题目的材料。", 404)
+                material = material_record.get("material")
+                blueprint = material_record.get("blueprint")
+                if not isinstance(material, dict) or not isinstance(blueprint, dict):
+                    raise QuestionVersionError(
+                        "MATERIAL_ARTIFACTS_MISSING", "材料或信息点蓝图不完整。", 409)
+                revision = await run_in_threadpool(
+                    self.question_versions.reserve,
+                    material_id, base_version_id, comments, actor)
+            except QuestionVersionError as exc:
+                return JSONResponse(_error_body(exc.code, exc.message), status_code=exc.status)
+            except Exception as exc:
+                return JSONResponse(_infra_error_body(
+                    "QUESTION_REVISION_PREPARE_FAILED", "题目修改任务没有创建成功。", exc),
+                    status_code=502)
+
+            payload = {
+                "action": "revise_questions_from_comments",
+                "material_id": material_id,
+                "request_id": revision["request_id"],
+                "base_version_id": base_version_id,
+                "material": material,
+                "blueprint": blueprint,
+                "package": base["package"],
+                "comments": comments,
+                "actor": actor,
+            }
+            session_id = self.session_for(actor)
+            try:
+                content_type, runtime_body, _ = await run_in_threadpool(
+                    self.runtime.invoke, payload, session_id=session_id)
+            except Exception as exc:
+                await run_in_threadpool(
+                    self.question_versions.fail_request, material_id, revision,
+                    "%s: %s" % (type(exc).__name__, str(exc)[:300]))
+                return JSONResponse(_infra_error_body(
+                    "QUESTION_REVISION_INVOKE_FAILED", "题目修改服务暂时没有响应。", exc),
+                    status_code=502)
+            if SSE_CONTENT_TYPE not in content_type:
+                await run_in_threadpool(
+                    self.question_versions.fail_request, material_id, revision,
+                    "Runtime returned a non-streaming response")
+                return JSONResponse(
+                    _error_body("QUESTION_REVISION_BAD_RESPONSE",
+                                "题目修改服务返回了错误格式。"), status_code=502)
+            return StreamingResponse(
+                _relay_question_revision(
+                    runtime_body, self.question_versions, material_id, revision),
+                media_type=SSE_CONTENT_TYPE,
+                headers=_SSE_HEADERS,
+            )
 
         @app.post("/api/batch-history/{batch_id}/submit")
         async def submit_batch(batch_id: str, request: Request) -> JSONResponse:
@@ -834,6 +984,71 @@ def _relay(body: Any) -> Iterator[bytes]:
         closer = getattr(body, "close", None)
         if callable(closer):
             closer()
+
+
+def _relay_question_revision(
+    body: Any,
+    service: QuestionVersionService,
+    material_id: str,
+    revision: Dict[str, Any],
+) -> Iterator[bytes]:
+    """Relay one revision, verifying completed versions before exposing success."""
+    terminal = False
+    try:
+        for payload in iter_sse_payloads(body):
+            try:
+                decoded = json.loads(payload)
+            except ValueError:
+                decoded = {}
+            event_type = decoded.get("type") if isinstance(decoded, dict) else None
+            if event_type == "question_revision_completed":
+                version_id = decoded.get("version_id")
+                try:
+                    if not isinstance(version_id, str):
+                        raise QuestionVersionError(
+                            "QUESTION_VERSION_NOT_FOUND", "Runtime 没有返回题目版本 ID。", 502)
+                    service.load(material_id, version_id)
+                except Exception:
+                    message = "修改结果没有写入题目版本存储，当前版本未改变。"
+                    service.fail_request(material_id, revision, message)
+                    failed = {
+                        "type": "question_revision_failed",
+                        "request_id": revision.get("request_id"),
+                        "message": message,
+                    }
+                    yield (
+                        "data: %s\n\n" % json.dumps(failed, ensure_ascii=False)
+                    ).encode("utf-8")
+                    return
+            if event_type in {
+                "question_revision_completed",
+                "question_revision_needs_material",
+                "question_revision_failed",
+            }:
+                terminal = True
+            yield ("data: %s\n\n" % payload).encode("utf-8")
+        if not terminal:
+            failed = {
+                "type": "question_revision_failed",
+                "request_id": revision.get("request_id"),
+                "message": "题目修改连接提前结束，当前版本未改变。",
+            }
+            yield ("data: %s\n\n" % json.dumps(failed, ensure_ascii=False)).encode("utf-8")
+    except Exception as exc:  # noqa: BLE001 - the browser is owed a revision-shaped terminal event
+        failed = {
+            "type": "question_revision_failed",
+            "request_id": revision.get("request_id"),
+            "message": "题目修改连接中断，当前版本未改变。",
+        }
+        yield ("data: %s\n\n" % json.dumps(failed, ensure_ascii=False)).encode("utf-8")
+        LOG.warning("question revision stream failed", exc_info=exc)
+    finally:
+        closer = getattr(body, "close", None)
+        if callable(closer):
+            closer()
+        # A broken Web-to-Runtime stream does not prove the Runtime stopped. Keep the durable
+        # running marker so a retry cannot launch a second paid Agent while the first may still
+        # finish and commit its immutable version. Runtime owns the terminal transition.
 
 
 async def _json_body(request: Request) -> Any:

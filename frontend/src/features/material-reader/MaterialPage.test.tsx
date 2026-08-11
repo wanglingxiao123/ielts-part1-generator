@@ -65,6 +65,25 @@ vi.mock('@/api/endpoints', () => ({
       Promise.resolve({ material_id: id, comments: [] }),
     deleteMaterialComment: (id: string) =>
       Promise.resolve({ material_id: id, comments: [] }),
+    materialQuestionVersions: (id: string) =>
+      Promise.resolve({
+        material_id: id,
+        active_version_id: 'original',
+        versions: questions.questions
+          ? [{
+              id: 'original',
+              created_at: '2026-08-11T00:00:00Z',
+              based_on_version_id: null,
+              source_comment_ids: [],
+              status: 'original',
+              package: questions.questions,
+              is_active: true,
+              ordinal: 1,
+            }]
+          : [],
+      }),
+    adoptQuestionVersion: (id: string, versionId: string) =>
+      Promise.resolve({ material_id: id, active_version_id: versionId }),
   },
 }))
 

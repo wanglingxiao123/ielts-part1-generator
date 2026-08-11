@@ -2732,16 +2732,106 @@ h3 {
   align-items: start;
 }
 
+.question-version-view {
+  display: grid;
+  gap: 10px;
+}
+
+.question-version-bar {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.question-version-bar label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.question-version-bar select {
+  min-width: 180px;
+  max-width: 100%;
+  padding: 6px 28px 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--ink);
+}
+
+.question-active-label {
+  color: var(--good);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .question-comments-panel {
   position: sticky;
   top: 8px;
   display: grid;
-  grid-template-rows: auto minmax(80px, 1fr) auto auto;
+  grid-template-rows: auto minmax(80px, 1fr) auto auto auto;
   max-height: calc(100vh - 24px);
   border: 1px solid var(--line);
   background: var(--panel);
   border-radius: var(--radius);
   overflow: hidden;
+}
+
+.question-revision-action {
+  display: grid;
+  gap: 7px;
+  padding: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.question-revision-action > .btn {
+  width: 100%;
+}
+
+.question-revision-action p {
+  margin: 0;
+  font-size: 11px;
+}
+
+.question-revision-progress {
+  color: var(--accent);
+}
+
+.question-revision-result {
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font-size: 11px;
+}
+
+.question-revision-result strong {
+  display: block;
+  margin-bottom: 3px;
+}
+
+.question-revision-result ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.question-revision-result.needs-material {
+  color: var(--warn);
+  border-color: var(--warn-line);
+  background: var(--warn-bg);
+}
+
+.question-revision-result.failed {
+  color: var(--bad);
+  border-color: var(--bad-line);
+  background: var(--bad-bg);
 }
 
 .comment-panel-head,

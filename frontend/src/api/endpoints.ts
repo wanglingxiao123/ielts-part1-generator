@@ -13,6 +13,10 @@ import type {
   PreviewAudioResponse,
   SelectMaterialResponse,
 } from '@/contracts/api'
+import type {
+  AdoptQuestionVersionResponse,
+  MaterialQuestionVersionsResponse,
+} from '@/contracts/questionVersions'
 import { request } from './http'
 import type {
   CreateMaterialComment,
@@ -146,5 +150,18 @@ export const api = {
     request<MaterialCommentsDocument>({
       method: 'DELETE',
       path: `/material-comments/${encodeURIComponent(materialId)}/${encodeURIComponent(commentId)}`,
+    }),
+
+  materialQuestionVersions: (materialId: string) =>
+    request<MaterialQuestionVersionsResponse>({
+      method: 'GET',
+      path: `/material-question-versions/${encodeURIComponent(materialId)}`,
+    }),
+
+  adoptQuestionVersion: (materialId: string, versionId: string) =>
+    request<AdoptQuestionVersionResponse>({
+      method: 'POST',
+      path: `/material-question-versions/${encodeURIComponent(materialId)}/${encodeURIComponent(versionId)}/adopt`,
+      body: {},
     }),
 }

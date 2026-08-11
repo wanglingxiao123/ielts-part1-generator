@@ -43,9 +43,11 @@ import { ExamPointPanel } from './ExamPointPanel'
 import { CommentComposer, CommentList } from './MaterialComments'
 import { MaterialReader } from './MaterialReader'
 import { QuestionPreviewPanel } from './QuestionPreviewPanel'
+import { QuestionRevisionAction, QuestionVersionBar } from './QuestionVersionControls'
 import { QuestionTypePanel } from './QuestionTypePanel'
 import { useMaterialQuestions } from './useMaterialQuestions'
 import { useMaterialComments } from './useMaterialComments'
+import { useQuestionVersions } from './useQuestionVersions'
 
 /** 标题下的两个页签。`script` 是进来时的默认，因为「阅读全文」是这一页原本的名字。 */
 type Tab = 'script' | 'questions'
@@ -144,6 +146,10 @@ export function MaterialPage() {
     materialId ?? '',
     record?.batch_id,
     questionsRequested && Boolean(record),
+  )
+  const questionVersions = useQuestionVersions(
+    materialId ?? '',
+    Boolean(questions.data?.questions),
   )
   const missing = useMemo(() => explainMissingQuestions(questions.data), [questions.data])
   const comments = useMaterialComments(materialId ?? '', Boolean(record))
@@ -348,6 +354,7 @@ export function MaterialPage() {
           comments={questionComments}
           commentsState={comments}
           onNavigateComment={navigateComment}
+          versionsState={questionVersions}
         />
       ) : (
         <>
@@ -482,6 +489,7 @@ function QuestionsTab({
   comments,
   commentsState,
   onNavigateComment,
+  versionsState,
 }: {
   state: ReturnType<typeof useMaterialQuestions>
   missing: ReturnType<typeof explainMissingQuestions>
@@ -494,6 +502,7 @@ function QuestionsTab({
   comments: ReturnType<typeof useMaterialComments>['comments']
   commentsState: ReturnType<typeof useMaterialComments>
   onNavigateComment: (anchor: CommentAnchor) => void
+  versionsState: ReturnType<typeof useQuestionVersions>
 }) {
   if (state.loading) {
     return <div className="panel panel-pad">正在读取题目…</div>
@@ -515,47 +524,52 @@ function QuestionsTab({
 
   const pkg = state.data?.questions
   if (pkg) {
+    const displayedPackage = versionsState.selectedVersion?.package ?? pkg
     return (
-      <div className="question-comments-layout">
-        <QuestionPreviewPanel
-          pkg={pkg}
-          blueprint={blueprint}
-          view={view}
-          onJump={onJump}
-          selectedQuestion={selectedQuestion}
-          commentCounts={commentCounts}
-          onSelectQuestion={onSelectQuestion}
-        />
-        <aside className="question-comments-panel">
-          <div className="comment-panel-head">批注 ({comments.length})</div>
-          {commentsState.loading ? (
-            <div className="comment-empty">正在读取批注…</div>
-          ) : (
-            <CommentList
-              comments={comments}
-              saving={commentsState.saving}
-              onNavigate={onNavigateComment}
-              onDelete={commentsState.remove}
-            />
-          )}
-          {commentsState.error && (
-            <div className="comment-error">
-              {commentsState.error}
-              <button type="button" onClick={commentsState.reload}>
-                重试
-              </button>
-            </div>
-          )}
-          <CommentComposer
-            anchor={
-              selectedQuestion === null
-                ? null
-                : { type: 'question', index: selectedQuestion }
-            }
-            saving={commentsState.saving}
-            onSubmit={commentsState.create}
+      <div className="question-version-view">
+        <QuestionVersionBar state={versionsState} />
+        <div className="question-comments-layout">
+          <QuestionPreviewPanel
+            pkg={displayedPackage}
+            blueprint={blueprint}
+            view={view}
+            onJump={onJump}
+            selectedQuestion={selectedQuestion}
+            commentCounts={commentCounts}
+            onSelectQuestion={onSelectQuestion}
           />
-        </aside>
+          <aside className="question-comments-panel">
+            <div className="comment-panel-head">批注 ({comments.length})</div>
+            {commentsState.loading ? (
+              <div className="comment-empty">正在读取批注…</div>
+            ) : (
+              <CommentList
+                comments={comments}
+                saving={commentsState.saving}
+                onNavigate={onNavigateComment}
+                onDelete={commentsState.remove}
+              />
+            )}
+            {commentsState.error && (
+              <div className="comment-error">
+                {commentsState.error}
+                <button type="button" onClick={commentsState.reload}>
+                  重试
+                </button>
+              </div>
+            )}
+            <CommentComposer
+              anchor={
+                selectedQuestion === null
+                  ? null
+                  : { type: 'question', index: selectedQuestion }
+              }
+              saving={commentsState.saving}
+              onSubmit={commentsState.create}
+            />
+            <QuestionRevisionAction state={versionsState} comments={comments} />
+          </aside>
+        </div>
       </div>
     )
   }

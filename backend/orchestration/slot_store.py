@@ -55,6 +55,8 @@ __all__ = [
     "MATERIAL_PENDING",
     "QUESTIONS_PENDING",
     "QUESTION_PREFIX",
+    "QUESTION_REVISION_PREFIX",
+    "QUESTION_VERSION_PREFIX",
     "RUNNING",
     "SLOT_PREFIX",
     "SLOT_STATES",
@@ -69,6 +71,8 @@ __all__ = [
 
 SLOT_PREFIX = "_slots/"
 QUESTION_PREFIX = "_questions/"
+QUESTION_VERSION_PREFIX = "_question_versions/"
+QUESTION_REVISION_PREFIX = "_question_revisions/"
 
 # --- slot states (§8.2(1)) ------------------------------------------------------------------
 # The order is the progression, and `material_done` exists as its own state for one reason: it is the
@@ -280,6 +284,63 @@ class SlotStore(object):
     def load_questions(self, material_id: str) -> Optional[Dict[str, Any]]:
         return self._read(_question_key(material_id))
 
+    def save_question_version(
+        self, material_id: str, version_id: str, payload: Dict[str, Any]
+    ) -> None:
+        key = _question_version_key(material_id, version_id)
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        try:
+            self._store.put(key, body, if_none_match=True)
+        except Exception as exc:  # noqa: BLE001 - object-store taxonomy is intentionally narrow
+            if type(exc).__name__ == "PreconditionFailed":
+                existing = self._read(key)
+                if existing == payload:
+                    return
+                raise SlotPersistenceError(
+                    "immutable question version already exists with different content: %s" % key
+                )
+            if not self.persistent:
+                return
+            raise SlotPersistenceError(
+                "could not create %s: %s: %s" % (key, type(exc).__name__, str(exc)[:200])
+            )
+
+    def load_question_version(
+        self, material_id: str, version_id: str
+    ) -> Optional[Dict[str, Any]]:
+        if version_id == "original":
+            return self.load_questions(material_id)
+        return self._read(_question_version_key(material_id, version_id))
+
+    def save_question_revision(
+        self, material_id: str, request_id: str, payload: Dict[str, Any]
+    ) -> None:
+        self._put(_question_revision_key(material_id, request_id), payload)
+        # The Web tier reserves this pointer with a conditional write. Runtime owns its terminal
+        # transition so a refresh can distinguish "still running" from a completed request without
+        # relying on the original SSE connection.
+        self._put(_question_revision_running_key(material_id), payload)
+
+    def load_question_revision(
+        self, material_id: str, request_id: str
+    ) -> Optional[Dict[str, Any]]:
+        return self._read(_question_revision_key(material_id, request_id))
+
+    def claim_question_revision(self, material_id: str, request_id: str) -> bool:
+        """Create-only execution claim; false means another Runtime invocation owns the work."""
+        key = _question_revision_claim_key(material_id, request_id)
+        try:
+            self._store.put(key, b"{}", if_none_match=True)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            if type(exc).__name__ == "PreconditionFailed":
+                return False
+            if not self.persistent:
+                return True
+            raise SlotPersistenceError(
+                "could not claim %s: %s: %s" % (key, type(exc).__name__, str(exc)[:200])
+            )
+
     # --- plumbing --------------------------------------------------------------------------
     def _put(self, key: str, payload: Dict[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -323,6 +384,22 @@ def _slot_key(batch_id: str, slot_id: str) -> str:
 
 def _question_key(material_id: str) -> str:
     return "%s%s.json" % (QUESTION_PREFIX, material_id)
+
+
+def _question_version_key(material_id: str, version_id: str) -> str:
+    return "%s%s/versions/%s.json" % (QUESTION_VERSION_PREFIX, material_id, version_id)
+
+
+def _question_revision_key(material_id: str, request_id: str) -> str:
+    return "%s%s/%s.json" % (QUESTION_REVISION_PREFIX, material_id, request_id)
+
+
+def _question_revision_running_key(material_id: str) -> str:
+    return "%s%s/running.json" % (QUESTION_REVISION_PREFIX, material_id)
+
+
+def _question_revision_claim_key(material_id: str, request_id: str) -> str:
+    return "%s%s/%s.claim" % (QUESTION_REVISION_PREFIX, material_id, request_id)
 
 
 def _now() -> float:

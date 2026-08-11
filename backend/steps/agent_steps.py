@@ -69,6 +69,7 @@ __all__ = [
     "GenerationWorkspace",
     "revise",
     "revise_questions",
+    "revise_questions_from_comments",
 ]
 
 # Part 1 is ten items. Named here because the question envelope enforces it, and duplicated from
@@ -682,6 +683,103 @@ async def revise_questions(
     finally:
         workspace.remove()
     return _question_envelope(reply, "question revision")
+
+
+async def revise_questions_from_comments(
+    material: Dict[str, Any],
+    blueprint: Dict[str, Any],
+    package: Dict[str, Any],
+    comments: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Apply reviewer comments or explicitly refuse when they require a script change."""
+    agent = build_generate_agent()
+    workspace = GenerationWorkspace()
+    try:
+        material_path = workspace.path / "material.json"
+        blueprint_path = workspace.path / "blueprint.json"
+        package_path = workspace.path / "questions.json"
+        comments_path = workspace.path / "comments.json"
+        material_path.write_text(
+            json.dumps(material, ensure_ascii=False, indent=2), encoding="utf-8")
+        blueprint_path.write_text(
+            json.dumps(blueprint, ensure_ascii=False, indent=2), encoding="utf-8")
+        package_path.write_text(
+            json.dumps(package, ensure_ascii=False, indent=2), encoding="utf-8")
+        comments_path.write_text(
+            json.dumps(comments, ensure_ascii=False, indent=2), encoding="utf-8")
+        message = "\n\n".join([
+            "Revise the complete ten-question package in response to the reviewer comments. "
+            "Activate the question-writing skill and obey all of its boundaries.",
+            "## Files\n\nmaterial.json: %s\nblueprint.json: %s\nquestions.json: %s\ncomments.json: %s"
+            % (material_path, blueprint_path, package_path, comments_path),
+            "## Fixed inputs\n\nThe material and blueprint are immutable. Do not edit the script, "
+            "change an information point, move a blueprint group boundary, or substitute another "
+            "answer target. Every permitted change belongs in the candidate-visible question face, "
+            "answer key or evidence records.",
+            "First decide whether EVERY comment can be resolved under those constraints. If any "
+            "comment requires changing what the recording says or what the blueprint planned, do "
+            "not make a partial revision. Return exactly this JSON shape:\n"
+            '{"outcome":"needs_material_revision","reasons":[{"comment_id":"...",'
+            '"question_number":1,"reason":"..."}]}',
+            "Otherwise make the smallest sufficient changes, run the question validator until it "
+            "reports no errors, and return exactly:\n"
+            '{"outcome":"revised","package":{COMPLETE QUESTION PACKAGE}}',
+        ]) + workspace.instructions()
+        reply = await _invoke(agent, message, "reviewer-comment question revision")
+    finally:
+        workspace.remove()
+
+    payload = extract_json(reply)
+    forbidden = [
+        key for key in ("material", "blueprint", "script", "listening_material_parts")
+        if key in payload
+    ]
+    if forbidden:
+        raise ModelCallError(
+            "reviewer-comment revision returned immutable artifact(s): %s"
+            % ", ".join(forbidden))
+    outcome = payload.get("outcome")
+    if outcome == "needs_material_revision":
+        reasons = payload.get("reasons")
+        if not isinstance(reasons, list) or not reasons:
+            raise ModelCallError(
+                "reviewer-comment revision requested a material change without reasons")
+        comment_ids = {str(row.get("id") or "") for row in comments if isinstance(row, dict)}
+        cleaned = []
+        for reason in reasons:
+            number = reason.get("question_number") if isinstance(reason, dict) else None
+            if (not isinstance(reason, dict)
+                    or str(reason.get("comment_id") or "") not in comment_ids
+                    or isinstance(number, bool) or not isinstance(number, int)
+                    or not 1 <= number <= QUESTION_COUNT
+                    or not str(reason.get("reason") or "").strip()):
+                raise ModelCallError(
+                    "reviewer-comment material reason does not identify an input comment and Q1-Q10")
+            cleaned.append(reason)
+        return {"outcome": outcome, "reasons": cleaned}
+    if outcome != "revised":
+        raise ModelCallError(
+            "reviewer-comment revision returned unknown outcome %r" % outcome)
+    package_out = payload.get("package")
+    if not isinstance(package_out, dict):
+        raise ModelCallError("reviewer-comment revision returned no complete package")
+    nested_forbidden = [
+        key for key in ("material", "blueprint", "script", "listening_material_parts")
+        if key in package_out
+    ]
+    if nested_forbidden:
+        raise ModelCallError(
+            "reviewer-comment package contains immutable artifact(s): %s"
+            % ", ".join(nested_forbidden))
+    # Reuse the exact package envelope checks without making extract_json parse a nested object.
+    missing = [key for key in _QUESTION_PACKAGE_REQUIRED_KEYS if key not in package_out]
+    face = package_out.get("question_face")
+    questions = face.get("questions") if isinstance(face, dict) else None
+    if missing or not isinstance(questions, list) or len(questions) != QUESTION_COUNT:
+        raise ModelCallError(
+            "reviewer-comment revision returned an incomplete package; missing=%s questions=%s"
+            % (missing, len(questions) if isinstance(questions, list) else "none"))
+    return {"outcome": outcome, "package": package_out}
 
 
 def build_revise_questions_message(

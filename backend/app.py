@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from typing import Any, Dict, Optional
 
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
@@ -53,6 +54,7 @@ app = BedrockAgentCoreApp()
 
 _catalogue: Optional[ScenarioCatalogue] = None
 _catalogue_lock = asyncio.Lock()
+_SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$")
 
 
 async def catalogue() -> ScenarioCatalogue:
@@ -98,10 +100,14 @@ async def invoke(payload: Dict[str, Any]):
     if action == "generate_sets":
         return _generate_sets(payload or {})
 
+    if action == "revise_questions_from_comments":
+        return _revise_questions_from_comments(payload or {})
+
     if action != "generate":
         return {
             "error": "unknown action %r; expected generate, generate_sets, list_scenarios, select, "
-                     "preview_audio, audio_status, list_candidates or presign_audio" % action
+                     "preview_audio, audio_status, list_candidates, presign_audio or "
+                     "revise_questions_from_comments" % action
         }
 
     return _generate(payload)
@@ -219,6 +225,56 @@ async def _generate_sets(payload: Dict[str, Any]):
     async for event in stream_request(
         request.slots, request.batch_id, budget=request.budget,
         concurrency=request.concurrency, group_id=request.group_id,
+    ):
+        yield event
+
+
+async def _revise_questions_from_comments(payload: Dict[str, Any]):
+    """Stream one reviewer-initiated revision; never mutate material or blueprint."""
+    from .orchestration.manual_question_revision import revise_from_comments
+    from .orchestration.slot_store import build_slot_store
+
+    required = ("material_id", "request_id", "base_version_id",
+                "material", "blueprint", "package", "comments")
+    missing = [key for key in required if not payload.get(key)]
+    if missing:
+        yield {"type": "question_revision_failed",
+               "message": "missing required fields: %s" % ", ".join(missing)}
+        return
+    for key in ("material_id", "request_id", "base_version_id"):
+        if not _SAFE_ID.fullmatch(str(payload.get(key) or "")):
+            yield {"type": "question_revision_failed",
+                   "message": "%s is invalid" % key}
+            return
+    if not all(isinstance(payload.get(key), dict)
+               for key in ("material", "blueprint", "package")):
+        yield {"type": "question_revision_failed",
+               "message": "material, blueprint and package must be JSON objects"}
+        return
+    comments = payload.get("comments")
+    if not isinstance(comments, list) or not comments:
+        yield {"type": "question_revision_failed", "message": "question comments are required"}
+        return
+    for row in comments:
+        anchor = row.get("anchor") if isinstance(row, dict) else None
+        number = anchor.get("index") if isinstance(anchor, dict) else None
+        if (not isinstance(row, dict) or not str(row.get("id") or "").strip()
+                or not isinstance(anchor, dict) or anchor.get("type") != "question"
+                or isinstance(number, bool) or not isinstance(number, int)
+                or not 1 <= number <= 10 or not str(row.get("text") or "").strip()):
+            yield {"type": "question_revision_failed",
+                   "message": "every comment must identify one question from Q1 to Q10"}
+            return
+    async for event in revise_from_comments(
+        store=build_slot_store(),
+        material_id=str(payload["material_id"]),
+        request_id=str(payload["request_id"]),
+        base_version_id=str(payload["base_version_id"]),
+        material=payload["material"],
+        blueprint=payload["blueprint"],
+        package=payload["package"],
+        comments=comments,
+        actor=str(payload.get("actor") or "reviewer"),
     ):
         yield event
 
