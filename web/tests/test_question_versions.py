@@ -76,6 +76,24 @@ def test_terminal_running_pointer_does_not_block_the_next_request(versions):
     assert second["request_id"] != first["request_id"]
 
 
+def test_existing_version_reconciles_a_stale_running_pointer_as_completed(versions):
+    service, store = versions
+    first = service.reserve("mat-1", "original", [{"id": "c1"}], "reviewer")
+    put(store, "_question_versions/mat-1/versions/%s.json" % first["request_id"], {
+        "id": first["request_id"],
+        "created_at": "2026-08-11T10:00:00Z",
+        "baseline_advisories": ["Q9 audit variance"],
+        "package": {"question_face": {}},
+    })
+
+    document = service.list("mat-1")
+
+    assert document["running_request"] is None
+    assert document["revision_request"]["status"] == "completed"
+    assert document["revision_request"]["version_id"] == first["request_id"]
+    assert document["revision_request"]["baseline_advisories"] == ["Q9 audit variance"]
+
+
 def test_unknown_base_or_adoption_target_is_rejected(versions):
     service, _ = versions
     with pytest.raises(QuestionVersionError) as found:
@@ -142,6 +160,8 @@ def test_revision_route_snapshots_question_comments_and_relays_runtime(
     payload = runtime.calls[-1]
     assert payload["action"] == "revise_questions_from_comments"
     assert payload["base_version_id"] == "original"
+    assert payload["base_version"]["id"] == "original"
+    assert payload["base_version"]["package"] == payload["package"]
     assert len(payload["comments"]) == 1
     assert payload["comments"][0]["anchor"] == {"type": "question", "index": 3}
 
@@ -215,6 +235,7 @@ def test_revision_stream_without_terminal_keeps_request_locked(
     assert "question_revision_failed" in response.text
     document = versions.list("mat-1")
     assert document["running_request"] is not None
+    assert document["revision_request"]["status"] == "running"
 
 
 def test_completed_event_without_stored_version_is_downgraded_to_failure(
@@ -255,4 +276,6 @@ def test_completed_event_without_stored_version_is_downgraded_to_failure(
 
     assert "question_revision_completed" not in response.text
     assert "question_revision_failed" in response.text
-    assert versions.list("mat-1")["running_request"] is None
+    document = versions.list("mat-1")
+    assert document["running_request"] is None
+    assert document["revision_request"]["status"] == "failed"

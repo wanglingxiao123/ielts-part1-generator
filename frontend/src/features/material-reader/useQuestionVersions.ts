@@ -4,14 +4,21 @@ import { userMessage } from '@/api/http'
 import { streamQuestionRevision } from '@/api/questionRevisions'
 import type { MaterialComment } from '@/contracts/comments'
 import type {
+  MaterialQuestionVersionsResponse,
   MaterialRevisionReason,
   QuestionPackageVersion,
+  QuestionRevisionRecord,
   QuestionRevisionStage,
 } from '@/contracts/questionVersions'
 
 export type RevisionResult =
+  | {
+      kind: 'revised'
+      versionId: string
+      baselineAdvisories: string[]
+    }
   | { kind: 'needs_material'; reasons: MaterialRevisionReason[] }
-  | { kind: 'failed'; message: string }
+  | { kind: 'failed'; message: string; blockers: string[] }
   | null
 
 export function useQuestionVersions(materialId: string, enabled: boolean) {
@@ -23,6 +30,8 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
   const [adopting, setAdopting] = useState(false)
   const [revisionStage, setRevisionStage] = useState<QuestionRevisionStage | null>(null)
   const [revisionResult, setRevisionResult] = useState<RevisionResult>(null)
+  const [revisionRequest, setRevisionRequest] =
+    useState<MaterialQuestionVersionsResponse['revision_request']>(null)
   const abortRef = useRef<AbortController | null>(null)
 
   const load = useCallback(async (preferredVersionId?: string) => {
@@ -39,10 +48,40 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
           ? preferred
           : nextActiveId
       })
-      if (response.running_request) {
-        setRevisionStage((current) => current ?? 'queued')
+      const request: QuestionRevisionRecord | null =
+        response.revision_request ??
+        (response.running_request
+          ? { ...response.running_request, status: 'running' }
+          : null)
+      setRevisionRequest(request)
+      const dismissed = window.localStorage.getItem(
+        `question-revision-dismissed:${materialId}`,
+      )
+      if (request?.status === 'running') {
+        setRevisionStage(request.stage ?? 'queued')
+        setRevisionResult(null)
       } else {
-        setRevisionStage((current) => current === 'queued' ? null : current)
+        setRevisionStage(null)
+        if (request && request.request_id !== dismissed) {
+          if (request.status === 'completed' && request.version_id) {
+            setRevisionResult({
+              kind: 'revised',
+              versionId: request.version_id,
+              baselineAdvisories: request.baseline_advisories ?? [],
+            })
+          } else if (request.status === 'needs_material_revision') {
+            setRevisionResult({
+              kind: 'needs_material',
+              reasons: request.reasons ?? [],
+            })
+          } else if (request.status === 'failed') {
+            setRevisionResult({
+              kind: 'failed',
+              message: request.message ?? '题目修改没有完成，原版本未受影响',
+              blockers: request.blockers ?? [],
+            })
+          }
+        }
       }
       return response
     } catch (err) {
@@ -60,7 +99,7 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
   }, [enabled, materialId, load])
 
   useEffect(() => {
-    if (revisionStage !== 'queued' || !enabled || !materialId) return
+    if (!revisionStage || !enabled || !materialId) return
     const timer = window.setInterval(() => void load(), 5000)
     return () => window.clearInterval(timer)
   }, [enabled, load, materialId, revisionStage])
@@ -113,11 +152,17 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
         abort.signal,
       )
       if (terminal.event === 'revised') {
+        setRevisionResult({
+          kind: 'revised',
+          versionId: terminal.version_id,
+          baselineAdvisories: terminal.baseline_advisories ?? [],
+        })
         await load(terminal.version_id)
       } else if (terminal.event === 'needs_material_revision') {
         setRevisionResult({ kind: 'needs_material', reasons: terminal.reasons })
+        await load()
       } else {
-        setRevisionResult({ kind: 'failed', message: terminal.message })
+        setRevisionResult({ kind: 'failed', message: terminal.message, blockers: [] })
         const refreshed = await load()
         keepQueued = Boolean(refreshed?.running_request)
       }
@@ -126,6 +171,7 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
         setRevisionResult({
           kind: 'failed',
           message: userMessage(err, '题目没有修改成功，原版本未受影响'),
+          blockers: [],
         })
         const refreshed = await load()
         keepQueued = Boolean(refreshed?.running_request)
@@ -135,6 +181,16 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
       if (abortRef.current === abort) abortRef.current = null
     }
   }, [activeVersionId, load, materialId, revisionStage, selectedVersion])
+
+  const dismissRevisionResult = useCallback(() => {
+    if (revisionRequest?.request_id) {
+      window.localStorage.setItem(
+        `question-revision-dismissed:${materialId}`,
+        revisionRequest.request_id,
+      )
+    }
+    setRevisionResult(null)
+  }, [materialId, revisionRequest?.request_id])
 
   return {
     versions,
@@ -147,7 +203,9 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
     adopting,
     adopt,
     revisionStage,
+    revisionRequest,
     revisionResult,
+    dismissRevisionResult,
     revise,
     reload: () => void load(),
   }

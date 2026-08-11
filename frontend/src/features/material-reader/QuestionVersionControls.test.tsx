@@ -43,7 +43,9 @@ function state(overrides: Partial<QuestionVersionsState> = {}): QuestionVersions
     adopting: false,
     adopt: vi.fn(),
     revisionStage: null,
+    revisionRequest: null,
     revisionResult: null,
+    dismissRevisionResult: vi.fn(),
     revise: vi.fn(),
     reload: vi.fn(),
     ...overrides,
@@ -125,12 +127,26 @@ describe('根据批注修改题目', () => {
   it('显示修改进度，并阻止重复提交', () => {
     render(
       <QuestionRevisionAction
-        state={state({ revisionStage: 'auditing' })}
+        state={state({
+          revisionStage: 'auditing',
+          revisionRequest: {
+            request_id: 'request-1',
+            status: 'running',
+            stage: 'auditing',
+            base_version_id: 'version-3',
+            comment_count: 1,
+          },
+        })}
         comments={COMMENTS}
       />,
     )
     expect(screen.getByRole('button', { name: '正在独立复评' })).toBeDisabled()
-    expect(screen.getByRole('status')).toHaveTextContent('请勿重复提交')
+    const progress = screen.getByRole('status')
+    expect(progress).toHaveTextContent('已提交 1 条批注 · 基于 V3')
+    expect(progress).toHaveTextContent('Agent 正在修改')
+    expect(progress).toHaveTextContent('完整校验')
+    expect(progress).toHaveTextContent('独立盲审')
+    expect(progress).toHaveTextContent('请勿重复提交')
   })
 
   it('需要修改材料时列出逐题原因且不提供题目版本操作', () => {
@@ -154,5 +170,27 @@ describe('根据批注修改题目', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('需要修改材料')
     expect(screen.getByRole('alert')).toHaveTextContent('Q3：录音中存在两个同样合理的答案')
     expect(screen.getByRole('alert')).toHaveTextContent('本次已终止')
+  })
+
+  it('成功结果持续说明新版本尚未自动采用，并可关闭', async () => {
+    const dismissRevisionResult = vi.fn()
+    render(
+      <QuestionRevisionAction
+        state={state({
+          revisionResult: {
+            kind: 'revised',
+            versionId: 'version-4',
+            baselineAdvisories: ['Q9 复审结论发生波动'],
+          },
+          dismissRevisionResult,
+        })}
+        comments={COMMENTS}
+      />,
+    )
+    expect(screen.getByRole('alert')).toHaveTextContent('新版本已生成')
+    expect(screen.getByRole('alert')).toHaveTextContent('当前采用版本不会自动改变')
+    expect(screen.getByText('查看 1 条基线提醒')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '关闭修改结果' }))
+    expect(dismissRevisionResult).toHaveBeenCalledOnce()
   })
 })

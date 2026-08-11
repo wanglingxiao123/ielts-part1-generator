@@ -636,6 +636,7 @@ class WebTier:
                 "material": material,
                 "blueprint": blueprint,
                 "package": base["package"],
+                "base_version": base,
                 "comments": comments,
                 "actor": actor,
             }

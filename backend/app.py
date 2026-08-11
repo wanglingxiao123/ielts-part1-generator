@@ -235,7 +235,7 @@ async def _revise_questions_from_comments(payload: Dict[str, Any]):
     from .orchestration.slot_store import build_slot_store
 
     required = ("material_id", "request_id", "base_version_id",
-                "material", "blueprint", "package", "comments")
+                "material", "blueprint", "package", "base_version", "comments")
     missing = [key for key in required if not payload.get(key)]
     if missing:
         yield {"type": "question_revision_failed",
@@ -247,9 +247,9 @@ async def _revise_questions_from_comments(payload: Dict[str, Any]):
                    "message": "%s is invalid" % key}
             return
     if not all(isinstance(payload.get(key), dict)
-               for key in ("material", "blueprint", "package")):
+               for key in ("material", "blueprint", "package", "base_version")):
         yield {"type": "question_revision_failed",
-               "message": "material, blueprint and package must be JSON objects"}
+               "message": "material, blueprint, package and base_version must be JSON objects"}
         return
     comments = payload.get("comments")
     if not isinstance(comments, list) or not comments:
@@ -273,6 +273,7 @@ async def _revise_questions_from_comments(payload: Dict[str, Any]):
         material=payload["material"],
         blueprint=payload["blueprint"],
         package=payload["package"],
+        base_version=payload["base_version"],
         comments=comments,
         actor=str(payload.get("actor") or "reviewer"),
     ):

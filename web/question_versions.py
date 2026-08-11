@@ -42,6 +42,11 @@ class QuestionVersionService:
                 "source_comment_ids": [],
                 "status": "original",
                 "package": original_package,
+                "quality": {
+                    "review": original.get("review"),
+                    "cross_check": original.get("cross_check"),
+                    "validation": original.get("validation"),
+                },
             })
         prefix = "%s%s/versions/" % (QUESTION_VERSION_PREFIX, material_id)
         for key in self.store.list_keys(prefix):
@@ -68,12 +73,14 @@ class QuestionVersionService:
             item["ordinal"] = ordinal
             item["is_active"] = str(row["id"]) == active_id
             projected.append(item)
-        running = self._running_request(material_id)
+        revision = self._latest_request(material_id)
+        running = revision if revision and revision.get("status") == "running" else None
         return {
             "material_id": material_id,
             "active_version_id": active_id or None,
             "versions": projected,
             "running_request": running,
+            "revision_request": revision,
         }
 
     def load(self, material_id: str, version_id: str) -> Dict[str, Any]:
@@ -109,8 +116,10 @@ class QuestionVersionService:
                 "request_id": request_id,
                 "material_id": material_id,
                 "status": "running",
+                "stage": "queued",
                 "base_version_id": base_version_id,
                 "source_comments": comments,
+                "comment_count": len(comments),
                 "actor": actor,
                 "created_at": _now(),
             }
@@ -141,7 +150,7 @@ class QuestionVersionService:
         self._put(_running_key(material_id), failed)
 
     def _running_request(self, material_id: str) -> Optional[Dict[str, Any]]:
-        pointer = self._read(_running_key(material_id))
+        pointer = self._latest_request(material_id)
         if isinstance(pointer, dict) and pointer.get("status") == "running":
             request_id = str(pointer.get("request_id") or "")
             # A durable version wins over a stale sidecar: version creation is the commit point.
@@ -168,6 +177,29 @@ class QuestionVersionService:
             return None
         running.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
         return running[0]
+
+    def _latest_request(self, material_id: str) -> Optional[Dict[str, Any]]:
+        pointer = self._read(_running_key(material_id))
+        if not isinstance(pointer, dict):
+            return None
+        request_id = str(pointer.get("request_id") or "")
+        version = (
+            self._read(_version_key(material_id, request_id))
+            if pointer.get("status") == "running" and request_id else None
+        )
+        if isinstance(version, dict):
+            return dict(
+                pointer,
+                status="completed",
+                stage="storing",
+                version_id=request_id,
+                completed_at=version.get("created_at")
+                or pointer.get("updated_at") or pointer.get("created_at"),
+                baseline_advisories=version.get("baseline_advisories") or [],
+            )
+        if pointer.get("status") == "running" and _is_stale(pointer):
+            return None
+        return pointer
 
     def _read(self, key: str) -> Optional[Dict[str, Any]]:
         try:

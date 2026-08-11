@@ -32,11 +32,17 @@ export function decodeRevisionFrame(frame: string): QuestionRevisionEvent | null
     if (wireType === 'question_revision_auditing') {
       return { event: 'progress', request_id: requestId, stage: 'auditing' }
     }
+    if (wireType === 'question_revision_storing') {
+      return { event: 'progress', request_id: requestId, stage: 'storing' }
+    }
     if (wireType === 'question_revision_completed' && typeof payload.version_id === 'string') {
       return {
         event: 'revised',
         request_id: requestId,
         version_id: payload.version_id,
+        baseline_advisories: Array.isArray(payload.baseline_advisories)
+          ? payload.baseline_advisories.filter((value): value is string => typeof value === 'string')
+          : [],
       }
     }
     if (wireType === 'question_revision_needs_material' && Array.isArray(payload.reasons)) {

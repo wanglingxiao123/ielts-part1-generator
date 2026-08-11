@@ -24,6 +24,22 @@ export interface MaterialQuestionVersionsResponse {
     base_version_id: string
     created_at: string
   } | null
+  revision_request?: QuestionRevisionRecord | null
+}
+
+export interface QuestionRevisionRecord {
+  request_id: string
+  status: 'running' | 'completed' | 'needs_material_revision' | 'failed'
+  stage?: QuestionRevisionStage
+  base_version_id: string
+  comment_count?: number
+  created_at?: string
+  completed_at?: string
+  version_id?: string
+  message?: string
+  reasons?: MaterialRevisionReason[]
+  blockers?: string[]
+  baseline_advisories?: string[]
 }
 
 export interface CreateQuestionRevisionRequest {
@@ -42,6 +58,7 @@ export type QuestionRevisionStage =
   | 'revising'
   | 'validating'
   | 'auditing'
+  | 'storing'
 
 export interface QuestionRevisionProgressEvent {
   event: 'progress'
@@ -54,6 +71,7 @@ export interface QuestionRevisionRevisedEvent {
   event: 'revised'
   request_id: string
   version_id: string
+  baseline_advisories?: string[]
 }
 
 export interface MaterialRevisionReason {

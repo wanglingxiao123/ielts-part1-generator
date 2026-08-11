@@ -2802,7 +2802,41 @@ h3 {
 }
 
 .question-revision-progress {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.question-revision-progress strong {
+  font-size: 12px;
+}
+
+.question-revision-steps {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11px;
+}
+
+.question-revision-steps li {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  align-items: center;
+  color: var(--ink-3);
+}
+
+.question-revision-steps li.done {
+  color: var(--good);
+}
+
+.question-revision-steps li.current {
   color: var(--accent);
+  font-weight: 600;
 }
 
 .question-revision-result {
@@ -2813,8 +2847,21 @@ h3 {
 }
 
 .question-revision-result strong {
-  display: block;
-  margin-bottom: 3px;
+  font-size: 12px;
+}
+
+.question-revision-result-head {
+  display: flex;
+  min-height: 24px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.question-revision-result-head .icon-btn {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
 }
 
 .question-revision-result ul {
@@ -2826,6 +2873,12 @@ h3 {
   color: var(--warn);
   border-color: var(--warn-line);
   background: var(--warn-bg);
+}
+
+.question-revision-result.succeeded {
+  color: var(--good);
+  border-color: var(--good);
+  background: var(--good-bg);
 }
 
 .question-revision-result.failed {

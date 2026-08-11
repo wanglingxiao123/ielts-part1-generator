@@ -111,7 +111,7 @@ describe('useQuestionVersions', () => {
     await waitFor(() => expect(result.current.selectedVersionId).toBe('original'))
     await act(() => result.current.revise([comment]))
 
-    expect(listVersions).toHaveBeenCalledOnce()
+    expect(listVersions).toHaveBeenCalledTimes(2)
     expect(result.current.selectedVersionId).toBe('original')
     expect(result.current.revisionResult).toEqual({
       kind: 'needs_material',
@@ -123,5 +123,52 @@ describe('useQuestionVersions', () => {
         },
       ],
     })
+  })
+
+  it('刷新后从持久请求记录恢复审核阶段', async () => {
+    listVersions.mockResolvedValue({
+      ...response(),
+      running_request: {
+        request_id: 'request-running',
+        status: 'running',
+        base_version_id: 'original',
+        created_at: '2026-08-11T09:00:00Z',
+      },
+      revision_request: {
+        request_id: 'request-running',
+        status: 'running',
+        stage: 'auditing',
+        base_version_id: 'original',
+        comment_count: 2,
+      },
+    })
+
+    const { result } = renderHook(() => useQuestionVersions('material-1', true))
+
+    await waitFor(() => expect(result.current.revisionStage).toBe('auditing'))
+    expect(result.current.revisionRequest?.comment_count).toBe(2)
+  })
+
+  it('刷新后恢复持久失败原因而不是静默清空', async () => {
+    listVersions.mockResolvedValue({
+      ...response(),
+      revision_request: {
+        request_id: 'request-failed',
+        status: 'failed',
+        base_version_id: 'original',
+        message: '修改后的题目未通过完整质量检查。',
+        blockers: ['Q5 has an equally-supported rival'],
+      },
+    })
+
+    const { result } = renderHook(() => useQuestionVersions('material-1', true))
+
+    await waitFor(() =>
+      expect(result.current.revisionResult).toEqual({
+        kind: 'failed',
+        message: '修改后的题目未通过完整质量检查。',
+        blockers: ['Q5 has an equally-supported rival'],
+      }),
+    )
   })
 })

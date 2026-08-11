@@ -23,6 +23,7 @@ describe('question revision SSE wire adapter', () => {
       event: 'revised',
       request_id: 'request-1',
       version_id: 'version-2',
+      baseline_advisories: [],
     })
   })
 
