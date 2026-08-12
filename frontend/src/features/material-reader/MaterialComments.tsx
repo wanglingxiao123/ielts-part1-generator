@@ -101,6 +101,10 @@ export function CommentCard({
   const statusLabel =
     status === 'needs_material'
         ? '需修改材料'
+      : status === 'needs_replan'
+        ? '需重新命题'
+      : status === 'no_change'
+        ? '无需修改'
       : status === 'resolved'
         ? comment.resolved_by_version_id
           ? `已在 ${resolvedVersionLabel?.(comment.resolved_by_version_id) ?? '新版本'} 处理`
@@ -129,6 +133,16 @@ export function CommentCard({
           </time>
         </span>
         <span className="comment-card-text">{comment.text}</span>
+        {readOnly && comment.decision_reason && (
+          <span className="comment-decision">
+            <strong>处理理由：</strong>{comment.decision_reason}
+            {(comment.decision_references?.length ?? 0) > 0 && (
+              <span>
+                <strong>核对依据：</strong>{comment.decision_references?.join('；')}
+              </span>
+            )}
+          </span>
+        )}
       </button>
       <button
         type="button"

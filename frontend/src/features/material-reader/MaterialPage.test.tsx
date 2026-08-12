@@ -14,6 +14,7 @@ import type {
   MaterialQuestionsResponse,
   MaterialRecord,
 } from '@/contracts/api'
+import type { QuestionRevisionRecord } from '@/contracts/questionVersions'
 import { buildRecord, QUESTION_PACKAGE } from '@/mocks/fixtures'
 import { MaterialPage } from './MaterialPage'
 
@@ -44,6 +45,8 @@ let questions: MaterialQuestionsResponse = {
   request_status: null,
 }
 const questionCalls: Array<[string, string | undefined]> = []
+let commentCalls = 0
+let revisionRequest: QuestionRevisionRecord | null = null
 
 vi.mock('@/api/endpoints', () => ({
   api: {
@@ -59,8 +62,10 @@ vi.mock('@/api/endpoints', () => ({
       questionCalls.push([id, batchId])
       return Promise.resolve(questions)
     },
-    materialComments: (id: string) =>
-      Promise.resolve({ material_id: id, comments: [] }),
+    materialComments: (id: string) => {
+      commentCalls += 1
+      return Promise.resolve({ material_id: id, comments: [] })
+    },
     createMaterialComment: (id: string) =>
       Promise.resolve({ material_id: id, comments: [] }),
     deleteMaterialComment: (id: string) =>
@@ -81,6 +86,7 @@ vi.mock('@/api/endpoints', () => ({
               ordinal: 1,
             }]
           : [],
+        revision_request: revisionRequest,
       }),
     adoptQuestionVersion: (id: string, versionId: string) =>
       Promise.resolve({ material_id: id, active_version_id: versionId }),
@@ -102,6 +108,8 @@ beforeEach(() => {
   previewCalls.length = 0
   audio = { status: 'not_requested', progress: { done: 0, total: 0 } }
   questionCalls.length = 0
+  commentCalls = 0
+  revisionRequest = null
   questions = { material_id: MATERIAL_ID, questions: null, slot: null, request_status: null }
 })
 
@@ -351,6 +359,28 @@ describe('MaterialPage 页签', () => {
     expect(screen.getByRole('checkbox', { name: /显示答案和证据/ })).not.toBeChecked()
     expect(document.querySelector('.qp-reveals')).toBeNull()
   })
+
+  it.each(['no_change', 'replan_questions'] as const)(
+    '%s 终态会立即刷新批注结算状态',
+    async (status) => {
+      questions = {
+        material_id: MATERIAL_ID,
+        questions: QUESTION_PACKAGE,
+        slot: null,
+        request_status: null,
+      }
+      revisionRequest = {
+        request_id: `request-${status}`,
+        status,
+        base_version_id: 'original',
+      }
+      renderPage()
+      await screen.findByRole('tab', { name: '题目预览' })
+      await userEvent.click(screen.getByRole('tab', { name: '题目预览' }))
+
+      await waitFor(() => expect(commentCalls).toBeGreaterThanOrEqual(2))
+    },
+  )
 
   /**
    * 从题解跳回原文。先切回 [对话原文] 再跳，否则跳转落在一个没挂载的阅读器上——点了没反应，

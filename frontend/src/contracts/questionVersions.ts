@@ -12,6 +12,15 @@ export interface QuestionPackageVersion {
   is_active: boolean
   /** Display-only V-number assigned by the server after sorting immutable versions. */
   ordinal: number
+  field_changes?: QuestionVersionFieldChange[]
+}
+
+export interface QuestionVersionFieldChange {
+  question_number: number
+  section: 'question' | 'answer_key' | 'evidence' | 'group' | 'instruction'
+  field: string
+  before: unknown
+  after: unknown
 }
 
 export interface MaterialQuestionVersionsResponse {
@@ -29,7 +38,13 @@ export interface MaterialQuestionVersionsResponse {
 
 export interface QuestionRevisionRecord {
   request_id: string
-  status: 'running' | 'completed' | 'needs_material_revision' | 'failed'
+  status:
+    | 'running'
+    | 'completed'
+    | 'no_change'
+    | 'replan_questions'
+    | 'needs_material_revision'
+    | 'failed'
   stage?: QuestionRevisionStage
   base_version_id: string
   comment_count?: number
@@ -55,6 +70,7 @@ export interface AdoptQuestionVersionResponse {
 export type QuestionRevisionStage =
   | 'queued'
   | 'analysing'
+  | 'revising'
   | 'validating'
   | 'auditing'
   | 'storing'
@@ -77,6 +93,19 @@ export interface MaterialRevisionReason {
   comment_id: string
   question_number: number
   reason: string
+  references?: string[]
+}
+
+export interface QuestionRevisionNoChangeEvent {
+  event: 'no_change'
+  request_id: string
+  reasons: MaterialRevisionReason[]
+}
+
+export interface QuestionRevisionNeedsReplanEvent {
+  event: 'needs_replan'
+  request_id: string
+  reasons: MaterialRevisionReason[]
 }
 
 export interface QuestionRevisionNeedsMaterialEvent {
@@ -94,10 +123,14 @@ export interface QuestionRevisionFailedEvent {
 export type QuestionRevisionEvent =
   | QuestionRevisionProgressEvent
   | QuestionRevisionRevisedEvent
+  | QuestionRevisionNoChangeEvent
+  | QuestionRevisionNeedsReplanEvent
   | QuestionRevisionNeedsMaterialEvent
   | QuestionRevisionFailedEvent
 
 export type QuestionRevisionTerminalEvent =
   | QuestionRevisionRevisedEvent
+  | QuestionRevisionNoChangeEvent
+  | QuestionRevisionNeedsReplanEvent
   | QuestionRevisionNeedsMaterialEvent
   | QuestionRevisionFailedEvent

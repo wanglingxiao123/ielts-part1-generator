@@ -106,6 +106,31 @@ describe('单人材料批注', () => {
     expect(screen.getByRole('button', { name: '删除 Q6 的批注' })).toBeDisabled()
   })
 
+  it('shows a no-change decision with durable reason and evidence', () => {
+    render(
+      <CommentCard
+        comment={{
+          id: 'c4',
+          created_at: '2026-08-11T14:30:00Z',
+          anchor: { type: 'question', index: 4 },
+          severity: 'major',
+          text: '答案可能不对',
+          status: 'no_change',
+          decision_reason: '现有答案与材料一致。',
+          decision_references: ['题面', '标准答案', '材料证据'],
+        }}
+        disabled={false}
+        onNavigate={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('无需修改')).toBeInTheDocument()
+    expect(screen.getByText(/现有答案与材料一致/)).toBeInTheDocument()
+    expect(screen.getByText(/题面；标准答案；材料证据/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '删除 Q4 的批注' })).toBeDisabled()
+  })
+
   it('disables the composer for a historical version', () => {
     render(
       <CommentComposer

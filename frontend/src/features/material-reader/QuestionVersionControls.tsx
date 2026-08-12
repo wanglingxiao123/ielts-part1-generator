@@ -6,6 +6,7 @@ import type { QuestionVersionsState } from './useQuestionVersions'
 const STAGE_LABEL: Record<QuestionRevisionStage, string> = {
   queued: '正在准备修改',
   analysing: '正在分析批注',
+  revising: '正在修改题目',
   validating: '正在检查完整十题',
   auditing: '正在独立复评',
   storing: '正在生成新版本',
@@ -22,6 +23,7 @@ const REVISION_STEPS = [
 const STAGE_INDEX: Record<QuestionRevisionStage, number> = {
   queued: 0,
   analysing: 1,
+  revising: 1,
   validating: 2,
   auditing: 3,
   storing: 4,
@@ -111,6 +113,11 @@ export function QuestionRevisionAction({
   const baseVersion = state.versions.find(
     (version) => version.id === request?.base_version_id,
   )
+  const revisedVersionId =
+    state.revisionResult?.kind === 'revised' ? state.revisionResult.versionId : null
+  const revisedVersion = revisedVersionId
+    ? state.versions.find((version) => version.id === revisedVersionId)
+    : undefined
 
   return (
     <div className="question-revision-action">
@@ -166,6 +173,9 @@ export function QuestionRevisionAction({
               </ul>
             </details>
           )}
+          <VersionDiffSummary
+            changes={revisedVersion?.field_changes ?? []}
+          />
         </RevisionResultShell>
       )}
       {state.revisionResult?.kind === 'needs_material' && (
@@ -178,6 +188,18 @@ export function QuestionRevisionAction({
               </li>
             ))}
           </ul>
+        </RevisionResultShell>
+      )}
+      {state.revisionResult?.kind === 'needs_replan' && (
+        <RevisionResultShell state={state} className="needs-replan" title="需要重新命题">
+          <p>这些意见需要更换信息点或重新规划题组，题目级修改已终止，现有版本未改变。</p>
+          <ReasonList reasons={state.revisionResult.reasons} />
+        </RevisionResultShell>
+      )}
+      {state.revisionResult?.kind === 'no_change' && (
+        <RevisionResultShell state={state} className="no-change" title="无需修改">
+          <p>核对后确认现有题目正确，本次未生成新版本。</p>
+          <ReasonList reasons={state.revisionResult.reasons} showReferences />
         </RevisionResultShell>
       )}
       {state.revisionResult?.kind === 'failed' && (
@@ -193,6 +215,79 @@ export function QuestionRevisionAction({
         </RevisionResultShell>
       )}
     </div>
+  )
+}
+
+const SECTION_LABEL = {
+  question: '题面',
+  answer_key: '答案',
+  evidence: '证据',
+  group: '题组版式',
+  instruction: '作答说明',
+} as const
+
+const FIELD_LABEL: Record<string, string> = {
+  carrier_before: '空格前文字',
+  carrier_after: '空格后文字',
+  canonical: '标准答案',
+  alternatives: '可接受答案',
+  turn_index: '材料位置',
+  quote: '证据原句',
+  word_limit: '词数限制',
+  instruction_text: '作答要求',
+  title: '题组标题',
+}
+
+function VersionDiffSummary({
+  changes,
+}: {
+  changes: NonNullable<QuestionVersionsState['selectedVersion']>['field_changes']
+}) {
+  if (!changes?.length) return null
+  return (
+    <details className="question-version-diff">
+      <summary>查看 {changes.length} 项修改</summary>
+      <ul>
+        {changes.map((change, index) => (
+          <li key={`${change.question_number}-${change.section}-${change.field}-${index}`}>
+            <strong>
+              Q{change.question_number} · {SECTION_LABEL[change.section]} ·{' '}
+              {FIELD_LABEL[change.field] ?? change.field}
+            </strong>
+            <span>{displayDiffValue(change.before)} → {displayDiffValue(change.after)}</span>
+          </li>
+        ))}
+      </ul>
+    </details>
+  )
+}
+
+function displayDiffValue(value: unknown): string {
+  if (value === '' || value == null) return '（空）'
+  if (typeof value === 'string') return value
+  return JSON.stringify(value)
+}
+
+function ReasonList({
+  reasons,
+  showReferences = false,
+}: {
+  reasons: { comment_id: string; question_number: number; reason: string; references?: string[] }[]
+  showReferences?: boolean
+}) {
+  return (
+    <ul>
+      {reasons.map((reason) => (
+        <li key={`${reason.comment_id}-${reason.question_number}`}>
+          Q{reason.question_number}：{reason.reason}
+          {showReferences && (reason.references?.length ?? 0) > 0 && (
+            <span className="revision-references">
+              核对依据：{reason.references?.join('；')}
+            </span>
+          )}
+        </li>
+      ))}
+    </ul>
   )
 }
 

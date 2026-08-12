@@ -14,16 +14,32 @@ async def collect(stream):
     return [event async for event in stream]
 
 
-@pytest.mark.asyncio
-async def test_material_required_outcome_stores_no_version(monkeypatch):
-    async def revise(*_args):
+@pytest.fixture(autouse=True)
+def question_only_classification(monkeypatch):
+    async def classify(_material, _blueprint, _package, comments):
         return {
-            "outcome": "needs_material_revision",
-            "reasons": [{"comment_id": "c1", "question_number": 2,
-                         "reason": "the recording states two equal answers"}],
+            "outcome": "question_only",
+            "reasons": [
+                {"comment_id": row["id"], "question_number": 1,
+                 "reason": "question-only", "references": []}
+                for row in comments
+            ],
         }
 
-    monkeypatch.setattr(subject.agent_steps, "revise_questions_from_comments", revise)
+    monkeypatch.setattr(subject.agent_steps, "classify_question_revision", classify)
+
+
+@pytest.mark.asyncio
+async def test_material_required_outcome_stores_no_version(monkeypatch):
+    async def classify(*_args):
+        return {
+            "outcome": "revise_material",
+            "reasons": [{"comment_id": "c1", "question_number": 2,
+                         "reason": "the material states two equal answers",
+                         "references": ["material turn 2"]}],
+        }
+
+    monkeypatch.setattr(subject.agent_steps, "classify_question_revision", classify)
     backing = InMemoryObjectStore()
     store = SlotStore(backing)
     events = await collect(subject.revise_from_comments(
@@ -36,6 +52,104 @@ async def test_material_required_outcome_stores_no_version(monkeypatch):
     assert store.load_question_version("mat-1", "req-1") is None
     request = store._read("_question_revisions/mat-1/req-1.json")
     assert request["status"] == "needs_material_revision"
+
+
+@pytest.mark.asyncio
+async def test_no_change_stores_reason_without_creating_version(monkeypatch):
+    model_reasons = [{
+        "comment_id": "c1",
+        "question_number": 2,
+        "reason": "The existing item already has one supported answer.",
+        "references": ["hallucinated face", "hallucinated answer", "hallucinated evidence"],
+    }]
+
+    async def classify(*_args):
+        return {"outcome": "no_change", "reasons": model_reasons}
+
+    monkeypatch.setattr(subject.agent_steps, "classify_question_revision", classify)
+    store = SlotStore(InMemoryObjectStore())
+    events = await collect(subject.revise_from_comments(
+        store=store, material_id="mat-1", request_id="req-1",
+        base_version_id="original", material={}, blueprint={}, package={
+            "question_face": {"questions": [
+                {"number": 2, "carrier_before": "Postcode", "carrier_after": ""},
+            ]},
+            "answer_key": [{"number": 2, "canonical": "BT14 9BJ"}],
+            "evidence": [{"number": 2, "turn_index": 3, "quote": "That's BT14 9BJ."}],
+        },
+        base_version={"package": {}}, comments=[{"id": "c1"}], actor="reviewer"))
+
+    references = events[-1]["reasons"][0]["references"]
+    assert references == [
+        "题面：Postcode [Q2]",
+        "标准答案：BT14 9BJ",
+        "材料证据（Turn 3）：That's BT14 9BJ.",
+    ]
+    assert all("hallucinated" not in value for value in references)
+    assert store.load_question_version("mat-1", "req-1") is None
+    stored = store._read("_question_revisions/mat-1/req-1.json")
+    assert stored["status"] == "no_change"
+    assert stored["reasons"][0]["references"] == references
+
+
+@pytest.mark.asyncio
+async def test_replan_questions_is_distinct_from_material_revision(monkeypatch):
+    async def classify(*_args):
+        return {
+            "outcome": "replan_questions",
+            "reasons": [{"comment_id": "c1", "question_number": 2,
+                         "reason": "A different information point is required",
+                         "references": ["blueprint item 2"]}],
+        }
+
+    monkeypatch.setattr(subject.agent_steps, "classify_question_revision", classify)
+    store = SlotStore(InMemoryObjectStore())
+    events = await collect(subject.revise_from_comments(
+        store=store, material_id="mat-1", request_id="req-1",
+        base_version_id="original", material={}, blueprint={}, package={},
+        base_version={"package": {}}, comments=[{"id": "c1"}], actor="reviewer"))
+
+    assert events[-1]["type"] == "question_revision_needs_replan"
+    assert store._read("_question_revisions/mat-1/req-1.json")["status"] == "replan_questions"
+    assert store.load_question_version("mat-1", "req-1") is None
+
+
+@pytest.mark.asyncio
+async def test_mixed_snapshot_routes_high_without_running_partial_question_revision(monkeypatch):
+    async def classify(*_args):
+        return {
+            "outcome": "replan_questions",
+            "reasons": [
+                {
+                    "comment_id": "c1", "question_number": 1,
+                    "outcome": "question_only", "reason": "local carrier fix",
+                },
+                {
+                    "comment_id": "c2", "question_number": 2,
+                    "outcome": "replan_questions", "reason": "new target required",
+                },
+            ],
+        }
+
+    async def revise(*_args):
+        raise AssertionError("a mixed higher-layer snapshot must not partially revise questions")
+
+    monkeypatch.setattr(subject.agent_steps, "classify_question_revision", classify)
+    monkeypatch.setattr(subject.agent_steps, "revise_questions_from_comments", revise)
+    store = SlotStore(InMemoryObjectStore())
+    events = await collect(subject.revise_from_comments(
+        store=store, material_id="mat-1", request_id="req-1",
+        base_version_id="original", material={}, blueprint={}, package={},
+        base_version={"package": {}}, comments=[{"id": "c1"}, {"id": "c2"}],
+        actor="reviewer"))
+
+    assert events[-1]["type"] == "question_revision_needs_replan"
+    record = store._read("_question_revisions/mat-1/req-1.json")
+    assert record["status"] == "replan_questions"
+    assert {row["comment_id"]: row["outcome"] for row in record["comment_outcomes"]} == {
+        "c1": "question_only",
+        "c2": "replan_questions",
+    }
 
 
 @pytest.mark.asyncio
@@ -53,15 +167,65 @@ async def test_agent_failure_stores_failed_request_without_version(monkeypatch):
 
     assert events[-1]["type"] == "question_revision_failed"
     assert store.load_question_version("mat-1", "req-1") is None
-    assert store._read("_question_revisions/mat-1/req-1.json")["status"] == "failed"
+    record = store._read("_question_revisions/mat-1/req-1.json")
+    assert record["status"] == "failed"
+    assert record["comment_outcomes"] == [{
+        "comment_id": "c1",
+        "question_number": 1,
+        "outcome": "question_only",
+        "reason": "question-only",
+    }]
+
+
+@pytest.mark.asyncio
+async def test_byte_identical_revision_fails_without_creating_noop_version(monkeypatch):
+    package = {
+        "question_face": {"questions": []},
+        "answer_key": [],
+        "evidence": [],
+    }
+
+    async def revise(_material, _blueprint, current, _comments):
+        return {"outcome": "revised", "package": copy.deepcopy(current)}
+
+    monkeypatch.setattr(subject.agent_steps, "revise_questions_from_comments", revise)
+    store = SlotStore(InMemoryObjectStore())
+    events = await collect(subject.revise_from_comments(
+        store=store, material_id="mat-1", request_id="req-noop",
+        base_version_id="original", material={}, blueprint={}, package=package,
+        base_version={"package": package},
+        comments=[{"id": "c1"}], actor="reviewer"))
+
+    assert events[-1]["type"] == "question_revision_failed"
+    assert store.load_question_version("mat-1", "req-noop") is None
+    record = store._read("_question_revisions/mat-1/req-noop.json")
+    assert record["status"] == "failed"
+    assert record["comment_outcomes"][0]["outcome"] == "question_only"
 
 
 @pytest.mark.asyncio
 async def test_only_a_fully_checked_package_becomes_an_immutable_version(monkeypatch):
     package = {"material_id": "mat-1", "question_face": {"questions": []},
                "answer_key": [], "evidence": []}
+    revised_comment_ids = []
 
-    async def revise(*_args):
+    async def classify(*_args):
+        return {
+            "outcome": "question_only",
+            "reasons": [
+                {
+                    "comment_id": "c1", "question_number": 1,
+                    "outcome": "question_only", "reason": "local fix",
+                },
+                {
+                    "comment_id": "c2", "question_number": 2,
+                    "outcome": "no_change", "reason": "already correct",
+                },
+            ],
+        }
+
+    async def revise(_material, _blueprint, _package, comments):
+        revised_comment_ids.extend(row["id"] for row in comments)
         return {"outcome": "revised", "package": package}
 
     class Validation:
@@ -93,6 +257,7 @@ async def test_only_a_fully_checked_package_becomes_an_immutable_version(monkeyp
     async def audit(*_args):
         return {"question_qc_status": "PASS"}
 
+    monkeypatch.setattr(subject.agent_steps, "classify_question_revision", classify)
     monkeypatch.setattr(subject.agent_steps, "revise_questions_from_comments", revise)
     monkeypatch.setattr(subject, "validate_questions", validate)
     monkeypatch.setattr(subject, "question_metrics", lambda *_args: {})
@@ -105,10 +270,11 @@ async def test_only_a_fully_checked_package_becomes_an_immutable_version(monkeyp
         store=store, material_id="mat-1", request_id="req-1",
         base_version_id="original", material={}, blueprint={}, package={},
         base_version={"package": {}},
-        comments=[{"id": "c1"}], actor="reviewer"))
+        comments=[{"id": "c1"}, {"id": "c2"}], actor="reviewer"))
 
     assert [event["type"] for event in events] == [
         "question_revision_started",
+        "question_revision_revising",
         "question_revision_validating",
         "question_revision_auditing",
         "question_revision_storing",
@@ -118,6 +284,12 @@ async def test_only_a_fully_checked_package_becomes_an_immutable_version(monkeyp
     assert version["package"] == package
     assert version["based_on_version_id"] == "original"
     assert version["source_comment_ids"] == ["c1"]
+    assert revised_comment_ids == ["c1"]
+    record = store._read("_question_revisions/mat-1/req-1.json")
+    assert {row["comment_id"]: row["outcome"] for row in record["comment_outcomes"]} == {
+        "c1": "question_only",
+        "c2": "no_change",
+    }
 
 
 def test_question_version_is_create_only_and_same_payload_is_idempotent():
@@ -273,6 +445,60 @@ def test_unexplained_crosscheck_shortfall_always_blocks():
     blockers, _, _ = subject._revision_gate(candidate, _base_version(base))
 
     assert any("agrees on 9 of 10" in blocker for blocker in blockers)
+
+
+def test_question_only_boundary_rejects_group_or_answer_replanning():
+    base = _package()
+    revised = copy.deepcopy(base)
+    revised["question_face"]["groups"][0]["layout"] = "note"
+    revised["answer_key"][1]["canonical"] = "different"
+    blueprint = {"items": [{"number": 2, "target": "answer-2"}]}
+
+    errors = subject._question_only_boundary_errors(base, revised, blueprint)
+
+    assert "question groups or layouts changed" in errors
+    assert "Q2 changed its blueprint answer target" in errors
+
+
+def test_question_only_boundary_allows_canonical_case_formatting():
+    base = _package()
+    revised = copy.deepcopy(base)
+    revised["answer_key"][1]["canonical"] = "ANSWER-2"
+    blueprint = {"items": [{"number": 2, "target": "answer-2"}]}
+
+    assert subject._question_only_boundary_errors(base, revised, blueprint) == []
+
+
+def test_field_changes_identify_dependent_question_fields():
+    base = _package()
+    revised = copy.deepcopy(base)
+    revised["question_face"]["questions"][4]["carrier_before"] = ""
+    revised["evidence"][4]["turn_index"] = 8
+
+    changes = subject._field_changes(base, revised)
+
+    assert {
+        (row["question_number"], row["section"], row["field"])
+        for row in changes
+    } == {(5, "question", "carrier_before"), (5, "evidence", "turn_index")}
+
+
+def test_field_changes_include_group_instruction_fields():
+    base = _package()
+    revised = copy.deepcopy(base)
+    base["question_face"]["instructions"][0]["word_limit"] = 2
+    revised["question_face"]["instructions"][0]["word_limit"] = 1
+
+    changes = subject._field_changes(base, revised)
+
+    assert any(
+        row["question_number"] == 1
+        and row["section"] == "instruction"
+        and row["field"] == "word_limit"
+        and row["before"] == 2
+        and row["after"] == 1
+        for row in changes
+    )
 
 
 @pytest.mark.asyncio

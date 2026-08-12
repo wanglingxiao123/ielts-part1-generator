@@ -125,6 +125,27 @@ describe('useQuestionVersions', () => {
     })
   })
 
+  it('无需修改时不生成版本并保留理由与核对依据', async () => {
+    const reasons = [{
+      comment_id: 'comment-q3',
+      question_number: 3,
+      reason: '现有题目已经正确',
+      references: ['题面', '标准答案', '材料证据'],
+    }]
+    streamRevision.mockResolvedValue({
+      event: 'no_change',
+      request_id: 'request-no-change',
+      reasons,
+    })
+    const { result } = renderHook(() => useQuestionVersions('material-1', true))
+    await waitFor(() => expect(result.current.selectedVersionId).toBe('original'))
+    await act(() => result.current.revise([comment]))
+
+    expect(result.current.revisionResult).toEqual({ kind: 'no_change', reasons })
+    expect(result.current.versions).toHaveLength(1)
+    expect(result.current.selectedVersionId).toBe('original')
+  })
+
   it('刷新后从持久请求记录恢复审核阶段', async () => {
     listVersions.mockResolvedValue({
       ...response(),
@@ -168,6 +189,35 @@ describe('useQuestionVersions', () => {
         kind: 'failed',
         message: '修改后的题目未通过完整质量检查。',
         blockers: ['Q5 has an equally-supported rival'],
+      }),
+    )
+  })
+
+  it('刷新后恢复需重新命题终态', async () => {
+    listVersions.mockResolvedValue({
+      ...response(),
+      revision_request: {
+        request_id: 'request-replan',
+        status: 'replan_questions',
+        base_version_id: 'original',
+        reasons: [{
+          comment_id: 'comment-q3',
+          question_number: 3,
+          reason: '需要更换信息点',
+        }],
+      },
+    })
+
+    const { result } = renderHook(() => useQuestionVersions('material-1', true))
+
+    await waitFor(() =>
+      expect(result.current.revisionResult).toEqual({
+        kind: 'needs_replan',
+        reasons: [{
+          comment_id: 'comment-q3',
+          question_number: 3,
+          reason: '需要更换信息点',
+        }],
       }),
     )
   })

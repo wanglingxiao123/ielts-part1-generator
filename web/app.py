@@ -1049,6 +1049,8 @@ def _relay_question_revision(
                     return
             if event_type in {
                 "question_revision_completed",
+                "question_revision_no_change",
+                "question_revision_needs_replan",
                 "question_revision_needs_material",
                 "question_revision_failed",
             }:
@@ -1128,7 +1130,13 @@ def _reconcile_question_comments(
         return
     status = revision.get("status")
     source = revision.get("source_comments")
-    if status not in {"completed", "needs_material_revision"} or not isinstance(source, list):
+    terminal_outcomes = {
+        "completed": "resolved",
+        "no_change": "no_change",
+        "replan_questions": "needs_replan",
+        "needs_material_revision": "needs_material",
+    }
+    if status not in terminal_outcomes or not isinstance(source, list):
         return
     comment_ids = [
         str(row.get("id"))
@@ -1137,16 +1145,56 @@ def _reconcile_question_comments(
     ]
     if not comment_ids:
         return
-    comments.settle_revision(
-        material_id,
-        comment_ids=comment_ids,
-        base_version_id=str(revision.get("base_version_id") or "original"),
-        request_id=str(revision.get("request_id") or ""),
-        outcome="resolved" if status == "completed" else "needs_material",
-        resolved_by_version_id=(
-            str(revision.get("version_id")) if status == "completed" else None
-        ),
-    )
+    dispositions = revision.get("comment_outcomes")
+    if not isinstance(dispositions, list):
+        legacy_reasons = {
+            str(row.get("comment_id") or ""): row
+            for row in revision.get("reasons") or []
+            if isinstance(row, dict) and str(row.get("comment_id") or "")
+        }
+        dispositions = [
+            {
+                **legacy_reasons.get(comment_id, {}),
+                "comment_id": comment_id,
+                "outcome": {
+                    "completed": "question_only",
+                    "no_change": "no_change",
+                    "replan_questions": "replan_questions",
+                    "needs_material_revision": "revise_material",
+                }[status],
+            }
+            for comment_id in comment_ids
+        ]
+    settlement_status = {
+        "question_only": "resolved",
+        "no_change": "no_change",
+        "replan_questions": "needs_replan",
+        "revise_material": "needs_material",
+    }
+    grouped: Dict[str, list[Dict[str, Any]]] = {}
+    for row in dispositions:
+        if not isinstance(row, dict):
+            continue
+        outcome = str(row.get("outcome") or "")
+        # A higher-layer route did not execute question-only changes.
+        if outcome == "question_only" and status != "completed":
+            continue
+        if outcome in settlement_status:
+            grouped.setdefault(outcome, []).append(row)
+    for outcome, rows in grouped.items():
+        comments.settle_revision(
+            material_id,
+            comment_ids=[str(row.get("comment_id") or "") for row in rows],
+            base_version_id=str(revision.get("base_version_id") or "original"),
+            request_id=str(revision.get("request_id") or ""),
+            outcome=settlement_status[outcome],
+            resolved_by_version_id=(
+                str(revision.get("version_id"))
+                if outcome == "question_only" and status == "completed"
+                else None
+            ),
+            reasons=rows,
+        )
 
 
 async def _json_body(request: Request) -> Any:

@@ -319,6 +319,114 @@ def test_versions_route_reconciles_completed_revision_comments(
     assert settled["resolved_by_version_id"] == version_id
 
 
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [("no_change", "no_change"), ("replan_questions", "needs_replan")],
+)
+def test_versions_route_reconciles_non_version_terminal_comments(
+    auth, runtime, static_dir, status, expected,
+):
+    backing = InMemoryObjectStore()
+    put(backing, "_questions/mat-1.json", {
+        "ok": True, "package": {"question_face": {}},
+    })
+    comments = CommentService(InMemoryCommentStore())
+    source = comments.create("mat-1", {
+        "anchor": {"type": "question", "index": 1},
+        "severity": "major", "text": "Review this.",
+    })["comments"][0]
+    versions = QuestionVersionService(backing)
+    revision = versions.reserve("mat-1", "original", [source], "reviewer")
+    terminal = dict(
+        revision,
+        status=status,
+        reasons=[{
+            "comment_id": source["id"], "question_number": 1,
+            "reason": "decision", "references": ["face", "answer", "material"],
+        }],
+        completed_at="2026-08-12T10:00:00Z",
+    )
+    put(backing, "_question_revisions/mat-1/running.json", terminal)
+    tier = WebTier(
+        auth, runtime, str(static_dir), history=_History(), comments=comments,
+        question_versions=versions,
+    )
+    from fastapi.testclient import TestClient
+
+    with TestClient(tier.app) as client:
+        register(client)
+        response = client.get("/api/material-question-versions/mat-1")
+
+    assert response.status_code == 200
+    settled = comments.list("mat-1")["comments"][0]
+    assert settled["status"] == expected
+    assert settled["decision_reason"] == "decision"
+
+
+def test_versions_route_settles_mixed_snapshot_per_comment_without_false_success(
+    auth, runtime, static_dir,
+):
+    backing = InMemoryObjectStore()
+    put(backing, "_questions/mat-1.json", {
+        "ok": True, "package": {"question_face": {}},
+    })
+    comments = CommentService(InMemoryCommentStore())
+    created = []
+    for index in (1, 2, 3):
+        created.append(comments.create("mat-1", {
+            "anchor": {"type": "question", "index": index},
+            "severity": "major", "text": "Review Q%d." % index,
+        })["comments"][-1])
+    versions = QuestionVersionService(backing)
+    revision = versions.reserve("mat-1", "original", created, "reviewer")
+    terminal = dict(
+        revision,
+        status="replan_questions",
+        reasons=[{
+            "comment_id": created[1]["id"], "question_number": 2,
+            "outcome": "replan_questions", "reason": "new target required",
+        }],
+        comment_outcomes=[
+            {
+                "comment_id": created[0]["id"], "question_number": 1,
+                "outcome": "question_only", "reason": "local fix not performed",
+            },
+            {
+                "comment_id": created[1]["id"], "question_number": 2,
+                "outcome": "replan_questions", "reason": "new target required",
+            },
+            {
+                "comment_id": created[2]["id"], "question_number": 3,
+                "outcome": "no_change", "reason": "already correct",
+                "references": ["face", "answer", "material"],
+            },
+        ],
+        completed_at="2026-08-12T10:00:00Z",
+    )
+    put(backing, "_question_revisions/mat-1/running.json", terminal)
+    tier = WebTier(
+        auth, runtime, str(static_dir), history=_History(), comments=comments,
+        question_versions=versions,
+    )
+    from fastapi.testclient import TestClient
+
+    with TestClient(tier.app) as client:
+        register(client)
+        response = client.get("/api/material-question-versions/mat-1")
+
+    assert response.status_code == 200
+    by_id = {
+        row["id"]: row for row in comments.list("mat-1")["comments"]
+    }
+    assert by_id[created[0]["id"]]["status"] == "open"
+    assert by_id[created[1]["id"]]["status"] == "needs_replan"
+    assert by_id[created[1]["id"]]["decision_reason"] == "new target required"
+    assert by_id[created[2]["id"]]["status"] == "no_change"
+    assert by_id[created[2]["id"]]["decision_references"] == [
+        "face", "answer", "material",
+    ]
+
+
 def test_comment_route_rejects_a_historical_question_version(
     auth, runtime, static_dir,
 ):

@@ -48,9 +48,14 @@ async def revise_from_comments(
     existing_request = store.load_question_revision(material_id, request_id)
     if isinstance(existing_request, dict):
         status = existing_request.get("status")
-        if status == "needs_material_revision":
+        if status in ("no_change", "replan_questions", "needs_material_revision"):
+            event_type = {
+                "no_change": "question_revision_no_change",
+                "replan_questions": "question_revision_needs_replan",
+                "needs_material_revision": "question_revision_needs_material",
+            }[status]
             yield {
-                "type": "question_revision_needs_material",
+                "type": event_type,
                 "request_id": request_id,
                 "reasons": existing_request.get("reasons") or [],
             }
@@ -91,30 +96,81 @@ async def revise_from_comments(
     })
     store.save_question_revision(material_id, request_id, request)
     yield {"type": "question_revision_started", "request_id": request_id}
+    comment_outcomes: List[Dict[str, Any]] = []
     try:
-        result = await agent_steps.revise_questions_from_comments(
+        classification = await agent_steps.classify_question_revision(
             material, blueprint, package, comments)
-        if result["outcome"] == "needs_material_revision":
+        route = classification["outcome"]
+        for reason in classification["reasons"]:
+            # Compatibility for injected/older classifiers that returned one snapshot-level route.
+            reason.setdefault("outcome", route)
+        classification["reasons"] = _with_package_references(
+            classification["reasons"], package)
+        reasons = classification["reasons"]
+        comment_outcomes = [
+            {
+                "comment_id": row["comment_id"],
+                "question_number": row["question_number"],
+                "outcome": row["outcome"],
+                "reason": row["reason"],
+                **({"references": row["references"]} if row.get("references") else {}),
+            }
+            for row in reasons
+        ]
+        if route != "question_only":
+            status = {
+                "no_change": "no_change",
+                "replan_questions": "replan_questions",
+                "revise_material": "needs_material_revision",
+            }[route]
+            event_type = {
+                "no_change": "question_revision_no_change",
+                "replan_questions": "question_revision_needs_replan",
+                "revise_material": "question_revision_needs_material",
+            }[route]
             record = {
                 "request_id": request_id,
                 "material_id": material_id,
-                "status": "needs_material_revision",
+                "status": status,
                 "base_version_id": base_version_id,
                 "source_comments": comments,
                 "comment_count": len(comments),
-                "reasons": result["reasons"],
+                "reasons": [
+                    row for row in reasons if row["outcome"] == route
+                ],
+                "comment_outcomes": comment_outcomes,
                 "actor": actor,
                 "completed_at": _now(),
             }
             store.save_question_revision(material_id, request_id, record)
             yield {
-                "type": "question_revision_needs_material",
+                "type": event_type,
                 "request_id": request_id,
-                "reasons": result["reasons"],
+                "reasons": [
+                    row for row in reasons if row["outcome"] == route
+                ],
             }
             return
 
+        actionable_ids = {
+            row["comment_id"] for row in reasons if row["outcome"] == "question_only"
+        }
+        actionable_comments = [
+            row for row in comments if str(row.get("id") or "") in actionable_ids
+        ]
+        request.update({"stage": "revising", "updated_at": _now()})
+        store.save_question_revision(material_id, request_id, request)
+        yield {"type": "question_revision_revising", "request_id": request_id}
+        result = await agent_steps.revise_questions_from_comments(
+            material, blueprint, package, actionable_comments)
         revised = result["package"]
+        if revised == package:
+            raise ValueError(
+                "question revision produced a byte-equivalent package despite actionable comments"
+            )
+        boundary_errors = _question_only_boundary_errors(package, revised, blueprint)
+        if boundary_errors:
+            raise ValueError("question-only boundary violated: %s" % "; ".join(boundary_errors))
         request.update({"stage": "validating", "updated_at": _now()})
         store.save_question_revision(material_id, request_id, request)
         yield {"type": "question_revision_validating", "request_id": request_id}
@@ -142,6 +198,7 @@ async def revise_from_comments(
                 "blockers": blockers,
                 "baseline_advisories": baseline_advisories,
                 "changed_questions": changed_questions,
+                "comment_outcomes": comment_outcomes,
                 "comment_count": len(comments),
                 "actor": actor,
                 "message": "修改后的题目未通过完整质量检查。",
@@ -164,12 +221,13 @@ async def revise_from_comments(
             "material_id": material_id,
             "created_at": _now(),
             "based_on_version_id": base_version_id,
-            "source_comment_ids": [str(row["id"]) for row in comments],
+            "source_comment_ids": [str(row["id"]) for row in actionable_comments],
             "status": "ready",
             "package": revised,
             "quality": candidate.as_dict(),
             "baseline_advisories": baseline_advisories,
             "changed_questions": changed_questions,
+            "field_changes": _field_changes(package, revised),
             "created_by": actor,
         }
         store.save_question_version(material_id, request_id, version)
@@ -184,6 +242,8 @@ async def revise_from_comments(
                 "comment_count": len(comments),
                 "baseline_advisories": baseline_advisories,
                 "changed_questions": changed_questions,
+                "field_changes": version["field_changes"],
+                "comment_outcomes": comment_outcomes,
                 "actor": actor,
                 "completed_at": _now(),
             })
@@ -201,7 +261,7 @@ async def revise_from_comments(
         }
     except Exception as exc:
         try:
-            store.save_question_revision(material_id, request_id, {
+            failed_record = {
                 "request_id": request_id,
                 "material_id": material_id,
                 "status": "failed",
@@ -211,7 +271,10 @@ async def revise_from_comments(
                 "message": "%s: %s" % (type(exc).__name__, str(exc)[:500]),
                 "actor": actor,
                 "completed_at": _now(),
-            })
+            }
+            if comment_outcomes:
+                failed_record["comment_outcomes"] = comment_outcomes
+            store.save_question_revision(material_id, request_id, failed_record)
         except Exception:
             # The terminal event is still owed to the caller even when the status store is the fault.
             pass
@@ -377,6 +440,140 @@ def _changed_scope(
         if any(group_id in changed_groups for group_id in group_ids):
             changed.add(number)
     return changed, changed_groups
+
+
+def _question_only_boundary_errors(
+    base: Dict[str, Any], revised: Dict[str, Any], blueprint: Dict[str, Any]
+) -> List[str]:
+    """Reject retargeting and layout replanning before audit can legitimise it."""
+    errors: List[str] = []
+    base_face = base.get("question_face") if isinstance(base.get("question_face"), dict) else {}
+    new_face = revised.get("question_face") if isinstance(revised.get("question_face"), dict) else {}
+    base_groups = _grouped(base_face.get("groups"))
+    new_groups = _grouped(new_face.get("groups"))
+    base_layouts = {
+        group_id: row.get("layout") for group_id, row in base_groups.items()
+    }
+    new_layouts = {
+        group_id: row.get("layout") for group_id, row in new_groups.items()
+    }
+    if base_layouts != new_layouts:
+        errors.append("question groups or layouts changed")
+    base_questions = _numbered(base_face.get("questions"))
+    new_questions = _numbered(new_face.get("questions"))
+    for number in QUESTION_NUMBERS:
+        old = base_questions.get(number) or {}
+        new = new_questions.get(number) or {}
+        if old.get("group_id") != new.get("group_id"):
+            errors.append("Q%d moved group" % number)
+    planned = {
+        int(row.get("number")): row
+        for row in blueprint.get("items", [])
+        if isinstance(row, dict) and isinstance(row.get("number"), int)
+    }
+    revised_answers = _numbered(revised.get("answer_key"))
+    for number, item in planned.items():
+        answer = revised_answers.get(number) or {}
+        planned_answer = str(
+            item.get("target") or item.get("answer") or item.get("canonical") or ""
+        ).strip()
+        if (
+            planned_answer
+            and str(answer.get("canonical") or "").strip().casefold()
+            != planned_answer.casefold()
+        ):
+            errors.append("Q%d changed its blueprint answer target" % number)
+    return errors
+
+
+def _field_changes(base: Dict[str, Any], revised: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Produce a compact, durable field-level summary for the version UI/API."""
+    changes: List[Dict[str, Any]] = []
+    sections = {
+        "question": (
+            (base.get("question_face") or {}).get("questions"),
+            (revised.get("question_face") or {}).get("questions"),
+        ),
+        "answer_key": (base.get("answer_key"), revised.get("answer_key")),
+        "evidence": (base.get("evidence"), revised.get("evidence")),
+    }
+    for section, (old_rows, new_rows) in sections.items():
+        old = _numbered(old_rows)
+        new = _numbered(new_rows)
+        for number in QUESTION_NUMBERS:
+            before = old.get(number) or {}
+            after = new.get(number) or {}
+            for field in sorted(set(before) | set(after)):
+                if before.get(field) != after.get(field):
+                    changes.append({
+                        "question_number": number,
+                        "section": section,
+                        "field": field,
+                        "before": before.get(field),
+                        "after": after.get(field),
+                    })
+    base_face = base.get("question_face") if isinstance(base.get("question_face"), dict) else {}
+    new_face = revised.get("question_face") if isinstance(revised.get("question_face"), dict) else {}
+    questions = _numbered(new_face.get("questions")) or _numbered(base_face.get("questions"))
+    for section, key in (("group", "groups"), ("instruction", "instructions")):
+        old = _grouped(base_face.get(key))
+        new = _grouped(new_face.get(key))
+        for group_id in sorted(set(old) | set(new)):
+            before = old.get(group_id) or {}
+            after = new.get(group_id) or {}
+            members = sorted(
+                number for number, row in questions.items()
+                if str(row.get("group_id") or "") == group_id
+            )
+            number = members[0] if members else 0
+            for field in sorted(set(before) | set(after)):
+                if field != "group_id" and before.get(field) != after.get(field):
+                    changes.append({
+                        "question_number": number,
+                        "section": section,
+                        "field": field,
+                        "before": before.get(field),
+                        "after": after.get(field),
+                    })
+    return changes
+
+
+def _with_package_references(
+    reasons: List[Dict[str, Any]], package: Dict[str, Any]
+) -> List[Dict[str, Any]]:
+    """Attach authoritative no-change evidence; model-supplied references never survive."""
+    face = package.get("question_face") if isinstance(package.get("question_face"), dict) else {}
+    questions = _numbered(face.get("questions"))
+    answers = _numbered(package.get("answer_key"))
+    evidence = _numbered(package.get("evidence"))
+    enriched: List[Dict[str, Any]] = []
+    for reason in reasons:
+        number = int(reason["question_number"])
+        question = questions.get(number) or {}
+        answer = answers.get(number) or {}
+        proof = evidence.get(number) or {}
+        carrier = "%s [Q%d] %s" % (
+            str(question.get("carrier_before") or "").strip(),
+            number,
+            str(question.get("carrier_after") or "").strip(),
+        )
+        enriched_reason = {
+            "comment_id": str(reason["comment_id"]),
+            "question_number": number,
+            "outcome": str(reason["outcome"]),
+            "reason": str(reason["reason"]),
+        }
+        if reason["outcome"] == "no_change":
+            enriched_reason["references"] = [
+                "题面：%s" % " ".join(carrier.split()),
+                "标准答案：%s" % str(answer.get("canonical") or ""),
+                "材料证据（Turn %s）：%s" % (
+                    proof.get("turn_index"),
+                    str(proof.get("quote") or ""),
+                ),
+            ]
+        enriched.append(enriched_reason)
+    return enriched
 
 
 def _numbered(rows: Any) -> Dict[int, Dict[str, Any]]:

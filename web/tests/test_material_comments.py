@@ -188,3 +188,27 @@ def test_needs_material_comment_is_read_only():
 
     assert found.value.code == "COMMENT_READ_ONLY"
     assert service.list(MATERIAL_ID)["comments"][0]["status"] == "needs_material"
+
+
+def test_no_change_comment_persists_reason_and_references():
+    service = CommentService(InMemoryCommentStore())
+    comment = service.create(MATERIAL_ID, payload())["comments"][0]
+    service.settle_revision(
+        MATERIAL_ID,
+        comment_ids=[comment["id"]],
+        base_version_id="original",
+        request_id="request-3",
+        outcome="no_change",
+        reasons=[{
+            "comment_id": comment["id"],
+            "reason": "现有答案已经正确。",
+            "references": ["题面", "标准答案", "材料证据"],
+        }],
+    )
+
+    settled = service.list(MATERIAL_ID)["comments"][0]
+    assert settled["status"] == "no_change"
+    assert settled["decision_reason"] == "现有答案已经正确。"
+    assert settled["decision_references"] == ["题面", "标准答案", "材料证据"]
+    with pytest.raises(CommentError):
+        service.delete(MATERIAL_ID, comment["id"])

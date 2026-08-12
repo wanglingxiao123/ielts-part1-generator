@@ -18,6 +18,8 @@ export type RevisionResult =
       baselineAdvisories: string[]
     }
   | { kind: 'needs_material'; reasons: MaterialRevisionReason[] }
+  | { kind: 'no_change'; reasons: MaterialRevisionReason[] }
+  | { kind: 'needs_replan'; reasons: MaterialRevisionReason[] }
   | { kind: 'failed'; message: string; blockers: string[] }
   | null
 
@@ -74,6 +76,10 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
               kind: 'needs_material',
               reasons: request.reasons ?? [],
             })
+          } else if (request.status === 'no_change') {
+            setRevisionResult({ kind: 'no_change', reasons: request.reasons ?? [] })
+          } else if (request.status === 'replan_questions') {
+            setRevisionResult({ kind: 'needs_replan', reasons: request.reasons ?? [] })
           } else if (request.status === 'failed') {
             setRevisionResult({
               kind: 'failed',
@@ -160,6 +166,12 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
         await load(terminal.version_id)
       } else if (terminal.event === 'needs_material_revision') {
         setRevisionResult({ kind: 'needs_material', reasons: terminal.reasons })
+        await load()
+      } else if (terminal.event === 'no_change') {
+        setRevisionResult({ kind: 'no_change', reasons: terminal.reasons })
+        await load()
+      } else if (terminal.event === 'needs_replan') {
+        setRevisionResult({ kind: 'needs_replan', reasons: terminal.reasons })
         await load()
       } else {
         setRevisionResult({ kind: 'failed', message: terminal.message, blockers: [] })

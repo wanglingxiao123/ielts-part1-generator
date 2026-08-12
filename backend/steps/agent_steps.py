@@ -63,6 +63,7 @@ __all__ = [
     "build_question_audit_payload",
     "build_revise_message",
     "build_revise_questions_message",
+    "classify_question_revision",
     "feasibility_audit",
     "generate",
     "generate_questions",
@@ -685,13 +686,13 @@ async def revise_questions(
     return _question_envelope(reply, "question revision")
 
 
-async def revise_questions_from_comments(
+async def classify_question_revision(
     material: Dict[str, Any],
     blueprint: Dict[str, Any],
     package: Dict[str, Any],
     comments: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Apply reviewer comments or explicitly refuse when they require a script change."""
+    """Classify reviewer comments before any question package is rewritten."""
     agent = build_generate_agent()
     workspace = GenerationWorkspace()
     try:
@@ -708,58 +709,133 @@ async def revise_questions_from_comments(
         comments_path.write_text(
             json.dumps(comments, ensure_ascii=False, indent=2), encoding="utf-8")
         message = "\n\n".join([
-            "Revise the complete ten-question package in response to the reviewer comments. "
-            "Activate the question-writing skill and obey all of its boundaries.",
+            "Classify the requested changes to this IELTS Listening Part 1 question package. "
+            "Do not modify or regenerate any artifact.",
             "## Files\n\nmaterial.json: %s\nblueprint.json: %s\nquestions.json: %s\ncomments.json: %s"
             % (material_path, blueprint_path, package_path, comments_path),
-            "## Fixed inputs\n\nThe material and blueprint are immutable. Do not edit the script, "
-            "change an information point, move a blueprint group boundary, or substitute another "
-            "answer target. Every permitted change belongs in the candidate-visible question face, "
-            "answer key or evidence records.",
-            "First decide whether EVERY comment can be resolved under those constraints. If any "
-            "comment requires changing what the recording says or what the blueprint planned, do "
-            "not make a partial revision. Return exactly this JSON shape:\n"
-            '{"outcome":"needs_material_revision","reasons":[{"comment_id":"...",'
-            '"question_number":1,"reason":"..."}]}',
-            "Otherwise make the smallest sufficient changes, run the question validator until it "
-            "reports no errors, and return exactly:\n"
-            '{"outcome":"revised","package":{COMPLETE QUESTION PACKAGE}}',
+            "Classify every comment independently with exactly one outcome:\n"
+            "- question_only: all comments can be solved by editing the question face, answer key, "
+            "accepted variants, word limit, evidence anchor, or related question metadata, without "
+            "changing the material, the ten blueprint information points, item_form, form_group, or "
+            "group boundaries.\n"
+            "- no_change: this comment is unfounded because the existing package is already correct.\n"
+            "- replan_questions: at least one comment requires choosing a different information "
+            "point or changing item_form, form_group, or group boundaries, but not the material.\n"
+            "- revise_material: at least one comment requires changing the listening material.\n\n"
+            "Return exactly: "
+            '{"reasons":[{"comment_id":"...","question_number":1,'
+            '"outcome":"question_only|no_change|replan_questions|revise_material",'
+            '"reason":"specific explanation"}]}. '
+            "Do not provide evidence references: Runtime derives those from the stored package. "
+            "Include one reason for every input comment.",
+        ]) + workspace.instructions()
+        reply = await _invoke(agent, message, "reviewer-comment question classification")
+    finally:
+        workspace.remove()
+
+    payload = extract_json(reply)
+    forbidden = [
+        key for key in (
+            "material", "blueprint", "script", "listening_material_parts", "package",
+        )
+        if key in payload
+    ]
+    if forbidden:
+        raise ModelCallError(
+            "reviewer-comment classification returned artifact(s): %s"
+            % ", ".join(forbidden))
+    allowed_outcomes = {"question_only", "no_change", "replan_questions", "revise_material"}
+    legacy_outcome = payload.get("outcome")
+    if legacy_outcome is not None and legacy_outcome not in allowed_outcomes:
+        raise ModelCallError(
+            "reviewer-comment classification returned unknown outcome %r" % legacy_outcome)
+    reasons = payload.get("reasons")
+    if not isinstance(reasons, list) or not reasons:
+        raise ModelCallError("reviewer-comment classification returned no reasons")
+    comment_ids = {str(row.get("id") or "") for row in comments if isinstance(row, dict)}
+    anchored_numbers = {
+        str(row.get("id") or ""): (row.get("anchor") or {}).get("index")
+        for row in comments
+        if isinstance(row, dict)
+        and isinstance(row.get("anchor"), dict)
+        and (row.get("anchor") or {}).get("type") == "question"
+    }
+    cleaned = []
+    covered = set()
+    for reason in reasons:
+        number = reason.get("question_number") if isinstance(reason, dict) else None
+        comment_id = str(reason.get("comment_id") or "") if isinstance(reason, dict) else ""
+        outcome = reason.get("outcome", legacy_outcome) if isinstance(reason, dict) else None
+        if (not isinstance(reason, dict) or comment_id not in comment_ids
+                or comment_id in covered
+                or outcome not in allowed_outcomes
+                or isinstance(number, bool) or not isinstance(number, int)
+                or not 1 <= number <= QUESTION_COUNT
+                or (
+                    comment_id in anchored_numbers
+                    and number != anchored_numbers[comment_id]
+                )
+                or not str(reason.get("reason") or "").strip()):
+            raise ModelCallError(
+                "reviewer-comment classification reason is incomplete or does not match its input")
+        covered.add(comment_id)
+        cleaned.append({
+            "comment_id": comment_id,
+            "question_number": number,
+            "outcome": outcome,
+            "reason": str(reason["reason"]).strip(),
+        })
+    if covered != comment_ids:
+        raise ModelCallError("reviewer-comment classification did not cover every comment")
+    priority = {
+        "no_change": 0,
+        "question_only": 1,
+        "replan_questions": 2,
+        "revise_material": 3,
+    }
+    route = max((row["outcome"] for row in cleaned), key=priority.__getitem__)
+    return {"outcome": route, "reasons": cleaned}
+
+
+async def revise_questions_from_comments(
+    material: Dict[str, Any],
+    blueprint: Dict[str, Any],
+    package: Dict[str, Any],
+    comments: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Apply comments already classified as question-only."""
+    agent = build_generate_agent()
+    workspace = GenerationWorkspace()
+    try:
+        material_path = workspace.path / "material.json"
+        blueprint_path = workspace.path / "blueprint.json"
+        package_path = workspace.path / "questions.json"
+        comments_path = workspace.path / "comments.json"
+        for path, value in (
+            (material_path, material), (blueprint_path, blueprint),
+            (package_path, package), (comments_path, comments),
+        ):
+            path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+        message = "\n\n".join([
+            "Revise the complete ten-question package for these comments. They have already been "
+            "classified as question-only. Activate the question-writing skill.",
+            "material.json: %s\nblueprint.json: %s\nquestions.json: %s\ncomments.json: %s"
+            % (material_path, blueprint_path, package_path, comments_path),
+            "The material, all ten blueprint information points, item_form, form_group, and group "
+            "boundaries are immutable. Do not retarget any answer. Make the smallest sufficient "
+            "change and synchronise every dependent question-face, answer-key, accepted-answer, "
+            "word-limit, evidence, and metadata field.",
+            "Run the validator until it reports no errors. Return exactly "
+            '{"outcome":"revised","package":{COMPLETE QUESTION PACKAGE}}.',
         ]) + workspace.instructions()
         reply = await _invoke(agent, message, "reviewer-comment question revision")
     finally:
         workspace.remove()
 
     payload = extract_json(reply)
-    forbidden = [
-        key for key in ("material", "blueprint", "script", "listening_material_parts")
-        if key in payload
-    ]
-    if forbidden:
-        raise ModelCallError(
-            "reviewer-comment revision returned immutable artifact(s): %s"
-            % ", ".join(forbidden))
     outcome = payload.get("outcome")
-    if outcome == "needs_material_revision":
-        reasons = payload.get("reasons")
-        if not isinstance(reasons, list) or not reasons:
-            raise ModelCallError(
-                "reviewer-comment revision requested a material change without reasons")
-        comment_ids = {str(row.get("id") or "") for row in comments if isinstance(row, dict)}
-        cleaned = []
-        for reason in reasons:
-            number = reason.get("question_number") if isinstance(reason, dict) else None
-            if (not isinstance(reason, dict)
-                    or str(reason.get("comment_id") or "") not in comment_ids
-                    or isinstance(number, bool) or not isinstance(number, int)
-                    or not 1 <= number <= QUESTION_COUNT
-                    or not str(reason.get("reason") or "").strip()):
-                raise ModelCallError(
-                    "reviewer-comment material reason does not identify an input comment and Q1-Q10")
-            cleaned.append(reason)
-        return {"outcome": outcome, "reasons": cleaned}
     if outcome != "revised":
-        raise ModelCallError(
-            "reviewer-comment revision returned unknown outcome %r" % outcome)
+        raise ModelCallError("reviewer-comment revision returned unknown outcome %r" % outcome)
     package_out = payload.get("package")
     if not isinstance(package_out, dict):
         raise ModelCallError("reviewer-comment revision returned no complete package")

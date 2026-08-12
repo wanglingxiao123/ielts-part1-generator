@@ -21,7 +21,9 @@ __all__ = [
 COMMENT_PREFIX = "_comments/"
 MAX_COMMENT_LENGTH = 4000
 SEVERITIES = frozenset({"critical", "major", "minor"})
-QUESTION_COMMENT_STATUSES = frozenset({"open", "resolved", "needs_material"})
+QUESTION_COMMENT_STATUSES = frozenset({
+    "open", "resolved", "no_change", "needs_replan", "needs_material",
+})
 MATERIAL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$")
 
 
@@ -140,12 +142,18 @@ class CommentService:
         request_id: str,
         outcome: str,
         resolved_by_version_id: Optional[str] = None,
+        reasons: Optional[list[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Idempotently settle only the open comments snapshotted by one revision."""
         material_id = _material_id(material_id)
-        if outcome not in {"resolved", "needs_material"}:
+        if outcome not in {"resolved", "no_change", "needs_replan", "needs_material"}:
             raise CommentError("INVALID_COMMENT_STATUS", "批注处理状态无效。")
         wanted = {str(value) for value in comment_ids if str(value)}
+        reason_by_id = {
+            str(row.get("comment_id")): row
+            for row in (reasons or [])
+            if isinstance(row, dict) and str(row.get("comment_id") or "")
+        }
         with self._lock:
             document = self._document(material_id)
             changed = False
@@ -163,6 +171,13 @@ class CommentService:
                 })
                 if outcome == "resolved" and resolved_by_version_id:
                     comment["resolved_by_version_id"] = resolved_by_version_id
+                reason = reason_by_id.get(str(comment.get("id")))
+                if reason:
+                    comment["decision_reason"] = str(reason.get("reason") or "")
+                    comment["decision_references"] = [
+                        str(value) for value in reason.get("references") or []
+                        if isinstance(value, str)
+                    ]
                 changed = True
             if changed:
                 self.store.save(material_id, document)

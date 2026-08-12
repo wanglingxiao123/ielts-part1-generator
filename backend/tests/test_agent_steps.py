@@ -32,6 +32,7 @@ from backend.steps.agent_steps import (
     _feasibility_envelope,
     build_feasibility_message,
     build_feasibility_payload,
+    classify_question_revision,
 )
 from backend.steps.call import ModelCallError
 
@@ -48,6 +49,100 @@ def _reply(**over) -> str:
 
 
 _ABSENT = object()
+
+
+@pytest.mark.asyncio
+async def test_question_revision_classification_requires_all_comment_reasons(monkeypatch):
+    async def invoke(*_args):
+        return json.dumps({
+            "outcome": "question_only",
+            "reasons": [{
+                "comment_id": "c1", "question_number": 1,
+                "reason": "local fix", "references": [],
+            }],
+        })
+
+    monkeypatch.setattr("backend.steps.agent_steps._invoke", invoke)
+    with pytest.raises(ModelCallError, match="every comment"):
+        await classify_question_revision(
+            {}, {}, {}, [{"id": "c1"}, {"id": "c2"}])
+
+
+@pytest.mark.asyncio
+async def test_classification_discards_model_supplied_references(monkeypatch):
+    async def invoke(*_args):
+        return json.dumps({
+            "outcome": "no_change",
+            "reasons": [{
+                "comment_id": "c1", "question_number": 1,
+                "reason": "already correct",
+                "references": ["hallucinated question", "hallucinated answer"],
+            }],
+        })
+
+    monkeypatch.setattr("backend.steps.agent_steps._invoke", invoke)
+    result = await classify_question_revision({}, {}, {}, [{"id": "c1"}])
+    assert result == {
+        "outcome": "no_change",
+        "reasons": [{
+            "comment_id": "c1",
+            "question_number": 1,
+            "outcome": "no_change",
+            "reason": "already correct",
+        }],
+    }
+
+
+@pytest.mark.asyncio
+async def test_classification_preserves_each_comment_outcome_and_uses_highest_route(monkeypatch):
+    async def invoke(*_args):
+        return json.dumps({
+            "reasons": [
+                {
+                    "comment_id": "c1", "question_number": 1,
+                    "outcome": "question_only", "reason": "fix the carrier",
+                },
+                {
+                    "comment_id": "c2", "question_number": 2,
+                    "outcome": "replan_questions", "reason": "choose another target",
+                },
+                {
+                    "comment_id": "c3", "question_number": 3,
+                    "outcome": "no_change", "reason": "already correct",
+                },
+            ],
+        })
+
+    monkeypatch.setattr("backend.steps.agent_steps._invoke", invoke)
+    result = await classify_question_revision(
+        {}, {}, {}, [{"id": "c1"}, {"id": "c2"}, {"id": "c3"}])
+
+    assert result["outcome"] == "replan_questions"
+    assert {
+        row["comment_id"]: row["outcome"] for row in result["reasons"]
+    } == {
+        "c1": "question_only",
+        "c2": "replan_questions",
+        "c3": "no_change",
+    }
+
+
+@pytest.mark.asyncio
+async def test_classification_rejects_reason_for_wrong_anchored_question(monkeypatch):
+    async def invoke(*_args):
+        return json.dumps({
+            "reasons": [{
+                "comment_id": "c1", "question_number": 2,
+                "outcome": "no_change", "reason": "already correct",
+            }],
+        })
+
+    monkeypatch.setattr("backend.steps.agent_steps._invoke", invoke)
+    with pytest.raises(ModelCallError, match="incomplete"):
+        await classify_question_revision(
+            {}, {}, {}, [{
+                "id": "c1", "anchor": {"type": "question", "index": 1},
+            }])
 
 
 class TestRequiredKeys:

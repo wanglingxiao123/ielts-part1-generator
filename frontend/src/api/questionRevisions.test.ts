@@ -14,6 +14,18 @@ describe('question revision SSE wire adapter', () => {
     })
   })
 
+  it('exposes the actual modification stage after classification', () => {
+    expect(
+      decodeRevisionFrame(
+        'data: {"type":"question_revision_revising","request_id":"request-1"}',
+      ),
+    ).toEqual({
+      event: 'progress',
+      request_id: 'request-1',
+      stage: 'revising',
+    })
+  })
+
   it('normalises a completed Runtime frame to the frontend terminal event', () => {
     expect(
       decodeRevisionFrame(
@@ -36,6 +48,23 @@ describe('question revision SSE wire adapter', () => {
       event: 'needs_material_revision',
       request_id: 'request-1',
       reasons: [{ comment_id: 'c1', question_number: 3, reason: '录音中答案不唯一' }],
+    })
+  })
+
+  it('normalises no-change decisions with their evidence', () => {
+    expect(
+      decodeRevisionFrame(
+        'data: {"type":"question_revision_no_change","request_id":"request-2","reasons":[{"comment_id":"c1","question_number":3,"reason":"already correct","references":["face","answer","material"]}]}',
+      ),
+    ).toEqual({
+      event: 'no_change',
+      request_id: 'request-2',
+      reasons: [{
+        comment_id: 'c1',
+        question_number: 3,
+        reason: 'already correct',
+        references: ['face', 'answer', 'material'],
+      }],
     })
   })
 })

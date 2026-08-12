@@ -159,7 +159,12 @@ export function MaterialPage() {
     const request = questionVersions.revisionRequest
     if (
       !request?.request_id ||
-      !['completed', 'needs_material_revision'].includes(request.status) ||
+      ![
+        'completed',
+        'no_change',
+        'replan_questions',
+        'needs_material_revision',
+      ].includes(request.status) ||
       reconciledRevisionRef.current === request.request_id
     ) {
       return

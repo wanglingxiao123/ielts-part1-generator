@@ -186,11 +186,70 @@ describe('根据批注修改题目', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('本次已终止')
   })
 
-  it('成功结果持续说明新版本尚未自动采用，并可关闭', async () => {
-    const dismissRevisionResult = vi.fn()
+  it('无需修改时展示理由和核对依据', () => {
     render(
       <QuestionRevisionAction
         state={state({
+          revisionResult: {
+            kind: 'no_change',
+            reasons: [{
+              comment_id: 'comment-1',
+              question_number: 3,
+              reason: '现有题目已经正确',
+              references: ['题面信息', '标准答案', '材料证据'],
+            }],
+          },
+        })}
+        comments={COMMENTS}
+      />,
+    )
+    const result = screen.getByRole('alert')
+    expect(result).toHaveTextContent('无需修改')
+    expect(result).toHaveTextContent('本次未生成新版本')
+    expect(result).toHaveTextContent('核对依据：题面信息；标准答案；材料证据')
+  })
+
+  it('需重新命题与需修改材料是不同终态', () => {
+    render(
+      <QuestionRevisionAction
+        state={state({
+          revisionResult: {
+            kind: 'needs_replan',
+            reasons: [{
+              comment_id: 'comment-1',
+              question_number: 3,
+              reason: '需要更换信息点',
+            }],
+          },
+        })}
+        comments={COMMENTS}
+      />,
+    )
+    expect(screen.getByRole('alert')).toHaveTextContent('需要重新命题')
+    expect(screen.getByRole('alert')).toHaveTextContent('需要更换信息点')
+    expect(screen.getByRole('alert')).not.toHaveTextContent('需要修改材料')
+  })
+
+  it('成功结果持续说明新版本尚未自动采用，并可关闭', async () => {
+    const dismissRevisionResult = vi.fn()
+    const versions = state().versions.map((item) =>
+      item.id === 'version-4'
+        ? {
+            ...item,
+            field_changes: [{
+              question_number: 5,
+              section: 'question' as const,
+              field: 'carrier_before',
+              before: '£',
+              after: '',
+            }],
+          }
+        : item,
+    )
+    render(
+      <QuestionRevisionAction
+        state={state({
+          versions,
           revisionResult: {
             kind: 'revised',
             versionId: 'version-4',
@@ -204,6 +263,9 @@ describe('根据批注修改题目', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('新版本已生成')
     expect(screen.getByRole('alert')).toHaveTextContent('当前采用版本不会自动改变')
     expect(screen.getByText('查看 1 条基线提醒')).toBeInTheDocument()
+    expect(screen.getByText('查看 1 项修改')).toBeInTheDocument()
+    expect(screen.getByText('Q5 · 题面 · 空格前文字')).toBeInTheDocument()
+    expect(screen.getByText('£ → （空）')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: '关闭修改结果' }))
     expect(dismissRevisionResult).toHaveBeenCalledOnce()
   })

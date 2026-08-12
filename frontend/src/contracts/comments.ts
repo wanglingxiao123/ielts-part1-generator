@@ -1,5 +1,10 @@
 export type CommentSeverity = 'critical' | 'major' | 'minor'
-export type QuestionCommentStatus = 'open' | 'resolved' | 'needs_material'
+export type QuestionCommentStatus =
+  | 'open'
+  | 'resolved'
+  | 'no_change'
+  | 'needs_replan'
+  | 'needs_material'
 
 export type CommentAnchor =
   | { type: 'question'; index: number }
@@ -16,6 +21,8 @@ export interface MaterialComment {
   resolved_by_version_id?: string
   revision_request_id?: string
   resolved_at?: string
+  decision_reason?: string
+  decision_references?: string[]
 }
 
 export interface MaterialCommentsDocument {

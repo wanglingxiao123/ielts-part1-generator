@@ -29,6 +29,9 @@ export function decodeRevisionFrame(frame: string): QuestionRevisionEvent | null
     if (wireType === 'question_revision_validating') {
       return { event: 'progress', request_id: requestId, stage: 'validating' }
     }
+    if (wireType === 'question_revision_revising') {
+      return { event: 'progress', request_id: requestId, stage: 'revising' }
+    }
     if (wireType === 'question_revision_auditing') {
       return { event: 'progress', request_id: requestId, stage: 'auditing' }
     }
@@ -43,6 +46,20 @@ export function decodeRevisionFrame(frame: string): QuestionRevisionEvent | null
         baseline_advisories: Array.isArray(payload.baseline_advisories)
           ? payload.baseline_advisories.filter((value): value is string => typeof value === 'string')
           : [],
+      }
+    }
+    if (wireType === 'question_revision_no_change' && Array.isArray(payload.reasons)) {
+      return {
+        event: 'no_change',
+        request_id: requestId,
+        reasons: payload.reasons as MaterialRevisionReason[],
+      }
+    }
+    if (wireType === 'question_revision_needs_replan' && Array.isArray(payload.reasons)) {
+      return {
+        event: 'needs_replan',
+        request_id: requestId,
+        reasons: payload.reasons as MaterialRevisionReason[],
       }
     }
     if (wireType === 'question_revision_needs_material' && Array.isArray(payload.reasons)) {
