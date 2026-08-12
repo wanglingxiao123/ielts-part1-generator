@@ -124,12 +124,14 @@ class QuestionVersionService:
                 "created_at": _now(),
             }
             running_key = _running_key(material_id)
-            # Remove only a terminal/stale pointer. The create-only put below is the actual
-            # cross-process mutex; the Python lock merely avoids needless races inside one task.
-            if self._read(running_key) is not None:
-                self.store.delete([running_key])
+            # Production runs one Web task, so the process lock arbitrates replacement of a
+            # terminal/stale pointer. Do not delete it first: the task role intentionally lacks
+            # DeleteObject, and S3 DeleteObjects reports per-key denial in its response rather than
+            # necessarily raising. An absent pointer still uses create-only PUT so a concurrently
+            # created live request cannot be overwritten.
+            pointer_exists = self._read(running_key) is not None
             try:
-                self._put(running_key, record, if_none_match=True)
+                self._put(running_key, record, if_none_match=not pointer_exists)
             except Exception as exc:
                 if type(exc).__name__ == "PreconditionFailed":
                     raise QuestionVersionError(
@@ -138,8 +140,19 @@ class QuestionVersionService:
                 raise
             try:
                 self._put(_request_key(material_id, request_id), record)
-            except Exception:
-                self.store.delete([running_key])
+            except Exception as exc:
+                failed = dict(
+                    record,
+                    status="failed",
+                    message="revision request record could not be stored",
+                    completed_at=_now(),
+                )
+                try:
+                    self._put(running_key, failed)
+                except Exception:
+                    # If the store itself is unavailable, preserving the running marker is safer
+                    # than admitting a second request whose first reservation is ambiguous.
+                    pass
                 raise
             return record
 

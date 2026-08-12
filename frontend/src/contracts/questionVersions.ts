@@ -55,7 +55,6 @@ export interface AdoptQuestionVersionResponse {
 export type QuestionRevisionStage =
   | 'queued'
   | 'analysing'
-  | 'revising'
   | 'validating'
   | 'auditing'
   | 'storing'

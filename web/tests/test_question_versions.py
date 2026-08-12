@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 
 import pytest
 
 from audio_storage.object_store import InMemoryObjectStore
+from web import app as app_module
 from web.app import WebTier
 from web.comment_store import CommentService, InMemoryCommentStore
 from web.question_versions import QuestionVersionError, QuestionVersionService
@@ -70,6 +73,8 @@ def test_terminal_running_pointer_does_not_block_the_next_request(versions):
         "created_at": "2026-08-11T10:00:00Z",
         "package": {"question_face": {}},
     })
+    store.delete = lambda _keys: (_ for _ in ()).throw(
+        AssertionError("terminal replacement must not require DeleteObject"))
 
     second = QuestionVersionService(store).reserve(
         "mat-1", "original", [{"id": "c2"}], "reviewer")
@@ -92,6 +97,62 @@ def test_existing_version_reconciles_a_stale_running_pointer_as_completed(versio
     assert document["revision_request"]["status"] == "completed"
     assert document["revision_request"]["version_id"] == first["request_id"]
     assert document["revision_request"]["baseline_advisories"] == ["Q9 audit variance"]
+
+
+def test_revision_relay_emits_heartbeats_while_runtime_is_silent(
+    versions, monkeypatch,
+):
+    service, store = versions
+    revision = service.reserve("mat-1", "original", [{"id": "c1"}], "reviewer")
+    body = FakeStreamingBody()
+    monkeypatch.setattr(app_module, "HEARTBEAT_SECONDS", 0.01)
+    relay = app_module._relay_question_revision(body, service, "mat-1", revision)
+
+    assert next(relay) == b": hb\n\n"
+
+    version_id = revision["request_id"]
+    put(store, "_question_versions/mat-1/versions/%s.json" % version_id, {
+        "id": version_id,
+        "created_at": "2026-08-12T10:00:00Z",
+        "package": {"question_face": {}},
+    })
+    body.push_event({
+        "type": "question_revision_completed",
+        "request_id": version_id,
+        "version_id": version_id,
+    })
+    body.finish()
+    frame = next(relay)
+    assert b"question_revision_completed" in frame
+    relay.close()
+    assert body.closed
+    deadline = time.monotonic() + 1
+    while (any(thread.name == "question-revision-sse" for thread in threading.enumerate())
+           and time.monotonic() < deadline):
+        time.sleep(0.01)
+    assert not any(
+        thread.name == "question-revision-sse" for thread in threading.enumerate())
+
+
+def test_sidecar_failure_marks_pointer_failed_instead_of_leaving_a_ghost_lock(
+    versions, monkeypatch,
+):
+    service, store = versions
+    original_put = store.put
+
+    def fail_sidecar(key, body, **kwargs):
+        if key.startswith("_question_revisions/mat-1/") and key.endswith(".json") \
+                and not key.endswith("/running.json"):
+            raise RuntimeError("sidecar unavailable")
+        return original_put(key, body, **kwargs)
+
+    monkeypatch.setattr(store, "put", fail_sidecar)
+    with pytest.raises(RuntimeError, match="sidecar unavailable"):
+        service.reserve("mat-1", "original", [{"id": "c1"}], "reviewer")
+
+    document = service.list("mat-1")
+    assert document["running_request"] is None
+    assert document["revision_request"]["status"] == "failed"
 
 
 def test_unknown_base_or_adoption_target_is_rejected(versions):

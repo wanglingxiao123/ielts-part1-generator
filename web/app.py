@@ -57,6 +57,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import queue
 import threading
 import time
 from http.cookies import SimpleCookie
@@ -84,6 +85,7 @@ from .comment_store import CommentError, CommentService
 from .fanout import (
     FANOUT_CONCURRENCY,
     HEARTBEAT,
+    HEARTBEAT_SECONDS,
     FanOut,
     build_executor,
     plan_children,
@@ -996,7 +998,10 @@ def _relay_question_revision(
     """Relay one revision, verifying completed versions before exposing success."""
     terminal = False
     try:
-        for payload in iter_sse_payloads(body):
+        for payload in _iter_revision_payloads(body):
+            if payload is HEARTBEAT:
+                yield b": hb\n\n"
+                continue
             try:
                 decoded = json.loads(payload)
             except ValueError:
@@ -1050,6 +1055,45 @@ def _relay_question_revision(
         # A broken Web-to-Runtime stream does not prove the Runtime stopped. Keep the durable
         # running marker so a retry cannot launch a second paid Agent while the first may still
         # finish and commit its immutable version. Runtime owns the terminal transition.
+
+
+def _iter_revision_payloads(body: Any) -> Iterator[Any]:
+    """Read a blocking Runtime body on a worker while yielding keepalive sentinels."""
+    events: "queue.Queue[Tuple[str, Any]]" = queue.Queue()
+
+    def read() -> None:
+        try:
+            for payload in iter_sse_payloads(body):
+                events.put(("payload", payload))
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the response thread
+            events.put(("error", exc))
+        finally:
+            events.put(("end", None))
+
+    worker = threading.Thread(
+        target=read,
+        name="question-revision-sse",
+        daemon=True,
+    )
+    worker.start()
+    try:
+        while True:
+            try:
+                kind, value = events.get(timeout=HEARTBEAT_SECONDS)
+            except queue.Empty:
+                yield HEARTBEAT
+                continue
+            if kind == "payload":
+                yield value
+            elif kind == "error":
+                raise value
+            else:
+                return
+    finally:
+        closer = getattr(body, "close", None)
+        if callable(closer):
+            closer()
+        worker.join(timeout=1.0)
 
 
 async def _json_body(request: Request) -> Any:

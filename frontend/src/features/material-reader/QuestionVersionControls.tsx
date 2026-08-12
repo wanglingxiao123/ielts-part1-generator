@@ -6,7 +6,6 @@ import type { QuestionVersionsState } from './useQuestionVersions'
 const STAGE_LABEL: Record<QuestionRevisionStage, string> = {
   queued: '正在准备修改',
   analysing: '正在分析批注',
-  revising: '正在修改题目',
   validating: '正在检查完整十题',
   auditing: '正在独立复评',
   storing: '正在生成新版本',
@@ -23,7 +22,6 @@ const REVISION_STEPS = [
 const STAGE_INDEX: Record<QuestionRevisionStage, number> = {
   queued: 0,
   analysing: 1,
-  revising: 1,
   validating: 2,
   auditing: 3,
   storing: 4,
