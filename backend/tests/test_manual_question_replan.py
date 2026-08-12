@@ -157,7 +157,7 @@ async def test_category_semantics_rejection_replans_with_feedback(monkeypatch):
         feasibility_calls += 1
         if feasibility_calls == 1:
             return {
-                "feasible": True,
+                "feasible": False,
                 "reasons": [
                     "Item 8: `62` identifies the operating bus route, not a quantity."
                 ],
@@ -227,7 +227,7 @@ async def test_category_semantics_exhaustion_is_failed_not_needs_material(monkey
 
     async def feasibility(*_args):
         return {
-            "feasible": True,
+            "feasible": False,
             "reasons": [
                 "Item 8: `62` identifies the operating bus route, not a quantity."
             ],

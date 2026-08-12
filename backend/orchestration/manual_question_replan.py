@@ -217,11 +217,7 @@ async def replan_from_comments(
                 if str(reason).strip()
             ]
             if feasibility.get("category_semantics_ok") is False:
-                plan_failures.append(
-                    "category_semantics"
-                    if feasibility.get("feasible") is True
-                    else "infeasible"
-                )
+                plan_failures.append("category_semantics")
                 continue
             if outcome == REGENERATE_MATERIAL:
                 plan_failures.append(
