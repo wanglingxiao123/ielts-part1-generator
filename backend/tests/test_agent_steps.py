@@ -128,7 +128,7 @@ async def test_classification_preserves_each_comment_outcome_and_uses_highest_ro
 
 
 @pytest.mark.asyncio
-async def test_classification_rejects_reason_for_wrong_anchored_question(monkeypatch):
+async def test_classification_projects_anchored_question_over_model_number(monkeypatch):
     async def invoke(*_args):
         return json.dumps({
             "reasons": [{
@@ -138,10 +138,105 @@ async def test_classification_rejects_reason_for_wrong_anchored_question(monkeyp
         })
 
     monkeypatch.setattr("backend.steps.agent_steps._invoke", invoke)
+    result = await classify_question_revision(
+        {}, {}, {}, [{
+            "id": "c1", "anchor": {"type": "question", "index": 1},
+        }])
+    assert result["reasons"][0]["question_number"] == 1
+
+
+@pytest.mark.asyncio
+async def test_classification_projects_anchor_when_model_omits_question_number(monkeypatch):
+    async def invoke(*_args):
+        return json.dumps({
+            "reasons": [{
+                "comment_id": "c1",
+                "outcome": "replan_questions",
+                "reason": "change the group layout",
+            }],
+        })
+
+    monkeypatch.setattr("backend.steps.agent_steps._invoke", invoke)
+    result = await classify_question_revision(
+        {}, {}, {}, [{
+            "id": "c1", "anchor": {"type": "question", "index": 3},
+        }])
+    assert result["reasons"] == [{
+        "comment_id": "c1",
+        "question_number": 3,
+        "outcome": "replan_questions",
+        "reason": "change the group layout",
+    }]
+
+
+@pytest.mark.asyncio
+async def test_classification_requires_question_number_without_anchor(monkeypatch):
+    async def invoke(*_args):
+        return json.dumps({
+            "reasons": [{
+                "comment_id": "c1",
+                "outcome": "question_only",
+                "reason": "fix the wording",
+            }],
+        })
+
+    monkeypatch.setattr("backend.steps.agent_steps._invoke", invoke)
+    with pytest.raises(ModelCallError, match="incomplete"):
+        await classify_question_revision({}, {}, {}, [{"id": "c1"}])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("anchor_index", [True, 0, 11, "3"])
+async def test_classification_rejects_malformed_question_anchor(
+    monkeypatch, anchor_index,
+):
+    async def invoke(*_args):
+        return json.dumps({
+            "reasons": [{
+                "comment_id": "c1",
+                "question_number": 3,
+                "outcome": "question_only",
+                "reason": "fix the wording",
+            }],
+        })
+
+    monkeypatch.setattr("backend.steps.agent_steps._invoke", invoke)
     with pytest.raises(ModelCallError, match="incomplete"):
         await classify_question_revision(
             {}, {}, {}, [{
-                "id": "c1", "anchor": {"type": "question", "index": 1},
+                "id": "c1",
+                "anchor": {"type": "question", "index": anchor_index},
+            }])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reason_overrides", "error"),
+    [
+        ({"outcome": "unsupported"}, "incomplete"),
+        ({"reason": "   "}, "incomplete"),
+        ({"comment_id": "other"}, "incomplete"),
+    ],
+)
+async def test_anchor_projection_does_not_weaken_reason_validation(
+    monkeypatch, reason_overrides, error,
+):
+    reason = {
+        "comment_id": "c1",
+        "question_number": 9,
+        "outcome": "question_only",
+        "reason": "fix the wording",
+    }
+    reason.update(reason_overrides)
+
+    async def invoke(*_args):
+        return json.dumps({"reasons": [reason]})
+
+    monkeypatch.setattr("backend.steps.agent_steps._invoke", invoke)
+    with pytest.raises(ModelCallError, match=error):
+        await classify_question_revision(
+            {}, {}, {}, [{
+                "id": "c1", "anchor": {"type": "question", "index": 3},
             }])
 
 

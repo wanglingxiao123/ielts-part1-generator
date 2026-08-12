@@ -723,9 +723,11 @@ async def classify_question_revision(
             "point or changing item_form, form_group, or group boundaries, but not the material.\n"
             "- revise_material: at least one comment requires changing the listening material.\n\n"
             "Return exactly: "
-            '{"reasons":[{"comment_id":"...","question_number":1,'
+            '{"reasons":[{"comment_id":"...",'
             '"outcome":"question_only|no_change|replan_questions|revise_material",'
             '"reason":"specific explanation"}]}. '
+            "Runtime derives question_number from question-anchored comments; include "
+            "question_number only for comments without a question anchor. "
             "Do not provide evidence references: Runtime derives those from the stored package. "
             "Include one reason for every input comment.",
         ]) + workspace.instructions()
@@ -763,18 +765,15 @@ async def classify_question_revision(
     cleaned = []
     covered = set()
     for reason in reasons:
-        number = reason.get("question_number") if isinstance(reason, dict) else None
         comment_id = str(reason.get("comment_id") or "") if isinstance(reason, dict) else ""
         outcome = reason.get("outcome", legacy_outcome) if isinstance(reason, dict) else None
+        model_number = reason.get("question_number") if isinstance(reason, dict) else None
+        number = anchored_numbers.get(comment_id, model_number)
         if (not isinstance(reason, dict) or comment_id not in comment_ids
                 or comment_id in covered
                 or outcome not in allowed_outcomes
                 or isinstance(number, bool) or not isinstance(number, int)
                 or not 1 <= number <= QUESTION_COUNT
-                or (
-                    comment_id in anchored_numbers
-                    and number != anchored_numbers[comment_id]
-                )
                 or not str(reason.get("reason") or "").strip()):
             raise ModelCallError(
                 "reviewer-comment classification reason is incomplete or does not match its input")
