@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from web.app import WebTier
-from web.comment_store import CommentService, InMemoryCommentStore
+from web.comment_store import CommentError, CommentService, InMemoryCommentStore
 
 from .conftest import StubRuntimeClient, register
 
@@ -112,3 +113,78 @@ def test_comment_document_survives_web_tier_rebuild(auth, static_dir):
             json={"email": "a@amazon.com", "password": "hunter2hunter2"},
         )
         assert client.get("/api/material-comments/%s" % MATERIAL_ID).json() == created
+
+
+def test_legacy_question_comment_is_projected_as_original_and_open():
+    store = InMemoryCommentStore()
+    store.save(MATERIAL_ID, {
+        "material_id": MATERIAL_ID,
+        "comments": [{
+            "id": "legacy",
+            "created_at": "2026-08-09T14:30:00Z",
+            "anchor": {"type": "question", "index": 2},
+            "severity": "major",
+            "text": "旧批注",
+        }],
+    })
+
+    comment = CommentService(store).list(MATERIAL_ID)["comments"][0]
+
+    assert comment["version_id"] == "original"
+    assert comment["status"] == "open"
+
+
+def test_question_comment_records_requested_version():
+    service = CommentService(InMemoryCommentStore())
+
+    document = service.create(MATERIAL_ID, {
+        **payload(),
+        "version_id": "version-2",
+    })
+
+    assert document["comments"][0]["version_id"] == "version-2"
+    assert document["comments"][0]["status"] == "open"
+
+
+def test_revision_settlement_only_updates_matching_snapshot():
+    service = CommentService(InMemoryCommentStore())
+    source = service.create(MATERIAL_ID, payload(text="用于本次修改"))["comments"][0]
+    concurrent = service.create(MATERIAL_ID, payload(4, text="处理中新增"))["comments"][1]
+    other_version = service.create(MATERIAL_ID, {
+        **payload(5, text="另一版本"),
+        "version_id": "version-2",
+    })["comments"][2]
+
+    document = service.settle_revision(
+        MATERIAL_ID,
+        comment_ids=[source["id"], other_version["id"]],
+        base_version_id="original",
+        request_id="request-1",
+        outcome="resolved",
+        resolved_by_version_id="version-3",
+    )
+    by_id = {comment["id"]: comment for comment in document["comments"]}
+
+    assert by_id[source["id"]]["status"] == "resolved"
+    assert by_id[source["id"]]["resolved_by_version_id"] == "version-3"
+    assert by_id[source["id"]]["revision_request_id"] == "request-1"
+    assert by_id[concurrent["id"]]["status"] == "open"
+    assert by_id[other_version["id"]]["status"] == "open"
+
+
+def test_needs_material_comment_is_read_only():
+    service = CommentService(InMemoryCommentStore())
+    comment = service.create(MATERIAL_ID, payload())["comments"][0]
+    service.settle_revision(
+        MATERIAL_ID,
+        comment_ids=[comment["id"]],
+        base_version_id="original",
+        request_id="request-2",
+        outcome="needs_material",
+    )
+
+    with pytest.raises(CommentError) as found:
+        service.delete(MATERIAL_ID, comment["id"])
+
+    assert found.value.code == "COMMENT_READ_ONLY"
+    assert service.list(MATERIAL_ID)["comments"][0]["status"] == "needs_material"

@@ -73,6 +73,7 @@ export function useMaterialComments(materialId: string, enabled: boolean) {
     },
     [materialId],
   )
+  const reload = useCallback(() => setReloadKey((key) => key + 1), [])
 
   return {
     comments: commentsMaterialId === materialId ? comments : [],
@@ -81,6 +82,6 @@ export function useMaterialComments(materialId: string, enabled: boolean) {
     error,
     create,
     remove,
-    reload: () => setReloadKey((key) => key + 1),
+    reload,
   }
 }

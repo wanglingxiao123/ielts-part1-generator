@@ -20,7 +20,7 @@
  * 音频播放器在页签之上，理由是听音频与看题面是同时进行的动作，把播放器藏进某一个页签会让另一个
  * 页签里的人失去它。
  */
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api } from '@/api/endpoints'
 import { getThresholds } from '@/config/runtimeConfig'
@@ -153,9 +153,28 @@ export function MaterialPage() {
   )
   const missing = useMemo(() => explainMissingQuestions(questions.data), [questions.data])
   const comments = useMaterialComments(materialId ?? '', Boolean(record))
+  const reloadComments = comments.reload
+  const reconciledRevisionRef = useRef('')
+  useEffect(() => {
+    const request = questionVersions.revisionRequest
+    if (
+      !request?.request_id ||
+      !['completed', 'needs_material_revision'].includes(request.status) ||
+      reconciledRevisionRef.current === request.request_id
+    ) {
+      return
+    }
+    reconciledRevisionRef.current = request.request_id
+    reloadComments()
+  }, [questionVersions.revisionRequest, reloadComments])
   const questionComments = useMemo(
-    () => comments.comments.filter((comment) => comment.anchor.type === 'question'),
-    [comments.comments],
+    () =>
+      comments.comments.filter(
+        (comment) =>
+          comment.anchor.type === 'question' &&
+          (comment.version_id ?? 'original') === questionVersions.selectedVersionId,
+      ),
+    [comments.comments, questionVersions.selectedVersionId],
   )
   const turnComments = useMemo(
     () => comments.comments.filter((comment) => comment.anchor.type === 'turn'),
@@ -548,6 +567,12 @@ function QuestionsTab({
                 saving={commentsState.saving}
                 onNavigate={onNavigateComment}
                 onDelete={commentsState.remove}
+                resolvedVersionLabel={(versionId) => {
+                  const version = versionsState.versions.find(
+                    (candidate) => candidate.id === versionId,
+                  )
+                  return version ? `V${version.ordinal}` : null
+                }}
               />
             )}
             {commentsState.error && (
@@ -565,7 +590,15 @@ function QuestionsTab({
                   : { type: 'question', index: selectedQuestion }
               }
               saving={commentsState.saving}
-              onSubmit={commentsState.create}
+              disabled={
+                versionsState.selectedVersion?.id !== versionsState.activeVersionId
+              }
+              onSubmit={(comment) =>
+                commentsState.create({
+                  ...comment,
+                  version_id: versionsState.selectedVersionId,
+                })
+              }
             />
             <QuestionRevisionAction state={versionsState} comments={comments} />
           </aside>

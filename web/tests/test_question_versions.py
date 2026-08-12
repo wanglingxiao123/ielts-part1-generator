@@ -227,6 +227,132 @@ def test_revision_route_snapshots_question_comments_and_relays_runtime(
     assert payload["comments"][0]["anchor"] == {"type": "question", "index": 3}
 
 
+def test_revision_route_excludes_handled_and_other_version_comments(
+    auth, runtime, static_dir,
+):
+    backing = InMemoryObjectStore()
+    put(backing, "_questions/mat-1.json", {
+        "ok": True,
+        "package": {"material_id": "mat-1", "question_face": {},
+                    "answer_key": [], "evidence": []},
+    })
+    versions = QuestionVersionService(backing)
+    comments = CommentService(InMemoryCommentStore())
+    open_comment = comments.create("mat-1", {
+        "anchor": {"type": "question", "index": 1},
+        "severity": "major", "text": "Open.",
+    })["comments"][0]
+    handled = comments.create("mat-1", {
+        "anchor": {"type": "question", "index": 2},
+        "severity": "major", "text": "Handled.",
+    })["comments"][1]
+    comments.settle_revision(
+        "mat-1",
+        comment_ids=[handled["id"]],
+        base_version_id="original",
+        request_id="old-request",
+        outcome="needs_material",
+    )
+    comments.create("mat-1", {
+        "anchor": {"type": "question", "index": 3},
+        "severity": "major", "text": "Other version.",
+        "version_id": "version-2",
+    })
+    put(backing, "_question_versions/mat-1/versions/new.json", {
+        "id": "new", "created_at": "2026-08-11T10:00:00Z",
+        "package": {"question_face": {}},
+    })
+    stream = FakeStreamingBody()
+    stream.push_event({"type": "question_revision_completed", "version_id": "new"})
+    stream.finish()
+    runtime.stream = stream
+    tier = WebTier(
+        auth, runtime, str(static_dir), history=_History(), comments=comments,
+        question_versions=versions,
+    )
+    from fastapi.testclient import TestClient
+
+    with TestClient(tier.app) as client:
+        register(client)
+        response = client.post(
+            "/api/material-question-revisions/mat-1",
+            json={"base_version_id": "original"},
+        )
+
+    assert response.status_code == 200
+    assert [row["id"] for row in runtime.calls[-1]["comments"]] == [open_comment["id"]]
+
+
+def test_versions_route_reconciles_completed_revision_comments(
+    auth, runtime, static_dir,
+):
+    backing = InMemoryObjectStore()
+    put(backing, "_questions/mat-1.json", {
+        "ok": True, "package": {"question_face": {}},
+    })
+    comments = CommentService(InMemoryCommentStore())
+    source = comments.create("mat-1", {
+        "anchor": {"type": "question", "index": 1},
+        "severity": "major", "text": "Revise.",
+    })["comments"][0]
+    versions = QuestionVersionService(backing)
+    revision = versions.reserve("mat-1", "original", [source], "reviewer")
+    version_id = revision["request_id"]
+    put(backing, "_question_versions/mat-1/versions/%s.json" % version_id, {
+        "id": version_id,
+        "created_at": "2026-08-12T10:00:00Z",
+        "package": {"question_face": {}},
+    })
+    tier = WebTier(
+        auth, runtime, str(static_dir), history=_History(), comments=comments,
+        question_versions=versions,
+    )
+    from fastapi.testclient import TestClient
+
+    with TestClient(tier.app) as client:
+        register(client)
+        response = client.get("/api/material-question-versions/mat-1")
+
+    assert response.status_code == 200
+    settled = comments.list("mat-1")["comments"][0]
+    assert settled["status"] == "resolved"
+    assert settled["resolved_by_version_id"] == version_id
+
+
+def test_comment_route_rejects_a_historical_question_version(
+    auth, runtime, static_dir,
+):
+    backing = InMemoryObjectStore()
+    put(backing, "_questions/mat-1.json", {
+        "ok": True, "package": {"question_face": {}},
+    })
+    put(backing, "_question_versions/mat-1/versions/v2.json", {
+        "id": "v2", "created_at": "2026-08-11T10:00:00Z",
+        "package": {"question_face": {}},
+    })
+    versions = QuestionVersionService(backing)
+    versions.adopt("mat-1", "v2", "reviewer")
+    comments = CommentService(InMemoryCommentStore())
+    tier = WebTier(
+        auth, runtime, str(static_dir), history=_History(), comments=comments,
+        question_versions=versions,
+    )
+    from fastapi.testclient import TestClient
+
+    with TestClient(tier.app) as client:
+        register(client)
+        response = client.post("/api/material-comments/mat-1", json={
+            "anchor": {"type": "question", "index": 1},
+            "severity": "major",
+            "text": "Historical comment.",
+            "version_id": "original",
+        })
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "COMMENT_VERSION_NOT_ACTIVE"
+    assert comments.list("mat-1")["comments"] == []
+
+
 def test_revision_route_rejects_a_non_active_base(auth, runtime, static_dir):
     backing = InMemoryObjectStore()
     put(backing, "_questions/mat-1.json", {

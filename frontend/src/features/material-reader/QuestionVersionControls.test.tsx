@@ -112,6 +112,20 @@ describe('根据批注修改题目', () => {
     expect(revise).toHaveBeenCalledWith(COMMENTS)
   })
 
+  it('已处理和需改材料的批注不会再次提交', async () => {
+    const revise = vi.fn()
+    const comments: MaterialComment[] = [
+      ...COMMENTS,
+      { ...COMMENTS[0]!, id: 'resolved', status: 'resolved' },
+      { ...COMMENTS[0]!, id: 'material', status: 'needs_material' },
+    ]
+    render(<QuestionRevisionAction state={state({ revise })} comments={comments} />)
+
+    await userEvent.click(screen.getByRole('button', { name: '提交修改' }))
+
+    expect(revise).toHaveBeenCalledWith([COMMENTS[0]])
+  })
+
   it('查看历史版本时禁止提交并解释原因', () => {
     const historical = version(2)
     render(

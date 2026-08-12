@@ -498,8 +498,25 @@ class WebTier:
 
             body = await _json_body(request)
             try:
+                if (
+                    isinstance(body, dict)
+                    and isinstance(body.get("anchor"), dict)
+                    and body["anchor"].get("type") == "question"
+                    and self.question_versions is not None
+                ):
+                    versions = await run_in_threadpool(
+                        self.question_versions.list, material_id)
+                    requested_version = str(body.get("version_id") or "original")
+                    if requested_version != versions.get("active_version_id"):
+                        raise CommentError(
+                            "COMMENT_VERSION_NOT_ACTIVE",
+                            "只能在当前采用的题目版本上添加批注。",
+                            409,
+                        )
                 document = await run_in_threadpool(self.comments.create, material_id, body)
             except CommentError as exc:
+                return JSONResponse(_error_body(exc.code, exc.message), status_code=exc.status)
+            except QuestionVersionError as exc:
                 return JSONResponse(_error_body(exc.code, exc.message), status_code=exc.status)
             except Exception as exc:  # noqa: BLE001
                 return JSONResponse(
@@ -537,6 +554,8 @@ class WebTier:
                 )
             try:
                 document = await run_in_threadpool(self.question_versions.list, material_id)
+                await run_in_threadpool(
+                    _reconcile_question_comments, self.comments, material_id, document)
             except QuestionVersionError as exc:
                 return JSONResponse(_error_body(exc.code, exc.message), status_code=exc.status)
             except Exception as exc:
@@ -593,6 +612,8 @@ class WebTier:
                     row for row in comments_doc.get("comments", [])
                     if isinstance(row, dict)
                     and (row.get("anchor") or {}).get("type") == "question"
+                    and row.get("version_id") == base_version_id
+                    and row.get("status") == "open"
                     and (requested_ids is None or str(row.get("id")) in requested_ids)
                 ]
                 if requested_ids is not None and {
@@ -1094,6 +1115,38 @@ def _iter_revision_payloads(body: Any) -> Iterator[Any]:
         if callable(closer):
             closer()
         worker.join(timeout=1.0)
+
+
+def _reconcile_question_comments(
+    comments: CommentService,
+    material_id: str,
+    versions: Dict[str, Any],
+) -> None:
+    """Apply a durable terminal revision to its exact comment snapshot."""
+    revision = versions.get("revision_request")
+    if not isinstance(revision, dict):
+        return
+    status = revision.get("status")
+    source = revision.get("source_comments")
+    if status not in {"completed", "needs_material_revision"} or not isinstance(source, list):
+        return
+    comment_ids = [
+        str(row.get("id"))
+        for row in source
+        if isinstance(row, dict) and str(row.get("id") or "")
+    ]
+    if not comment_ids:
+        return
+    comments.settle_revision(
+        material_id,
+        comment_ids=comment_ids,
+        base_version_id=str(revision.get("base_version_id") or "original"),
+        request_id=str(revision.get("request_id") or ""),
+        outcome="resolved" if status == "completed" else "needs_material",
+        resolved_by_version_id=(
+            str(revision.get("version_id")) if status == "completed" else None
+        ),
+    )
 
 
 async def _json_body(request: Request) -> Any:

@@ -22,15 +22,17 @@ function anchorLabel(anchor: CommentAnchor): string {
 export function CommentComposer({
   anchor,
   saving,
+  disabled = false,
   onSubmit,
 }: {
   anchor: CommentAnchor | null
   saving: boolean
+  disabled?: boolean
   onSubmit: (comment: CreateMaterialComment) => Promise<boolean>
 }) {
   const [text, setText] = useState('')
   const [severity, setSeverity] = useState<CommentSeverity | null>(null)
-  const canSubmit = Boolean(anchor && severity && text.trim() && !saving)
+  const canSubmit = Boolean(anchor && severity && text.trim() && !saving && !disabled)
 
   const submit = async () => {
     if (!anchor || !severity || !text.trim()) return
@@ -41,9 +43,13 @@ export function CommentComposer({
   }
 
   return (
-    <div className="comment-composer">
+    <div className={`comment-composer${disabled ? ' disabled' : ''}`}>
       <div className="comment-anchor">
-        {anchor ? `位置：${anchorLabel(anchor)}` : '先点击左侧题目或对话 Turn'}
+        {disabled
+          ? '历史版本仅供查看'
+          : anchor
+            ? `位置：${anchorLabel(anchor)}`
+            : '先点击左侧题目或对话 Turn'}
       </div>
       <div className="comment-severity" aria-label="严重程度">
         {(Object.keys(SEVERITY) as CommentSeverity[]).map((value) => (
@@ -54,6 +60,7 @@ export function CommentComposer({
               severity === value ? ' selected' : ''
             }`}
             aria-pressed={severity === value}
+            disabled={disabled}
             onClick={() => setSeverity(value)}
           >
             {SEVERITY[value].label}
@@ -66,6 +73,7 @@ export function CommentComposer({
         rows={3}
         placeholder="写下批注意见"
         aria-label="批注内容"
+        disabled={disabled}
         onChange={(event) => setText(event.target.value)}
       />
       <button type="button" className="btn comment-submit" disabled={!canSubmit} onClick={submit}>
@@ -78,16 +86,28 @@ export function CommentComposer({
 export function CommentCard({
   comment,
   disabled,
+  resolvedVersionLabel,
   onNavigate,
   onDelete,
 }: {
   comment: MaterialComment
   disabled: boolean
+  resolvedVersionLabel?: (versionId: string) => string | null
   onNavigate: (anchor: CommentAnchor) => void
   onDelete: (id: string) => void
 }) {
+  const status = comment.anchor.type === 'question' ? (comment.status ?? 'open') : 'open'
+  const readOnly = status !== 'open'
+  const statusLabel =
+    status === 'needs_material'
+        ? '需修改材料'
+      : status === 'resolved'
+        ? comment.resolved_by_version_id
+          ? `已在 ${resolvedVersionLabel?.(comment.resolved_by_version_id) ?? '新版本'} 处理`
+          : '已处理'
+        : null
   return (
-    <article className={`comment-card severity-${comment.severity}`}>
+    <article className={`comment-card severity-${comment.severity} ${status}`}>
       <button
         type="button"
         className="comment-card-body"
@@ -98,6 +118,7 @@ export function CommentCard({
           <span className={`comment-severity-tag severity-${comment.severity}`}>
             {SEVERITY[comment.severity].short}
           </span>
+          {statusLabel && <span className="comment-status-tag">{statusLabel}</span>}
           <time dateTime={comment.created_at}>
             {new Date(comment.created_at).toLocaleString('zh-CN', {
               month: 'numeric',
@@ -114,7 +135,7 @@ export function CommentCard({
         className="comment-delete"
         title="删除批注"
         aria-label={`删除 ${anchorLabel(comment.anchor)} 的批注`}
-        disabled={disabled}
+        disabled={disabled || readOnly}
         onClick={() => onDelete(comment.id)}
       >
         ×
@@ -126,11 +147,13 @@ export function CommentCard({
 export function CommentList({
   comments,
   saving,
+  resolvedVersionLabel,
   onNavigate,
   onDelete,
 }: {
   comments: MaterialComment[]
   saving: boolean
+  resolvedVersionLabel?: (versionId: string) => string | null
   onNavigate: (anchor: CommentAnchor) => void
   onDelete: (id: string) => void
 }) {
@@ -143,7 +166,10 @@ export function CommentList({
         <CommentCard
           key={comment.id}
           comment={comment}
-          disabled={saving}
+          disabled={saving || (
+            comment.anchor.type === 'question' && (comment.status ?? 'open') !== 'open'
+          )}
+          resolvedVersionLabel={resolvedVersionLabel}
           onNavigate={onNavigate}
           onDelete={onDelete}
         />

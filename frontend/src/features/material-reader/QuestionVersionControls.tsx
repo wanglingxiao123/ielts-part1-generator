@@ -97,7 +97,8 @@ export function QuestionRevisionAction({
 }) {
   const viewingActive = state.selectedVersion?.id === state.activeVersionId
   const pendingComments = comments.filter(
-    (comment) => comment.anchor.type === 'question',
+    (comment) =>
+      comment.anchor.type === 'question' && (comment.status ?? 'open') === 'open',
   )
   const canRevise =
     pendingComments.length > 0 &&

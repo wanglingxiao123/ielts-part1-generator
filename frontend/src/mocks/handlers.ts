@@ -938,6 +938,9 @@ const mockTransport = async (spec: RequestSpec): Promise<unknown> => {
             anchor: body.anchor,
             severity: body.severity,
             text: body.text.trim(),
+            ...(body.anchor.type === 'question'
+              ? { version_id: body.version_id ?? 'original', status: 'open' as const }
+              : {}),
           },
         ],
       }

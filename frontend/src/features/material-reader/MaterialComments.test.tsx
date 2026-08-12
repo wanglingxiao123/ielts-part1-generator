@@ -55,4 +55,45 @@ describe('单人材料批注', () => {
     await userEvent.click(screen.getByRole('button', { name: '删除 Turn 4 的批注' }))
     expect(onDelete).toHaveBeenCalledWith('c1')
   })
+
+  it('renders handled comments as read-only with their outcome', () => {
+    const onDelete = vi.fn()
+    render(
+      <CommentCard
+        comment={{
+          id: 'c2',
+          created_at: '2026-08-11T14:30:00Z',
+          anchor: { type: 'question', index: 5 },
+          severity: 'major',
+          text: '修改金额题',
+          version_id: 'original',
+          status: 'resolved',
+          resolved_by_version_id: 'version-2',
+        }}
+        disabled={false}
+        resolvedVersionLabel={() => 'V2'}
+        onNavigate={vi.fn()}
+        onDelete={onDelete}
+      />,
+    )
+
+    expect(screen.getByText('已在 V2 处理')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '删除 Q5 的批注' })).toBeDisabled()
+    expect(screen.getByText('修改金额题').closest('article')).toHaveClass('resolved')
+  })
+
+  it('disables the composer for a historical version', () => {
+    render(
+      <CommentComposer
+        anchor={{ type: 'question', index: 3 }}
+        saving={false}
+        disabled
+        onSubmit={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('历史版本仅供查看')).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: '批注内容' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '添加批注' })).toBeDisabled()
+  })
 })
