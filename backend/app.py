@@ -33,7 +33,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
@@ -55,6 +55,7 @@ app = BedrockAgentCoreApp()
 _catalogue: Optional[ScenarioCatalogue] = None
 _catalogue_lock = asyncio.Lock()
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$")
+_version_audio_tasks: Dict[Tuple[str, str], asyncio.Task[Any]] = {}
 
 
 async def catalogue() -> ScenarioCatalogue:
@@ -89,6 +90,9 @@ async def invoke(payload: Dict[str, Any]):
         material_id = (payload or {}).get("material_id")
         if not material_id:
             return _error("bad_request", "material_id is required")
+        version_id = str((payload or {}).get("version_id") or "")
+        if version_id and version_id != "original":
+            return await _version_audio_status(str(material_id), version_id)
         return audio_status(str(material_id))
 
     if action == "list_candidates":
@@ -105,6 +109,9 @@ async def invoke(payload: Dict[str, Any]):
 
     if action == "replan_questions_from_comments":
         return _replan_questions_from_comments(payload or {})
+
+    if action == "revise_material_from_comments":
+        return _revise_material_from_comments(payload or {})
 
     if action != "generate":
         return {
@@ -154,6 +161,9 @@ async def _preview_audio(payload: Dict[str, Any]) -> Dict[str, Any]:
     material_id = payload.get("material_id")
     if not material_id:
         return _error("bad_request", "material_id is required")
+    version_id = str(payload.get("version_id") or "")
+    if version_id and version_id != "original":
+        return await _preview_version_audio(str(material_id), version_id)
     try:
         return await preview_audio(str(material_id), actor=str(payload.get("actor") or "user"))
     except UnknownMaterial as exc:
@@ -171,6 +181,10 @@ async def _presign(payload: Dict[str, Any]) -> Dict[str, Any]:
     material_id = payload.get("material_id")
     if not material_id:
         return _error("bad_request", "material_id is required")
+    version_id = str(payload.get("version_id") or "")
+    if version_id and version_id != "original":
+        return await _presign_version_audio(
+            str(material_id), version_id, int(payload.get("ttl_seconds") or 3600))
     ttl = payload.get("ttl_seconds") or 3600
     from . import audio
 
@@ -186,6 +200,150 @@ async def _presign(payload: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 - reported to the caller rather than raised into SSE
         return _error("presign_failed", "%s: %s" % (type(exc).__name__, str(exc)[:300]),
                       material_id=material_id)
+
+
+def _load_assessment_version(material_id: str, version_id: str) -> Dict[str, Any]:
+    from .orchestration.slot_store import build_slot_store
+
+    version = build_slot_store().load_question_version(material_id, version_id)
+    if not isinstance(version, dict):
+        raise ValueError("assessment version was not found")
+    if version.get("operation") == "revise_material" and (
+        not isinstance(version.get("material"), dict)
+        or not isinstance(version.get("blueprint"), dict)
+    ):
+        raise ValueError("assessment version material artifacts are incomplete")
+    return version
+
+
+async def _version_audio_status(material_id: str, version_id: str) -> Dict[str, Any]:
+    from . import audio
+
+    try:
+        version = await asyncio.to_thread(
+            _load_assessment_version, material_id, version_id)
+        if version.get("operation") != "revise_material":
+            return audio_status(material_id)
+        version_store, _ = audio.build_version_audio_store()
+        status = await asyncio.to_thread(version_store.status, material_id, version_id)
+        if status.get("status") == "ready":
+            status = dict(status)
+            status["manifest"] = await asyncio.to_thread(
+                version_store.manifest, material_id, version_id)
+        status.setdefault("progress", {"done": 0, "total": 0})
+        return status
+    except Exception as exc:  # noqa: BLE001 - action errors use the Runtime envelope
+        return _error(
+            "version_audio_status_failed",
+            "%s: %s" % (type(exc).__name__, str(exc)[:300]),
+            material_id=material_id,
+            version_id=version_id,
+        )
+
+
+async def _preview_version_audio(material_id: str, version_id: str) -> Dict[str, Any]:
+    from . import audio
+
+    try:
+        task_key = (material_id, version_id)
+        running_task = _version_audio_tasks.get(task_key)
+        if running_task is not None and not running_task.done():
+            return {
+                "material_id": material_id,
+                "version_id": version_id,
+                "audio_job_id": "%s/%s" % task_key,
+                "status": "synthesizing",
+                "repeat": True,
+            }
+        version = await asyncio.to_thread(
+            _load_assessment_version, material_id, version_id)
+        if version.get("operation") != "revise_material":
+            return await preview_audio(material_id, actor="reviewer")
+        version_store, _ = audio.build_version_audio_store()
+        current = await asyncio.to_thread(version_store.status, material_id, version_id)
+        if current.get("status") in {"synthesizing", "ready"}:
+            return {
+                "material_id": material_id,
+                "version_id": version_id,
+                "audio_job_id": "%s/%s" % (material_id, version_id),
+                "status": current["status"],
+                "repeat": True,
+            }
+
+        polly = audio.build_polly()
+
+        def work() -> None:
+            version_store.preview(
+                material_id,
+                version_id,
+                version["material"],
+                version["blueprint"],
+                polly=polly,
+                scenario_key="assessment-version",
+            )
+
+        task = asyncio.create_task(asyncio.to_thread(work))
+        _version_audio_tasks[task_key] = task
+
+        def forget(completed: asyncio.Task[Any]) -> None:
+            if _version_audio_tasks.get(task_key) is completed:
+                _version_audio_tasks.pop(task_key, None)
+
+        task.add_done_callback(forget)
+        return {
+            "material_id": material_id,
+            "version_id": version_id,
+            "audio_job_id": "%s/%s" % (material_id, version_id),
+            "status": "synthesizing",
+            "repeat": False,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return _error(
+            "version_audio_preview_failed",
+            "%s: %s" % (type(exc).__name__, str(exc)[:300]),
+            material_id=material_id,
+            version_id=version_id,
+        )
+
+
+async def _presign_version_audio(
+    material_id: str, version_id: str, ttl_seconds: int
+) -> Dict[str, Any]:
+    from . import audio
+
+    try:
+        version = await asyncio.to_thread(
+            _load_assessment_version, material_id, version_id)
+        if version.get("operation") != "revise_material":
+            state_store, _ = audio.build_state_store()
+            urls = await asyncio.to_thread(
+                state_store.presign_audio, material_id, ttl_seconds=ttl_seconds)
+            return {
+                "material_id": material_id,
+                "version_id": version_id,
+                "urls": {str(key): value for key, value in sorted(urls.items())},
+                "ttl_seconds": ttl_seconds,
+            }
+        version_store, _ = audio.build_version_audio_store()
+        urls = await asyncio.to_thread(
+            version_store.presign,
+            material_id,
+            version_id,
+            ttl_seconds=ttl_seconds,
+        )
+        return {
+            "material_id": material_id,
+            "version_id": version_id,
+            "urls": {str(key): value for key, value in sorted(urls.items())},
+            "ttl_seconds": ttl_seconds,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return _error(
+            "version_audio_presign_failed",
+            "%s: %s" % (type(exc).__name__, str(exc)[:300]),
+            material_id=material_id,
+            version_id=version_id,
+        )
 
 
 async def _generate(payload: Dict[str, Any]):
@@ -345,6 +503,79 @@ async def _replan_questions_from_comments(payload: Dict[str, Any]):
             }
             return
     async for event in replan_from_comments(
+        store=build_slot_store(),
+        material_id=str(payload["material_id"]),
+        request_id=str(payload["request_id"]),
+        source_request_id=str(payload["source_request_id"]),
+        base_version_id=str(payload["base_version_id"]),
+        material=payload["material"],
+        blueprint=payload["blueprint"],
+        package=payload["package"],
+        comments=comments,
+        actor=str(payload.get("actor") or "reviewer"),
+    ):
+        yield event
+
+
+async def _revise_material_from_comments(payload: Dict[str, Any]):
+    """Stream a confirmed material revision and complete question regeneration."""
+    from .orchestration.manual_material_revision import revise_material_from_comments
+    from .orchestration.slot_store import build_slot_store
+
+    required = (
+        "material_id", "request_id", "source_request_id", "base_version_id",
+        "material", "blueprint", "package", "comments",
+    )
+    missing = [key for key in required if not payload.get(key)]
+    if missing:
+        yield {
+            "type": "question_revision_failed",
+            "message": "missing required fields: %s" % ", ".join(missing),
+        }
+        return
+    for key in ("material_id", "request_id", "source_request_id", "base_version_id"):
+        if not _SAFE_ID.fullmatch(str(payload.get(key) or "")):
+            yield {
+                "type": "question_revision_failed",
+                "message": "%s is invalid" % key,
+            }
+            return
+    if not all(
+        isinstance(payload.get(key), dict)
+        for key in ("material", "blueprint", "package")
+    ):
+        yield {
+            "type": "question_revision_failed",
+            "message": "material, blueprint and package must be JSON objects",
+        }
+        return
+    comments = payload.get("comments")
+    if not isinstance(comments, list) or not comments:
+        yield {
+            "type": "question_revision_failed",
+            "message": "source reviewer comments are required",
+        }
+        return
+    for row in comments:
+        anchor = row.get("anchor") if isinstance(row, dict) else None
+        index = anchor.get("index") if isinstance(anchor, dict) else None
+        if (
+            not isinstance(row, dict)
+            or not str(row.get("id") or "").strip()
+            or not isinstance(anchor, dict)
+            or anchor.get("type") not in {"question", "turn"}
+            or isinstance(index, bool)
+            or not isinstance(index, int)
+            or (anchor.get("type") == "question" and not 1 <= index <= 10)
+            or (anchor.get("type") == "turn" and index < 0)
+            or not str(row.get("text") or "").strip()
+        ):
+            yield {
+                "type": "question_revision_failed",
+                "message": "every source comment must identify a question or turn",
+            }
+            return
+    async for event in revise_material_from_comments(
         store=build_slot_store(),
         material_id=str(payload["material_id"]),
         request_id=str(payload["request_id"]),

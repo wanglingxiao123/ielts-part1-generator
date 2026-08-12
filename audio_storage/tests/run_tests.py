@@ -31,6 +31,7 @@ from audio_storage import (
     ssml,
     state_store as state_store_module,
     synthesize,
+    version_audio,
     voice,
 )
 from audio_storage.manifest import ClipInput
@@ -1225,6 +1226,136 @@ def test_synthesis_failure_writes_no_manifest() -> None:
     check("and now completes", retried.ok)
 
 
+def test_version_audio_never_falls_back_to_original() -> None:
+    print("assessment-version audio never falls back to original")
+    backing = InMemoryObjectStore()
+    original_prefix = "pending/{0}/{1}/".format(SCENARIO_KEY, MATERIAL_ID)
+    original_manifest = {
+        "clips": [
+            {"turn_index": 0, "key": "audio/turn_000.mp3"},
+        ]
+    }
+    backing.put(original_prefix + "audio/turn_000.mp3", b"original")
+    backing.put(
+        original_prefix + "audio/manifest.json",
+        json.dumps(original_manifest).encode("utf-8"),
+    )
+
+    version_id = "revision-123"
+    status = version_audio.version_audio_status(backing, MATERIAL_ID, version_id)
+    check(
+        "a version with no manifest reports needs_synthesis",
+        status["status"] == version_audio.NEEDS_SYNTHESIS,
+        json.dumps(status),
+    )
+    initialized = version_audio.initialize_version_audio(
+        backing, MATERIAL_ID, version_id
+    )
+    check(
+        "initialization persists the shared material/version key",
+        initialized["version_key"] == "{0}/{1}".format(MATERIAL_ID, version_id),
+        json.dumps(initialized),
+    )
+    check(
+        "presign refuses the missing version manifest",
+        _raises(
+            version_audio.VersionAudioNotReady,
+            lambda: version_audio.presign_version_audio(
+                backing, MATERIAL_ID, version_id
+            ),
+        ),
+    )
+    presigned = [call[1] for call in backing.calls if call[0] == "presign"]
+    check(
+        "the original clip is never presigned as a fallback",
+        presigned == [],
+        json.dumps(presigned),
+    )
+    version_prefix = version_audio.version_prefix(MATERIAL_ID, "crashed-version")
+    backing.put(version_prefix + "audio/turn_000.mp3", b"partial")
+    backing.put(
+        version_prefix + "audio/manifest.json",
+        json.dumps(original_manifest).encode("utf-8"),
+    )
+    check(
+        "a manifest without an explicit ready state is not playable",
+        _raises(
+            version_audio.VersionAudioNotReady,
+            lambda: version_audio.presign_version_audio(
+                backing, MATERIAL_ID, "crashed-version"
+            ),
+        ),
+    )
+
+
+def test_version_audio_synthesis_is_isolated() -> None:
+    print("assessment-version synthesis and presign isolation")
+    material, blueprint, backing, polly = _synth_fixture()
+    first_id = "revision-a"
+    second_id = "revision-b"
+
+    first = version_audio.synthesize_version_audio(
+        backing,
+        polly,
+        MATERIAL_ID,
+        first_id,
+        material,
+        blueprint,
+        scenario_key=SCENARIO_KEY,
+        synthesized_at="2026-08-12T09:00:00Z",
+    )
+    check("first version synthesis completes", first.ok, json.dumps(first.summary()))
+    first_prefix = version_audio.version_prefix(MATERIAL_ID, first_id)
+    second_prefix = version_audio.version_prefix(MATERIAL_ID, second_id)
+    check(
+        "all first-version objects stay under its version prefix",
+        bool(backing.list_keys(first_prefix))
+        and not backing.list_keys(second_prefix),
+    )
+    first_urls = version_audio.presign_version_audio(
+        backing, MATERIAL_ID, first_id
+    )
+    check(
+        "first version presigns only its own prefix",
+        all(first_prefix in url for url in first_urls.values()),
+        json.dumps(first_urls),
+    )
+
+    calls_before = polly.calls
+    second = version_audio.preview_version_audio(
+        backing,
+        polly,
+        MATERIAL_ID,
+        second_id,
+        material,
+        blueprint,
+        scenario_key=SCENARIO_KEY,
+        synthesized_at="2026-08-12T09:05:00Z",
+    )
+    check(
+        "a different version does not reuse the first version's clips",
+        second.ok and polly.calls - calls_before == len(turns_of(material)),
+        json.dumps(second.summary()),
+    )
+    check(
+        "both versions have independent ready state",
+        version_audio.version_audio_status(backing, MATERIAL_ID, first_id)["status"]
+        == version_audio.READY
+        and version_audio.version_audio_status(backing, MATERIAL_ID, second_id)[
+            "status"
+        ]
+        == version_audio.READY,
+    )
+    second_urls = version_audio.presign_version_audio(
+        backing, MATERIAL_ID, second_id
+    )
+    check(
+        "second version presigns only its own prefix",
+        all(second_prefix in url for url in second_urls.values()),
+        json.dumps(second_urls),
+    )
+
+
 def test_synthesis_uses_measured_constants() -> None:
     print("synthesis uses the measured constants, not the design's guesses")
     check(
@@ -2098,6 +2229,8 @@ def main() -> int:
         test_synthesis_idempotency,
         test_synthesis_cache_key_is_on_the_object,
         test_synthesis_failure_writes_no_manifest,
+        test_version_audio_never_falls_back_to_original,
+        test_version_audio_synthesis_is_isolated,
         test_synthesis_uses_measured_constants,
         test_synthesis_refuses_before_it_pays,
         test_single_turn_resynthesis,

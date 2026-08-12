@@ -22,5 +22,6 @@ __all__ = [
     "ssml",
     "state_store",
     "synthesize",
+    "version_audio",
     "voice",
 ]

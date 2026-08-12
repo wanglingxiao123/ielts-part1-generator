@@ -417,7 +417,58 @@ def synthesize_material(
     verify_voices: bool = False,
     on_event: Optional[Callable[[str, dict], None]] = None,
 ) -> SynthesisResult:
-    """Synthesise every turn of one material into its destination prefix.
+    """Synthesise a published material into its legacy state-managed prefix."""
+    prefix = "{0}/{1}/{2}/".format(state, scenario_key, material_id)
+    return _synthesize_material_at_prefix(
+        material,
+        material_id=material_id,
+        scenario_key=scenario_key,
+        store=store,
+        polly=polly,
+        destination_prefix=prefix,
+        blueprint=blueprint,
+        voice_map=voice_map,
+        voice_override=voice_override,
+        state=state,
+        sample_rate=sample_rate,
+        rate=rate,
+        narrator_rate=narrator_rate,
+        overrides=overrides,
+        concurrency=concurrency,
+        degraded=degraded,
+        degraded_reason=degraded_reason,
+        synthesized_at=synthesized_at,
+        force_turns=force_turns,
+        verify_voices=verify_voices,
+        on_event=on_event,
+    )
+
+
+def _synthesize_material_at_prefix(
+    material: dict,
+    *,
+    material_id: str,
+    scenario_key: str,
+    store,
+    polly: PollyClient,
+    destination_prefix: str,
+    blueprint: Optional[dict] = None,
+    voice_map: Optional[Dict[str, str]] = None,
+    voice_override: Optional[Dict[str, str]] = None,
+    state: str = PENDING,
+    sample_rate: str = SAMPLE_RATE,
+    rate: Optional[str] = DIALOGUE_RATE,
+    narrator_rate: Optional[str] = NARRATOR_RATE,
+    overrides: Optional[Dict[str, str]] = None,
+    concurrency: int = CONCURRENCY,
+    degraded: bool = False,
+    degraded_reason: Optional[str] = None,
+    synthesized_at: Optional[str] = None,
+    force_turns: Sequence[int] = (),
+    verify_voices: bool = False,
+    on_event: Optional[Callable[[str, dict], None]] = None,
+) -> SynthesisResult:
+    """Synthesise every turn into one caller-owned, explicit destination prefix.
 
     Returns the manifest rather than writing it: publish_material owns the sentinel, so there is
     exactly one place that decides a material has become visible. On any turn failure the
@@ -429,7 +480,7 @@ def synthesize_material(
     if verify_voices:
         check_voices(polly, resolved_map)
 
-    prefix = "{0}/{1}/{2}/".format(state, scenario_key, material_id)
+    prefix = destination_prefix
     plans = plan_material(
         material, voice_map=resolved_map, sample_rate=sample_rate, rate=rate,
         narrator_rate=narrator_rate, overrides=overrides, blueprint=blueprint,

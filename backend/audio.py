@@ -16,7 +16,14 @@ from __future__ import annotations
 import os
 from typing import Optional, Tuple
 
-__all__ = ["bucket_name", "region_name", "build_state_store", "build_polly", "build_clients"]
+__all__ = [
+    "bucket_name",
+    "region_name",
+    "build_state_store",
+    "build_version_audio_store",
+    "build_polly",
+    "build_clients",
+]
 
 # No default bucket. A wrong-but-plausible default would silently write a real material into
 # someone else's prefix; an unset variable fails on the first call with an actionable message.
@@ -50,6 +57,21 @@ def build_state_store(store=None):
 
         store = S3ObjectStore(bucket_name())
     return StateStore(store), store
+
+
+def build_version_audio_store(store=None):
+    """A version-isolated audio store plus its backing object store.
+
+    Runtime actions should use this for assessment versions instead of calling
+    ``StateStore.locate`` with the logical material id.
+    """
+    from audio_storage.version_audio import VersionAudioStore
+
+    if store is None:
+        from audio_storage.object_store import S3ObjectStore
+
+        store = S3ObjectStore(bucket_name())
+    return VersionAudioStore(store), store
 
 
 def build_polly(client=None):

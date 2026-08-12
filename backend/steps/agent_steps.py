@@ -70,6 +70,7 @@ __all__ = [
     "GenerationWorkspace",
     "replan_blueprint",
     "revise",
+    "revise_material_from_comments",
     "revise_questions",
     "revise_questions_from_comments",
 ]
@@ -699,6 +700,50 @@ async def replan_blueprint(
     if returned != expected:
         raise ModelCallError(
             "question replanning changed the immutable listening material")
+    return output
+
+
+async def revise_material_from_comments(
+    material: Dict[str, Any],
+    current_blueprint: Dict[str, Any],
+    comments: List[Dict[str, Any]],
+) -> GenOutput:
+    """Rewrite a complete material and blueprint from confirmed reviewer comments."""
+    agent = build_generate_agent()
+    workspace = GenerationWorkspace()
+    try:
+        material_path = workspace.path / "material.json"
+        blueprint_path = workspace.path / "current-blueprint.json"
+        comments_path = workspace.path / "comments.json"
+        material_path.write_text(
+            json.dumps(material, ensure_ascii=False, indent=2), encoding="utf-8")
+        blueprint_path.write_text(
+            json.dumps(current_blueprint, ensure_ascii=False, indent=2), encoding="utf-8")
+        comments_path.write_text(
+            json.dumps(comments, ensure_ascii=False, indent=2), encoding="utf-8")
+        message = "\n\n".join([
+            "Revise this complete IELTS Listening Part 1 material to satisfy the confirmed "
+            "reviewer comments. Return a complete replacement material and a complete replacement "
+            "blueprint, not a patch. The logical material_id must remain unchanged.",
+            "Activate the listening-material generation skill and follow its workflow completely. "
+            "Keep unrelated content stable, but make every material change required by the comments. "
+            "Rebuild all ten information points against the revised script, update every turn_index "
+            "and evidence anchor, and run the material+blueprint validator until it reports no errors.",
+            "## Files\n\nmaterial.json: %s\ncurrent-blueprint.json: %s\ncomments.json: %s"
+            % (material_path, blueprint_path, comments_path),
+            "Reply with exactly one JSON object shaped as "
+            '{"material": <complete revised material>, '
+            '"blueprint": <complete revised blueprint>}. '
+            "Do not include questions, an answer key, or commentary.",
+        ]) + workspace.instructions()
+        reply = await _invoke(agent, message, "material revision")
+    finally:
+        workspace.remove()
+    output = _envelope(reply, "material revision")
+    returned_id = str(output.material.get("material_id") or "")
+    expected_id = str(material.get("material_id") or "")
+    if expected_id and returned_id != expected_id:
+        raise ModelCallError("material revision changed the logical material_id")
     return output
 
 
