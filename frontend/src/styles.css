@@ -2933,7 +2933,7 @@ h3 {
 }
 
 .comment-card.resolved,
-.comment-card.needs-material {
+.comment-card.needs_material {
   border-color: #c7c9cc;
   border-left-color: #89919a;
   background: #f4f5f7;
@@ -2941,7 +2941,7 @@ h3 {
 }
 
 .comment-card.resolved .comment-card-meta strong,
-.comment-card.needs-material .comment-card-meta strong {
+.comment-card.needs_material .comment-card-meta strong {
   color: #5e6c84;
 }
 

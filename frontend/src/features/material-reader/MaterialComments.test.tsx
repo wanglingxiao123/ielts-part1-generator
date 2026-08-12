@@ -82,6 +82,30 @@ describe('单人材料批注', () => {
     expect(screen.getByText('修改金额题').closest('article')).toHaveClass('resolved')
   })
 
+  it('marks material-dependent comments with the matching read-only class', () => {
+    render(
+      <CommentCard
+        comment={{
+          id: 'c3',
+          created_at: '2026-08-11T14:30:00Z',
+          anchor: { type: 'question', index: 6 },
+          severity: 'major',
+          text: '需要改录音原文',
+          status: 'needs_material',
+        }}
+        disabled={false}
+        onNavigate={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('需修改材料')).toBeInTheDocument()
+    expect(screen.getByText('需要改录音原文').closest('article')).toHaveClass(
+      'needs_material',
+    )
+    expect(screen.getByRole('button', { name: '删除 Q6 的批注' })).toBeDisabled()
+  })
+
   it('disables the composer for a historical version', () => {
     render(
       <CommentComposer
