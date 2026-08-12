@@ -164,6 +164,8 @@ async def replan_from_comments(
         planned: Optional[Dict[str, Any]] = None
         validation: Any = None
         feedback: List[str] = []
+        plan_failures: List[str] = []
+        plan_accepted = False
         for _attempt in range(MAX_PLAN_ATTEMPTS):
             if _attempt:
                 request.update({"stage": "planning", "updated_at": _now()})
@@ -184,38 +186,64 @@ async def replan_from_comments(
                     "The replacement blueprint is byte-equivalent to the current blueprint. "
                     "The confirmed comments require a genuine replan."
                 ]
+                plan_failures.append("unchanged")
                 continue
             request.update({"stage": "validating", "updated_at": _now()})
             store.save_question_revision(material_id, request_id, request)
             yield {"type": "question_revision_validating", "request_id": request_id}
             validation = await validate(material, planned)
-            if validation.ok:
-                break
-            feedback = list(validation.errors)
+            if not validation.ok:
+                feedback = list(validation.errors)
+                plan_failures.append("validation")
+                continue
 
-        if planned is None or validation is None or not validation.ok:
+            request.update({"stage": "feasibility", "updated_at": _now()})
+            store.save_question_revision(material_id, request_id, request)
+            yield {"type": "question_revision_feasibility", "request_id": request_id}
+            feasibility = await agent_steps.feasibility_audit(
+                material, planned, _qr027_counts(validation))
+            verdict = preflight_verdict(validation.as_dict(), feasibility)
+            outcome = verdict.get("outcome")
+            if outcome in CANNOT_DECIDE or outcome not in {
+                PASS, PASS_WITH_JUSTIFICATION, REGENERATE_MATERIAL
+            }:
+                raise RuntimeError(
+                    "question feasibility could not be decided: %s: %s"
+                    % (outcome, "; ".join(verdict.get("reasons") or [])))
+
+            feedback = [
+                str(reason)
+                for reason in verdict.get("reasons") or []
+                if str(reason).strip()
+            ]
+            if feasibility.get("category_semantics_ok") is False:
+                plan_failures.append(
+                    "category_semantics"
+                    if feasibility.get("feasible") is True
+                    else "infeasible"
+                )
+                continue
+            if outcome == REGENERATE_MATERIAL:
+                plan_failures.append(
+                    "infeasible" if feasibility.get("feasible") is False
+                    else "feasibility"
+                )
+                continue
+
+            plan_accepted = True
+            break
+
+        if not plan_accepted:
+            if plan_failures and plan_failures[-1] == "category_semantics":
+                raise RuntimeError(
+                    "question blueprint category semantics could not be corrected: %s"
+                    % "; ".join(feedback or ["no usable reason was returned"])
+                )
             messages = feedback or ["No valid replacement blueprint could be produced."]
             async for event in _finish_needs_material(
                 store, request, comments, messages):
                 yield event
             return
-
-        request.update({"stage": "feasibility", "updated_at": _now()})
-        store.save_question_revision(material_id, request_id, request)
-        yield {"type": "question_revision_feasibility", "request_id": request_id}
-        feasibility = await agent_steps.feasibility_audit(
-            material, planned, _qr027_counts(validation))
-        verdict = preflight_verdict(validation.as_dict(), feasibility)
-        outcome = verdict.get("outcome")
-        if outcome == REGENERATE_MATERIAL:
-            async for event in _finish_needs_material(
-                store, request, comments, verdict.get("reasons") or []):
-                yield event
-            return
-        if outcome in CANNOT_DECIDE or outcome not in {PASS, PASS_WITH_JUSTIFICATION}:
-            raise RuntimeError(
-                "question feasibility could not be decided: %s: %s"
-                % (outcome, "; ".join(verdict.get("reasons") or [])))
 
         request.update({"stage": "generating", "updated_at": _now()})
         store.save_question_revision(material_id, request_id, request)

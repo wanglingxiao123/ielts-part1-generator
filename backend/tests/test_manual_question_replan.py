@@ -128,6 +128,309 @@ async def test_replan_stores_blueprint_snapshot_and_never_changes_material(monke
 
 
 @pytest.mark.asyncio
+async def test_category_semantics_rejection_replans_with_feedback(monkeypatch):
+    material = {"turns": [{"speaker": "A", "text": "Take bus route 62."}]}
+    old_blueprint = {"blueprint_schema_version": 2, "items": [{"number": 1}]}
+    planned_blueprints = [
+        {"blueprint_schema_version": 2, "items": [
+            {"number": 2, "target_answer": "62", "answer_category": "quantity"},
+        ]},
+        {"blueprint_schema_version": 2, "items": [
+            {"number": 3, "target_answer": "62", "answer_category": "service"},
+        ]},
+    ]
+    planner_feedback = []
+    feasibility_calls = 0
+
+    async def replan(_material, _blueprint, _comments, feedback):
+        planner_feedback.append(feedback)
+        return GenOutput(
+            copy.deepcopy(material),
+            copy.deepcopy(planned_blueprints[len(planner_feedback) - 1]),
+        )
+
+    async def validate(*_args):
+        return Validation()
+
+    async def feasibility(*_args):
+        nonlocal feasibility_calls
+        feasibility_calls += 1
+        if feasibility_calls == 1:
+            return {
+                "feasible": True,
+                "reasons": [
+                    "Item 8: `62` identifies the operating bus route, not a quantity."
+                ],
+                "category_semantics_ok": False,
+            }
+        return {
+            "feasible": True,
+            "reasons": ["all ten points are supported"],
+            "category_semantics_ok": True,
+        }
+
+    async def run_questions(*_args, **_kwargs):
+        return SimpleNamespace(
+            ok=True,
+            candidate=Candidate({"question_face": {"questions": []}}),
+            advisories=[],
+            blockers=[],
+            detail=None,
+        )
+
+    monkeypatch.setattr(subject.agent_steps, "replan_blueprint", replan)
+    monkeypatch.setattr(subject, "validate", validate)
+    monkeypatch.setattr(subject.agent_steps, "feasibility_audit", feasibility)
+    monkeypatch.setattr(subject, "run_questions", run_questions)
+    store = SlotStore(InMemoryObjectStore())
+
+    events = await collect(subject.replan_from_comments(
+        store=store,
+        material_id="mat-1",
+        request_id="replan-semantic-retry",
+        source_request_id="classify-1",
+        base_version_id="original",
+        material=material,
+        blueprint=old_blueprint,
+        package={"question_face": {}},
+        comments=[comment()],
+        actor="reviewer",
+    ))
+
+    assert events[-1]["type"] == "question_revision_completed"
+    assert feasibility_calls == 2
+    assert planner_feedback[0] is None
+    assert "bus route" in " ".join(planner_feedback[1])
+    assert [event["type"] for event in events].count(
+        "question_revision_feasibility") == 2
+    version = store.load_question_version("mat-1", "replan-semantic-retry")
+    assert version["blueprint"] == planned_blueprints[1]
+
+
+@pytest.mark.asyncio
+async def test_category_semantics_exhaustion_is_failed_not_needs_material(monkeypatch):
+    material = {"turns": [{"speaker": "A", "text": "Take bus route 62."}]}
+    planner_feedback = []
+
+    async def replan(_material, _blueprint, _comments, feedback):
+        planner_feedback.append(feedback)
+        return GenOutput(
+            copy.deepcopy(material),
+            {
+                "blueprint_schema_version": 2,
+                "items": [{"number": len(planner_feedback) + 1}],
+            },
+        )
+
+    async def validate(*_args):
+        return Validation()
+
+    async def feasibility(*_args):
+        return {
+            "feasible": True,
+            "reasons": [
+                "Item 8: `62` identifies the operating bus route, not a quantity."
+            ],
+            "category_semantics_ok": False,
+        }
+
+    monkeypatch.setattr(subject.agent_steps, "replan_blueprint", replan)
+    monkeypatch.setattr(subject, "validate", validate)
+    monkeypatch.setattr(subject.agent_steps, "feasibility_audit", feasibility)
+    store = SlotStore(InMemoryObjectStore())
+
+    events = await collect(subject.replan_from_comments(
+        store=store,
+        material_id="mat-1",
+        request_id="replan-semantic-exhausted",
+        source_request_id="classify-1",
+        base_version_id="original",
+        material=material,
+        blueprint={"blueprint_schema_version": 2, "items": [{"number": 1}]},
+        package={"question_face": {}},
+        comments=[comment()],
+        actor="reviewer",
+    ))
+
+    assert len(planner_feedback) == subject.MAX_PLAN_ATTEMPTS
+    assert all(
+        "bus route" in " ".join(feedback)
+        for feedback in planner_feedback[1:]
+    )
+    assert events[-1]["type"] == "question_revision_failed"
+    assert not any(
+        event["type"] == "question_revision_needs_material" for event in events
+    )
+    assert store.load_question_version(
+        "mat-1", "replan-semantic-exhausted") is None
+    record = store.load_question_revision(
+        "mat-1", "replan-semantic-exhausted")
+    assert record["status"] == "failed"
+    assert "category semantics could not be corrected" in record["message"]
+
+
+@pytest.mark.asyncio
+async def test_category_semantics_exhaustion_after_validation_failure_is_failed(
+    monkeypatch,
+):
+    material = {"turns": [{"speaker": "A", "text": "Take bus route 62."}]}
+    planner_feedback = []
+    validation_calls = 0
+
+    async def replan(_material, _blueprint, _comments, feedback):
+        planner_feedback.append(feedback)
+        return GenOutput(
+            copy.deepcopy(material),
+            {
+                "blueprint_schema_version": 2,
+                "items": [{"number": len(planner_feedback) + 1}],
+            },
+        )
+
+    async def validate(*_args):
+        nonlocal validation_calls
+        validation_calls += 1
+        if validation_calls == 1:
+            return Validation(["The first replacement blueprint is malformed."])
+        return Validation()
+
+    async def feasibility(*_args):
+        return {
+            "feasible": True,
+            "reasons": [
+                "Item 8: `62` identifies the operating bus route, not a quantity."
+            ],
+            "category_semantics_ok": False,
+        }
+
+    monkeypatch.setattr(subject.agent_steps, "replan_blueprint", replan)
+    monkeypatch.setattr(subject, "validate", validate)
+    monkeypatch.setattr(subject.agent_steps, "feasibility_audit", feasibility)
+    store = SlotStore(InMemoryObjectStore())
+
+    events = await collect(subject.replan_from_comments(
+        store=store,
+        material_id="mat-1",
+        request_id="replan-semantic-after-validation",
+        source_request_id="classify-1",
+        base_version_id="original",
+        material=material,
+        blueprint={"blueprint_schema_version": 2, "items": [{"number": 1}]},
+        package={"question_face": {}},
+        comments=[comment()],
+        actor="reviewer",
+    ))
+
+    assert len(planner_feedback) == subject.MAX_PLAN_ATTEMPTS
+    assert "malformed" in " ".join(planner_feedback[1])
+    assert "bus route" in " ".join(planner_feedback[2])
+    assert events[-1]["type"] == "question_revision_failed"
+    assert not any(
+        event["type"] == "question_revision_needs_material" for event in events
+    )
+    record = store.load_question_revision(
+        "mat-1", "replan-semantic-after-validation")
+    assert record["status"] == "failed"
+    assert "category semantics could not be corrected" in record["message"]
+
+
+@pytest.mark.asyncio
+async def test_material_infeasibility_replans_before_needs_material(monkeypatch):
+    material = {"turns": [{"speaker": "A", "text": "Only nine usable details."}]}
+    planner_feedback = []
+
+    async def replan(_material, _blueprint, _comments, feedback):
+        planner_feedback.append(feedback)
+        return GenOutput(
+            copy.deepcopy(material),
+            {
+                "blueprint_schema_version": 2,
+                "items": [{"number": len(planner_feedback) + 1}],
+            },
+        )
+
+    async def validate(*_args):
+        return Validation()
+
+    async def feasibility(*_args):
+        return {
+            "feasible": False,
+            "reasons": ["The selected points do not support ten unique questions."],
+            "category_semantics_ok": True,
+        }
+
+    monkeypatch.setattr(subject.agent_steps, "replan_blueprint", replan)
+    monkeypatch.setattr(subject, "validate", validate)
+    monkeypatch.setattr(subject.agent_steps, "feasibility_audit", feasibility)
+    store = SlotStore(InMemoryObjectStore())
+
+    events = await collect(subject.replan_from_comments(
+        store=store,
+        material_id="mat-1",
+        request_id="replan-infeasible",
+        source_request_id="classify-1",
+        base_version_id="original",
+        material=material,
+        blueprint={"blueprint_schema_version": 2, "items": [{"number": 1}]},
+        package={"question_face": {}},
+        comments=[comment()],
+        actor="reviewer",
+    ))
+
+    assert len(planner_feedback) == subject.MAX_PLAN_ATTEMPTS
+    assert all(
+        "ten unique questions" in " ".join(feedback)
+        for feedback in planner_feedback[1:]
+    )
+    assert events[-1]["type"] == "question_revision_needs_material"
+    record = store.load_question_revision("mat-1", "replan-infeasible")
+    assert record["status"] == "needs_material_revision"
+
+
+@pytest.mark.asyncio
+async def test_undecidable_feasibility_is_failed_not_needs_material(monkeypatch):
+    material = {"turns": [{"speaker": "A", "text": "hello"}]}
+
+    async def replan(*_args):
+        return GenOutput(
+            copy.deepcopy(material),
+            {"blueprint_schema_version": 2, "items": [{"number": 2}]},
+        )
+
+    async def validate(*_args):
+        return Validation()
+
+    async def feasibility(*_args):
+        return None
+
+    monkeypatch.setattr(subject.agent_steps, "replan_blueprint", replan)
+    monkeypatch.setattr(subject, "validate", validate)
+    monkeypatch.setattr(subject.agent_steps, "feasibility_audit", feasibility)
+    store = SlotStore(InMemoryObjectStore())
+
+    events = await collect(subject.replan_from_comments(
+        store=store,
+        material_id="mat-1",
+        request_id="replan-undecidable",
+        source_request_id="classify-1",
+        base_version_id="original",
+        material=material,
+        blueprint={"blueprint_schema_version": 2, "items": [{"number": 1}]},
+        package={"question_face": {}},
+        comments=[comment()],
+        actor="reviewer",
+    ))
+
+    assert events[-1]["type"] == "question_revision_failed"
+    assert not any(
+        event["type"] == "question_revision_needs_material" for event in events
+    )
+    record = store.load_question_revision("mat-1", "replan-undecidable")
+    assert record["status"] == "failed"
+    assert "SEMANTICS_MISSING" in record["message"]
+
+
+@pytest.mark.asyncio
 async def test_replan_rejects_a_model_returned_material_change(monkeypatch):
     material = {"turns": [{"speaker": "A", "text": "original"}]}
 
