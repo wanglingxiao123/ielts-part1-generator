@@ -234,6 +234,37 @@ async def test_classification_requires_scope_for_replanning(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_classification_prompt_treats_explicit_layout_changes_as_requirements(
+    monkeypatch,
+):
+    captured = {}
+
+    async def invoke(_agent, message, _label):
+        captured["message"] = message
+        return json.dumps({
+            "reasons": [{
+                "comment_id": "c1",
+                "outcome": "replan_questions",
+                "replan_scope": "layout_only",
+                "reason": "the requested Form-to-Note conversion changes item_form",
+            }],
+        })
+
+    monkeypatch.setattr("backend.steps.agent_steps._invoke", invoke)
+    result = await classify_question_revision(
+        {}, {}, {}, [{
+            "id": "c1",
+            "anchor": {"type": "question", "index": 3},
+            "text": "Change this group from Form to Note.",
+        }])
+
+    assert result["outcome"] == "replan_questions"
+    assert result["reasons"][0]["replan_scope"] == "layout_only"
+    assert "explicit transformation request is a requirement" in captured["message"]
+    assert "Do not return no_change merely because you prefer" in captured["message"]
+
+
+@pytest.mark.asyncio
 async def test_classification_requires_question_number_without_anchor(monkeypatch):
     async def invoke(*_args):
         return json.dumps({
