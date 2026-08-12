@@ -23,6 +23,8 @@ export type RevisionResult =
   | { kind: 'failed'; message: string; blockers: string[] }
   | null
 
+const REVISION_RECOVERY_DELAYS_MS = [0, 250, 750] as const
+
 export function useQuestionVersions(materialId: string, enabled: boolean) {
   const [versions, setVersions] = useState<QuestionPackageVersion[]>([])
   const [activeVersionId, setActiveVersionId] = useState('')
@@ -35,6 +37,7 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
   const [revisionRequest, setRevisionRequest] =
     useState<MaterialQuestionVersionsResponse['revision_request']>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const revisionAttemptRef = useRef(0)
 
   const load = useCallback(async (preferredVersionId?: string) => {
     setLoading(true)
@@ -101,7 +104,10 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
   useEffect(() => {
     if (!enabled || !materialId) return
     void load()
-    return () => abortRef.current?.abort()
+    return () => {
+      revisionAttemptRef.current += 1
+      abortRef.current?.abort()
+    }
   }, [enabled, materialId, load])
 
   useEffect(() => {
@@ -143,20 +149,57 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
     if (questionCommentIds.length === 0) return
 
     const abort = new AbortController()
+    const attempt = revisionAttemptRef.current + 1
+    revisionAttemptRef.current = attempt
     let keepQueued = false
+    let requestId = ''
     abortRef.current = abort
     setRevisionResult(null)
     setError(null)
     setRevisionStage('queued')
+    const recoverDurableResult = async () => {
+      let stillRunning = false
+      for (const delay of REVISION_RECOVERY_DELAYS_MS) {
+        if (delay > 0) {
+          await new Promise<void>((resolve) => window.setTimeout(resolve, delay))
+        }
+        if (abort.signal.aborted || revisionAttemptRef.current !== attempt) {
+          return 'aborted' as const
+        }
+        let refreshed: MaterialQuestionVersionsResponse
+        try {
+          refreshed = await api.materialQuestionVersions(materialId)
+        } catch {
+          continue
+        }
+        const durableRequest =
+          refreshed?.revision_request ??
+          (refreshed?.running_request
+            ? { ...refreshed.running_request, status: 'running' as const }
+            : null)
+        if (requestId && durableRequest?.request_id !== requestId) continue
+        if (durableRequest?.status === 'running') {
+          stillRunning = true
+          continue
+        }
+        if (durableRequest) {
+          await load()
+          return 'terminal' as const
+        }
+      }
+      return stillRunning ? 'running' as const : 'missing' as const
+    }
     try {
       const terminal = await streamQuestionRevision(
         materialId,
         { base_version_id: activeVersionId, comment_ids: questionCommentIds },
         (event) => {
+          if (event.request_id) requestId = event.request_id
           if (event.event === 'progress') setRevisionStage(event.stage)
         },
         abort.signal,
       )
+      if (terminal.request_id) requestId = terminal.request_id
       if (terminal.event === 'revised') {
         setRevisionResult({
           kind: 'revised',
@@ -174,23 +217,29 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
         setRevisionResult({ kind: 'needs_replan', reasons: terminal.reasons })
         await load()
       } else {
-        setRevisionResult({ kind: 'failed', message: terminal.message, blockers: [] })
-        const refreshed = await load()
-        keepQueued = Boolean(refreshed?.running_request)
+        const recovery = await recoverDurableResult()
+        keepQueued = recovery === 'running'
+        if (recovery === 'missing') {
+          setRevisionResult({ kind: 'failed', message: terminal.message, blockers: [] })
+        }
       }
     } catch (err) {
       if (!abort.signal.aborted) {
-        setRevisionResult({
-          kind: 'failed',
-          message: userMessage(err, '题目没有修改成功，原版本未受影响'),
-          blockers: [],
-        })
-        const refreshed = await load()
-        keepQueued = Boolean(refreshed?.running_request)
+        const recovery = await recoverDurableResult()
+        keepQueued = recovery === 'running'
+        if (recovery === 'missing') {
+          setRevisionResult({
+            kind: 'failed',
+            message: userMessage(err, '题目没有修改成功，原版本未受影响'),
+            blockers: [],
+          })
+        }
       }
     } finally {
-      setRevisionStage(keepQueued ? 'queued' : null)
-      if (abortRef.current === abort) abortRef.current = null
+      if (revisionAttemptRef.current === attempt) {
+        setRevisionStage(keepQueued ? 'queued' : null)
+        if (abortRef.current === abort) abortRef.current = null
+      }
     }
   }, [activeVersionId, load, materialId, revisionStage, selectedVersion])
 

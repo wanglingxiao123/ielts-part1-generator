@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import type { MaterialComment } from '@/contracts/comments'
 import type {
@@ -51,6 +51,10 @@ const comment: MaterialComment = {
 beforeEach(() => {
   vi.clearAllMocks()
   listVersions.mockResolvedValue(response())
+})
+
+afterEach(() => {
+  vi.useRealTimers()
 })
 
 describe('useQuestionVersions', () => {
@@ -220,5 +224,131 @@ describe('useQuestionVersions', () => {
         }],
       }),
     )
+  })
+
+  it('连接提前失败时等待持久状态从运行中变为需重新命题', async () => {
+    vi.useFakeTimers()
+    const running: MaterialQuestionVersionsResponse = {
+      ...response(),
+      revision_request: {
+        request_id: 'request-replan',
+        status: 'running',
+        stage: 'auditing',
+        base_version_id: 'original',
+      },
+    }
+    const needsReplan: MaterialQuestionVersionsResponse = {
+      ...response(),
+      revision_request: {
+        request_id: 'request-replan',
+        status: 'replan_questions',
+        base_version_id: 'original',
+        reasons: [{
+          comment_id: 'comment-q3',
+          question_number: 3,
+          reason: '需要重新规划题组',
+        }],
+      },
+    }
+    listVersions
+      .mockResolvedValueOnce(response())
+      .mockResolvedValueOnce(running)
+      .mockResolvedValueOnce(needsReplan)
+      .mockResolvedValueOnce(needsReplan)
+    streamRevision.mockImplementation(
+      async (
+        _materialId: string,
+        _body: unknown,
+        onEvent: (event: QuestionRevisionEvent) => void,
+      ) => {
+        onEvent({ event: 'progress', request_id: 'request-replan', stage: 'auditing' })
+        throw new Error('题目修改连接提前结束，请稍后重试')
+      },
+    )
+
+    const { result } = renderHook(() => useQuestionVersions('material-1', true))
+    await act(async () => {
+      await vi.runAllTimersAsync()
+    })
+    expect(result.current.selectedVersionId).toBe('original')
+
+    let revision: Promise<void>
+    act(() => {
+      revision = result.current.revise([comment])
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250)
+      await revision
+    })
+
+    expect(result.current.revisionResult).toEqual({
+      kind: 'needs_replan',
+      reasons: [{
+        comment_id: 'comment-q3',
+        question_number: 3,
+        reason: '需要重新规划题组',
+      }],
+    })
+    expect(result.current.revisionStage).toBeNull()
+  })
+
+  it('失败终态到达时优先恢复随后落盘的需重新命题结果', async () => {
+    vi.useFakeTimers()
+    const running: MaterialQuestionVersionsResponse = {
+      ...response(),
+      revision_request: {
+        request_id: 'request-replan',
+        status: 'running',
+        stage: 'auditing',
+        base_version_id: 'original',
+      },
+    }
+    const needsReplan: MaterialQuestionVersionsResponse = {
+      ...response(),
+      revision_request: {
+        request_id: 'request-replan',
+        status: 'replan_questions',
+        base_version_id: 'original',
+        reasons: [{
+          comment_id: 'comment-q3',
+          question_number: 3,
+          reason: '需要重新规划题组',
+        }],
+      },
+    }
+    listVersions
+      .mockResolvedValueOnce(response())
+      .mockResolvedValueOnce(running)
+      .mockResolvedValueOnce(needsReplan)
+      .mockResolvedValueOnce(needsReplan)
+    streamRevision.mockResolvedValue({
+      event: 'failed',
+      request_id: 'request-replan',
+      message: '题目修改连接提前结束，请稍后重试',
+    })
+
+    const { result } = renderHook(() => useQuestionVersions('material-1', true))
+    await act(async () => {
+      await vi.runAllTimersAsync()
+    })
+
+    let revision: Promise<void>
+    act(() => {
+      revision = result.current.revise([comment])
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250)
+      await revision
+    })
+
+    expect(result.current.revisionResult).toEqual({
+      kind: 'needs_replan',
+      reasons: [{
+        comment_id: 'comment-q3',
+        question_number: 3,
+        reason: '需要重新规划题组',
+      }],
+    })
+    expect(result.current.revisionStage).toBeNull()
   })
 })
