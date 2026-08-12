@@ -227,6 +227,7 @@ class QuestionVersionService:
             raise QuestionVersionError(
                 "QUESTION_REPLAN_SOURCE_MISSING", "原修改记录没有保留题目批注。", 409)
         dispositions: Dict[str, str] = {}
+        replan_scopes: Dict[str, str] = {}
         for row in outcomes:
             if not isinstance(row, dict):
                 raise QuestionVersionError(
@@ -243,6 +244,16 @@ class QuestionVersionService:
                 raise QuestionVersionError(
                     "QUESTION_REPLAN_SOURCE_INVALID", "原修改记录的批注结论不完整。", 409)
             dispositions[comment_id] = outcome
+            scope = row.get("replan_scope")
+            if outcome == "replan_questions":
+                # Source records created before replan scopes existed retain the old full-replan
+                # behaviour so a durable confirmation does not change meaning after deployment.
+                scope = "retarget" if scope is None else str(scope)
+                if scope not in {"layout_only", "retarget"}:
+                    raise QuestionVersionError(
+                        "QUESTION_REPLAN_SOURCE_INVALID",
+                        "原修改记录的重新命题范围不完整。", 409)
+                replan_scopes[comment_id] = scope
         comment_ids: set[str] = set()
         for row in source_comments:
             anchor = row.get("anchor") if isinstance(row, dict) else None
@@ -265,12 +276,15 @@ class QuestionVersionService:
         if set(dispositions) != comment_ids or "replan_questions" not in dispositions.values():
             raise QuestionVersionError(
                 "QUESTION_REPLAN_SOURCE_INVALID", "原修改记录的批注结论不完整。", 409)
-        comments = [
-            dict(row)
-            for row in source_comments
-            if dispositions[str(row["id"])]
-            in {"question_only", "replan_questions"}
-        ]
+        comments = []
+        for row in source_comments:
+            comment_id = str(row["id"])
+            if dispositions[comment_id] not in {"question_only", "replan_questions"}:
+                continue
+            projected = dict(row)
+            if dispositions[comment_id] == "replan_questions":
+                projected["replan_scope"] = replan_scopes[comment_id]
+            comments.append(projected)
         if not comments:
             raise QuestionVersionError(
                 "QUESTION_REPLAN_SOURCE_MISSING",

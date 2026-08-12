@@ -208,6 +208,122 @@ async def test_category_semantics_rejection_replans_with_feedback(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_layout_only_replans_when_an_information_point_changes(monkeypatch):
+    material = {"turns": [{"speaker": "A", "text": "Take bus route 62."}]}
+    old_blueprint = {
+        "blueprint_schema_version": 2,
+        "items": [{
+            "number": 1,
+            "target": "62",
+            "evidence": "bus route 62",
+            "turn_index": 0,
+            "item_form": "form",
+        }],
+    }
+    invalid = copy.deepcopy(old_blueprint)
+    invalid["items"][0].update({"target": "Bus route 62", "item_form": "note"})
+    corrected = copy.deepcopy(old_blueprint)
+    corrected["items"][0]["item_form"] = "note"
+    planner_feedback = []
+
+    async def replan(_material, _blueprint, _comments, feedback):
+        planner_feedback.append(feedback)
+        blueprint = invalid if len(planner_feedback) == 1 else corrected
+        return GenOutput(copy.deepcopy(material), copy.deepcopy(blueprint))
+
+    async def validate(*_args):
+        return Validation()
+
+    async def feasibility(*_args):
+        return {
+            "feasible": True,
+            "reasons": ["the unchanged point supports the Note layout"],
+            "category_semantics_ok": True,
+        }
+
+    async def run_questions(*_args, **_kwargs):
+        return SimpleNamespace(
+            ok=True,
+            candidate=Candidate({"question_face": {"questions": []}}),
+            advisories=[],
+            blockers=[],
+            detail=None,
+        )
+
+    monkeypatch.setattr(subject.agent_steps, "replan_blueprint", replan)
+    monkeypatch.setattr(subject, "validate", validate)
+    monkeypatch.setattr(subject.agent_steps, "feasibility_audit", feasibility)
+    monkeypatch.setattr(subject, "run_questions", run_questions)
+    store = SlotStore(InMemoryObjectStore())
+    scoped_comment = dict(comment(), replan_scope="layout_only")
+
+    events = await collect(subject.replan_from_comments(
+        store=store,
+        material_id="mat-1",
+        request_id="replan-layout-only",
+        source_request_id="classify-1",
+        base_version_id="original",
+        material=material,
+        blueprint=old_blueprint,
+        package={"question_face": {}},
+        comments=[scoped_comment],
+        actor="reviewer",
+    ))
+
+    assert events[-1]["type"] == "question_revision_completed"
+    assert "changed Q1" in " ".join(planner_feedback[1])
+    version = store.load_question_version("mat-1", "replan-layout-only")
+    assert version["blueprint"]["items"][0]["target"] == "62"
+    assert version["blueprint"]["items"][0]["evidence"] == "bus route 62"
+    assert version["blueprint"]["items"][0]["turn_index"] == 0
+    assert version["blueprint"]["items"][0]["item_form"] == "note"
+
+
+@pytest.mark.asyncio
+async def test_layout_only_scope_exhaustion_is_failed(monkeypatch):
+    material = {"turns": [{"speaker": "A", "text": "Take bus route 62."}]}
+    old_blueprint = {
+        "blueprint_schema_version": 2,
+        "items": [{
+            "number": 1,
+            "target": "62",
+            "evidence": "bus route 62",
+            "turn_index": 0,
+        }],
+    }
+
+    async def replan(*_args):
+        changed = copy.deepcopy(old_blueprint)
+        changed["items"][0]["target"] = "Bus route 62"
+        return GenOutput(copy.deepcopy(material), changed)
+
+    monkeypatch.setattr(subject.agent_steps, "replan_blueprint", replan)
+    store = SlotStore(InMemoryObjectStore())
+
+    events = await collect(subject.replan_from_comments(
+        store=store,
+        material_id="mat-1",
+        request_id="replan-layout-scope-exhausted",
+        source_request_id="classify-1",
+        base_version_id="original",
+        material=material,
+        blueprint=old_blueprint,
+        package={"question_face": {}},
+        comments=[dict(comment(), replan_scope="layout_only")],
+        actor="reviewer",
+    ))
+
+    assert events[-1]["type"] == "question_revision_failed"
+    assert not any(
+        event["type"] == "question_revision_needs_material" for event in events
+    )
+    record = store.load_question_revision(
+        "mat-1", "replan-layout-scope-exhausted")
+    assert record["status"] == "failed"
+    assert "layout-only boundary" in record["message"]
+
+
+@pytest.mark.asyncio
 async def test_category_semantics_exhaustion_is_failed_not_needs_material(monkeypatch):
     material = {"turns": [{"speaker": "A", "text": "Take bus route 62."}]}
     planner_feedback = []

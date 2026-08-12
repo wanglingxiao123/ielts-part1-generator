@@ -73,6 +73,46 @@ def _material_reasons(
     return _comment_outcomes(comments, "revise_material", detail)
 
 
+def _preserves_information_points(comments: List[Dict[str, Any]]) -> bool:
+    scopes = {
+        str(comment.get("replan_scope") or "")
+        for comment in comments
+        if isinstance(comment, dict) and comment.get("replan_scope")
+    }
+    return "layout_only" in scopes and "retarget" not in scopes
+
+
+def _information_point_errors(
+    current: Dict[str, Any], planned: Dict[str, Any]
+) -> List[str]:
+    current_items = current.get("items")
+    planned_items = planned.get("items")
+    if not isinstance(current_items, list) or not isinstance(planned_items, list):
+        return ["Layout-only replanning requires complete current and replacement item lists."]
+    current_by_number = {
+        item.get("number"): item for item in current_items if isinstance(item, dict)
+    }
+    planned_by_number = {
+        item.get("number"): item for item in planned_items if isinstance(item, dict)
+    }
+    if set(current_by_number) != set(planned_by_number):
+        return ["Layout-only replanning changed the set of information-point numbers."]
+    errors: List[str] = []
+    for number in sorted(current_by_number):
+        before = current_by_number[number]
+        after = planned_by_number[number]
+        changed = [
+            field for field in ("target", "evidence", "turn_index")
+            if before.get(field) != after.get(field)
+        ]
+        if changed:
+            errors.append(
+                "Layout-only replanning changed Q%s information-point field(s): %s."
+                % (number, ", ".join(changed))
+            )
+    return errors
+
+
 async def replan_from_comments(
     *,
     store: SlotStore,
@@ -91,6 +131,7 @@ async def replan_from_comments(
     original_material = copy.deepcopy(material)
     original_bytes = _material_bytes(material)
     material_sha256 = hashlib.sha256(original_bytes).hexdigest()
+    preserve_information_points = _preserves_information_points(comments)
 
     existing_version = store.load_question_version(material_id, request_id)
     if existing_version is not None:
@@ -188,6 +229,12 @@ async def replan_from_comments(
                 ]
                 plan_failures.append("unchanged")
                 continue
+            if preserve_information_points:
+                scope_errors = _information_point_errors(blueprint, planned)
+                if scope_errors:
+                    feedback = scope_errors
+                    plan_failures.append("scope")
+                    continue
             request.update({"stage": "validating", "updated_at": _now()})
             store.save_question_revision(material_id, request_id, request)
             yield {"type": "question_revision_validating", "request_id": request_id}
@@ -233,6 +280,11 @@ async def replan_from_comments(
             if plan_failures and plan_failures[-1] == "category_semantics":
                 raise RuntimeError(
                     "question blueprint category semantics could not be corrected: %s"
+                    % "; ".join(feedback or ["no usable reason was returned"])
+                )
+            if plan_failures and plan_failures[-1] == "scope":
+                raise RuntimeError(
+                    "question blueprint could not satisfy the layout-only boundary: %s"
                     % "; ".join(feedback or ["no usable reason was returned"])
                 )
             messages = feedback or ["No valid replacement blueprint could be produced."]

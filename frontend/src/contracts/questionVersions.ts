@@ -104,6 +104,7 @@ export interface MaterialRevisionReason {
   comment_id: string
   question_number: number
   reason: string
+  replan_scope?: 'layout_only' | 'retarget'
   references?: string[]
 }
 

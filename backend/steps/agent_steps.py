@@ -674,6 +674,10 @@ async def replan_blueprint(
             "The new blueprint may change targets, answer categories, item_form, form_group, and "
             "group boundaries. It must still contain exactly ten fair points supported by the "
             "unchanged material. Run the material+blueprint validator until it reports no errors.",
+            "Each comment may carry replan_scope. For layout_only, preserve every existing item's "
+            "target, evidence, and turn_index exactly; change only layout/group fields and any "
+            "derived semantic metadata needed to make that unchanged point valid. For retarget, "
+            "different information points are allowed. Python enforces this boundary.",
             "## Files\n\nmaterial.json: %s\ncurrent-blueprint.json: %s\ncomments.json: %s"
             % (material_path, blueprint_path, comments_path),
             "Reply with exactly one JSON object shaped as "
@@ -776,9 +780,15 @@ async def classify_question_revision(
             "- replan_questions: at least one comment requires choosing a different information "
             "point or changing item_form, form_group, or group boundaries, but not the material.\n"
             "- revise_material: at least one comment requires changing the listening material.\n\n"
+            "For every replan_questions result also return replan_scope. Use layout_only when the "
+            "reviewer requests only item_form, form_group, group-boundary, or printed-layout changes "
+            "and does not request different information points. Use retarget when satisfying the "
+            "comment requires replacing any target answer or evidence point. For every other outcome "
+            "use replan_scope none.\n\n"
             "Return exactly: "
             '{"reasons":[{"comment_id":"...",'
             '"outcome":"question_only|no_change|replan_questions|revise_material",'
+            '"replan_scope":"none|layout_only|retarget",'
             '"reason":"specific explanation"}]}. '
             "Runtime derives question_number from question-anchored comments; include "
             "question_number only for comments without a question anchor. "
@@ -821,23 +831,35 @@ async def classify_question_revision(
     for reason in reasons:
         comment_id = str(reason.get("comment_id") or "") if isinstance(reason, dict) else ""
         outcome = reason.get("outcome", legacy_outcome) if isinstance(reason, dict) else None
+        replan_scope = (
+            reason.get("replan_scope", "none") if isinstance(reason, dict) else None
+        )
         model_number = reason.get("question_number") if isinstance(reason, dict) else None
         number = anchored_numbers.get(comment_id, model_number)
         if (not isinstance(reason, dict) or comment_id not in comment_ids
                 or comment_id in covered
                 or outcome not in allowed_outcomes
+                or replan_scope not in {"none", "layout_only", "retarget"}
+                or (
+                    outcome == "replan_questions"
+                    and replan_scope not in {"layout_only", "retarget"}
+                )
+                or (outcome != "replan_questions" and replan_scope != "none")
                 or isinstance(number, bool) or not isinstance(number, int)
                 or not 1 <= number <= QUESTION_COUNT
                 or not str(reason.get("reason") or "").strip()):
             raise ModelCallError(
                 "reviewer-comment classification reason is incomplete or does not match its input")
         covered.add(comment_id)
-        cleaned.append({
+        cleaned_reason = {
             "comment_id": comment_id,
             "question_number": number,
             "outcome": outcome,
             "reason": str(reason["reason"]).strip(),
-        })
+        }
+        if outcome == "replan_questions":
+            cleaned_reason["replan_scope"] = replan_scope
+        cleaned.append(cleaned_reason)
     if covered != comment_ids:
         raise ModelCallError("reviewer-comment classification did not cover every comment")
     priority = {

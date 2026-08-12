@@ -113,6 +113,10 @@ async def revise_from_comments(
                 "question_number": row["question_number"],
                 "outcome": row["outcome"],
                 "reason": row["reason"],
+                **(
+                    {"replan_scope": row["replan_scope"]}
+                    if row.get("replan_scope") else {}
+                ),
                 **({"references": row["references"]} if row.get("references") else {}),
             }
             for row in reasons
@@ -564,6 +568,8 @@ def _with_package_references(
             "outcome": str(reason["outcome"]),
             "reason": str(reason["reason"]),
         }
+        if reason.get("replan_scope"):
+            enriched_reason["replan_scope"] = str(reason["replan_scope"])
         if reason["outcome"] == "no_change":
             enriched_reason["references"] = [
                 "题面：%s" % " ".join(carrier.split()),

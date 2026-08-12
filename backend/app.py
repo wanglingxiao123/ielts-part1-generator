@@ -334,6 +334,10 @@ async def _replan_questions_from_comments(payload: Dict[str, Any]):
             or not isinstance(number, int)
             or not 1 <= number <= 10
             or not str(row.get("text") or "").strip()
+            or (
+                row.get("replan_scope") is not None
+                and row.get("replan_scope") not in {"layout_only", "retarget"}
+            )
         ):
             yield {
                 "type": "question_revision_failed",

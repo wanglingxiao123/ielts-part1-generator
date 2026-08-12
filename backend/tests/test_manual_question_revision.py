@@ -98,6 +98,7 @@ async def test_replan_questions_is_distinct_from_material_revision(monkeypatch):
         return {
             "outcome": "replan_questions",
             "reasons": [{"comment_id": "c1", "question_number": 2,
+                         "replan_scope": "retarget",
                          "reason": "A different information point is required",
                          "references": ["blueprint item 2"]}],
         }
@@ -110,7 +111,9 @@ async def test_replan_questions_is_distinct_from_material_revision(monkeypatch):
         base_version={"package": {}}, comments=[{"id": "c1"}], actor="reviewer"))
 
     assert events[-1]["type"] == "question_revision_needs_replan"
-    assert store._read("_question_revisions/mat-1/req-1.json")["status"] == "replan_questions"
+    record = store._read("_question_revisions/mat-1/req-1.json")
+    assert record["status"] == "replan_questions"
+    assert record["comment_outcomes"][0]["replan_scope"] == "retarget"
     assert store.load_question_version("mat-1", "req-1") is None
 
 

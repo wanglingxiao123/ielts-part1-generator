@@ -146,7 +146,8 @@ async def test_classification_preserves_each_comment_outcome_and_uses_highest_ro
                 },
                 {
                     "comment_id": "c2", "question_number": 2,
-                    "outcome": "replan_questions", "reason": "choose another target",
+                    "outcome": "replan_questions", "replan_scope": "retarget",
+                    "reason": "choose another target",
                 },
                 {
                     "comment_id": "c3", "question_number": 3,
@@ -194,6 +195,7 @@ async def test_classification_projects_anchor_when_model_omits_question_number(m
             "reasons": [{
                 "comment_id": "c1",
                 "outcome": "replan_questions",
+                "replan_scope": "layout_only",
                 "reason": "change the group layout",
             }],
         })
@@ -207,8 +209,28 @@ async def test_classification_projects_anchor_when_model_omits_question_number(m
         "comment_id": "c1",
         "question_number": 3,
         "outcome": "replan_questions",
+        "replan_scope": "layout_only",
         "reason": "change the group layout",
     }]
+
+
+@pytest.mark.asyncio
+async def test_classification_requires_scope_for_replanning(monkeypatch):
+    async def invoke(*_args):
+        return json.dumps({
+            "reasons": [{
+                "comment_id": "c1",
+                "outcome": "replan_questions",
+                "reason": "change the group layout",
+            }],
+        })
+
+    monkeypatch.setattr("backend.steps.agent_steps._invoke", invoke)
+    with pytest.raises(ModelCallError, match="incomplete"):
+        await classify_question_revision(
+            {}, {}, {}, [{
+                "id": "c1", "anchor": {"type": "question", "index": 3},
+            }])
 
 
 @pytest.mark.asyncio

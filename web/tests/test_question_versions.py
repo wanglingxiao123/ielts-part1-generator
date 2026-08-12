@@ -174,7 +174,11 @@ def test_replan_reservation_reuses_actionable_source_snapshot_without_open_comme
         status="replan_questions",
         comment_outcomes=[
             {"comment_id": "c1", "outcome": "question_only"},
-            {"comment_id": "c2", "outcome": "replan_questions"},
+            {
+                "comment_id": "c2",
+                "outcome": "replan_questions",
+                "replan_scope": "layout_only",
+            },
             {"comment_id": "c3", "outcome": "no_change"},
         ],
     )
@@ -186,6 +190,7 @@ def test_replan_reservation_reuses_actionable_source_snapshot_without_open_comme
     assert execution["operation"] == "replan_questions"
     assert execution["source_request_id"] == source["request_id"]
     assert [row["id"] for row in execution["source_comments"]] == ["c1", "c2"]
+    assert execution["source_comments"][1]["replan_scope"] == "layout_only"
 
 
 def test_replan_reservation_is_idempotent_for_one_source_decision(versions):
@@ -211,6 +216,7 @@ def test_replan_reservation_is_idempotent_for_one_source_decision(versions):
     second = service.reserve_replan("mat-1", source["request_id"], "reviewer")
 
     assert second["request_id"] == first["request_id"]
+    assert first["source_comments"][0]["replan_scope"] == "retarget"
 
 
 def test_failed_replan_execution_can_retry_the_same_source_decision(versions):
@@ -298,11 +304,13 @@ def test_replan_route_dispatches_from_durable_decision_without_new_comment(
         status="replan_questions",
         reasons=[{
             "comment_id": "c1", "question_number": 3,
-            "outcome": "replan_questions", "reason": "new layout required",
+            "outcome": "replan_questions", "replan_scope": "layout_only",
+            "reason": "new layout required",
         }],
         comment_outcomes=[{
             "comment_id": "c1", "question_number": 3,
-            "outcome": "replan_questions", "reason": "new layout required",
+            "outcome": "replan_questions", "replan_scope": "layout_only",
+            "reason": "new layout required",
         }],
     )
     put(backing, "_question_revisions/mat-1/%s.json" % source["request_id"], terminal)
@@ -335,6 +343,7 @@ def test_replan_route_dispatches_from_durable_decision_without_new_comment(
     assert payload["source_request_id"] == source["request_id"]
     assert payload["base_version_id"] == "original"
     assert [row["id"] for row in payload["comments"]] == ["c1"]
+    assert payload["comments"][0]["replan_scope"] == "layout_only"
 
 
 def test_revision_route_snapshots_question_comments_and_relays_runtime(
