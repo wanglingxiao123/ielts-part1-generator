@@ -6,6 +6,9 @@ import type { QuestionVersionsState } from './useQuestionVersions'
 const STAGE_LABEL: Record<QuestionRevisionStage, string> = {
   queued: '正在准备修改',
   analysing: '正在分析批注',
+  planning: '正在重新规划信息点',
+  feasibility: '正在检查新方案',
+  generating: '正在生成完整十题',
   revising: '正在修改题目',
   validating: '正在检查完整十题',
   auditing: '正在独立复评',
@@ -20,13 +23,37 @@ const REVISION_STEPS = [
   '生成新版本',
 ] as const
 
+const REPLAN_STEPS = [
+  '已接收请求',
+  '重新规划信息点',
+  '材料校验与可行性',
+  '生成完整十题',
+  '独立盲审',
+  '生成新版本',
+] as const
+
 const STAGE_INDEX: Record<QuestionRevisionStage, number> = {
   queued: 0,
   analysing: 1,
+  planning: 1,
+  feasibility: 2,
+  generating: 2,
   revising: 1,
   validating: 2,
   auditing: 3,
   storing: 4,
+}
+
+const REPLAN_STAGE_INDEX: Record<QuestionRevisionStage, number> = {
+  queued: 0,
+  analysing: 1,
+  planning: 1,
+  feasibility: 2,
+  generating: 3,
+  revising: 3,
+  validating: 2,
+  auditing: 4,
+  storing: 5,
 }
 
 export function QuestionVersionBar({
@@ -118,6 +145,28 @@ export function QuestionRevisionAction({
   const revisedVersion = revisedVersionId
     ? state.versions.find((version) => version.id === revisedVersionId)
     : undefined
+  const replanSourceRequestId =
+    state.revisionRequest?.status === 'replan_questions'
+      ? state.revisionRequest.request_id
+      : state.revisionRequest?.status === 'failed' &&
+          state.revisionRequest.operation === 'replan_questions'
+        ? state.revisionRequest.source_request_id
+        : undefined
+  const canReplan =
+    Boolean(replanSourceRequestId) &&
+    state.revisionRequest?.base_version_id === state.activeVersionId &&
+    viewingActive &&
+    !state.loading &&
+    !state.adopting &&
+    !state.revisionStage
+  const isReplanning =
+    request?.operation === 'replan_questions' ||
+    (request?.status === 'replan_questions' && Boolean(currentStage)) ||
+    currentStage === 'planning' ||
+    currentStage === 'feasibility' ||
+    currentStage === 'generating'
+  const progressSteps = isReplanning ? REPLAN_STEPS : REVISION_STEPS
+  const progressIndex = isReplanning ? REPLAN_STAGE_INDEX : STAGE_INDEX
 
   return (
     <div className="question-revision-action">
@@ -135,15 +184,15 @@ export function QuestionRevisionAction({
       {currentStage && (
         <div className="question-revision-progress" role="status">
           <div className="question-revision-result-head">
-            <strong>正在修改题目</strong>
+            <strong>{isReplanning ? '正在重新命题' : '正在修改题目'}</strong>
           </div>
           <p>
             已提交 {request?.comment_count ?? pendingComments.length} 条批注
             {baseVersion ? ` · 基于 V${baseVersion.ordinal}` : ''}
           </p>
           <ol className="question-revision-steps">
-            {REVISION_STEPS.map((label, index) => {
-              const current = STAGE_INDEX[currentStage]
+            {progressSteps.map((label, index) => {
+              const current = progressIndex[currentStage]
               const status = index < current ? 'done' : index === current ? 'current' : 'pending'
               return (
                 <li key={label} className={status}>
@@ -191,9 +240,27 @@ export function QuestionRevisionAction({
         </RevisionResultShell>
       )}
       {state.revisionResult?.kind === 'needs_replan' && (
-        <RevisionResultShell state={state} className="needs-replan" title="需要重新命题">
-          <p>这些意见需要更换信息点或重新规划题组，题目级修改已终止，现有版本未改变。</p>
+        <RevisionResultShell
+          state={state}
+          className="needs-replan"
+          title="需要重新命题"
+          dismissable={false}
+        >
+          <p>这些意见需要更换信息点或重新规划题组。确认后将保持听力材料不变，重建完整蓝图和十道题。</p>
           <ReasonList reasons={state.revisionResult.reasons} />
+          <div className="question-replan-confirm">
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={!canReplan}
+              onClick={() => void state.replan()}
+            >
+              确认重新命题
+            </button>
+            {!canReplan && !viewingActive && (
+              <span className="muted">请先切回当前采用版本。</span>
+            )}
+          </div>
         </RevisionResultShell>
       )}
       {state.revisionResult?.kind === 'no_change' && (
@@ -203,7 +270,12 @@ export function QuestionRevisionAction({
         </RevisionResultShell>
       )}
       {state.revisionResult?.kind === 'failed' && (
-        <RevisionResultShell state={state} className="failed" title="修改未完成">
+        <RevisionResultShell
+          state={state}
+          className="failed"
+          title="修改未完成"
+          dismissable={!replanSourceRequestId}
+        >
           <p>{state.revisionResult.message}</p>
           {state.revisionResult.blockers.length > 0 && (
             <ul>
@@ -211,6 +283,18 @@ export function QuestionRevisionAction({
                 <li key={blocker}>{blocker}</li>
               ))}
             </ul>
+          )}
+          {replanSourceRequestId && (
+            <div className="question-replan-confirm">
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={!canReplan}
+                onClick={() => void state.replan()}
+              >
+                重新尝试命题
+              </button>
+            </div>
           )}
         </RevisionResultShell>
       )}
@@ -296,25 +380,29 @@ function RevisionResultShell({
   className,
   title,
   children,
+  dismissable = true,
 }: {
   state: QuestionVersionsState
   className: string
   title: string
   children: ReactNode
+  dismissable?: boolean
 }) {
   return (
     <div className={`question-revision-result ${className}`} role="alert">
       <div className="question-revision-result-head">
         <strong>{title}</strong>
-        <button
-          type="button"
-          className="icon-btn"
-          aria-label="关闭修改结果"
-          title="关闭"
-          onClick={state.dismissRevisionResult}
-        >
-          ×
-        </button>
+        {dismissable && (
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label="关闭修改结果"
+            title="关闭"
+            onClick={state.dismissRevisionResult}
+          >
+            ×
+          </button>
+        )}
       </div>
       {children}
     </div>

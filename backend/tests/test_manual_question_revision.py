@@ -282,6 +282,7 @@ async def test_only_a_fully_checked_package_becomes_an_immutable_version(monkeyp
     ]
     version = store.load_question_version("mat-1", "req-1")
     assert version["package"] == package
+    assert version["blueprint"] == {}
     assert version["based_on_version_id"] == "original"
     assert version["source_comment_ids"] == ["c1"]
     assert revised_comment_ids == ["c1"]

@@ -1,6 +1,7 @@
 import { getConfig } from '@/config/runtimeConfig'
 import type {
   CreateQuestionRevisionRequest,
+  CreateQuestionReplanRequest,
   MaterialRevisionReason,
   QuestionRevisionEvent,
   QuestionRevisionTerminalEvent,
@@ -25,6 +26,15 @@ export function decodeRevisionFrame(frame: string): QuestionRevisionEvent | null
     const requestId = typeof payload.request_id === 'string' ? payload.request_id : ''
     if (wireType === 'question_revision_started') {
       return { event: 'progress', request_id: requestId, stage: 'analysing' }
+    }
+    if (wireType === 'question_revision_planning') {
+      return { event: 'progress', request_id: requestId, stage: 'planning' }
+    }
+    if (wireType === 'question_revision_feasibility') {
+      return { event: 'progress', request_id: requestId, stage: 'feasibility' }
+    }
+    if (wireType === 'question_revision_generating') {
+      return { event: 'progress', request_id: requestId, stage: 'generating' }
     }
     if (wireType === 'question_revision_validating') {
       return { event: 'progress', request_id: requestId, stage: 'validating' }
@@ -92,8 +102,36 @@ export async function streamQuestionRevision(
   onEvent: (event: QuestionRevisionEvent) => void,
   signal?: AbortSignal,
 ): Promise<QuestionRevisionTerminalEvent> {
+  return streamRevisionRequest(
+    `/material-question-revisions/${encodeURIComponent(materialId)}`,
+    body,
+    onEvent,
+    signal,
+  )
+}
+
+export async function streamQuestionReplan(
+  materialId: string,
+  body: CreateQuestionReplanRequest,
+  onEvent: (event: QuestionRevisionEvent) => void,
+  signal?: AbortSignal,
+): Promise<QuestionRevisionTerminalEvent> {
+  return streamRevisionRequest(
+    `/material-question-replans/${encodeURIComponent(materialId)}`,
+    body,
+    onEvent,
+    signal,
+  )
+}
+
+async function streamRevisionRequest(
+  path: string,
+  body: CreateQuestionRevisionRequest | CreateQuestionReplanRequest,
+  onEvent: (event: QuestionRevisionEvent) => void,
+  signal?: AbortSignal,
+): Promise<QuestionRevisionTerminalEvent> {
   const response = await fetch(
-    `${getConfig().apiBaseUrl}/material-question-revisions/${encodeURIComponent(materialId)}`,
+    `${getConfig().apiBaseUrl}${path}`,
     {
       method: 'POST',
       credentials: CREDENTIALS,

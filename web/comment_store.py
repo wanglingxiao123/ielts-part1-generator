@@ -143,12 +143,14 @@ class CommentService:
         outcome: str,
         resolved_by_version_id: Optional[str] = None,
         reasons: Optional[list[Dict[str, Any]]] = None,
+        from_statuses: Optional[list[str]] = None,
     ) -> Dict[str, Any]:
-        """Idempotently settle only the open comments snapshotted by one revision."""
+        """Idempotently settle snapshotted comments from the allowed prior states."""
         material_id = _material_id(material_id)
         if outcome not in {"resolved", "no_change", "needs_replan", "needs_material"}:
             raise CommentError("INVALID_COMMENT_STATUS", "批注处理状态无效。")
         wanted = {str(value) for value in comment_ids if str(value)}
+        allowed_statuses = set(from_statuses or ["open"])
         reason_by_id = {
             str(row.get("comment_id")): row
             for row in (reasons or [])
@@ -162,7 +164,7 @@ class CommentService:
                 if (comment.get("id") not in wanted
                         or (comment.get("anchor") or {}).get("type") != "question"
                         or comment.get("version_id") != base_version_id
-                        or comment.get("status") != "open"):
+                        or comment.get("status") not in allowed_statuses):
                     continue
                 comment.update({
                     "status": outcome,

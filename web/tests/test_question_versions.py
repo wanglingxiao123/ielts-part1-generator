@@ -162,12 +162,179 @@ def test_unknown_base_or_adoption_target_is_rejected(versions):
     assert found.value.status == 404
 
 
+def test_replan_reservation_reuses_actionable_source_snapshot_without_open_comments(versions):
+    service, store = versions
+    source = service.reserve("mat-1", "original", [
+        {"id": "c1", "anchor": {"type": "question", "index": 1}, "text": "local"},
+        {"id": "c2", "anchor": {"type": "question", "index": 2}, "text": "replan"},
+        {"id": "c3", "anchor": {"type": "question", "index": 3}, "text": "wrong"},
+    ], "reviewer")
+    terminal = dict(
+        source,
+        status="replan_questions",
+        comment_outcomes=[
+            {"comment_id": "c1", "outcome": "question_only"},
+            {"comment_id": "c2", "outcome": "replan_questions"},
+            {"comment_id": "c3", "outcome": "no_change"},
+        ],
+    )
+    put(store, "_question_revisions/mat-1/%s.json" % source["request_id"], terminal)
+    put(store, "_question_revisions/mat-1/running.json", terminal)
+
+    execution = service.reserve_replan("mat-1", source["request_id"], "reviewer")
+
+    assert execution["operation"] == "replan_questions"
+    assert execution["source_request_id"] == source["request_id"]
+    assert [row["id"] for row in execution["source_comments"]] == ["c1", "c2"]
+
+
+def test_replan_reservation_is_idempotent_for_one_source_decision(versions):
+    service, store = versions
+    source = service.reserve("mat-1", "original", [{
+        "id": "c1",
+        "anchor": {"type": "question", "index": 1},
+        "text": "Change the group layout.",
+    }], "reviewer")
+    terminal = dict(
+        source,
+        status="replan_questions",
+        comment_outcomes=[{
+            "comment_id": "c1",
+            "outcome": "replan_questions",
+            "reason": "new layout required",
+        }],
+    )
+    put(store, "_question_revisions/mat-1/%s.json" % source["request_id"], terminal)
+    put(store, "_question_revisions/mat-1/running.json", terminal)
+
+    first = service.reserve_replan("mat-1", source["request_id"], "reviewer")
+    second = service.reserve_replan("mat-1", source["request_id"], "reviewer")
+
+    assert second["request_id"] == first["request_id"]
+
+
+def test_failed_replan_execution_can_retry_the_same_source_decision(versions):
+    service, store = versions
+    source = service.reserve("mat-1", "original", [{
+        "id": "c1",
+        "anchor": {"type": "question", "index": 1},
+        "text": "Change the group layout.",
+    }], "reviewer")
+    terminal = dict(
+        source,
+        status="replan_questions",
+        comment_outcomes=[{
+            "comment_id": "c1",
+            "outcome": "replan_questions",
+            "reason": "new layout required",
+        }],
+    )
+    put(store, "_question_revisions/mat-1/%s.json" % source["request_id"], terminal)
+    put(store, "_question_revisions/mat-1/running.json", terminal)
+    first = service.reserve_replan("mat-1", source["request_id"], "reviewer")
+    service.fail_request("mat-1", first, "model unavailable")
+
+    retry = service.reserve_replan("mat-1", source["request_id"], "reviewer")
+
+    assert retry["request_id"] != first["request_id"]
+    assert retry["source_request_id"] == source["request_id"]
+
+
+@pytest.mark.parametrize("change", [
+    {"material_id": "other-material"},
+    {"request_id": "other-request"},
+    {"operation": "replan_questions"},
+    {"comment_outcomes": []},
+])
+def test_replan_source_rejects_an_invalid_durable_decision(versions, change):
+    service, store = versions
+    source = service.reserve("mat-1", "original", [{
+        "id": "c1",
+        "anchor": {"type": "question", "index": 1},
+        "text": "Change the group layout.",
+    }], "reviewer")
+    terminal = dict(source)
+    terminal.update({
+        "status": "replan_questions",
+        "comment_outcomes": [{
+            "comment_id": "c1",
+            "outcome": "replan_questions",
+            "reason": "new layout required",
+        }],
+    })
+    terminal.update(change)
+    put(store, "_question_revisions/mat-1/%s.json" % source["request_id"], terminal)
+
+    with pytest.raises(QuestionVersionError):
+        service.replan_source("mat-1", source["request_id"])
+
+
 class _History:
     def get_material(self, material_id):
         if material_id != "mat-1":
             return None
         return {"material": {"content_kind": "listening_material"},
                 "blueprint": {"blueprint_schema_version": 2}}
+
+
+def test_replan_route_dispatches_from_durable_decision_without_new_comment(
+    auth, runtime, static_dir,
+):
+    backing = InMemoryObjectStore()
+    put(backing, "_questions/mat-1.json", {
+        "ok": True,
+        "package": {"material_id": "mat-1", "question_face": {},
+                    "answer_key": [], "evidence": []},
+    })
+    versions = QuestionVersionService(backing)
+    source = versions.reserve("mat-1", "original", [{
+        "id": "c1",
+        "anchor": {"type": "question", "index": 3},
+        "severity": "major",
+        "text": "Change the whole form group to notes.",
+    }], "reviewer")
+    terminal = dict(
+        source,
+        status="replan_questions",
+        reasons=[{
+            "comment_id": "c1", "question_number": 3,
+            "outcome": "replan_questions", "reason": "new layout required",
+        }],
+        comment_outcomes=[{
+            "comment_id": "c1", "question_number": 3,
+            "outcome": "replan_questions", "reason": "new layout required",
+        }],
+    )
+    put(backing, "_question_revisions/mat-1/%s.json" % source["request_id"], terminal)
+    put(backing, "_question_revisions/mat-1/running.json", terminal)
+    stream = FakeStreamingBody()
+    stream.push_event({
+        "type": "question_revision_needs_material",
+        "request_id": "execution",
+        "reasons": [],
+    })
+    stream.finish()
+    runtime.stream = stream
+    tier = WebTier(
+        auth, runtime, str(static_dir), history=_History(),
+        comments=CommentService(InMemoryCommentStore()),
+        question_versions=versions,
+    )
+    from fastapi.testclient import TestClient
+
+    with TestClient(tier.app) as client:
+        register(client)
+        response = client.post(
+            "/api/material-question-replans/mat-1",
+            json={"source_request_id": source["request_id"]},
+        )
+
+    assert response.status_code == 200
+    payload = runtime.calls[-1]
+    assert payload["action"] == "replan_questions_from_comments"
+    assert payload["source_request_id"] == source["request_id"]
+    assert payload["base_version_id"] == "original"
+    assert [row["id"] for row in payload["comments"]] == ["c1"]
 
 
 def test_revision_route_snapshots_question_comments_and_relays_runtime(
@@ -361,6 +528,64 @@ def test_versions_route_reconciles_non_version_terminal_comments(
     settled = comments.list("mat-1")["comments"][0]
     assert settled["status"] == expected
     assert settled["decision_reason"] == "decision"
+
+
+def test_completed_replan_resolves_the_previous_needs_replan_comment(
+    auth, runtime, static_dir,
+):
+    backing = InMemoryObjectStore()
+    put(backing, "_questions/mat-1.json", {
+        "ok": True, "package": {"question_face": {}},
+    })
+    comments = CommentService(InMemoryCommentStore())
+    source = comments.create("mat-1", {
+        "anchor": {"type": "question", "index": 3},
+        "severity": "major", "text": "Change the group layout.",
+    })["comments"][0]
+    comments.settle_revision(
+        "mat-1",
+        comment_ids=[source["id"]],
+        base_version_id="original",
+        request_id="classification",
+        outcome="needs_replan",
+    )
+    execution = {
+        "request_id": "replan-execution",
+        "material_id": "mat-1",
+        "operation": "replan_questions",
+        "source_request_id": "classification",
+        "status": "completed",
+        "base_version_id": "original",
+        "source_comments": [source],
+        "version_id": "replan-execution",
+        "comment_outcomes": [{
+            "comment_id": source["id"],
+            "question_number": 3,
+            "outcome": "replan_questions",
+            "reason": "resolved by full replan",
+        }],
+    }
+    put(backing, "_question_revisions/mat-1/running.json", execution)
+    put(backing, "_question_versions/mat-1/versions/replan-execution.json", {
+        "id": "replan-execution",
+        "created_at": "2026-08-12T10:00:00Z",
+        "package": {"question_face": {}},
+        "blueprint": {"blueprint_schema_version": 2},
+    })
+    tier = WebTier(
+        auth, runtime, str(static_dir), history=_History(), comments=comments,
+        question_versions=QuestionVersionService(backing),
+    )
+    from fastapi.testclient import TestClient
+
+    with TestClient(tier.app) as client:
+        register(client)
+        response = client.get("/api/material-question-versions/mat-1")
+
+    assert response.status_code == 200
+    settled = comments.list("mat-1")["comments"][0]
+    assert settled["status"] == "resolved"
+    assert settled["resolved_by_version_id"] == "replan-execution"
 
 
 def test_versions_route_settles_mixed_snapshot_per_comment_without_false_success(

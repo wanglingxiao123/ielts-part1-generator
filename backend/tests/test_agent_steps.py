@@ -33,6 +33,7 @@ from backend.steps.agent_steps import (
     build_feasibility_message,
     build_feasibility_payload,
     classify_question_revision,
+    replan_blueprint,
 )
 from backend.steps.call import ModelCallError
 
@@ -49,6 +50,47 @@ def _reply(**over) -> str:
 
 
 _ABSENT = object()
+
+
+@pytest.mark.asyncio
+async def test_question_replanning_accepts_unchanged_material_and_blueprint(monkeypatch):
+    material = {"material_id": "mat-1", "turns": [{"text": "hello"}]}
+
+    async def invoke(*_args):
+        return json.dumps({
+            "material": material,
+            "blueprint": {"blueprint_schema_version": 2, "items": []},
+        })
+
+    monkeypatch.setattr("backend.steps.agent_steps._invoke", invoke)
+    result = await replan_blueprint(
+        material, {"items": [{"number": 1}]}, [{"id": "c1"}])
+    assert result.material == material
+    assert result.blueprint == {"blueprint_schema_version": 2, "items": []}
+
+
+@pytest.mark.asyncio
+async def test_question_replanning_rejects_a_changed_returned_material(monkeypatch):
+    async def invoke(*_args):
+        return json.dumps({
+            "material": {"turns": [{"text": "changed"}]},
+            "blueprint": {"items": []},
+        })
+
+    monkeypatch.setattr("backend.steps.agent_steps._invoke", invoke)
+    with pytest.raises(ModelCallError, match="changed the immutable listening material"):
+        await replan_blueprint(
+            {"turns": [{"text": "original"}]}, {}, [{"id": "c1"}])
+
+
+@pytest.mark.asyncio
+async def test_question_replanning_rejects_a_missing_material_envelope(monkeypatch):
+    async def invoke(*_args):
+        return json.dumps({"blueprint": {"items": []}})
+
+    monkeypatch.setattr("backend.steps.agent_steps._invoke", invoke)
+    with pytest.raises(ModelCallError, match="lacked the material/blueprint envelope"):
+        await replan_blueprint({"turns": []}, {}, [{"id": "c1"}])
 
 
 @pytest.mark.asyncio

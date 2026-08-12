@@ -68,6 +68,7 @@ __all__ = [
     "generate",
     "generate_questions",
     "GenerationWorkspace",
+    "replan_blueprint",
     "revise",
     "revise_questions",
     "revise_questions_from_comments",
@@ -642,6 +643,59 @@ async def generate_questions(material: Dict[str, Any], blueprint: Dict[str, Any]
         # key, and the next step is a blind audit by an agent that can read any absolute path.
         workspace.remove()
     return _question_envelope(reply, "question generation")
+
+
+async def replan_blueprint(
+    material: Dict[str, Any],
+    current_blueprint: Dict[str, Any],
+    comments: List[Dict[str, Any]],
+    feedback: Optional[List[str]] = None,
+) -> GenOutput:
+    """Rebuild all ten information points while treating the material as immutable input."""
+    agent = build_generate_agent()
+    workspace = GenerationWorkspace()
+    try:
+        material_path = workspace.path / "material.json"
+        blueprint_path = workspace.path / "current-blueprint.json"
+        comments_path = workspace.path / "comments.json"
+        material_path.write_text(
+            json.dumps(material, ensure_ascii=False, indent=2), encoding="utf-8")
+        blueprint_path.write_text(
+            json.dumps(current_blueprint, ensure_ascii=False, indent=2), encoding="utf-8")
+        comments_path.write_text(
+            json.dumps(comments, ensure_ascii=False, indent=2), encoding="utf-8")
+        message = "\n\n".join([
+            "Replan the complete information-point blueprint for this existing IELTS Listening "
+            "Part 1 material. The listening material is immutable: do not edit or rewrite it. "
+            "Return that complete material unchanged beside the replacement blueprint so Python can "
+            "verify the boundary. Use the reviewer comments as requirements, and rebuild all ten points and all group "
+            "boundaries rather than patching the current blueprint.",
+            "Activate the listening-material generation skill and follow its blueprint rules. "
+            "The new blueprint may change targets, answer categories, item_form, form_group, and "
+            "group boundaries. It must still contain exactly ten fair points supported by the "
+            "unchanged material. Run the material+blueprint validator until it reports no errors.",
+            "## Files\n\nmaterial.json: %s\ncurrent-blueprint.json: %s\ncomments.json: %s"
+            % (material_path, blueprint_path, comments_path),
+            "Reply with exactly one JSON object shaped as "
+            '{"material": <the complete unchanged material>, '
+            '"blueprint": <the complete replacement blueprint>}. '
+            "Do not include questions, an answer key, or commentary.",
+        ]) + workspace.instructions() + _feedback_block(feedback)
+        reply = await _invoke(agent, message, "question replanning")
+    finally:
+        workspace.remove()
+
+    output = _envelope(reply, "question replanning")
+    expected = json.dumps(
+        material, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    returned = json.dumps(
+        output.material, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    if returned != expected:
+        raise ModelCallError(
+            "question replanning changed the immutable listening material")
+    return output
 
 
 async def revise_questions(

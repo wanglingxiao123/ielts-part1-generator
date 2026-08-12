@@ -2881,6 +2881,13 @@ h3 {
   background: var(--warn-bg);
 }
 
+.question-replan-confirm {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
 .question-revision-result.no-change {
   color: var(--ink-2);
   background: var(--bg);

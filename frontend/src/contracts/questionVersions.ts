@@ -1,4 +1,4 @@
-import type { QuestionPackage } from './index'
+import type { Blueprint, QuestionPackage } from './index'
 
 export type QuestionVersionStatus = 'original' | 'ready'
 
@@ -9,6 +9,8 @@ export interface QuestionPackageVersion {
   source_comment_ids: string[]
   status: QuestionVersionStatus
   package: QuestionPackage
+  /** Present on replanned versions; old versions fall back to the material record blueprint. */
+  blueprint?: Blueprint
   is_active: boolean
   /** Display-only V-number assigned by the server after sorting immutable versions. */
   ordinal: number
@@ -46,6 +48,8 @@ export interface QuestionRevisionRecord {
     | 'needs_material_revision'
     | 'failed'
   stage?: QuestionRevisionStage
+  operation?: 'revise_questions' | 'replan_questions'
+  source_request_id?: string
   base_version_id: string
   comment_count?: number
   created_at?: string
@@ -62,6 +66,10 @@ export interface CreateQuestionRevisionRequest {
   comment_ids?: string[]
 }
 
+export interface CreateQuestionReplanRequest {
+  source_request_id: string
+}
+
 export interface AdoptQuestionVersionResponse {
   material_id: string
   active_version_id: string | null
@@ -70,6 +78,9 @@ export interface AdoptQuestionVersionResponse {
 export type QuestionRevisionStage =
   | 'queued'
   | 'analysing'
+  | 'planning'
+  | 'feasibility'
+  | 'generating'
   | 'revising'
   | 'validating'
   | 'auditing'

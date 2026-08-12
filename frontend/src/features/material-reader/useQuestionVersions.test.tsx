@@ -5,12 +5,13 @@ import type {
   MaterialQuestionVersionsResponse,
   QuestionRevisionEvent,
 } from '@/contracts/questionVersions'
-import { QUESTION_PACKAGE } from '@/mocks/fixtures'
+import { BASE_BLUEPRINT, QUESTION_PACKAGE } from '@/mocks/fixtures'
 import { useQuestionVersions } from './useQuestionVersions'
 
 const listVersions = vi.fn<() => Promise<MaterialQuestionVersionsResponse>>()
 const adoptVersion = vi.fn()
 const streamRevision = vi.fn()
+const streamReplan = vi.fn()
 
 vi.mock('@/api/endpoints', () => ({
   api: {
@@ -21,6 +22,7 @@ vi.mock('@/api/endpoints', () => ({
 
 vi.mock('@/api/questionRevisions', () => ({
   streamQuestionRevision: (...args: unknown[]) => streamRevision(...args),
+  streamQuestionReplan: (...args: unknown[]) => streamReplan(...args),
 }))
 
 const response = (active = 'original'): MaterialQuestionVersionsResponse => ({
@@ -223,6 +225,135 @@ describe('useQuestionVersions', () => {
           reason: '需要更换信息点',
         }],
       }),
+    )
+  })
+
+  it('确认重新命题后生成带蓝图快照的新版本且不自动采用', async () => {
+    const replanDecision: MaterialQuestionVersionsResponse = {
+      ...response(),
+      revision_request: {
+        request_id: 'request-needs-replan',
+        status: 'replan_questions',
+        base_version_id: 'original',
+        reasons: [{
+          comment_id: 'comment-q3',
+          question_number: 3,
+          reason: '需要重新规划题组',
+        }],
+      },
+    }
+    const replanned = {
+      ...response(),
+      revision_request: {
+        request_id: 'request-replan-execution',
+        status: 'completed' as const,
+        operation: 'replan_questions' as const,
+        source_request_id: 'request-needs-replan',
+        base_version_id: 'original',
+        version_id: 'version-replanned',
+      },
+      versions: [
+        ...response().versions,
+        {
+          ...response().versions[0]!,
+          id: 'version-replanned',
+          based_on_version_id: 'original',
+          status: 'ready' as const,
+          is_active: false,
+          ordinal: 2,
+          blueprint: BASE_BLUEPRINT,
+        },
+      ],
+    }
+    listVersions
+      .mockResolvedValueOnce(replanDecision)
+      .mockResolvedValueOnce(replanned)
+    streamReplan.mockResolvedValue({
+      event: 'revised',
+      request_id: 'request-replan-execution',
+      version_id: 'version-replanned',
+    })
+
+    const { result } = renderHook(() => useQuestionVersions('material-1', true))
+    await waitFor(() => expect(result.current.revisionResult?.kind).toBe('needs_replan'))
+    await act(() => result.current.replan())
+
+    expect(streamReplan).toHaveBeenCalledWith(
+      'material-1',
+      { source_request_id: 'request-needs-replan' },
+      expect.any(Function),
+      expect.any(AbortSignal),
+    )
+    expect(result.current.selectedVersionId).toBe('version-replanned')
+    expect(result.current.activeVersionId).toBe('original')
+    expect(result.current.selectedVersion?.blueprint).toBeDefined()
+  })
+
+  it('连续确认重新命题只启动一个执行请求', async () => {
+    const replanDecision: MaterialQuestionVersionsResponse = {
+      ...response(),
+      revision_request: {
+        request_id: 'request-needs-replan',
+        status: 'replan_questions',
+        base_version_id: 'original',
+        reasons: [],
+      },
+    }
+    listVersions.mockResolvedValue(replanDecision)
+    let finish!: (value: {
+      event: 'revised'
+      request_id: string
+      version_id: string
+    }) => void
+    streamReplan.mockImplementation(() => new Promise((resolve) => {
+      finish = resolve
+    }))
+
+    const { result } = renderHook(() => useQuestionVersions('material-1', true))
+    await waitFor(() => expect(result.current.revisionResult?.kind).toBe('needs_replan'))
+    let first!: Promise<void>
+    await act(async () => {
+      first = result.current.replan()
+      await result.current.replan()
+    })
+
+    expect(streamReplan).toHaveBeenCalledOnce()
+    finish({
+      event: 'revised',
+      request_id: 'request-replan-execution',
+      version_id: 'version-replanned',
+    })
+    await act(() => first)
+  })
+
+  it('重新命题失败后使用持久源请求重试', async () => {
+    const failed: MaterialQuestionVersionsResponse = {
+      ...response(),
+      revision_request: {
+        request_id: 'request-failed',
+        status: 'failed',
+        operation: 'replan_questions',
+        source_request_id: 'request-needs-replan',
+        base_version_id: 'original',
+        message: 'model unavailable',
+      },
+    }
+    listVersions.mockResolvedValue(failed)
+    streamReplan.mockResolvedValue({
+      event: 'failed',
+      request_id: 'request-retry',
+      message: 'still unavailable',
+    })
+
+    const { result } = renderHook(() => useQuestionVersions('material-1', true))
+    await waitFor(() => expect(result.current.revisionResult?.kind).toBe('failed'))
+    await act(() => result.current.replan())
+
+    expect(streamReplan).toHaveBeenCalledWith(
+      'material-1',
+      { source_request_id: 'request-needs-replan' },
+      expect.any(Function),
+      expect.any(AbortSignal),
     )
   })
 

@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '@/api/endpoints'
 import { userMessage } from '@/api/http'
-import { streamQuestionRevision } from '@/api/questionRevisions'
+import { streamQuestionReplan, streamQuestionRevision } from '@/api/questionRevisions'
 import type { MaterialComment } from '@/contracts/comments'
 import type {
   MaterialQuestionVersionsResponse,
   MaterialRevisionReason,
   QuestionPackageVersion,
   QuestionRevisionRecord,
+  QuestionRevisionEvent,
   QuestionRevisionStage,
+  QuestionRevisionTerminalEvent,
 } from '@/contracts/questionVersions'
 
 export type RevisionResult =
@@ -24,6 +26,10 @@ export type RevisionResult =
   | null
 
 const REVISION_RECOVERY_DELAYS_MS = [0, 250, 750] as const
+type RevisionStarter = (
+  onEvent: (event: QuestionRevisionEvent) => void,
+  signal: AbortSignal,
+) => Promise<QuestionRevisionTerminalEvent>
 
 export function useQuestionVersions(materialId: string, enabled: boolean) {
   const [versions, setVersions] = useState<QuestionPackageVersion[]>([])
@@ -38,6 +44,7 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
     useState<MaterialQuestionVersionsResponse['revision_request']>(null)
   const abortRef = useRef<AbortController | null>(null)
   const revisionAttemptRef = useRef(0)
+  const revisionInFlightRef = useRef(false)
 
   const load = useCallback(async (preferredVersionId?: string) => {
     setLoading(true)
@@ -107,6 +114,7 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
     return () => {
       revisionAttemptRef.current += 1
       abortRef.current?.abort()
+      revisionInFlightRef.current = false
     }
   }, [enabled, materialId, load])
 
@@ -141,13 +149,12 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
     }
   }, [activeVersionId, materialId, selectedVersion])
 
-  const revise = useCallback(async (comments: MaterialComment[]) => {
-    if (!selectedVersion || selectedVersion.id !== activeVersionId || revisionStage) return
-    const questionCommentIds = comments
-      .filter((comment) => comment.anchor.type === 'question')
-      .map((comment) => comment.id)
-    if (questionCommentIds.length === 0) return
-
+  const runRevision = useCallback(async (
+    start: RevisionStarter,
+    fallbackMessage: string,
+  ) => {
+    if (revisionInFlightRef.current) return
+    revisionInFlightRef.current = true
     const abort = new AbortController()
     const attempt = revisionAttemptRef.current + 1
     revisionAttemptRef.current = attempt
@@ -190,9 +197,7 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
       return stillRunning ? 'running' as const : 'missing' as const
     }
     try {
-      const terminal = await streamQuestionRevision(
-        materialId,
-        { base_version_id: activeVersionId, comment_ids: questionCommentIds },
+      const terminal = await start(
         (event) => {
           if (event.request_id) requestId = event.request_id
           if (event.event === 'progress') setRevisionStage(event.stage)
@@ -230,7 +235,7 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
         if (recovery === 'missing') {
           setRevisionResult({
             kind: 'failed',
-            message: userMessage(err, '题目没有修改成功，原版本未受影响'),
+            message: userMessage(err, fallbackMessage),
             blockers: [],
           })
         }
@@ -238,10 +243,71 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
     } finally {
       if (revisionAttemptRef.current === attempt) {
         setRevisionStage(keepQueued ? 'queued' : null)
-        if (abortRef.current === abort) abortRef.current = null
+      }
+      if (abortRef.current === abort) {
+        abortRef.current = null
+        revisionInFlightRef.current = false
       }
     }
-  }, [activeVersionId, load, materialId, revisionStage, selectedVersion])
+  }, [load, materialId])
+
+  const revise = useCallback(async (comments: MaterialComment[]) => {
+    if (!selectedVersion || selectedVersion.id !== activeVersionId || revisionStage) return
+    const questionCommentIds = comments
+      .filter((comment) => comment.anchor.type === 'question')
+      .map((comment) => comment.id)
+    if (questionCommentIds.length === 0) return
+    await runRevision(
+      (onEvent, signal) => streamQuestionRevision(
+        materialId,
+        { base_version_id: activeVersionId, comment_ids: questionCommentIds },
+        onEvent,
+        signal,
+      ),
+      '题目没有修改成功，原版本未受影响',
+    )
+  }, [
+    activeVersionId,
+    materialId,
+    revisionStage,
+    runRevision,
+    selectedVersion,
+  ])
+
+  const replan = useCallback(async () => {
+    const sourceRequestId =
+      revisionRequest?.status === 'replan_questions'
+        ? revisionRequest.request_id
+        : revisionRequest?.status === 'failed' &&
+            revisionRequest.operation === 'replan_questions'
+          ? revisionRequest.source_request_id
+          : undefined
+    if (
+      revisionStage ||
+      !sourceRequestId ||
+      !selectedVersion ||
+      selectedVersion.id !== activeVersionId ||
+      revisionRequest?.base_version_id !== activeVersionId
+    ) {
+      return
+    }
+    await runRevision(
+      (onEvent, signal) => streamQuestionReplan(
+        materialId,
+        { source_request_id: sourceRequestId },
+        onEvent,
+        signal,
+      ),
+      '重新命题没有完成，现有版本未受影响',
+    )
+  }, [
+    activeVersionId,
+    materialId,
+    revisionRequest,
+    revisionStage,
+    runRevision,
+    selectedVersion,
+  ])
 
   const dismissRevisionResult = useCallback(() => {
     if (revisionRequest?.request_id) {
@@ -268,6 +334,7 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
     revisionResult,
     dismissRevisionResult,
     revise,
+    replan,
     reload: () => void load(),
   }
 }

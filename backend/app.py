@@ -103,11 +103,14 @@ async def invoke(payload: Dict[str, Any]):
     if action == "revise_questions_from_comments":
         return _revise_questions_from_comments(payload or {})
 
+    if action == "replan_questions_from_comments":
+        return _replan_questions_from_comments(payload or {})
+
     if action != "generate":
         return {
             "error": "unknown action %r; expected generate, generate_sets, list_scenarios, select, "
                      "preview_audio, audio_status, list_candidates, presign_audio or "
-                     "revise_questions_from_comments" % action
+                     "revise_questions_from_comments or replan_questions_from_comments" % action
         }
 
     return _generate(payload)
@@ -274,6 +277,78 @@ async def _revise_questions_from_comments(payload: Dict[str, Any]):
         blueprint=payload["blueprint"],
         package=payload["package"],
         base_version=payload["base_version"],
+        comments=comments,
+        actor=str(payload.get("actor") or "reviewer"),
+    ):
+        yield event
+
+
+async def _replan_questions_from_comments(payload: Dict[str, Any]):
+    """Stream a confirmed full replan while keeping the supplied material immutable."""
+    from .orchestration.manual_question_replan import replan_from_comments
+    from .orchestration.slot_store import build_slot_store
+
+    required = (
+        "material_id", "request_id", "source_request_id", "base_version_id",
+        "material", "blueprint", "package", "comments",
+    )
+    missing = [key for key in required if not payload.get(key)]
+    if missing:
+        yield {
+            "type": "question_revision_failed",
+            "message": "missing required fields: %s" % ", ".join(missing),
+        }
+        return
+    for key in ("material_id", "request_id", "source_request_id", "base_version_id"):
+        if not _SAFE_ID.fullmatch(str(payload.get(key) or "")):
+            yield {
+                "type": "question_revision_failed",
+                "message": "%s is invalid" % key,
+            }
+            return
+    if not all(
+        isinstance(payload.get(key), dict)
+        for key in ("material", "blueprint", "package")
+    ):
+        yield {
+            "type": "question_revision_failed",
+            "message": "material, blueprint and package must be JSON objects",
+        }
+        return
+    comments = payload.get("comments")
+    if not isinstance(comments, list) or not comments:
+        yield {
+            "type": "question_revision_failed",
+            "message": "source question comments are required",
+        }
+        return
+    for row in comments:
+        anchor = row.get("anchor") if isinstance(row, dict) else None
+        number = anchor.get("index") if isinstance(anchor, dict) else None
+        if (
+            not isinstance(row, dict)
+            or not str(row.get("id") or "").strip()
+            or not isinstance(anchor, dict)
+            or anchor.get("type") != "question"
+            or isinstance(number, bool)
+            or not isinstance(number, int)
+            or not 1 <= number <= 10
+            or not str(row.get("text") or "").strip()
+        ):
+            yield {
+                "type": "question_revision_failed",
+                "message": "every source comment must identify one question from Q1 to Q10",
+            }
+            return
+    async for event in replan_from_comments(
+        store=build_slot_store(),
+        material_id=str(payload["material_id"]),
+        request_id=str(payload["request_id"]),
+        source_request_id=str(payload["source_request_id"]),
+        base_version_id=str(payload["base_version_id"]),
+        material=payload["material"],
+        blueprint=payload["blueprint"],
+        package=payload["package"],
         comments=comments,
         actor=str(payload.get("actor") or "reviewer"),
     ):

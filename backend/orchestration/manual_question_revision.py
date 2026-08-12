@@ -224,6 +224,7 @@ async def revise_from_comments(
             "source_comment_ids": [str(row["id"]) for row in actionable_comments],
             "status": "ready",
             "package": revised,
+            "blueprint": blueprint,
             "quality": candidate.as_dict(),
             "baseline_advisories": baseline_advisories,
             "changed_questions": changed_questions,

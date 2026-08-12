@@ -47,6 +47,7 @@ function state(overrides: Partial<QuestionVersionsState> = {}): QuestionVersions
     revisionResult: null,
     dismissRevisionResult: vi.fn(),
     revise: vi.fn(),
+    replan: vi.fn(),
     reload: vi.fn(),
     ...overrides,
   }
@@ -213,6 +214,11 @@ describe('根据批注修改题目', () => {
     render(
       <QuestionRevisionAction
         state={state({
+          revisionRequest: {
+            request_id: 'request-replan',
+            status: 'replan_questions',
+            base_version_id: 'version-3',
+          },
           revisionResult: {
             kind: 'needs_replan',
             reasons: [{
@@ -228,6 +234,63 @@ describe('根据批注修改题目', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('需要重新命题')
     expect(screen.getByRole('alert')).toHaveTextContent('需要更换信息点')
     expect(screen.getByRole('alert')).not.toHaveTextContent('需要修改材料')
+    expect(screen.getByRole('button', { name: '确认重新命题' })).toBeEnabled()
+  })
+
+  it('确认重新命题复用持久结果，不要求新增批注', async () => {
+    const replan = vi.fn()
+    render(
+      <QuestionRevisionAction
+        state={state({
+          replan,
+          revisionRequest: {
+            request_id: 'request-replan',
+            status: 'replan_questions',
+            base_version_id: 'version-3',
+          },
+          revisionResult: {
+            kind: 'needs_replan',
+            reasons: [{
+              comment_id: 'comment-1',
+              question_number: 3,
+              reason: '需要更换信息点',
+            }],
+          },
+        })}
+        comments={[]}
+      />,
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: '确认重新命题' }))
+    expect(replan).toHaveBeenCalledOnce()
+  })
+
+  it('重新命题失败后保留源决策并允许重试', async () => {
+    const replan = vi.fn()
+    render(
+      <QuestionRevisionAction
+        state={state({
+          replan,
+          revisionRequest: {
+            request_id: 'request-failed',
+            status: 'failed',
+            operation: 'replan_questions',
+            source_request_id: 'request-needs-replan',
+            base_version_id: 'version-3',
+          },
+          revisionResult: {
+            kind: 'failed',
+            message: '重新命题没有完成',
+            blockers: [],
+          },
+        })}
+        comments={[]}
+      />,
+    )
+
+    expect(screen.queryByRole('button', { name: '关闭修改结果' })).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '重新尝试命题' }))
+    expect(replan).toHaveBeenCalledOnce()
   })
 
   it('成功结果持续说明新版本尚未自动采用，并可关闭', async () => {

@@ -26,7 +26,7 @@ class QuestionVersionError(ValueError):
 class QuestionVersionService:
     def __init__(self, store: Any) -> None:
         self.store = store
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     def list(self, material_id: str) -> Dict[str, Any]:
         material_id = _material_id(material_id)
@@ -102,7 +102,14 @@ class QuestionVersionService:
         return self.list(material_id)
 
     def reserve(
-        self, material_id: str, base_version_id: str, comments: List[Dict[str, Any]], actor: str
+        self,
+        material_id: str,
+        base_version_id: str,
+        comments: List[Dict[str, Any]],
+        actor: str,
+        *,
+        operation: str = "revise_questions",
+        source_request_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         material_id = _material_id(material_id)
         self.load(material_id, base_version_id)
@@ -117,12 +124,15 @@ class QuestionVersionService:
                 "material_id": material_id,
                 "status": "running",
                 "stage": "queued",
+                "operation": operation,
                 "base_version_id": base_version_id,
                 "source_comments": comments,
                 "comment_count": len(comments),
                 "actor": actor,
                 "created_at": _now(),
             }
+            if source_request_id:
+                record["source_request_id"] = source_request_id
             running_key = _running_key(material_id)
             # Production runs one Web task, so the process lock arbitrates replacement of a
             # terminal/stale pointer. Do not delete it first: the task role intentionally lacks
@@ -155,6 +165,153 @@ class QuestionVersionService:
                     pass
                 raise
             return record
+
+    def load_request(self, material_id: str, request_id: str) -> Dict[str, Any]:
+        material_id = _material_id(material_id)
+        request_id = _record_id(request_id, "INVALID_REQUEST_ID")
+        found = self._read(_request_key(material_id, request_id))
+        if not isinstance(found, dict):
+            raise QuestionVersionError(
+                "QUESTION_REVISION_NOT_FOUND", "没有找到这次题目修改记录。", 404)
+        return found
+
+    def reserve_replan(
+        self, material_id: str, source_request_id: str, actor: str
+    ) -> Dict[str, Any]:
+        """Reserve execution from a durable replan decision, without new open comments."""
+        material_id = _material_id(material_id)
+        source_request_id = _record_id(source_request_id, "INVALID_REQUEST_ID")
+        with self._lock:
+            source = self.replan_source(material_id, source_request_id)
+            existing = self._replan_execution(material_id, source_request_id)
+            if existing is not None:
+                return existing
+            return self.reserve(
+                material_id,
+                str(source["base_version_id"]),
+                source["comments"],
+                actor,
+                operation="replan_questions",
+                source_request_id=source_request_id,
+            )
+
+    def replan_source(
+        self, material_id: str, source_request_id: str
+    ) -> Dict[str, Any]:
+        """Validate and project the immutable source snapshot before reserving execution."""
+        material_id = _material_id(material_id)
+        source_request_id = _record_id(source_request_id, "INVALID_REQUEST_ID")
+        source = self.load_request(material_id, source_request_id)
+        if (
+            source.get("request_id") != source_request_id
+            or source.get("material_id") != material_id
+            or source.get("operation") == "replan_questions"
+            or source.get("status") != "replan_questions"
+        ):
+            raise QuestionVersionError(
+                "QUESTION_REPLAN_NOT_AVAILABLE",
+                "这次修改不需要重新命题，不能启动该操作。", 409)
+        base_version_id = str(source.get("base_version_id") or "")
+        versions = self.list(material_id)
+        if not base_version_id or versions.get("active_version_id") != base_version_id:
+            raise QuestionVersionError(
+                "BASE_VERSION_NOT_ACTIVE", "只能基于当前采用版本重新命题。", 409)
+        source_comments = source.get("source_comments")
+        outcomes = source.get("comment_outcomes")
+        if (
+            not isinstance(source_comments, list)
+            or not source_comments
+            or not isinstance(outcomes, list)
+            or not outcomes
+        ):
+            raise QuestionVersionError(
+                "QUESTION_REPLAN_SOURCE_MISSING", "原修改记录没有保留题目批注。", 409)
+        dispositions: Dict[str, str] = {}
+        for row in outcomes:
+            if not isinstance(row, dict):
+                raise QuestionVersionError(
+                    "QUESTION_REPLAN_SOURCE_INVALID", "原修改记录的批注结论不完整。", 409)
+            comment_id = str(row.get("comment_id") or "")
+            outcome = str(row.get("outcome") or "")
+            if (
+                not comment_id
+                or comment_id in dispositions
+                or outcome not in {
+                    "question_only", "no_change", "replan_questions", "revise_material",
+                }
+            ):
+                raise QuestionVersionError(
+                    "QUESTION_REPLAN_SOURCE_INVALID", "原修改记录的批注结论不完整。", 409)
+            dispositions[comment_id] = outcome
+        comment_ids: set[str] = set()
+        for row in source_comments:
+            anchor = row.get("anchor") if isinstance(row, dict) else None
+            comment_id = str(row.get("id") or "") if isinstance(row, dict) else ""
+            number = anchor.get("index") if isinstance(anchor, dict) else None
+            if (
+                not comment_id
+                or comment_id in comment_ids
+                or comment_id not in dispositions
+                or not isinstance(anchor, dict)
+                or anchor.get("type") != "question"
+                or isinstance(number, bool)
+                or not isinstance(number, int)
+                or not 1 <= number <= 10
+                or not str(row.get("text") or "").strip()
+            ):
+                raise QuestionVersionError(
+                    "QUESTION_REPLAN_SOURCE_INVALID", "原修改记录的题目批注不完整。", 409)
+            comment_ids.add(comment_id)
+        if set(dispositions) != comment_ids or "replan_questions" not in dispositions.values():
+            raise QuestionVersionError(
+                "QUESTION_REPLAN_SOURCE_INVALID", "原修改记录的批注结论不完整。", 409)
+        comments = [
+            dict(row)
+            for row in source_comments
+            if dispositions[str(row["id"])]
+            in {"question_only", "replan_questions"}
+        ]
+        if not comments:
+            raise QuestionVersionError(
+                "QUESTION_REPLAN_SOURCE_MISSING",
+                "原修改记录没有可用于重新命题的批注。", 409)
+        return {
+            "request": source,
+            "base_version_id": base_version_id,
+            "comments": comments,
+        }
+
+    def _replan_execution(
+        self, material_id: str, source_request_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Return the one reusable execution for a confirmed source decision."""
+        prefix = "%s%s/" % (QUESTION_REVISION_PREFIX, material_id)
+        matches: List[Dict[str, Any]] = []
+        for key in self.store.list_keys(prefix):
+            if key == _running_key(material_id) or key.endswith(".claim"):
+                continue
+            found = self._read(key)
+            if (
+                isinstance(found, dict)
+                and found.get("operation") == "replan_questions"
+                and found.get("source_request_id") == source_request_id
+                and found.get("status") != "failed"
+                and not (
+                    found.get("status") == "running"
+                    and _is_stale(found)
+                )
+            ):
+                matches.append(found)
+        if not matches:
+            return None
+        matches.sort(
+            key=lambda row: (
+                str(row.get("created_at") or ""),
+                str(row.get("request_id") or ""),
+            ),
+            reverse=True,
+        )
+        return matches[0]
 
     def fail_request(self, material_id: str, record: Dict[str, Any], message: str) -> None:
         failed = dict(record)
@@ -239,6 +396,13 @@ def _material_id(value: Any) -> str:
     if not MATERIAL_ID_RE.fullmatch(material_id):
         raise QuestionVersionError("INVALID_MATERIAL_ID", "材料 ID 无效。")
     return material_id
+
+
+def _record_id(value: Any, code: str) -> str:
+    record_id = str(value or "").strip()
+    if not MATERIAL_ID_RE.fullmatch(record_id):
+        raise QuestionVersionError(code, "记录 ID 无效。")
+    return record_id
 
 
 def _request_key(material_id: str, request_id: str) -> str:

@@ -549,13 +549,14 @@ function QuestionsTab({
   const pkg = state.data?.questions
   if (pkg) {
     const displayedPackage = versionsState.selectedVersion?.package ?? pkg
+    const displayedBlueprint = versionsState.selectedVersion?.blueprint ?? blueprint
     return (
       <div className="question-version-view">
         <QuestionVersionBar state={versionsState} />
         <div className="question-comments-layout">
           <QuestionPreviewPanel
             pkg={displayedPackage}
-            blueprint={blueprint}
+            blueprint={displayedBlueprint}
             view={view}
             onJump={onJump}
             selectedQuestion={selectedQuestion}

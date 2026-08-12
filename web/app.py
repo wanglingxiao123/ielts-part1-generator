@@ -637,7 +637,12 @@ class WebTier:
                     raise QuestionVersionError(
                         "MATERIAL_NOT_FOUND", "没有找到这套题目的材料。", 404)
                 material = material_record.get("material")
-                blueprint = material_record.get("blueprint")
+                fallback_blueprint = material_record.get("blueprint")
+                blueprint = (
+                    base.get("blueprint")
+                    if isinstance(base.get("blueprint"), dict)
+                    else fallback_blueprint
+                )
                 if not isinstance(material, dict) or not isinstance(blueprint, dict):
                     raise QuestionVersionError(
                         "MATERIAL_ARTIFACTS_MISSING", "材料或信息点蓝图不完整。", 409)
@@ -681,6 +686,92 @@ class WebTier:
                 return JSONResponse(
                     _error_body("QUESTION_REVISION_BAD_RESPONSE",
                                 "题目修改服务返回了错误格式。"), status_code=502)
+            return StreamingResponse(
+                _relay_question_revision(
+                    runtime_body, self.question_versions, material_id, revision),
+                media_type=SSE_CONTENT_TYPE,
+                headers=_SSE_HEADERS,
+            )
+
+        @app.post("/api/material-question-replans/{material_id}")
+        async def replan_material_questions(material_id: str, request: Request) -> Any:
+            """Confirm and execute a previously classified full question replan."""
+            from starlette.concurrency import run_in_threadpool
+
+            if self.question_versions is None:
+                return JSONResponse(
+                    _error_body("QUESTION_VERSIONS_UNAVAILABLE", "题目版本存储未配置。"),
+                    status_code=503)
+            body = _as_dict(await _json_body(request))
+            source_request_id = str(body.get("source_request_id") or "")
+            if not source_request_id:
+                return JSONResponse(
+                    _error_body("bad_request", "source_request_id is required"),
+                    status_code=400)
+            user = request.scope.get(USER_SCOPE_KEY) or {}
+            actor = str(user.get("email") or "reviewer")
+            try:
+                source = await run_in_threadpool(
+                    self.question_versions.replan_source,
+                    material_id, source_request_id)
+                base_version_id = str(source["base_version_id"])
+                base = await run_in_threadpool(
+                    self.question_versions.load, material_id, base_version_id)
+                material_record = await run_in_threadpool(
+                    self.history.get_material, material_id)
+                if not isinstance(material_record, dict):
+                    raise QuestionVersionError(
+                        "MATERIAL_NOT_FOUND", "没有找到这套题目的材料。", 404)
+                material = material_record.get("material")
+                fallback_blueprint = material_record.get("blueprint")
+                blueprint = (
+                    base.get("blueprint")
+                    if isinstance(base.get("blueprint"), dict)
+                    else fallback_blueprint
+                )
+                if not isinstance(material, dict) or not isinstance(blueprint, dict):
+                    raise QuestionVersionError(
+                        "MATERIAL_ARTIFACTS_MISSING", "材料或信息点蓝图不完整。", 409)
+                revision = await run_in_threadpool(
+                    self.question_versions.reserve_replan,
+                    material_id, source_request_id, actor)
+            except QuestionVersionError as exc:
+                return JSONResponse(_error_body(exc.code, exc.message), status_code=exc.status)
+            except Exception as exc:
+                return JSONResponse(_infra_error_body(
+                    "QUESTION_REPLAN_PREPARE_FAILED", "重新命题任务没有创建成功。", exc),
+                    status_code=502)
+
+            payload = {
+                "action": "replan_questions_from_comments",
+                "material_id": material_id,
+                "request_id": revision["request_id"],
+                "source_request_id": source_request_id,
+                "base_version_id": base_version_id,
+                "material": material,
+                "blueprint": blueprint,
+                "package": base["package"],
+                "comments": revision["source_comments"],
+                "actor": actor,
+            }
+            session_id = self.session_for(actor)
+            try:
+                content_type, runtime_body, _ = await run_in_threadpool(
+                    self.runtime.invoke, payload, session_id=session_id)
+            except Exception as exc:
+                await run_in_threadpool(
+                    self.question_versions.fail_request, material_id, revision,
+                    "%s: %s" % (type(exc).__name__, str(exc)[:300]))
+                return JSONResponse(_infra_error_body(
+                    "QUESTION_REPLAN_INVOKE_FAILED", "重新命题服务暂时没有响应。", exc),
+                    status_code=502)
+            if SSE_CONTENT_TYPE not in content_type:
+                await run_in_threadpool(
+                    self.question_versions.fail_request, material_id, revision,
+                    "Runtime returned a non-streaming response")
+                return JSONResponse(
+                    _error_body("QUESTION_REPLAN_BAD_RESPONSE",
+                                "重新命题服务返回了错误格式。"), status_code=502)
             return StreamingResponse(
                 _relay_question_revision(
                     runtime_body, self.question_versions, material_id, revision),
@@ -1171,6 +1262,7 @@ def _reconcile_question_comments(
         "replan_questions": "needs_replan",
         "revise_material": "needs_material",
     }
+    is_replan_execution = revision.get("operation") == "replan_questions"
     grouped: Dict[str, list[Dict[str, Any]]] = {}
     for row in dispositions:
         if not isinstance(row, dict):
@@ -1179,21 +1271,33 @@ def _reconcile_question_comments(
         # A higher-layer route did not execute question-only changes.
         if outcome == "question_only" and status != "completed":
             continue
-        if outcome in settlement_status:
-            grouped.setdefault(outcome, []).append(row)
-    for outcome, rows in grouped.items():
+        target = settlement_status.get(outcome)
+        if (
+            is_replan_execution
+            and status == "completed"
+            and outcome in {"question_only", "replan_questions"}
+        ):
+            target = "resolved"
+        if target:
+            grouped.setdefault(target, []).append(row)
+    for target, rows in grouped.items():
         comments.settle_revision(
             material_id,
             comment_ids=[str(row.get("comment_id") or "") for row in rows],
             base_version_id=str(revision.get("base_version_id") or "original"),
             request_id=str(revision.get("request_id") or ""),
-            outcome=settlement_status[outcome],
+            outcome=target,
             resolved_by_version_id=(
                 str(revision.get("version_id"))
-                if outcome == "question_only" and status == "completed"
+                if target == "resolved" and status == "completed"
                 else None
             ),
             reasons=rows,
+            from_statuses=(
+                ["open", "needs_replan"]
+                if is_replan_execution
+                else ["open"]
+            ),
         )
 
 
