@@ -7,6 +7,11 @@ const STAGE_LABEL: Record<QuestionRevisionStage, string> = {
   queued: '正在准备修改',
   analysing: '正在分析批注',
   planning: '正在重新规划信息点',
+  material_revising: '正在修改听力材料',
+  material_auditing: '正在复核新材料',
+  revising_material: '正在修改听力材料',
+  validating_material: '正在校验新材料',
+  auditing_material: '正在复核新材料',
   feasibility: '正在检查新方案',
   generating: '正在生成完整十题',
   revising: '正在修改题目',
@@ -32,10 +37,25 @@ const REPLAN_STEPS = [
   '生成新版本',
 ] as const
 
+const MATERIAL_REVISION_STEPS = [
+  '已接收请求',
+  '修改听力材料',
+  '复核新材料',
+  '重建信息点',
+  '生成完整十题',
+  '独立盲审',
+  '生成新版本',
+] as const
+
 const STAGE_INDEX: Record<QuestionRevisionStage, number> = {
   queued: 0,
   analysing: 1,
   planning: 1,
+  material_revising: 1,
+  material_auditing: 2,
+  revising_material: 1,
+  validating_material: 2,
+  auditing_material: 2,
   feasibility: 2,
   generating: 2,
   revising: 1,
@@ -48,12 +68,34 @@ const REPLAN_STAGE_INDEX: Record<QuestionRevisionStage, number> = {
   queued: 0,
   analysing: 1,
   planning: 1,
+  material_revising: 1,
+  material_auditing: 2,
+  revising_material: 1,
+  validating_material: 2,
+  auditing_material: 2,
   feasibility: 2,
   generating: 3,
   revising: 3,
   validating: 2,
   auditing: 4,
   storing: 5,
+}
+
+const MATERIAL_STAGE_INDEX: Record<QuestionRevisionStage, number> = {
+  queued: 0,
+  analysing: 0,
+  material_revising: 1,
+  material_auditing: 2,
+  revising_material: 1,
+  validating_material: 2,
+  auditing_material: 2,
+  planning: 3,
+  feasibility: 3,
+  generating: 4,
+  revising: 4,
+  validating: 4,
+  auditing: 5,
+  storing: 6,
 }
 
 export function QuestionVersionBar({
@@ -80,9 +122,9 @@ export function QuestionVersionBar({
   return (
     <div className="question-version-bar">
       <label>
-        <span>题目版本</span>
+        <span>材料与题目版本</span>
         <select
-          aria-label="题目版本"
+          aria-label="材料与题目版本"
           value={state.selectedVersionId}
           onChange={(event) => state.setSelectedVersionId(event.target.value)}
         >
@@ -91,6 +133,7 @@ export function QuestionVersionBar({
               V{version.ordinal}
               {version.status === 'original' ? ' · 原始版本' : ''}
               {version.is_active ? ' · 当前采用' : ''}
+              {!version.is_active ? ' · 历史版本' : ''}
             </option>
           ))}
         </select>
@@ -159,14 +202,43 @@ export function QuestionRevisionAction({
     !state.loading &&
     !state.adopting &&
     !state.revisionStage
+  const materialSourceRequestId =
+    state.revisionRequest?.status === 'needs_material_revision'
+      ? state.revisionRequest.request_id
+      : state.revisionRequest?.status === 'failed' &&
+          state.revisionRequest.operation === 'revise_material'
+        ? state.revisionRequest.source_request_id
+        : undefined
+  const canReviseMaterial =
+    Boolean(materialSourceRequestId) &&
+    state.revisionRequest?.base_version_id === state.activeVersionId &&
+    viewingActive &&
+    !state.loading &&
+    !state.adopting &&
+    !state.revisionStage
+  const isMaterialRevision =
+    request?.operation === 'revise_material' ||
+    currentStage === 'material_revising' ||
+    currentStage === 'material_auditing' ||
+    currentStage === 'revising_material' ||
+    currentStage === 'validating_material' ||
+    currentStage === 'auditing_material'
   const isReplanning =
     request?.operation === 'replan_questions' ||
     (request?.status === 'replan_questions' && Boolean(currentStage)) ||
     currentStage === 'planning' ||
     currentStage === 'feasibility' ||
     currentStage === 'generating'
-  const progressSteps = isReplanning ? REPLAN_STEPS : REVISION_STEPS
-  const progressIndex = isReplanning ? REPLAN_STAGE_INDEX : STAGE_INDEX
+  const progressSteps = isMaterialRevision
+    ? MATERIAL_REVISION_STEPS
+    : isReplanning
+      ? REPLAN_STEPS
+      : REVISION_STEPS
+  const progressIndex = isMaterialRevision
+    ? MATERIAL_STAGE_INDEX
+    : isReplanning
+      ? REPLAN_STAGE_INDEX
+      : STAGE_INDEX
 
   return (
     <div className="question-revision-action">
@@ -184,7 +256,13 @@ export function QuestionRevisionAction({
       {currentStage && (
         <div className="question-revision-progress" role="status">
           <div className="question-revision-result-head">
-            <strong>{isReplanning ? '正在重新命题' : '正在修改题目'}</strong>
+            <strong>
+              {isMaterialRevision
+                ? '正在修改材料并重新命题'
+                : isReplanning
+                  ? '正在重新命题'
+                  : '正在修改题目'}
+            </strong>
           </div>
           <p>
             已提交 {request?.comment_count ?? pendingComments.length} 条批注
@@ -228,15 +306,27 @@ export function QuestionRevisionAction({
         </RevisionResultShell>
       )}
       {state.revisionResult?.kind === 'needs_material' && (
-        <RevisionResultShell state={state} className="needs-material" title="需要修改材料">
-          <p>以下意见无法只通过修改题目解决，本次已终止，现有版本未改变。</p>
-          <ul>
-            {state.revisionResult.reasons.map((reason) => (
-              <li key={`${reason.comment_id}-${reason.question_number}`}>
-                Q{reason.question_number}：{reason.reason}
-              </li>
-            ))}
-          </ul>
+        <RevisionResultShell
+          state={state}
+          className="needs-material"
+          title="需要修改材料"
+          dismissable={false}
+        >
+          <p>这些意见需要修改听力材料。确认后将生成新材料、重建信息点和完整十题；现有版本不会被覆盖或自动采用。</p>
+          <ReasonList reasons={state.revisionResult.reasons} />
+          <div className="question-replan-confirm">
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={!canReviseMaterial}
+              onClick={() => void state.reviseMaterial()}
+            >
+              确认修改材料
+            </button>
+            {!canReviseMaterial && !viewingActive && (
+              <span className="muted">请先切回当前采用版本。</span>
+            )}
+          </div>
         </RevisionResultShell>
       )}
       {state.revisionResult?.kind === 'needs_replan' && (
@@ -274,7 +364,7 @@ export function QuestionRevisionAction({
           state={state}
           className="failed"
           title="修改未完成"
-          dismissable={!replanSourceRequestId}
+          dismissable={!replanSourceRequestId && !materialSourceRequestId}
         >
           <p>{state.revisionResult.message}</p>
           {state.revisionResult.blockers.length > 0 && (
@@ -293,6 +383,18 @@ export function QuestionRevisionAction({
                 onClick={() => void state.replan()}
               >
                 重新尝试命题
+              </button>
+            </div>
+          )}
+          {materialSourceRequestId && (
+            <div className="question-replan-confirm">
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={!canReviseMaterial}
+                onClick={() => void state.reviseMaterial()}
+              >
+                重新尝试修改材料
               </button>
             </div>
           )}

@@ -42,6 +42,22 @@ describe('question revision SSE wire adapter', () => {
     })
   })
 
+  it.each([
+    ['question_revision_revising_material', 'material_revising'],
+    ['question_revision_validating_material', 'validating_material'],
+    ['question_revision_auditing_material', 'material_auditing'],
+  ] as const)('normalises %s', (wireType, stage) => {
+    expect(
+      decodeRevisionFrame(
+        `data: {"type":"${wireType}","request_id":"request-material"}`,
+      ),
+    ).toEqual({
+      event: 'progress',
+      request_id: 'request-material',
+      stage,
+    })
+  })
+
   it('normalises a completed Runtime frame to the frontend terminal event', () => {
     expect(
       decodeRevisionFrame(

@@ -11,22 +11,32 @@ import type { AudioStatusResponse } from '@/contracts/api'
  * exactly the event that makes it change. Bumping the key after that POST is what resumes polling;
  * without it the panel would sit on the stale `not_requested` until the page was reloaded.
  */
-export function useAudioStatus(materialId: string, enabled: boolean, restartKey = 0) {
+export function useAudioStatus(
+  materialId: string,
+  versionId: string,
+  enabled: boolean,
+  restartKey = 0,
+) {
   const [status, setStatus] = useState<AudioStatusResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [resultKey, setResultKey] = useState('')
+  const requestKey = `${materialId}:${versionId}`
 
   useEffect(() => {
     if (!enabled) return
     let stopped = false
     let attempts = 0
     let timer: number | null = null
+    setStatus(null)
+    setError(null)
 
     const tick = async () => {
       try {
-        const res = await api.getAudio(materialId)
+        const res = await api.getAudio(materialId, versionId)
         if (stopped) return
         setStatus(res)
         setError(null)
+        setResultKey(requestKey)
         if (res.status === 'ready' || res.status === 'failed') return
         // `not_requested` is a settled state, not a step on the way to ready:
         // synthesis starts only on selection. Polling it forever burned a
@@ -35,6 +45,7 @@ export function useAudioStatus(materialId: string, enabled: boolean, restartKey 
       } catch (err) {
         if (stopped) return
         setError(err instanceof Error ? err.message : String(err))
+        setResultKey(requestKey)
       }
       attempts += 1
       // 2s for the first 30 attempts, then back off to 10s.
@@ -45,7 +56,10 @@ export function useAudioStatus(materialId: string, enabled: boolean, restartKey 
       stopped = true
       if (timer !== null) window.clearTimeout(timer)
     }
-  }, [materialId, enabled, restartKey])
+  }, [materialId, versionId, enabled, restartKey, requestKey])
 
-  return { status, error }
+  return {
+    status: resultKey === requestKey ? status : null,
+    error: resultKey === requestKey ? error : null,
+  }
 }

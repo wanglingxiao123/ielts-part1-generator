@@ -15,6 +15,8 @@ import type {
   MaterialRecord,
 } from '@/contracts/api'
 import type { QuestionRevisionRecord } from '@/contracts/questionVersions'
+import type { MaterialComment } from '@/contracts/comments'
+import type { QuestionPackageVersion } from '@/contracts/questionVersions'
 import { buildRecord, QUESTION_PACKAGE } from '@/mocks/fixtures'
 import { MaterialPage } from './MaterialPage'
 
@@ -33,6 +35,8 @@ let record: MaterialRecord = baseRecord
 /** 音频状态由测试驱动，`previewAudio` 的调用次数被计下来。 */
 let audio: AudioStatusResponse = { status: 'not_requested', progress: { done: 0, total: 0 } }
 const previewCalls: string[] = []
+const previewVersionCalls: Array<string | undefined> = []
+const audioVersionCalls: Array<string | undefined> = []
 
 /**
  * 题目端点。默认「暂无题目」，因为那是绝大多数材料一生中的常态——把有题当默认会让「没题时这一页
@@ -47,24 +51,30 @@ let questions: MaterialQuestionsResponse = {
 const questionCalls: Array<[string, string | undefined]> = []
 let commentCalls = 0
 let revisionRequest: QuestionRevisionRecord | null = null
+let versionOverride: QuestionPackageVersion[] | null = null
+let materialComments: MaterialComment[] = []
 
 vi.mock('@/api/endpoints', () => ({
   api: {
     getMaterial: () => Promise.resolve(record),
-    previewAudio: (id: string) => {
+    previewAudio: (id: string, versionId?: string) => {
       previewCalls.push(id)
+      previewVersionCalls.push(versionId)
       // 真后端会把 job 建起来，下一次轮询就看得到；这里照做。
       audio = { status: 'queued', progress: { done: 0, total: 43 } }
       return Promise.resolve({ material_id: id, audio_job_id: 'job-1', repeat: false })
     },
-    getAudio: () => Promise.resolve(audio),
+    getAudio: (_id: string, versionId?: string) => {
+      audioVersionCalls.push(versionId)
+      return Promise.resolve(audio)
+    },
     materialQuestions: (id: string, batchId?: string) => {
       questionCalls.push([id, batchId])
       return Promise.resolve(questions)
     },
     materialComments: (id: string) => {
       commentCalls += 1
-      return Promise.resolve({ material_id: id, comments: [] })
+      return Promise.resolve({ material_id: id, comments: materialComments })
     },
     createMaterialComment: (id: string) =>
       Promise.resolve({ material_id: id, comments: [] }),
@@ -74,7 +84,7 @@ vi.mock('@/api/endpoints', () => ({
       Promise.resolve({
         material_id: id,
         active_version_id: 'original',
-        versions: questions.questions
+        versions: versionOverride ?? (questions.questions
           ? [{
               id: 'original',
               created_at: '2026-08-11T00:00:00Z',
@@ -85,7 +95,7 @@ vi.mock('@/api/endpoints', () => ({
               is_active: true,
               ordinal: 1,
             }]
-          : [],
+          : []),
         revision_request: revisionRequest,
       }),
     adoptQuestionVersion: (id: string, versionId: string) =>
@@ -106,10 +116,14 @@ function renderPage() {
 beforeEach(() => {
   record = baseRecord
   previewCalls.length = 0
+  previewVersionCalls.length = 0
+  audioVersionCalls.length = 0
   audio = { status: 'not_requested', progress: { done: 0, total: 0 } }
   questionCalls.length = 0
   commentCalls = 0
   revisionRequest = null
+  versionOverride = null
+  materialComments = []
   questions = { material_id: MATERIAL_ID, questions: null, slot: null, request_status: null }
 })
 
@@ -291,6 +305,130 @@ describe('返回批次', () => {
 /* ── 标题下的两个页签 ────────────────────────────────────────────────────── */
 
 describe('MaterialPage 页签', () => {
+  it('版本选择同时切换材料、Turn 批注和音频归属', async () => {
+    const revisedMaterial = structuredClone(baseRecord.material)
+    revisedMaterial.listening_material_parts[0]!.script.turns[1]!.text =
+      'VERSION TWO MATERIAL'
+    versionOverride = [
+      {
+        id: 'original',
+        created_at: '',
+        based_on_version_id: null,
+        source_comment_ids: [],
+        status: 'original',
+        package: QUESTION_PACKAGE,
+        is_active: true,
+        ordinal: 1,
+      },
+      {
+        id: 'version-2',
+        created_at: '2026-08-12T12:00:00Z',
+        based_on_version_id: 'original',
+        source_comment_ids: ['comment-v2'],
+        status: 'ready',
+        operation: 'revise_material',
+        material: revisedMaterial,
+        blueprint: baseRecord.blueprint,
+        package: QUESTION_PACKAGE,
+        audio: { status: 'needs_synthesis', version_key: 'version-2' },
+        is_active: false,
+        ordinal: 2,
+      },
+    ]
+    materialComments = [
+      {
+        id: 'comment-original',
+        created_at: '2026-08-12T10:00:00Z',
+        anchor: { type: 'turn', index: 1 },
+        severity: 'minor',
+        text: 'original comment',
+      },
+      {
+        id: 'comment-v2',
+        created_at: '2026-08-12T12:00:00Z',
+        anchor: { type: 'turn', index: 1 },
+        severity: 'minor',
+        text: 'version two comment',
+        version_id: 'version-2',
+      },
+    ]
+
+    renderPage()
+    expect(await screen.findByText('V1 · 当前采用')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /批注 \(1\)/ })).toBeInTheDocument()
+    audioVersionCalls.length = 0
+
+    await userEvent.selectOptions(
+      screen.getByRole('combobox', { name: '材料与题目版本' }),
+      'version-2',
+    )
+
+    await waitFor(() =>
+      expect(document.querySelector('.material-version-state')).toHaveTextContent(
+        'V2 · 历史版本',
+      ),
+    )
+    expect(screen.getByText('VERSION TWO MATERIAL')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /批注 \(1\)/ }))
+    expect(screen.getByText('version two comment')).toBeInTheDocument()
+    expect(screen.queryByText('original comment')).not.toBeInTheDocument()
+    expect(screen.getByText('需要生成新版录音')).toBeInTheDocument()
+    expect(audioVersionCalls).toEqual(['version-2'])
+  })
+
+  it('新版录音就绪后不再显示需要生成的静态版本状态', async () => {
+    audio = {
+      status: 'ready',
+      progress: { done: 1, total: 1 },
+      manifest: {
+        material_id: MATERIAL_ID,
+        generated_at: '2026-08-12T12:00:00Z',
+        engine: 'polly',
+        format: 'mp3',
+        sample_rate_hz: 24_000,
+        voice_map: { speaker1: 'Amy', speaker2: 'Arthur', speaker3: 'Brian' },
+        total_duration_ms: 0,
+        url_expires_at: '2026-08-12T13:00:00Z',
+        segments: [],
+      },
+    }
+    versionOverride = [
+      {
+        id: 'original',
+        created_at: '',
+        based_on_version_id: null,
+        source_comment_ids: [],
+        status: 'original',
+        package: QUESTION_PACKAGE,
+        is_active: true,
+        ordinal: 1,
+      },
+      {
+        id: 'version-2',
+        created_at: '2026-08-12T12:00:00Z',
+        based_on_version_id: 'original',
+        source_comment_ids: [],
+        status: 'ready',
+        operation: 'revise_material',
+        material: baseRecord.material,
+        blueprint: baseRecord.blueprint,
+        package: QUESTION_PACKAGE,
+        audio: { status: 'needs_synthesis', version_key: 'version-2' },
+        is_active: false,
+        ordinal: 2,
+      },
+    ]
+
+    renderPage()
+
+    await userEvent.selectOptions(
+      await screen.findByRole('combobox', { name: '材料与题目版本' }),
+      'version-2',
+    )
+    await waitFor(() => expect(audioVersionCalls).toContain('version-2'))
+    expect(screen.queryByText('需要生成新版录音')).not.toBeInTheDocument()
+  })
+
   it('选择对话 Turn 后展开批注面板并显示锚点', async () => {
     renderPage()
     const toggle = await screen.findByRole('button', { name: /批注 \(0\)/ })

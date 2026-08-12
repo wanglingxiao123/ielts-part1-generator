@@ -1,6 +1,20 @@
-import type { Blueprint, QuestionPackage } from './index'
+import type { AudioManifest } from './manifest'
+import type { Blueprint, Material, QuestionPackage } from './index'
 
 export type QuestionVersionStatus = 'original' | 'ready'
+export type AssessmentVersionAudioStatus =
+  | 'needs_synthesis'
+  | 'synthesizing'
+  | 'ready'
+  | 'failed'
+
+export interface AssessmentVersionAudio {
+  status: AssessmentVersionAudioStatus
+  version_key?: string
+  progress?: { done: number; total: number }
+  error?: string | null
+  manifest?: AudioManifest
+}
 
 export interface QuestionPackageVersion {
   id: string
@@ -11,6 +25,12 @@ export interface QuestionPackageVersion {
   package: QuestionPackage
   /** Present on replanned versions; old versions fall back to the material record blueprint. */
   blueprint?: Blueprint
+  /** Present only when this assessment version changed the listening material. */
+  material?: Material
+  operation?: 'revise_questions' | 'replan_questions' | 'revise_material'
+  material_sha256?: string
+  /** Absence means a legacy version uses the original material audio. */
+  audio?: AssessmentVersionAudio
   is_active: boolean
   /** Display-only V-number assigned by the server after sorting immutable versions. */
   ordinal: number
@@ -48,7 +68,7 @@ export interface QuestionRevisionRecord {
     | 'needs_material_revision'
     | 'failed'
   stage?: QuestionRevisionStage
-  operation?: 'revise_questions' | 'replan_questions'
+  operation?: 'revise_questions' | 'replan_questions' | 'revise_material'
   source_request_id?: string
   base_version_id: string
   comment_count?: number
@@ -70,6 +90,10 @@ export interface CreateQuestionReplanRequest {
   source_request_id: string
 }
 
+export interface CreateMaterialRevisionRequest {
+  source_request_id: string
+}
+
 export interface AdoptQuestionVersionResponse {
   material_id: string
   active_version_id: string | null
@@ -79,6 +103,11 @@ export type QuestionRevisionStage =
   | 'queued'
   | 'analysing'
   | 'planning'
+  | 'material_revising'
+  | 'material_auditing'
+  | 'revising_material'
+  | 'validating_material'
+  | 'auditing_material'
   | 'feasibility'
   | 'generating'
   | 'revising'

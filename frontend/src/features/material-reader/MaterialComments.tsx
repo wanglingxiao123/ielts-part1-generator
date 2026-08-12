@@ -161,12 +161,14 @@ export function CommentCard({
 export function CommentList({
   comments,
   saving,
+  readOnly = false,
   resolvedVersionLabel,
   onNavigate,
   onDelete,
 }: {
   comments: MaterialComment[]
   saving: boolean
+  readOnly?: boolean
   resolvedVersionLabel?: (versionId: string) => string | null
   onNavigate: (anchor: CommentAnchor) => void
   onDelete: (id: string) => void
@@ -180,7 +182,7 @@ export function CommentList({
         <CommentCard
           key={comment.id}
           comment={comment}
-          disabled={saving || (
+          disabled={readOnly || saving || (
             comment.anchor.type === 'question' && (comment.status ?? 'open') !== 'open'
           )}
           resolvedVersionLabel={resolvedVersionLabel}

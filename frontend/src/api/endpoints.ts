@@ -108,15 +108,18 @@ export const api = {
    * 一遍的人会因此永久失去备选。合成结果与选定共用同一份 clip，所以之后真的选定不会重复计费。
    * 同样必须幂等：重复 POST 返回同一个 job。
    */
-  previewAudio: (materialId: string) =>
+  previewAudio: (materialId: string, versionId?: string) =>
     request<PreviewAudioResponse>({
       method: 'POST',
-      path: `/materials/${materialId}/audio`,
+      path: `/materials/${materialId}/audio${versionId ? `?version_id=${encodeURIComponent(versionId)}` : ''}`,
       body: {},
     }),
 
-  getAudio: (materialId: string) =>
-    request<AudioStatusResponse>({ method: 'GET', path: `/materials/${materialId}/audio` }),
+  getAudio: (materialId: string, versionId?: string) =>
+    request<AudioStatusResponse>({
+      method: 'GET',
+      path: `/materials/${materialId}/audio${versionId ? `?version_id=${encodeURIComponent(versionId)}` : ''}`,
+    }),
 
   /**
    * 这套材料已交付的题目包，给「题目预览」页签。served by the WEB TIER.

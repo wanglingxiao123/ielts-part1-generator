@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { CommentCard, CommentComposer } from './MaterialComments'
+import { CommentCard, CommentComposer, CommentList } from './MaterialComments'
 
 describe('单人材料批注', () => {
   it('requires an anchor, severity and text before submitting', async () => {
@@ -144,5 +144,28 @@ describe('单人材料批注', () => {
     expect(screen.getByText('历史版本仅供查看')).toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: '批注内容' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '添加批注' })).toBeDisabled()
+  })
+
+  it('disables deletion for every comment in a historical version', () => {
+    render(
+      <CommentList
+        comments={[{
+          id: 'turn-comment',
+          created_at: '2026-08-12T14:30:00Z',
+          anchor: { type: 'turn', index: 2 },
+          severity: 'minor',
+          text: '旧版旁注',
+          version_id: 'original',
+        }]}
+        saving={false}
+        readOnly
+        onNavigate={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    )
+
+    expect(
+      screen.getByRole('button', { name: '删除 Turn 2 的批注' }),
+    ).toBeDisabled()
   })
 })

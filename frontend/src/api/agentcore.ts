@@ -1132,7 +1132,10 @@ async function selectMaterial(materialId: string): Promise<SelectMaterialRespons
  * 套。前端这里唯一要跟着做的事是**不要**把它记进 `selections`——那份记录的语义是「这一套被选定
  * 了」，对比视图据此把同组的另一套置灰。试听记成选定会让页面谎报一个还没发生的决定。
  */
-async function previewAudio(materialId: string): Promise<PreviewAudioResponse> {
+async function previewAudio(
+  materialId: string,
+  versionId?: string,
+): Promise<PreviewAudioResponse> {
   /* 这里原来先查 `findSlotByMaterial`，查不到就本地抛 404「材料不存在（本页会话内未见此材料）」。
    *
    * 那道门是多余的，而且它挡掉的正是它该放过的请求：`slots` 只装**本页会话生成的**批次，历史批次
@@ -1145,6 +1148,7 @@ async function previewAudio(materialId: string): Promise<PreviewAudioResponse> {
   const body = await invoke<WireAudioStatus>({
     action: 'preview_audio',
     material_id: materialId,
+    ...(versionId ? { version_id: versionId } : {}),
     actor: 'reviewer',
   })
   return {
@@ -1167,14 +1171,19 @@ function siblingsOf(hit: SlotHit, materialId: string): string[] {
     .map((s) => s.materialId!)
 }
 
-async function audioStatus(materialId: string): Promise<AudioStatusResponse> {
+async function audioStatus(
+  materialId: string,
+  versionId?: string,
+): Promise<AudioStatusResponse> {
   const wire = await invoke<WireAudioStatus>({
     action: 'audio_status',
     material_id: materialId,
+    ...(versionId ? { version_id: versionId } : {}),
   })
   if (wire.status !== 'ready' || !wire.manifest) {
+    const status = wire.status === 'needs_synthesis' ? 'not_requested' : wire.status
     return {
-      status: (wire.status as AudioStatusResponse['status']) ?? 'not_requested',
+      status: (status as AudioStatusResponse['status']) ?? 'not_requested',
       progress: wire.progress ?? { done: 0, total: 0 },
       ...(wire.error ? { error: wire.error } : {}),
     }
@@ -1184,6 +1193,7 @@ async function audioStatus(materialId: string): Promise<AudioStatusResponse> {
   const signed = await invoke<WirePresign>({
     action: 'presign_audio',
     material_id: materialId,
+    ...(versionId ? { version_id: versionId } : {}),
     ttl_seconds: 3600,
   })
   return {
@@ -1383,11 +1393,11 @@ const agentCoreTransport: Transport = async (spec: RequestSpec): Promise<unknown
   }
 
   if (spec.method === 'POST' && resource === 'materials' && sub === 'audio') {
-    return previewAudio(id!)
+    return previewAudio(id!, query.get('version_id') ?? undefined)
   }
 
   if (spec.method === 'GET' && resource === 'materials' && sub === 'audio') {
-    return audioStatus(id!)
+    return audioStatus(id!, query.get('version_id') ?? undefined)
   }
 
   throw new ApiError(404, 'NOT_FOUND', `适配层未实现：${spec.method} ${spec.path}`)

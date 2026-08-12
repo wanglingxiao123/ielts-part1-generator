@@ -48,6 +48,7 @@ function state(overrides: Partial<QuestionVersionsState> = {}): QuestionVersions
     dismissRevisionResult: vi.fn(),
     revise: vi.fn(),
     replan: vi.fn(),
+    reviseMaterial: vi.fn(),
     reload: vi.fn(),
     ...overrides,
   }
@@ -77,7 +78,7 @@ describe('题目版本控件', () => {
     render(<QuestionVersionBar state={state()} />)
     const options = screen.getAllByRole('option')
     expect(options).toHaveLength(5)
-    expect(options[0]).toHaveTextContent('V1 · 原始版本')
+    expect(options[0]).toHaveTextContent('V1 · 原始版本 · 历史版本')
     expect(options[2]).toHaveTextContent('V3 · 当前采用')
     expect(screen.getByText('当前采用')).toBeInTheDocument()
   })
@@ -94,7 +95,10 @@ describe('题目版本控件', () => {
     })
     render(<QuestionVersionBar state={current} />)
 
-    await userEvent.selectOptions(screen.getByRole('combobox', { name: '题目版本' }), 'version-4')
+    await userEvent.selectOptions(
+      screen.getByRole('combobox', { name: '材料与题目版本' }),
+      'version-4',
+    )
     expect(setSelectedVersionId).toHaveBeenCalledWith('version-4')
     expect(adopt).not.toHaveBeenCalled()
 
@@ -164,10 +168,17 @@ describe('根据批注修改题目', () => {
     expect(progress).toHaveTextContent('请勿重复提交')
   })
 
-  it('需要修改材料时列出逐题原因且不提供题目版本操作', () => {
+  it('需要修改材料时列出逐题原因并要求二次确认', async () => {
+    const reviseMaterial = vi.fn()
     render(
       <QuestionRevisionAction
         state={state({
+          reviseMaterial,
+          revisionRequest: {
+            request_id: 'request-material',
+            status: 'needs_material_revision',
+            base_version_id: 'version-3',
+          },
           revisionResult: {
             kind: 'needs_material',
             reasons: [
@@ -184,7 +195,33 @@ describe('根据批注修改题目', () => {
     )
     expect(screen.getByRole('alert')).toHaveTextContent('需要修改材料')
     expect(screen.getByRole('alert')).toHaveTextContent('Q3：录音中存在两个同样合理的答案')
-    expect(screen.getByRole('alert')).toHaveTextContent('本次已终止')
+    expect(screen.getByRole('alert')).toHaveTextContent('现有版本不会被覆盖或自动采用')
+    await userEvent.click(screen.getByRole('button', { name: '确认修改材料' }))
+    expect(reviseMaterial).toHaveBeenCalledOnce()
+  })
+
+  it('材料修改显示独立的完整再生成阶段', () => {
+    render(
+      <QuestionRevisionAction
+        state={state({
+          revisionStage: 'material_auditing',
+          revisionRequest: {
+            request_id: 'request-material-running',
+            status: 'running',
+            operation: 'revise_material',
+            stage: 'material_auditing',
+            base_version_id: 'version-3',
+          },
+        })}
+        comments={COMMENTS}
+      />,
+    )
+    const progress = screen.getByRole('status')
+    expect(progress).toHaveTextContent('正在修改材料并重新命题')
+    expect(progress).toHaveTextContent('修改听力材料')
+    expect(progress).toHaveTextContent('复核新材料')
+    expect(progress).toHaveTextContent('重建信息点')
+    expect(progress).toHaveTextContent('生成完整十题')
   })
 
   it('无需修改时展示理由和核对依据', () => {

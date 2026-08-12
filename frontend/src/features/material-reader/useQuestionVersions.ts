@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '@/api/endpoints'
 import { userMessage } from '@/api/http'
-import { streamQuestionReplan, streamQuestionRevision } from '@/api/questionRevisions'
+import {
+  streamMaterialRevision,
+  streamQuestionReplan,
+  streamQuestionRevision,
+} from '@/api/questionRevisions'
 import type { MaterialComment } from '@/contracts/comments'
 import type {
   MaterialQuestionVersionsResponse,
@@ -309,6 +313,42 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
     selectedVersion,
   ])
 
+  const reviseMaterial = useCallback(async () => {
+    const sourceRequestId =
+      revisionRequest?.status === 'needs_material_revision'
+        ? revisionRequest.request_id
+        : revisionRequest?.status === 'failed' &&
+            revisionRequest.operation === 'revise_material'
+          ? revisionRequest.source_request_id
+          : undefined
+    if (
+      revisionStage ||
+      !sourceRequestId ||
+      !selectedVersion ||
+      selectedVersion.id !== activeVersionId ||
+      revisionRequest?.base_version_id !== activeVersionId
+    ) {
+      return
+    }
+    await runRevision(
+      (onEvent, signal) =>
+        streamMaterialRevision(
+          materialId,
+          { source_request_id: sourceRequestId },
+          onEvent,
+          signal,
+        ),
+      '材料修改没有完成，现有版本未受影响',
+    )
+  }, [
+    activeVersionId,
+    materialId,
+    revisionRequest,
+    revisionStage,
+    runRevision,
+    selectedVersion,
+  ])
+
   const dismissRevisionResult = useCallback(() => {
     if (revisionRequest?.request_id) {
       window.localStorage.setItem(
@@ -335,6 +375,7 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
     dismissRevisionResult,
     revise,
     replan,
+    reviseMaterial,
     reload: () => void load(),
   }
 }

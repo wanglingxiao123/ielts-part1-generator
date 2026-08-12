@@ -2773,6 +2773,20 @@ h3 {
   font-weight: 600;
 }
 
+.material-version-state {
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--ink-2);
+  background: var(--panel);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.assessment-audio-state {
+  margin-top: 10px;
+}
+
 .question-comments-panel {
   position: sticky;
   top: 8px;

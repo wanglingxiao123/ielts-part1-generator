@@ -2,6 +2,7 @@ import { getConfig } from '@/config/runtimeConfig'
 import type {
   CreateQuestionRevisionRequest,
   CreateQuestionReplanRequest,
+  CreateMaterialRevisionRequest,
   MaterialRevisionReason,
   QuestionRevisionEvent,
   QuestionRevisionTerminalEvent,
@@ -29,6 +30,15 @@ export function decodeRevisionFrame(frame: string): QuestionRevisionEvent | null
     }
     if (wireType === 'question_revision_planning') {
       return { event: 'progress', request_id: requestId, stage: 'planning' }
+    }
+    if (wireType === 'question_revision_revising_material') {
+      return { event: 'progress', request_id: requestId, stage: 'material_revising' }
+    }
+    if (wireType === 'question_revision_validating_material') {
+      return { event: 'progress', request_id: requestId, stage: 'validating_material' }
+    }
+    if (wireType === 'question_revision_auditing_material') {
+      return { event: 'progress', request_id: requestId, stage: 'material_auditing' }
     }
     if (wireType === 'question_revision_feasibility') {
       return { event: 'progress', request_id: requestId, stage: 'feasibility' }
@@ -124,9 +134,26 @@ export async function streamQuestionReplan(
   )
 }
 
+export async function streamMaterialRevision(
+  materialId: string,
+  body: CreateMaterialRevisionRequest,
+  onEvent: (event: QuestionRevisionEvent) => void,
+  signal?: AbortSignal,
+): Promise<QuestionRevisionTerminalEvent> {
+  return streamRevisionRequest(
+    `/material-revisions/${encodeURIComponent(materialId)}`,
+    body,
+    onEvent,
+    signal,
+  )
+}
+
 async function streamRevisionRequest(
   path: string,
-  body: CreateQuestionRevisionRequest | CreateQuestionReplanRequest,
+  body:
+    | CreateQuestionRevisionRequest
+    | CreateQuestionReplanRequest
+    | CreateMaterialRevisionRequest,
   onEvent: (event: QuestionRevisionEvent) => void,
   signal?: AbortSignal,
 ): Promise<QuestionRevisionTerminalEvent> {

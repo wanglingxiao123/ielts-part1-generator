@@ -24,7 +24,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api } from '@/api/endpoints'
 import { getThresholds } from '@/config/runtimeConfig'
-import type { MaterialRecord } from '@/contracts/api'
+import type { AudioStatusResponse, MaterialRecord } from '@/contracts/api'
 import type { CommentAnchor } from '@/contracts/comments'
 import { summariseExamPoints } from '@/domain/examPoints'
 import { analyseFormGroups } from '@/domain/formGroups'
@@ -67,6 +67,12 @@ export function MaterialPage() {
   const [generateError, setGenerateError] = useState<string | null>(null)
   /** 每次点「生成音频」+1，用来重新开启轮询（`not_requested` 会让轮询停下来）。 */
   const [pollKey, setPollKey] = useState(0)
+  const questionVersions = useQuestionVersions(
+    materialId ?? '',
+    Boolean(record),
+  )
+  const selectedVersionId = questionVersions.selectedVersionId || 'original'
+  const selectedVersionAudio = questionVersions.selectedVersion?.audio
 
   const cursor = useAudioStore((s) => s.cursor)
   const playing = useAudioStore((s) => s.playing)
@@ -77,12 +83,28 @@ export function MaterialPage() {
   // Audio may or may not exist yet: it is synthesised on demand from the button below (a preview,
   // which does NOT select the material) or by an earlier selection. Either way this poll reports
   // the same job, so the panel needs no knowledge of which of the two paid for the clips.
-  const audioEnabled = Boolean(record)
-  const { status: audioStatus, error: audioError } = useAudioStatus(
+  const audioEnabled = Boolean(record) && Boolean(questionVersions.selectedVersion)
+  const { status: fetchedAudioStatus, error: audioError } = useAudioStatus(
     materialId ?? '',
+    selectedVersionId,
     audioEnabled,
     pollKey,
   )
+  const audioStatus = useMemo<AudioStatusResponse | null>(() => {
+    if (!selectedVersionAudio) return fetchedAudioStatus
+    if (fetchedAudioStatus && fetchedAudioStatus.status !== 'not_requested') {
+      return fetchedAudioStatus
+    }
+    if (selectedVersionAudio.status === 'needs_synthesis') {
+      return { status: 'not_requested', progress: { done: 0, total: 0 } }
+    }
+    return {
+      status: selectedVersionAudio.status,
+      progress: selectedVersionAudio.progress ?? { done: 0, total: 0 },
+      error: selectedVersionAudio.error,
+      manifest: selectedVersionAudio.manifest,
+    }
+  }, [fetchedAudioStatus, selectedVersionAudio])
   const playlist = useMemo<Playlist | null>(
     () =>
       audioStatus?.status === 'ready' && audioStatus.manifest
@@ -104,7 +126,21 @@ export function MaterialPage() {
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))
   }, [materialId, fromStore])
 
-  const view = useMemo(() => (record ? joinFromRecord(record) : null), [record])
+  const displayedRecord = useMemo(
+    () =>
+      record && questionVersions.selectedVersion
+        ? {
+            ...record,
+            material: questionVersions.selectedVersion.material ?? record.material,
+            blueprint: questionVersions.selectedVersion.blueprint ?? record.blueprint,
+          }
+        : record,
+    [questionVersions.selectedVersion, record],
+  )
+  const view = useMemo(
+    () => (displayedRecord ? joinFromRecord(displayedRecord) : null),
+    [displayedRecord],
+  )
   const groups = useMemo(
     () => (view ? analyseFormGroups(view, getThresholds()) : null),
     [view],
@@ -117,8 +153,8 @@ export function MaterialPage() {
    * 材料是完整的、可读的、可选的；这些只是出题前值得先看一眼的位置。
    */
   const validationNotes = useMemo(
-    () => summariseValidationNotes(record?.validation_findings ?? []),
-    [record?.validation_findings],
+    () => summariseValidationNotes(displayedRecord?.validation_findings ?? []),
+    [displayedRecord?.validation_findings],
   )
 
   const jumpTo = useCallback((turnIndex: number) => {
@@ -147,10 +183,6 @@ export function MaterialPage() {
     record?.batch_id,
     questionsRequested && Boolean(record),
   )
-  const questionVersions = useQuestionVersions(
-    materialId ?? '',
-    Boolean(questions.data?.questions),
-  )
   const missing = useMemo(() => explainMissingQuestions(questions.data), [questions.data])
   const comments = useMaterialComments(materialId ?? '', Boolean(record))
   const reloadComments = comments.reload
@@ -177,13 +209,18 @@ export function MaterialPage() {
       comments.comments.filter(
         (comment) =>
           comment.anchor.type === 'question' &&
-          (comment.version_id ?? 'original') === questionVersions.selectedVersionId,
+          (comment.version_id ?? 'original') === selectedVersionId,
       ),
-    [comments.comments, questionVersions.selectedVersionId],
+    [comments.comments, selectedVersionId],
   )
   const turnComments = useMemo(
-    () => comments.comments.filter((comment) => comment.anchor.type === 'turn'),
-    [comments.comments],
+    () =>
+      comments.comments.filter(
+        (comment) =>
+          comment.anchor.type === 'turn' &&
+          (comment.version_id ?? 'original') === selectedVersionId,
+      ),
+    [comments.comments, selectedVersionId],
   )
   const questionCommentCounts = useMemo(
     () =>
@@ -231,14 +268,14 @@ export function MaterialPage() {
     setGenerating(true)
     setGenerateError(null)
     void api
-      .previewAudio(materialId)
+      .previewAudio(materialId, selectedVersionId)
       // 先让轮询重新跑起来，再解除「生成中」——顺序反了会有一帧回到按钮态，看起来像点击丢了。
       .then(() => setPollKey((k) => k + 1))
       .catch((err) => {
         setGenerateError(err instanceof Error ? err.message : String(err))
         setGenerating(false)
       })
-  }, [materialId])
+  }, [materialId, selectedVersionId])
 
   // 轮询已经报出真实状态之后，本地那个「刚点过」的标记就没用了，交给状态本身。
   useEffect(() => {
@@ -277,7 +314,14 @@ export function MaterialPage() {
       </div>
     )
   }
-  if (!view || !record || !groups || !examPoints) {
+  if (
+    !view ||
+    !record ||
+    !displayedRecord ||
+    !groups ||
+    !examPoints ||
+    (questionVersions.loading && questionVersions.versions.length === 0)
+  ) {
     return (
       <div className="page">
         <div className="panel panel-pad">加载中…</div>
@@ -298,6 +342,12 @@ export function MaterialPage() {
         )}
         <h2 style={{ margin: 0 }}>{view.scenario.slice(0, 70)}</h2>
         <span className="mono muted">{record.material_id}</span>
+        <span className="material-version-state">
+          V{questionVersions.selectedVersion?.ordinal ?? 1} ·{' '}
+          {selectedVersionId === (questionVersions.activeVersionId || 'original')
+            ? '当前采用'
+            : '历史版本'}
+        </span>
         {/* 「N 个点听不出来」原来在这里只是个数字。它已经并入考点小结的「听不出来」块——那里带
             点号、可跳转，能直接看到是哪几句。这里不再重复一个不能行动的计数。 */}
         {record.degraded && (
@@ -324,7 +374,22 @@ export function MaterialPage() {
         </div>
       )}
 
-      {audioEnabled &&
+      <QuestionVersionBar state={questionVersions} />
+
+      {selectedVersionAudio && audioStatus?.status === 'not_requested' && !generating && (
+        <div className="banner banner-warn assessment-audio-state" role="status">
+          <strong>需要生成新版录音</strong>
+          <div>这个版本修改了听力材料，不会播放旧版本录音。</div>
+        </div>
+      )}
+      {selectedVersionAudio && audioStatus?.status === 'failed' && (
+        <div className="banner banner-bad assessment-audio-state" role="status">
+          <strong>新版录音生成失败</strong>
+          <div>文字材料和题目仍可查看，可以重新生成录音。</div>
+        </div>
+      )}
+
+      {Boolean(record) &&
         (playlist ? (
           <AudioPlayer playlist={playlist} pool={pool} currentTurn={playingTurn} />
         ) : (
@@ -367,7 +432,7 @@ export function MaterialPage() {
         <QuestionsTab
           state={questions}
           missing={missing}
-          blueprint={record.blueprint}
+          blueprint={displayedRecord.blueprint}
           view={view}
           onJump={jumpToScript}
           selectedQuestion={
@@ -414,6 +479,10 @@ export function MaterialPage() {
                   <CommentList
                     comments={turnComments}
                     saving={comments.saving}
+                    readOnly={
+                      selectedVersionId !==
+                      (questionVersions.activeVersionId || 'original')
+                    }
                     onNavigate={navigateComment}
                     onDelete={comments.remove}
                   />
@@ -429,7 +498,16 @@ export function MaterialPage() {
                 <CommentComposer
                   anchor={turnAnchor}
                   saving={comments.saving}
-                  onSubmit={comments.create}
+                  disabled={
+                    selectedVersionId !==
+                    (questionVersions.activeVersionId || 'original')
+                  }
+                  onSubmit={(comment) =>
+                    comments.create({
+                      ...comment,
+                      version_id: selectedVersionId,
+                    })
+                  }
                 />
               </div>
             )}
@@ -552,7 +630,6 @@ function QuestionsTab({
     const displayedBlueprint = versionsState.selectedVersion?.blueprint ?? blueprint
     return (
       <div className="question-version-view">
-        <QuestionVersionBar state={versionsState} />
         <div className="question-comments-layout">
           <QuestionPreviewPanel
             pkg={displayedPackage}
@@ -571,6 +648,9 @@ function QuestionsTab({
               <CommentList
                 comments={comments}
                 saving={commentsState.saving}
+                readOnly={
+                  versionsState.selectedVersion?.id !== versionsState.activeVersionId
+                }
                 onNavigate={onNavigateComment}
                 onDelete={commentsState.remove}
                 resolvedVersionLabel={(versionId) => {
