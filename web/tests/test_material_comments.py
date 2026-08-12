@@ -134,6 +134,36 @@ def test_legacy_question_comment_is_projected_as_original_and_open():
     assert comment["status"] == "open"
 
 
+def test_legacy_turn_comment_is_projected_as_original():
+    store = InMemoryCommentStore()
+    store.save(MATERIAL_ID, {
+        "material_id": MATERIAL_ID,
+        "comments": [{
+            "id": "legacy-turn",
+            "created_at": "2026-08-09T14:30:00Z",
+            "anchor": {"type": "turn", "index": 2},
+            "severity": "minor",
+            "text": "旧材料批注",
+        }],
+    })
+
+    comment = CommentService(store).list(MATERIAL_ID)["comments"][0]
+
+    assert comment["version_id"] == "original"
+
+
+def test_turn_comment_records_requested_version():
+    service = CommentService(InMemoryCommentStore())
+    document = service.create(MATERIAL_ID, {
+        "anchor": {"type": "turn", "index": 2},
+        "severity": "minor",
+        "text": "新版材料批注",
+        "version_id": "version-2",
+    })
+
+    assert document["comments"][0]["version_id"] == "version-2"
+
+
 def test_question_comment_records_requested_version():
     service = CommentService(InMemoryCommentStore())
 

@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 QUESTION_PREFIX = "_questions/"
 QUESTION_VERSION_PREFIX = "_question_versions/"
 QUESTION_REVISION_PREFIX = "_question_revisions/"
+ASSESSMENT_AUDIO_PREFIX = "_assessment_audio/"
 MATERIAL_ID_RE = __import__("re").compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$")
 RUNNING_TTL_SECONDS = 2 * 60 * 60
 
@@ -70,6 +71,25 @@ class QuestionVersionService:
         projected = []
         for ordinal, row in enumerate(versions, 1):
             item = dict(row)
+            if item.get("operation") == "revise_material":
+                stored_audio = self._read(
+                    "%s%s/%s/status.json"
+                    % (ASSESSMENT_AUDIO_PREFIX, material_id, str(item.get("id") or ""))
+                )
+                if isinstance(stored_audio, dict):
+                    if (
+                        stored_audio.get("status") == "ready"
+                        and not self.store.head(
+                            "%s%s/%s/audio/manifest.json"
+                            % (
+                                ASSESSMENT_AUDIO_PREFIX,
+                                material_id,
+                                str(item.get("id") or ""),
+                            )
+                        )
+                    ):
+                        stored_audio = dict(stored_audio, status="needs_synthesis")
+                    item["audio"] = stored_audio
             item["ordinal"] = ordinal
             item["is_active"] = str(row["id"]) == active_id
             projected.append(item)
@@ -92,7 +112,16 @@ class QuestionVersionService:
 
     def adopt(self, material_id: str, version_id: str, actor: str) -> Dict[str, Any]:
         material_id = _material_id(material_id)
-        self.load(material_id, version_id)
+        version = self.load(material_id, version_id)
+        if version.get("operation") == "revise_material" and not all(
+            isinstance(version.get(key), dict)
+            for key in ("material", "blueprint", "package", "audio")
+        ):
+            raise QuestionVersionError(
+                "ASSESSMENT_VERSION_INCOMPLETE",
+                "这个材料版本不完整，不能采用。",
+                409,
+            )
         self._put("%s%s/active.json" % (QUESTION_VERSION_PREFIX, material_id), {
             "material_id": material_id,
             "version_id": version_id,
@@ -194,6 +223,115 @@ class QuestionVersionService:
                 operation="replan_questions",
                 source_request_id=source_request_id,
             )
+
+    def reserve_material_revision(
+        self, material_id: str, source_request_id: str, actor: str
+    ) -> Dict[str, Any]:
+        """Reserve one execution for a durable revise-material decision."""
+        material_id = _material_id(material_id)
+        source_request_id = _record_id(source_request_id, "INVALID_REQUEST_ID")
+        with self._lock:
+            source = self.material_revision_source(material_id, source_request_id)
+            existing = self._source_execution(
+                material_id, source_request_id, "revise_material")
+            if existing is not None:
+                return existing
+            return self.reserve(
+                material_id,
+                str(source["base_version_id"]),
+                source["comments"],
+                actor,
+                operation="revise_material",
+                source_request_id=source_request_id,
+            )
+
+    def material_revision_source(
+        self, material_id: str, source_request_id: str
+    ) -> Dict[str, Any]:
+        """Validate a classified material-revision snapshot and its active baseline."""
+        material_id = _material_id(material_id)
+        source_request_id = _record_id(source_request_id, "INVALID_REQUEST_ID")
+        source = self.load_request(material_id, source_request_id)
+        if (
+            source.get("request_id") != source_request_id
+            or source.get("material_id") != material_id
+            or source.get("operation") in {"replan_questions", "revise_material"}
+            or source.get("status") != "needs_material_revision"
+        ):
+            raise QuestionVersionError(
+                "MATERIAL_REVISION_NOT_AVAILABLE",
+                "这次修改不需要修改材料，不能启动该操作。",
+                409,
+            )
+        base_version_id = str(source.get("base_version_id") or "")
+        versions = self.list(material_id)
+        if not base_version_id or versions.get("active_version_id") != base_version_id:
+            raise QuestionVersionError(
+                "BASE_VERSION_NOT_ACTIVE", "只能基于当前采用版本修改材料。", 409)
+        source_comments = source.get("source_comments")
+        outcomes = source.get("comment_outcomes")
+        if not isinstance(source_comments, list) or not source_comments \
+                or not isinstance(outcomes, list) or not outcomes:
+            raise QuestionVersionError(
+                "MATERIAL_REVISION_SOURCE_MISSING",
+                "原修改记录没有保留批注。",
+                409,
+            )
+        dispositions: Dict[str, str] = {}
+        for row in outcomes:
+            comment_id = str(row.get("comment_id") or "") if isinstance(row, dict) else ""
+            outcome = str(row.get("outcome") or "") if isinstance(row, dict) else ""
+            if (
+                not comment_id
+                or comment_id in dispositions
+                or outcome not in {
+                    "question_only", "no_change", "replan_questions", "revise_material",
+                }
+            ):
+                raise QuestionVersionError(
+                    "MATERIAL_REVISION_SOURCE_INVALID",
+                    "原修改记录的批注结论不完整。",
+                    409,
+                )
+            dispositions[comment_id] = outcome
+        comments: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for row in source_comments:
+            anchor = row.get("anchor") if isinstance(row, dict) else None
+            comment_id = str(row.get("id") or "") if isinstance(row, dict) else ""
+            if (
+                not comment_id
+                or comment_id in seen
+                or comment_id not in dispositions
+                or not isinstance(anchor, dict)
+                or anchor.get("type") not in {"question", "turn"}
+                or not str(row.get("text") or "").strip()
+            ):
+                raise QuestionVersionError(
+                    "MATERIAL_REVISION_SOURCE_INVALID",
+                    "原修改记录的批注不完整。",
+                    409,
+                )
+            seen.add(comment_id)
+            if dispositions[comment_id] != "no_change":
+                comments.append(dict(row))
+        if set(dispositions) != seen or "revise_material" not in dispositions.values():
+            raise QuestionVersionError(
+                "MATERIAL_REVISION_SOURCE_INVALID",
+                "原修改记录的批注结论不完整。",
+                409,
+            )
+        if not comments:
+            raise QuestionVersionError(
+                "MATERIAL_REVISION_SOURCE_MISSING",
+                "原修改记录没有可用于修改材料的批注。",
+                409,
+            )
+        return {
+            "request": source,
+            "base_version_id": base_version_id,
+            "comments": comments,
+        }
 
     def replan_source(
         self, material_id: str, source_request_id: str
@@ -308,6 +446,37 @@ class QuestionVersionService:
             if (
                 isinstance(found, dict)
                 and found.get("operation") == "replan_questions"
+                and found.get("source_request_id") == source_request_id
+                and found.get("status") != "failed"
+                and not (
+                    found.get("status") == "running"
+                    and _is_stale(found)
+                )
+            ):
+                matches.append(found)
+        if not matches:
+            return None
+        matches.sort(
+            key=lambda row: (
+                str(row.get("created_at") or ""),
+                str(row.get("request_id") or ""),
+            ),
+            reverse=True,
+        )
+        return matches[0]
+
+    def _source_execution(
+        self, material_id: str, source_request_id: str, operation: str
+    ) -> Optional[Dict[str, Any]]:
+        prefix = "%s%s/" % (QUESTION_REVISION_PREFIX, material_id)
+        matches: List[Dict[str, Any]] = []
+        for key in self.store.list_keys(prefix):
+            if key == _running_key(material_id) or key.endswith(".claim"):
+                continue
+            found = self._read(key)
+            if (
+                isinstance(found, dict)
+                and found.get("operation") == operation
                 and found.get("source_request_id") == source_request_id
                 and found.get("status") != "failed"
                 and not (

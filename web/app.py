@@ -383,7 +383,9 @@ class WebTier:
             return JSONResponse(found)
 
         @app.get("/api/batch-history-material/{material_id}")
-        async def get_history_material(material_id: str) -> JSONResponse:
+        async def get_history_material(
+            material_id: str, version_id: str = ""
+        ) -> JSONResponse:
             """One material's artifacts by id alone, for the reader page of a historical batch.
 
             A separate route rather than a query on `/api/batch-history/{id}`: the reader-page URL is
@@ -407,6 +409,32 @@ class WebTier:
                                 "历史记录里没有材料 %s" % material_id, material_id=material_id),
                     status_code=404,
                 )
+            if self.question_versions is not None:
+                try:
+                    versions = await run_in_threadpool(
+                        self.question_versions.list, material_id)
+                    if not versions.get("versions") and not version_id:
+                        return JSONResponse(found)
+                    selected_id = version_id or str(
+                        versions.get("active_version_id") or "original")
+                    selected = await run_in_threadpool(
+                        self.question_versions.load, material_id, selected_id)
+                except QuestionVersionError as exc:
+                    return JSONResponse(
+                        _error_body(exc.code, exc.message), status_code=exc.status)
+                projected = dict(found)
+                if isinstance(selected.get("material"), dict):
+                    projected["material"] = selected["material"]
+                if isinstance(selected.get("blueprint"), dict):
+                    projected["blueprint"] = selected["blueprint"]
+                projected["assessment_version"] = {
+                    "id": selected_id,
+                    "ordinal": selected.get("ordinal"),
+                    "is_active": selected_id == versions.get("active_version_id"),
+                    "operation": selected.get("operation"),
+                    "audio": selected.get("audio"),
+                }
+                found = projected
             return JSONResponse(found)
 
         @app.get("/api/material-questions/{material_id}")
@@ -498,10 +526,10 @@ class WebTier:
 
             body = await _json_body(request)
             try:
+                anchor = body.get("anchor") if isinstance(body, dict) else None
                 if (
-                    isinstance(body, dict)
-                    and isinstance(body.get("anchor"), dict)
-                    and body["anchor"].get("type") == "question"
+                    isinstance(anchor, dict)
+                    and anchor.get("type") in {"question", "turn"}
                     and self.question_versions is not None
                 ):
                     versions = await run_in_threadpool(
@@ -510,7 +538,7 @@ class WebTier:
                     if requested_version != versions.get("active_version_id"):
                         raise CommentError(
                             "COMMENT_VERSION_NOT_ACTIVE",
-                            "只能在当前采用的题目版本上添加批注。",
+                            "只能在当前采用的材料版本上添加批注。",
                             409,
                         )
                 document = await run_in_threadpool(self.comments.create, material_id, body)
@@ -531,6 +559,26 @@ class WebTier:
             from starlette.concurrency import run_in_threadpool
 
             try:
+                if self.question_versions is not None:
+                    current = await run_in_threadpool(
+                        self.comments.list, material_id)
+                    found = next(
+                        (
+                            row for row in current.get("comments", [])
+                            if isinstance(row, dict) and row.get("id") == comment_id
+                        ),
+                        None,
+                    )
+                    if found is not None:
+                        versions = await run_in_threadpool(
+                            self.question_versions.list, material_id)
+                        comment_version = str(found.get("version_id") or "original")
+                        if comment_version != versions.get("active_version_id"):
+                            raise CommentError(
+                                "COMMENT_VERSION_NOT_ACTIVE",
+                                "历史版本的批注只能查看，不能删除。",
+                                409,
+                            )
                 document = await run_in_threadpool(
                     self.comments.delete, material_id, comment_id)
             except CommentError as exc:
@@ -772,6 +820,102 @@ class WebTier:
                 return JSONResponse(
                     _error_body("QUESTION_REPLAN_BAD_RESPONSE",
                                 "重新命题服务返回了错误格式。"), status_code=502)
+            return StreamingResponse(
+                _relay_question_revision(
+                    runtime_body, self.question_versions, material_id, revision),
+                media_type=SSE_CONTENT_TYPE,
+                headers=_SSE_HEADERS,
+            )
+
+        @app.post("/api/material-revisions/{material_id}")
+        async def revise_material(material_id: str, request: Request) -> Any:
+            """Confirm and execute a durable revise-material classification."""
+            from starlette.concurrency import run_in_threadpool
+
+            if self.question_versions is None:
+                return JSONResponse(
+                    _error_body("QUESTION_VERSIONS_UNAVAILABLE", "题目版本存储未配置。"),
+                    status_code=503)
+            body = _as_dict(await _json_body(request))
+            source_request_id = str(body.get("source_request_id") or "")
+            if not source_request_id:
+                return JSONResponse(
+                    _error_body("bad_request", "source_request_id is required"),
+                    status_code=400)
+            user = request.scope.get(USER_SCOPE_KEY) or {}
+            actor = str(user.get("email") or "reviewer")
+            try:
+                source = await run_in_threadpool(
+                    self.question_versions.material_revision_source,
+                    material_id, source_request_id)
+                base_version_id = str(source["base_version_id"])
+                base = await run_in_threadpool(
+                    self.question_versions.load, material_id, base_version_id)
+                material_record = await run_in_threadpool(
+                    self.history.get_material, material_id)
+                if not isinstance(material_record, dict):
+                    raise QuestionVersionError(
+                        "MATERIAL_NOT_FOUND", "没有找到这套题目的材料。", 404)
+                material = (
+                    base.get("material")
+                    if isinstance(base.get("material"), dict)
+                    else material_record.get("material")
+                )
+                blueprint = (
+                    base.get("blueprint")
+                    if isinstance(base.get("blueprint"), dict)
+                    else material_record.get("blueprint")
+                )
+                if not isinstance(material, dict) or not isinstance(blueprint, dict):
+                    raise QuestionVersionError(
+                        "MATERIAL_ARTIFACTS_MISSING", "材料或信息点蓝图不完整。", 409)
+                revision = await run_in_threadpool(
+                    self.question_versions.reserve_material_revision,
+                    material_id, source_request_id, actor)
+            except QuestionVersionError as exc:
+                return JSONResponse(_error_body(exc.code, exc.message), status_code=exc.status)
+            except Exception as exc:
+                return JSONResponse(_infra_error_body(
+                    "MATERIAL_REVISION_PREPARE_FAILED",
+                    "材料修改任务没有创建成功。",
+                    exc,
+                ), status_code=502)
+            payload = {
+                "action": "revise_material_from_comments",
+                "material_id": material_id,
+                "request_id": revision["request_id"],
+                "source_request_id": source_request_id,
+                "base_version_id": base_version_id,
+                "material": material,
+                "blueprint": blueprint,
+                "package": base["package"],
+                "comments": revision["source_comments"],
+                "actor": actor,
+            }
+            session_id = self.session_for(actor)
+            try:
+                content_type, runtime_body, _ = await run_in_threadpool(
+                    self.runtime.invoke, payload, session_id=session_id)
+            except Exception as exc:
+                await run_in_threadpool(
+                    self.question_versions.fail_request, material_id, revision,
+                    "%s: %s" % (type(exc).__name__, str(exc)[:300]))
+                return JSONResponse(_infra_error_body(
+                    "MATERIAL_REVISION_INVOKE_FAILED",
+                    "材料修改服务暂时没有响应。",
+                    exc,
+                ), status_code=502)
+            if SSE_CONTENT_TYPE not in content_type:
+                await run_in_threadpool(
+                    self.question_versions.fail_request, material_id, revision,
+                    "Runtime returned a non-streaming response")
+                return JSONResponse(
+                    _error_body(
+                        "MATERIAL_REVISION_BAD_RESPONSE",
+                        "材料修改服务返回了错误格式。",
+                    ),
+                    status_code=502,
+                )
             return StreamingResponse(
                 _relay_question_revision(
                     runtime_body, self.question_versions, material_id, revision),
@@ -1262,7 +1406,9 @@ def _reconcile_question_comments(
         "replan_questions": "needs_replan",
         "revise_material": "needs_material",
     }
-    is_replan_execution = revision.get("operation") == "replan_questions"
+    operation = revision.get("operation")
+    is_replan_execution = operation == "replan_questions"
+    is_material_execution = operation == "revise_material"
     grouped: Dict[str, list[Dict[str, Any]]] = {}
     for row in dispositions:
         if not isinstance(row, dict):
@@ -1276,6 +1422,12 @@ def _reconcile_question_comments(
             is_replan_execution
             and status == "completed"
             and outcome in {"question_only", "replan_questions"}
+        ):
+            target = "resolved"
+        if (
+            is_material_execution
+            and status == "completed"
+            and outcome in {"question_only", "replan_questions", "revise_material"}
         ):
             target = "resolved"
         if target:
@@ -1294,8 +1446,8 @@ def _reconcile_question_comments(
             ),
             reasons=rows,
             from_statuses=(
-                ["open", "needs_replan"]
-                if is_replan_execution
+                ["open", "needs_replan", "needs_material"]
+                if is_replan_execution or is_material_execution
                 else ["open"]
             ),
         )

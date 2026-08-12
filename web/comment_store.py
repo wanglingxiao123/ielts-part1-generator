@@ -104,9 +104,9 @@ class CommentService:
             "severity": _severity(payload.get("severity")),
             "text": _text(payload.get("text")),
         }
+        comment["version_id"] = _version_id(payload.get("version_id"))
         if comment["anchor"]["type"] == "question":
             comment.update({
-                "version_id": _version_id(payload.get("version_id")),
                 "status": "open",
             })
         with self._lock:
@@ -193,9 +193,9 @@ class CommentService:
             if not isinstance(row, dict):
                 continue
             comment = dict(row)
+            if not isinstance(comment.get("version_id"), str):
+                comment["version_id"] = "original"
             if (comment.get("anchor") or {}).get("type") == "question":
-                if not isinstance(comment.get("version_id"), str):
-                    comment["version_id"] = "original"
                 if comment.get("status") not in QUESTION_COMMENT_STATUSES:
                     comment["status"] = "open"
             projected.append(comment)
