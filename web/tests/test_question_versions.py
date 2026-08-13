@@ -740,6 +740,7 @@ def test_revision_route_snapshots_question_comments_and_relays_runtime(
         auth, runtime, str(static_dir), history=_History(), comments=comments,
         question_versions=versions,
     )
+    warm_session = tier.session_for("a@amazon.com")
     from fastapi.testclient import TestClient
 
     with TestClient(tier.app) as client:
@@ -757,6 +758,8 @@ def test_revision_route_snapshots_question_comments_and_relays_runtime(
     assert payload["base_version"]["package"] == payload["package"]
     assert len(payload["comments"]) == 1
     assert payload["comments"][0]["anchor"] == {"type": "question", "index": 3}
+    assert runtime.session_ids[-1] != warm_session
+    assert runtime.session_ids[-1].startswith("ielts-revision-")
 
 
 def test_revision_route_uses_adopted_material_version_artifacts(

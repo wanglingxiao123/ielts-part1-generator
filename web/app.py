@@ -760,8 +760,7 @@ class WebTier:
                 "comments": comments,
                 "actor": actor,
             }
-            return self._start_revision_execution(
-                payload, material_id, revision, self.session_for(actor))
+            return self._start_revision_execution(payload, material_id, revision)
 
         @app.post("/api/material-question-replans/{material_id}")
         async def replan_material_questions(material_id: str, request: Request) -> Any:
@@ -818,8 +817,7 @@ class WebTier:
                 "comments": revision["source_comments"],
                 "actor": actor,
             }
-            return self._start_revision_execution(
-                payload, material_id, revision, self.session_for(actor))
+            return self._start_revision_execution(payload, material_id, revision)
 
         @app.post("/api/material-revisions/{material_id}")
         async def revise_material(material_id: str, request: Request) -> Any:
@@ -877,8 +875,7 @@ class WebTier:
                 "comments": revision["source_comments"],
                 "actor": actor,
             }
-            return self._start_revision_execution(
-                payload, material_id, revision, self.session_for(actor))
+            return self._start_revision_execution(payload, material_id, revision)
 
         @app.post("/api/batch-history/{batch_id}/submit")
         async def submit_batch(batch_id: str, request: Request) -> JSONResponse:
@@ -1047,12 +1044,15 @@ class WebTier:
         payload: Dict[str, Any],
         material_id: str,
         revision: Dict[str, Any],
-        session_id: str,
     ) -> StreamingResponse:
         request_id = str(revision.get("request_id") or "")
 
         def producer(publish) -> None:
             try:
+                # Long revisions must not inherit a user's warm microVM. AgentCore sessions can
+                # remain pinned to the Runtime version that created them across a deployment, and
+                # sharing one also couples otherwise independent background executions.
+                session_id = new_session_id("ielts-revision")
                 content_type, runtime_body, _ = self.runtime.invoke(
                     payload, session_id=session_id)
                 if SSE_CONTENT_TYPE not in content_type:
