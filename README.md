@@ -199,9 +199,8 @@ Runtime 立即返回 job id，浏览器通过 `audio_status` 轮询。合成完�
 系统**没有使用 Cognito**。`web/auth.py` 将用户保存在
 `s3://ielts-part1-materials-{account}/web/users.json`，使用 PBKDF2 密码摘要和由 SSM 密钥签名的
 7 天 HttpOnly cookie；`ALLOWED_EMAIL_DOMAINS` 控制新用户注册。本地开发可回退到本地 JSON。
-当前生产环境允许 `@amazon.com` 和 `@example.com` 注册，其他邮箱域名会被拒绝。部署时应显式设置
-`ALLOWED_EMAIL_DOMAINS=amazon.com,example.com`；未设置时默认值 `*` 会允许任意邮箱域名注册，
-不适合直接用于公网环境。
+客户演示统一使用 `@example.com` 注册。部署时应显式设置 `ALLOWED_EMAIL_DOMAINS`；未设置时
+默认值 `*` 会允许任意邮箱域名注册，不适合直接用于公网环境。
 这套方案面向小规模内部使用，不提供邮箱验证、找回密码、MFA 或企业 SSO。
 
 ## 3. 生成流程（Agent Loop）
