@@ -344,7 +344,7 @@ describe('返回批次', () => {
 /* ── 标题下的两个页签 ────────────────────────────────────────────────────── */
 
 describe('MaterialPage 页签', () => {
-  it('版本选择同时切换材料、Turn 批注和音频归属', async () => {
+  it('版本选择同时切换材料和音频归属，原文批注保持隐藏', async () => {
     const revisedMaterial = structuredClone(baseRecord.material)
     revisedMaterial.listening_material_parts[0]!.script.turns[1]!.text =
       'VERSION TWO MATERIAL'
@@ -394,7 +394,7 @@ describe('MaterialPage 页签', () => {
 
     renderPage()
     expect(await screen.findByText('V1 · 当前采用')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /批注 \(1\)/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /批注/ })).not.toBeInTheDocument()
     audioVersionCalls.length = 0
 
     await userEvent.selectOptions(
@@ -408,8 +408,7 @@ describe('MaterialPage 页签', () => {
       ),
     )
     expect(screen.getByText('VERSION TWO MATERIAL')).toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: /批注 \(1\)/ }))
-    expect(screen.getByText('version two comment')).toBeInTheDocument()
+    expect(screen.queryByText('version two comment')).not.toBeInTheDocument()
     expect(screen.queryByText('original comment')).not.toBeInTheDocument()
     expect(screen.getByText('需要生成新版录音')).toBeInTheDocument()
     expect(audioVersionCalls).toEqual(['version-2'])
@@ -468,15 +467,15 @@ describe('MaterialPage 页签', () => {
     expect(screen.queryByText('需要生成新版录音')).not.toBeInTheDocument()
   })
 
-  it('选择对话 Turn 后展开批注面板并显示锚点', async () => {
+  it('对话原文不显示批注入口，点击 Turn 也不会打开评价 UI', async () => {
     renderPage()
-    const toggle = await screen.findByRole('button', { name: /批注 \(0\)/ })
-    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    await screen.findByRole('tab', { name: '对话原文' })
+    expect(screen.queryByRole('button', { name: /批注/ })).not.toBeInTheDocument()
 
     await userEvent.click(document.querySelector('[data-turn="4"]') as HTMLElement)
 
-    expect(toggle).toHaveAttribute('aria-expanded', 'true')
-    expect(screen.getByText('位置：Turn 4')).toBeInTheDocument()
+    expect(screen.queryByText('位置：Turn 4')).not.toBeInTheDocument()
+    expect(document.querySelector('.comment-count-badge')).toBeNull()
   })
 
   it('标题下有 [对话原文] 与 [题目预览]，默认停在对话原文', async () => {

@@ -60,8 +60,6 @@ export function MaterialPage() {
   const [jump, setJump] = useState<{ turnIndex: number; nonce: number } | null>(null)
   const [tab, setTab] = useState<Tab>('script')
   const [questionAnchor, setQuestionAnchor] = useState<CommentAnchor | null>(null)
-  const [turnAnchor, setTurnAnchor] = useState<CommentAnchor | null>(null)
-  const [scriptCommentsOpen, setScriptCommentsOpen] = useState(false)
   /** 生成音频：已按下、还没等到第一次「合成中」状态的那一小段。 */
   const [generating, setGenerating] = useState(false)
   const [generateError, setGenerateError] = useState<string | null>(null)
@@ -220,15 +218,6 @@ export function MaterialPage() {
       ),
     [comments.comments, selectedVersionId],
   )
-  const turnComments = useMemo(
-    () =>
-      comments.comments.filter(
-        (comment) =>
-          comment.anchor.type === 'turn' &&
-          (comment.version_id ?? 'original') === selectedVersionId,
-      ),
-    [comments.comments, selectedVersionId],
-  )
   const questionCommentCounts = useMemo(
     () =>
       questionComments.reduce((counts, comment) => {
@@ -237,31 +226,16 @@ export function MaterialPage() {
       }, new Map<number, number>()),
     [questionComments],
   )
-  const turnCommentCounts = useMemo(
-    () =>
-      turnComments.reduce((counts, comment) => {
-        counts.set(comment.anchor.index, (counts.get(comment.anchor.index) ?? 0) + 1)
-        return counts
-      }, new Map<number, number>()),
-    [turnComments],
-  )
-
   const navigateComment = useCallback((anchor: CommentAnchor) => {
-    if (anchor.type === 'question') {
-      setTab('questions')
-      setQuestionsRequested(true)
-      setQuestionAnchor(anchor)
-      window.setTimeout(() => {
-        document
-          .querySelector(`[data-question="${anchor.index}"]`)
-          ?.scrollIntoView({ block: 'center', behavior: 'smooth' })
-      }, 0)
-      return
-    }
-    setTab('script')
-    setScriptCommentsOpen(true)
-    setTurnAnchor(anchor)
-    setJump({ turnIndex: anchor.index, nonce: Date.now() })
+    if (anchor.type !== 'question') return
+    setTab('questions')
+    setQuestionsRequested(true)
+    setQuestionAnchor(anchor)
+    window.setTimeout(() => {
+      document
+        .querySelector(`[data-question="${anchor.index}"]`)
+        ?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    }, 0)
   }, [])
 
   /**
@@ -461,64 +435,7 @@ export function MaterialPage() {
             onPlayTurn={playlist ? onPlayTurn : undefined}
             unplayableTurns={playlist?.unplayableTurnIndexes}
             jumpToTurn={jump}
-            commentCounts={turnCommentCounts}
-            onSelectCommentTurn={(index) => {
-              setTurnAnchor({ type: 'turn', index })
-              setScriptCommentsOpen(true)
-            }}
           />
-
-          <section className={`script-comments${scriptCommentsOpen ? ' open' : ''}`}>
-            <button
-              type="button"
-              className="script-comments-toggle"
-              aria-expanded={scriptCommentsOpen}
-              onClick={() => setScriptCommentsOpen((open) => !open)}
-            >
-              <span>批注 ({turnComments.length})</span>
-              <span aria-hidden="true">{scriptCommentsOpen ? '⌄' : '⌃'}</span>
-            </button>
-            {scriptCommentsOpen && (
-              <div className="script-comments-body">
-                {comments.loading ? (
-                  <div className="comment-empty">正在读取批注…</div>
-                ) : (
-                  <CommentList
-                    comments={turnComments}
-                    saving={comments.saving}
-                    readOnly={
-                      selectedVersionId !==
-                      (questionVersions.activeVersionId || 'original')
-                    }
-                    onNavigate={navigateComment}
-                    onDelete={comments.remove}
-                  />
-                )}
-                {comments.error && (
-                  <div className="comment-error">
-                    {comments.error}
-                    <button type="button" onClick={comments.reload}>
-                      重试
-                    </button>
-                  </div>
-                )}
-                <CommentComposer
-                  anchor={turnAnchor}
-                  saving={comments.saving}
-                  disabled={
-                    selectedVersionId !==
-                    (questionVersions.activeVersionId || 'original')
-                  }
-                  onSubmit={(comment) =>
-                    comments.create({
-                      ...comment,
-                      version_id: selectedVersionId,
-                    })
-                  }
-                />
-              </div>
-            )}
-          </section>
 
           <div className="split-2" style={{ marginTop: 12 }}>
             <ExamPointPanel summary={examPoints} onJump={jumpTo} />
