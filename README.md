@@ -241,24 +241,44 @@ flowchart TB
         P -- "材料不适合出题" --> W
     end
 
+    D -. "交付后可选" .-> CM
+
+    subgraph REVISION["模块三* · 人工评价与版本修订（可选）"]
+        direction LR
+        CM["提交题目批注*"] --> CL{"先分类<br/>不直接改稿"}
+        CL -- "无需修改" --> NC["记录理由与引证<br/>版本不变"]
+        CL -- "局部修题" --> QR["只修改锚定题目"]
+        CL -- "重新命题" --> RP["确认后重规划蓝图<br/>重建完整十题"]
+        CL -- "修改材料" --> MR["确认后修改材料<br/>重建蓝图与十题"]
+        QR --> QA["完整校验 +<br/>独立盲审"]
+        RP --> QA
+        MR --> QA
+        QA --> NV["生成不可变新版本<br/>不自动采用"]
+        NV --> AD["人工检查并采用"]
+    end
+
     classDef ai fill:#fef3c7,stroke:#d97706,color:#78350f;
     classDef audit fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
     classDef code fill:#f3f4f6,stroke:#6b7280,color:#111827;
     classDef done fill:#dcfce7,stroke:#16a34a,color:#14532d;
+    classDef optional fill:#f3e8ff,stroke:#9333ea,color:#581c87;
     classDef moduleLabel fill:#fde68a,stroke:#b45309,color:#78350f,font-weight:bold;
     class M moduleLabel;
-    class G,R,T,J ai;
-    class A,E,H audit;
-    class Q,F,V,X,C,B,P,K,W code;
-    class O,D done;
+    class G,R,T,J,QR,RP,MR ai;
+    class A,E,H,QA audit;
+    class Q,F,V,X,C,B,P,K,W,CL code;
+    class CM,NV optional;
+    class O,D,NC,AD done;
     style MATERIAL fill:#fff8e8,stroke:#d97706,stroke-width:2px;
     style QUESTIONS fill:#eff6ff,stroke:#2563eb,stroke-width:2px;
+    style REVISION fill:#faf5ff,stroke:#9333ea,stroke-width:2px,stroke-dasharray:5 5;
 ```
 
-这张图先按上下两个大模块表达系统结构：上方暖色区域生成并审核听力材料，下方蓝色区域生成并
-审核对应题目。区域内部，黄色节点是负责写作或改稿的生成 Agent，蓝色节点是独立审核，灰色节点
-是 Python 控制的校验、预检和重试，绿色节点是采用或交付结果。图只表达整体方向；各层的重试
-边界和交付门槛在下文说明。
+这张图按三个模块表达系统结构：模块一生成并审核听力材料，模块二生成并审核对应题目；二者是每次
+生成都要经过的主流程。带星号、虚线边框的模块三是**交付后的可选优化步骤**，只有用户提交题目批注
+时才进入，不属于一次生成请求的必经路径。区域内部，黄色节点是负责写作或改稿的生成 Agent，蓝色
+节点是独立审核，灰色节点是 Python 控制的校验、预检和重试，绿色节点是采用或交付结果。图只表达
+整体方向；各层的重试边界和交付门槛在下文说明。
 
 整个流程可以按下面的顺序理解：
 
@@ -275,6 +295,11 @@ flowchart TB
 8. **定向修题与恢复**：有问题时只修改题面、答案键和证据，不动录音原文，最多两轮。仍不可交付
    时先重启一次题目阶段，再失败则更换材料。
 9. **完整交付**：每套必须同时包含材料和十道题才算完成；要求 N 套时，N 套全部完成才算成功。
+10. **人工评价与版本修订***：交付后可以针对题目提交批注。系统先判断无需修改、局部修题、重新命题
+    或修改材料；需要执行时重新通过完整校验和独立盲审，生成一个不会自动采用的新版本。此步骤是
+    后续优化能力，不是生成完整套件的必经阶段。
+
+`*` 表示可选的交付后流程。
 
 因此，这套系统不是让一个 AI 从头到尾自行决定下一步，而是
 “**Agent 执行需要理解语言的工作，Python 控制流程并验收结果**”：
