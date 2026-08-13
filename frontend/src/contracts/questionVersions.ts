@@ -37,6 +37,12 @@ export interface QuestionPackageVersion {
   field_changes?: QuestionVersionFieldChange[]
 }
 
+export type QuestionRevisionAvailableAction =
+  | 'confirm_replan'
+  | 'confirm_material'
+  | 'retry_replan'
+  | 'retry_material'
+
 export interface QuestionVersionFieldChange {
   question_number: number
   section: 'question' | 'answer_key' | 'evidence' | 'group' | 'instruction'
@@ -56,6 +62,9 @@ export interface MaterialQuestionVersionsResponse {
     created_at: string
   } | null
   revision_request?: QuestionRevisionRecord | null
+  available_action?: QuestionRevisionAvailableAction | null
+  action_source_request_id?: string | null
+  action_unavailable_reason?: string | null
 }
 
 export interface QuestionRevisionRecord {

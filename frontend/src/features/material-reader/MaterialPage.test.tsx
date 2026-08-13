@@ -83,7 +83,8 @@ vi.mock('@/api/endpoints', () => ({
     materialQuestionVersions: (id: string) =>
       Promise.resolve({
         material_id: id,
-        active_version_id: 'original',
+        active_version_id:
+          versionOverride?.find((version) => version.is_active)?.id ?? 'original',
         versions: versionOverride ?? (questions.questions
           ? [{
               id: 'original',
@@ -276,6 +277,41 @@ describe('MaterialPage 结构校验意见', () => {
     const button = await screen.findByRole('button', { name: /生成音频/ })
     await userEvent.click(button)
     expect(previewCalls).toEqual([MATERIAL_ID])
+  })
+
+  it('新版材料不显示原始材料的质量提示', async () => {
+    record = {
+      ...baseRecord,
+      degraded: true,
+      audit_rejection: { message: '原始材料盲审未通过' },
+      validation_findings: ['dialogue words outside 450-750: 812'],
+    }
+    questions = {
+      material_id: MATERIAL_ID,
+      questions: QUESTION_PACKAGE,
+      slot: null,
+      request_status: null,
+    }
+    versionOverride = [{
+      id: 'material-v2',
+      created_at: '2026-08-13T00:00:00Z',
+      based_on_version_id: 'original',
+      source_comment_ids: ['comment-1'],
+      status: 'ready',
+      package: QUESTION_PACKAGE,
+      material: baseRecord.material,
+      blueprint: baseRecord.blueprint,
+      operation: 'revise_material',
+      is_active: true,
+      ordinal: 2,
+    }]
+
+    renderPage()
+    await screen.findByRole('combobox', { name: '材料与题目版本' })
+
+    expect(screen.queryByText('未经修改环节')).not.toBeInTheDocument()
+    expect(screen.queryByText('这一套有明显缺陷')).not.toBeInTheDocument()
+    expect(screen.queryByText('结构校验意见')).not.toBeInTheDocument()
   })
 })
 

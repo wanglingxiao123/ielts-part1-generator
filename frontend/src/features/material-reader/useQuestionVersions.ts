@@ -11,6 +11,7 @@ import type {
   MaterialQuestionVersionsResponse,
   MaterialRevisionReason,
   QuestionPackageVersion,
+  QuestionRevisionAvailableAction,
   QuestionRevisionRecord,
   QuestionRevisionEvent,
   QuestionRevisionStage,
@@ -46,6 +47,12 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
   const [revisionResult, setRevisionResult] = useState<RevisionResult>(null)
   const [revisionRequest, setRevisionRequest] =
     useState<MaterialQuestionVersionsResponse['revision_request']>(null)
+  const [availableAction, setAvailableAction] =
+    useState<QuestionRevisionAvailableAction | null>(null)
+  const [actionSourceRequestId, setActionSourceRequestId] = useState<string | null>(null)
+  const [actionUnavailableReason, setActionUnavailableReason] = useState<string | null>(null)
+  const [inFlightOperation, setInFlightOperation] =
+    useState<QuestionRevisionRecord['operation']>(undefined)
   const abortRef = useRef<AbortController | null>(null)
   const revisionAttemptRef = useRef(0)
   const revisionInFlightRef = useRef(false)
@@ -70,39 +77,45 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
           ? { ...response.running_request, status: 'running' }
           : null)
       setRevisionRequest(request)
+      setAvailableAction(response.available_action ?? null)
+      setActionSourceRequestId(response.action_source_request_id ?? null)
+      setActionUnavailableReason(response.action_unavailable_reason ?? null)
       const dismissed = window.localStorage.getItem(
         `question-revision-dismissed:${materialId}`,
       )
+      let nextResult: RevisionResult = null
       if (request?.status === 'running') {
         setRevisionStage(request.stage ?? 'queued')
-        setRevisionResult(null)
+        setInFlightOperation(request.operation)
       } else {
         setRevisionStage(null)
+        setInFlightOperation(undefined)
         if (request && request.request_id !== dismissed) {
           if (request.status === 'completed' && request.version_id) {
-            setRevisionResult({
+            nextResult = {
               kind: 'revised',
               versionId: request.version_id,
               baselineAdvisories: request.baseline_advisories ?? [],
-            })
+            }
           } else if (request.status === 'needs_material_revision') {
-            setRevisionResult({
+            nextResult = {
               kind: 'needs_material',
               reasons: request.reasons ?? [],
-            })
+            }
           } else if (request.status === 'no_change') {
-            setRevisionResult({ kind: 'no_change', reasons: request.reasons ?? [] })
+            nextResult = { kind: 'no_change', reasons: request.reasons ?? [] }
           } else if (request.status === 'replan_questions') {
-            setRevisionResult({ kind: 'needs_replan', reasons: request.reasons ?? [] })
+            nextResult = { kind: 'needs_replan', reasons: request.reasons ?? [] }
           } else if (request.status === 'failed') {
-            setRevisionResult({
+            nextResult = {
               kind: 'failed',
               message: request.message ?? '题目修改没有完成，原版本未受影响',
               blockers: request.blockers ?? [],
-            })
+            }
           }
         }
       }
+      setRevisionResult(nextResult)
       return response
     } catch (err) {
       setError(userMessage(err, '题目版本暂时读取不到，请稍后重试'))
@@ -139,23 +152,18 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
     try {
       const response = await api.adoptQuestionVersion(materialId, selectedVersion.id)
       const nextActiveId = response.active_version_id ?? ''
-      setActiveVersionId(nextActiveId)
-      setVersions((current) =>
-        current.map((version) => ({
-          ...version,
-          is_active: version.id === nextActiveId,
-        })),
-      )
+      await load(nextActiveId)
     } catch (err) {
       setError(userMessage(err, '这个题目版本没有采用成功，请稍后重试'))
     } finally {
       setAdopting(false)
     }
-  }, [activeVersionId, materialId, selectedVersion])
+  }, [activeVersionId, load, materialId, selectedVersion])
 
   const runRevision = useCallback(async (
     start: RevisionStarter,
     fallbackMessage: string,
+    operation: NonNullable<QuestionRevisionRecord['operation']>,
   ) => {
     if (revisionInFlightRef.current) return
     revisionInFlightRef.current = true
@@ -168,7 +176,9 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
     setRevisionResult(null)
     setError(null)
     setRevisionStage('queued')
+    setInFlightOperation(operation)
     const recoverDurableResult = async () => {
+      if (!requestId) return 'missing' as const
       let stillRunning = false
       for (const delay of REVISION_RECOVERY_DELAYS_MS) {
         if (delay > 0) {
@@ -188,7 +198,7 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
           (refreshed?.running_request
             ? { ...refreshed.running_request, status: 'running' as const }
             : null)
-        if (requestId && durableRequest?.request_id !== requestId) continue
+        if (durableRequest?.request_id !== requestId) continue
         if (durableRequest?.status === 'running') {
           stillRunning = true
           continue
@@ -247,6 +257,7 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
     } finally {
       if (revisionAttemptRef.current === attempt) {
         setRevisionStage(keepQueued ? 'queued' : null)
+        if (!keepQueued) setInFlightOperation(undefined)
       }
       if (abortRef.current === abort) {
         abortRef.current = null
@@ -269,6 +280,7 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
         signal,
       ),
       '题目没有修改成功，原版本未受影响',
+      'revise_questions',
     )
   }, [
     activeVersionId,
@@ -279,54 +291,42 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
   ])
 
   const replan = useCallback(async () => {
-    const sourceRequestId =
-      revisionRequest?.status === 'replan_questions'
-        ? revisionRequest.request_id
-        : revisionRequest?.status === 'failed' &&
-            revisionRequest.operation === 'replan_questions'
-          ? revisionRequest.source_request_id
-          : undefined
     if (
       revisionStage ||
-      !sourceRequestId ||
+      !actionSourceRequestId ||
+      !['confirm_replan', 'retry_replan'].includes(availableAction ?? '') ||
       !selectedVersion ||
-      selectedVersion.id !== activeVersionId ||
-      revisionRequest?.base_version_id !== activeVersionId
+      selectedVersion.id !== activeVersionId
     ) {
       return
     }
     await runRevision(
       (onEvent, signal) => streamQuestionReplan(
         materialId,
-        { source_request_id: sourceRequestId },
+        { source_request_id: actionSourceRequestId },
         onEvent,
         signal,
       ),
       '重新命题没有完成，现有版本未受影响',
+      'replan_questions',
     )
   }, [
     activeVersionId,
+    actionSourceRequestId,
+    availableAction,
     materialId,
-    revisionRequest,
     revisionStage,
     runRevision,
     selectedVersion,
   ])
 
   const reviseMaterial = useCallback(async () => {
-    const sourceRequestId =
-      revisionRequest?.status === 'needs_material_revision'
-        ? revisionRequest.request_id
-        : revisionRequest?.status === 'failed' &&
-            revisionRequest.operation === 'revise_material'
-          ? revisionRequest.source_request_id
-          : undefined
     if (
       revisionStage ||
-      !sourceRequestId ||
+      !actionSourceRequestId ||
+      !['confirm_material', 'retry_material'].includes(availableAction ?? '') ||
       !selectedVersion ||
-      selectedVersion.id !== activeVersionId ||
-      revisionRequest?.base_version_id !== activeVersionId
+      selectedVersion.id !== activeVersionId
     ) {
       return
     }
@@ -334,16 +334,18 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
       (onEvent, signal) =>
         streamMaterialRevision(
           materialId,
-          { source_request_id: sourceRequestId },
+          { source_request_id: actionSourceRequestId },
           onEvent,
           signal,
         ),
       '材料修改没有完成，现有版本未受影响',
+      'revise_material',
     )
   }, [
     activeVersionId,
+    actionSourceRequestId,
+    availableAction,
     materialId,
-    revisionRequest,
     revisionStage,
     runRevision,
     selectedVersion,
@@ -372,6 +374,10 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
     revisionStage,
     revisionRequest,
     revisionResult,
+    availableAction,
+    actionSourceRequestId,
+    actionUnavailableReason,
+    inFlightOperation,
     dismissRevisionResult,
     revise,
     replan,

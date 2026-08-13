@@ -45,6 +45,10 @@ function state(overrides: Partial<QuestionVersionsState> = {}): QuestionVersions
     revisionStage: null,
     revisionRequest: null,
     revisionResult: null,
+    availableAction: null,
+    actionSourceRequestId: null,
+    actionUnavailableReason: null,
+    inFlightOperation: undefined,
     dismissRevisionResult: vi.fn(),
     revise: vi.fn(),
     replan: vi.fn(),
@@ -174,6 +178,8 @@ describe('根据批注修改题目', () => {
       <QuestionRevisionAction
         state={state({
           reviseMaterial,
+          availableAction: 'confirm_material',
+          actionSourceRequestId: 'request-material',
           revisionRequest: {
             request_id: 'request-material',
             status: 'needs_material_revision',
@@ -251,6 +257,8 @@ describe('根据批注修改题目', () => {
     render(
       <QuestionRevisionAction
         state={state({
+          availableAction: 'confirm_replan',
+          actionSourceRequestId: 'request-replan',
           revisionRequest: {
             request_id: 'request-replan',
             status: 'replan_questions',
@@ -280,6 +288,8 @@ describe('根据批注修改题目', () => {
       <QuestionRevisionAction
         state={state({
           replan,
+          availableAction: 'confirm_replan',
+          actionSourceRequestId: 'request-replan',
           revisionRequest: {
             request_id: 'request-replan',
             status: 'replan_questions',
@@ -308,6 +318,8 @@ describe('根据批注修改题目', () => {
       <QuestionRevisionAction
         state={state({
           replan,
+          availableAction: 'retry_replan',
+          actionSourceRequestId: 'request-needs-replan',
           revisionRequest: {
             request_id: 'request-failed',
             status: 'failed',
@@ -328,6 +340,48 @@ describe('根据批注修改题目', () => {
     expect(screen.queryByRole('button', { name: '关闭修改结果' })).not.toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: '重新尝试命题' }))
     expect(replan).toHaveBeenCalledOnce()
+  })
+
+  it('服务端判定动作已失效时显示原因而不是无解释禁用', () => {
+    render(
+      <QuestionRevisionAction
+        state={state({
+          revisionRequest: {
+            request_id: 'request-material',
+            status: 'needs_material_revision',
+            base_version_id: 'version-2',
+          },
+          revisionResult: {
+            kind: 'needs_material',
+            reasons: [],
+          },
+          actionUnavailableReason: '当前采用版本已改变，请基于新版本重新提交批注。',
+        })}
+        comments={[]}
+      />,
+    )
+
+    expect(screen.getByRole('button', { name: '确认修改材料' })).toBeDisabled()
+    expect(screen.getByText('当前采用版本已改变，请基于新版本重新提交批注。')).toBeInTheDocument()
+  })
+
+  it('材料确认排队后立即显示材料修改进度', () => {
+    render(
+      <QuestionRevisionAction
+        state={state({
+          revisionStage: 'queued',
+          inFlightOperation: 'revise_material',
+          revisionRequest: {
+            request_id: 'request-material-source',
+            status: 'needs_material_revision',
+            base_version_id: 'version-3',
+          },
+        })}
+        comments={COMMENTS}
+      />,
+    )
+
+    expect(screen.getByRole('status')).toHaveTextContent('正在修改材料并重新命题')
   })
 
   it('成功结果持续说明新版本尚未自动采用，并可关闭', async () => {

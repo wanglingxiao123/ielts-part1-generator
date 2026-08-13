@@ -677,23 +677,17 @@ class WebTier:
                 if versions.get("active_version_id") != base_version_id:
                     raise QuestionVersionError(
                         "BASE_VERSION_NOT_ACTIVE", "只能基于当前采用版本提交修改。", 409)
-                base = await run_in_threadpool(
-                    self.question_versions.load, material_id, base_version_id)
                 material_record = await run_in_threadpool(
                     self.history.get_material, material_id)
                 if not isinstance(material_record, dict):
                     raise QuestionVersionError(
                         "MATERIAL_NOT_FOUND", "没有找到这套题目的材料。", 404)
-                material = material_record.get("material")
-                fallback_blueprint = material_record.get("blueprint")
-                blueprint = (
-                    base.get("blueprint")
-                    if isinstance(base.get("blueprint"), dict)
-                    else fallback_blueprint
-                )
-                if not isinstance(material, dict) or not isinstance(blueprint, dict):
-                    raise QuestionVersionError(
-                        "MATERIAL_ARTIFACTS_MISSING", "材料或信息点蓝图不完整。", 409)
+                artifacts = await run_in_threadpool(
+                    self.question_versions.assessment_artifacts,
+                    material_id, base_version_id, material_record)
+                material = artifacts["material"]
+                blueprint = artifacts["blueprint"]
+                base = artifacts["base_version"]
                 revision = await run_in_threadpool(
                     self.question_versions.reserve,
                     material_id, base_version_id, comments, actor)
@@ -763,23 +757,17 @@ class WebTier:
                     self.question_versions.replan_source,
                     material_id, source_request_id)
                 base_version_id = str(source["base_version_id"])
-                base = await run_in_threadpool(
-                    self.question_versions.load, material_id, base_version_id)
                 material_record = await run_in_threadpool(
                     self.history.get_material, material_id)
                 if not isinstance(material_record, dict):
                     raise QuestionVersionError(
                         "MATERIAL_NOT_FOUND", "没有找到这套题目的材料。", 404)
-                material = material_record.get("material")
-                fallback_blueprint = material_record.get("blueprint")
-                blueprint = (
-                    base.get("blueprint")
-                    if isinstance(base.get("blueprint"), dict)
-                    else fallback_blueprint
-                )
-                if not isinstance(material, dict) or not isinstance(blueprint, dict):
-                    raise QuestionVersionError(
-                        "MATERIAL_ARTIFACTS_MISSING", "材料或信息点蓝图不完整。", 409)
+                artifacts = await run_in_threadpool(
+                    self.question_versions.assessment_artifacts,
+                    material_id, base_version_id, material_record)
+                material = artifacts["material"]
+                blueprint = artifacts["blueprint"]
+                base = artifacts["base_version"]
                 revision = await run_in_threadpool(
                     self.question_versions.reserve_replan,
                     material_id, source_request_id, actor)
@@ -849,26 +837,17 @@ class WebTier:
                     self.question_versions.material_revision_source,
                     material_id, source_request_id)
                 base_version_id = str(source["base_version_id"])
-                base = await run_in_threadpool(
-                    self.question_versions.load, material_id, base_version_id)
                 material_record = await run_in_threadpool(
                     self.history.get_material, material_id)
                 if not isinstance(material_record, dict):
                     raise QuestionVersionError(
                         "MATERIAL_NOT_FOUND", "没有找到这套题目的材料。", 404)
-                material = (
-                    base.get("material")
-                    if isinstance(base.get("material"), dict)
-                    else material_record.get("material")
-                )
-                blueprint = (
-                    base.get("blueprint")
-                    if isinstance(base.get("blueprint"), dict)
-                    else material_record.get("blueprint")
-                )
-                if not isinstance(material, dict) or not isinstance(blueprint, dict):
-                    raise QuestionVersionError(
-                        "MATERIAL_ARTIFACTS_MISSING", "材料或信息点蓝图不完整。", 409)
+                artifacts = await run_in_threadpool(
+                    self.question_versions.assessment_artifacts,
+                    material_id, base_version_id, material_record)
+                material = artifacts["material"]
+                blueprint = artifacts["blueprint"]
+                base = artifacts["base_version"]
                 revision = await run_in_threadpool(
                     self.question_versions.reserve_material_revision,
                     material_id, source_request_id, actor)
@@ -1424,6 +1403,13 @@ def _reconcile_question_comments(
             and outcome in {"question_only", "replan_questions"}
         ):
             target = "resolved"
+        if (
+            is_replan_execution
+            and status == "needs_material_revision"
+            and revision.get("failure_code") == "MATERIAL_INFEASIBLE"
+            and outcome == "replan_questions"
+        ):
+            target = "needs_material"
         if (
             is_material_execution
             and status == "completed"

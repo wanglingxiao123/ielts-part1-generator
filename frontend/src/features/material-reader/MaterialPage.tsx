@@ -133,6 +133,13 @@ export function MaterialPage() {
             ...record,
             material: questionVersions.selectedVersion.material ?? record.material,
             blueprint: questionVersions.selectedVersion.blueprint ?? record.blueprint,
+            ...(questionVersions.selectedVersion.material
+              ? {
+                  validation_findings: [],
+                  audit_rejection: undefined,
+                  degraded: false,
+                }
+              : {}),
           }
         : record,
     [questionVersions.selectedVersion, record],
@@ -350,7 +357,7 @@ export function MaterialPage() {
         </span>
         {/* 「N 个点听不出来」原来在这里只是个数字。它已经并入考点小结的「听不出来」块——那里带
             点号、可跳转，能直接看到是哪几句。这里不再重复一个不能行动的计数。 */}
-        {record.degraded && (
+        {displayedRecord.degraded && (
           <span className="flag flag-warn" title="首次评价即通过，未经修改与复评环节">
             未经修改环节
           </span>
@@ -367,10 +374,10 @@ export function MaterialPage() {
 
       {/* 评价环节的判定在这里说成一句缺点，而不是一个状态：材料照样可读、可选，
           只是把「它哪里不行」摆出来让审阅者自己决定。分数与 verdict 枚举不出现。 */}
-      {record.audit_rejection && (
+      {displayedRecord.audit_rejection && (
         <div className="banner banner-warn">
           <strong>这一套有明显缺陷</strong>
-          <div>{record.audit_rejection.message}。仍可选用，建议先通读全文确认。</div>
+          <div>{displayedRecord.audit_rejection.message}。仍可选用，建议先通读全文确认。</div>
         </div>
       )}
 

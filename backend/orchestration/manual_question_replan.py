@@ -73,6 +73,23 @@ def _material_reasons(
     return _comment_outcomes(comments, "revise_material", detail)
 
 
+def _replan_outcomes(
+    comments: List[Dict[str, Any]], reason: str
+) -> List[Dict[str, Any]]:
+    outcomes: List[Dict[str, Any]] = []
+    for comment in comments:
+        scope = comment.get("replan_scope") if isinstance(comment, dict) else None
+        outcome = _comment_outcomes(
+            [comment],
+            "replan_questions" if scope else "question_only",
+            reason,
+        )[0]
+        if scope:
+            outcome["replan_scope"] = scope
+        outcomes.append(outcome)
+    return outcomes
+
+
 def _preserves_information_points(comments: List[Dict[str, Any]]) -> bool:
     scopes = {
         str(comment.get("replan_scope") or "")
@@ -277,20 +294,43 @@ async def replan_from_comments(
             break
 
         if not plan_accepted:
-            if plan_failures and plan_failures[-1] == "category_semantics":
-                raise RuntimeError(
-                    "question blueprint category semantics could not be corrected: %s"
-                    % "; ".join(feedback or ["no usable reason was returned"])
-                )
-            if plan_failures and plan_failures[-1] == "scope":
-                raise RuntimeError(
-                    "question blueprint could not satisfy the layout-only boundary: %s"
-                    % "; ".join(feedback or ["no usable reason was returned"])
-                )
             messages = feedback or ["No valid replacement blueprint could be produced."]
-            async for event in _finish_needs_material(
-                store, request, comments, messages):
-                yield event
+            last_failure = plan_failures[-1] if plan_failures else "planning"
+            if last_failure == "infeasible" and not preserve_information_points:
+                async for event in _finish_needs_material(
+                    store, request, comments, messages):
+                    yield event
+                return
+            failure_messages = {
+                "category_semantics": (
+                    "question blueprint category semantics could not be corrected"
+                ),
+                "scope": "question blueprint could not satisfy the layout-only boundary",
+                "validation": "question blueprint validation could not be satisfied",
+                "unchanged": "question blueprint remained unchanged",
+                "feasibility": "question blueprint feasibility did not prove material infeasibility",
+                "infeasible": (
+                    "layout-only replanning cannot change the listening material"
+                ),
+            }
+            await _save_failed(
+                store,
+                request,
+                phase="planning" if last_failure == "unchanged" else last_failure,
+                code="REPLAN_%s_EXHAUSTED" % last_failure.upper(),
+                blockers=messages,
+                message="%s: %s" % (
+                    failure_messages.get(
+                        last_failure, "question blueprint planning failed"),
+                    "; ".join(messages),
+                ),
+            )
+            yield {
+                "type": "question_revision_failed",
+                "request_id": request_id,
+                "message": "重新命题没有完成，现有版本未改变。",
+                "blockers": messages[:8],
+            }
             return
 
         request.update({"stage": "generating", "updated_at": _now()})
@@ -333,9 +373,22 @@ async def replan_from_comments(
             messages = list(questions.blockers)
             if not messages and questions.detail:
                 messages = [str(questions.detail)]
-            async for event in _finish_needs_material(
-                store, request, comments, messages):
-                yield event
+            messages = messages or ["The replacement question set failed quality checks."]
+            await _save_failed(
+                store,
+                request,
+                phase="question_generation",
+                code="QUESTION_GENERATION_QUALITY_FAILED",
+                blockers=messages,
+                message="replacement question generation failed quality checks: %s"
+                % "; ".join(messages),
+            )
+            yield {
+                "type": "question_revision_failed",
+                "request_id": request_id,
+                "message": "重新命题未通过完整质量检查，现有版本未改变。",
+                "blockers": messages[:8],
+            }
             return
         if material != original_material or _material_bytes(material) != original_bytes:
             raise ValueError("question generation mutated the listening material")
@@ -387,14 +440,15 @@ async def replan_from_comments(
             "elapsed_seconds": round(time.time() - started, 1),
         }
     except Exception as exc:
-        failed = dict(request)
-        failed.update({
-            "status": "failed",
-            "message": "%s: %s" % (type(exc).__name__, str(exc)[:500]),
-            "completed_at": _now(),
-        })
         try:
-            store.save_question_revision(material_id, request_id, failed)
+            await _save_failed(
+                store,
+                request,
+                phase=str(request.get("stage") or "unknown"),
+                code=type(exc).__name__,
+                blockers=[str(exc)[:500]],
+                message="%s: %s" % (type(exc).__name__, str(exc)[:500]),
+            )
         except Exception:
             pass
         yield {
@@ -416,7 +470,13 @@ async def _finish_needs_material(
         "status": "needs_material_revision",
         "stage": request.get("stage"),
         "reasons": reasons,
-        "comment_outcomes": reasons,
+        "comment_outcomes": _replan_outcomes(
+            comments,
+            "The confirmed replan could not be completed with the unchanged material.",
+        ),
+        "escalation_reason": "; ".join(messages),
+        "failure_phase": "feasibility",
+        "failure_code": "MATERIAL_INFEASIBLE",
         "completed_at": _now(),
     })
     store.save_question_revision(
@@ -426,3 +486,25 @@ async def _finish_needs_material(
         "request_id": request["request_id"],
         "reasons": reasons,
     }
+
+
+async def _save_failed(
+    store: SlotStore,
+    request: Dict[str, Any],
+    *,
+    phase: str,
+    code: str,
+    blockers: List[str],
+    message: str,
+) -> None:
+    terminal = dict(request)
+    terminal.update({
+        "status": "failed",
+        "failure_phase": phase,
+        "failure_code": code,
+        "blockers": list(blockers),
+        "message": message,
+        "completed_at": _now(),
+    })
+    store.save_question_revision(
+        str(request["material_id"]), str(request["request_id"]), terminal)

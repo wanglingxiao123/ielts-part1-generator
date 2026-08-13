@@ -489,7 +489,7 @@ async def test_material_infeasibility_replans_before_needs_material(monkeypatch)
         material=material,
         blueprint={"blueprint_schema_version": 2, "items": [{"number": 1}]},
         package={"question_face": {}},
-        comments=[comment()],
+        comments=[dict(comment(), replan_scope="retarget")],
         actor="reviewer",
     ))
 
@@ -501,6 +501,27 @@ async def test_material_infeasibility_replans_before_needs_material(monkeypatch)
     assert events[-1]["type"] == "question_revision_needs_material"
     record = store.load_question_revision("mat-1", "replan-infeasible")
     assert record["status"] == "needs_material_revision"
+    assert record["operation"] == "replan_questions"
+    assert record["source_request_id"] == "classify-1"
+    assert record["base_version_id"] == "original"
+    assert record["source_comments"][0]["replan_scope"] == "retarget"
+    assert record["failure_phase"] == "feasibility"
+    assert record["failure_code"] == "MATERIAL_INFEASIBLE"
+    assert record["comment_outcomes"][0]["outcome"] == "replan_questions"
+    assert record["comment_outcomes"][0]["replan_scope"] == "retarget"
+
+
+def test_material_escalation_preserves_mixed_comment_outcomes():
+    outcomes = subject._replan_outcomes([
+        dict(comment(), id="local-fix"),
+        dict(comment(), id="retarget", replan_scope="retarget"),
+    ], "material is infeasible")
+
+    assert [(row["comment_id"], row["outcome"]) for row in outcomes] == [
+        ("local-fix", "question_only"),
+        ("retarget", "replan_questions"),
+    ]
+    assert outcomes[1]["replan_scope"] == "retarget"
 
 
 @pytest.mark.asyncio
@@ -584,7 +605,7 @@ async def test_replan_rejects_a_model_returned_material_change(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_invalid_blueprint_exhaustion_escalates_to_material_revision(monkeypatch):
+async def test_invalid_blueprint_exhaustion_is_failed_not_material_revision(monkeypatch):
     async def replan(*_args):
         return GenOutput(
             {"turns": []},
@@ -611,19 +632,38 @@ async def test_invalid_blueprint_exhaustion_escalates_to_material_revision(monke
         actor="reviewer",
     ))
 
-    assert events[-1]["type"] == "question_revision_needs_material"
-    assert "ten valid points" in events[-1]["reasons"][0]["reason"]
+    assert events[-1]["type"] == "question_revision_failed"
+    assert "ten valid points" in events[-1]["blockers"][0]
     assert store.load_question_version("mat-1", "replan-1") is None
-    assert store.load_question_revision("mat-1", "replan-1")["status"] == \
-        "needs_material_revision"
+    record = store.load_question_revision("mat-1", "replan-1")
+    assert record["status"] == "failed"
+    assert record["operation"] == "replan_questions"
+    assert record["source_request_id"] == "classify-1"
+    assert record["failure_phase"] == "validation"
+    assert record["failure_code"] == "REPLAN_VALIDATION_EXHAUSTED"
 
 
 @pytest.mark.asyncio
-async def test_undeliverable_full_question_set_escalates_to_material_revision(monkeypatch):
+async def test_layout_only_q9_quality_failure_is_failed_not_material_revision(
+    monkeypatch,
+):
+    current_blueprint = {
+        "blueprint_schema_version": 2,
+        "items": [{
+            "number": 6,
+            "target": "3 hours",
+            "evidence": "It takes three hours.",
+            "turn_index": 18,
+            "item_form": "form",
+        }],
+    }
+    replanned_blueprint = copy.deepcopy(current_blueprint)
+    replanned_blueprint["items"][0]["item_form"] = "note"
+
     async def replan(*_args):
         return GenOutput(
             {"turns": []},
-            {"blueprint_schema_version": 2, "items": [{"number": 2}]},
+            copy.deepcopy(replanned_blueprint),
         )
 
     async def validate(*_args):
@@ -641,7 +681,11 @@ async def test_undeliverable_full_question_set_escalates_to_material_revision(mo
             ok=False,
             candidate=None,
             advisories=[],
-            blockers=["Q4 still has two defensible answers"],
+            blockers=[
+                "Q9 has an open MAJOR finding AR-012 in the blind audit",
+                "Q9 has an equally-supported rival answer '14 May' (AR-012)",
+                "Q9's evidence anchor is one turn from the writer's and unconfirmed",
+            ],
             detail=None,
         )
 
@@ -658,11 +702,25 @@ async def test_undeliverable_full_question_set_escalates_to_material_revision(mo
         source_request_id="classify-1",
         base_version_id="original",
         material={"turns": []},
-        blueprint={"blueprint_schema_version": 2, "items": [{"number": 1}]},
+        blueprint=current_blueprint,
         package={"question_face": {}},
-        comments=[comment()],
+        comments=[dict(
+            comment(),
+            replan_scope="layout_only",
+            text="Change Q6-10 from Form to Note without changing the material.",
+        )],
         actor="reviewer",
     ))
 
-    assert events[-1]["type"] == "question_revision_needs_material"
-    assert "two defensible answers" in events[-1]["reasons"][0]["reason"]
+    assert events[-1]["type"] == "question_revision_failed"
+    assert not any(
+        event["type"] == "question_revision_needs_material" for event in events
+    )
+    assert any("AR-012" in blocker for blocker in events[-1]["blockers"])
+    record = store.load_question_revision("mat-1", "replan-1")
+    assert record["status"] == "failed"
+    assert record["operation"] == "replan_questions"
+    assert record["source_request_id"] == "classify-1"
+    assert record["source_comments"][0]["replan_scope"] == "layout_only"
+    assert record["failure_phase"] == "question_generation"
+    assert record["failure_code"] == "QUESTION_GENERATION_QUALITY_FAILED"

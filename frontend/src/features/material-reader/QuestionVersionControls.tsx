@@ -188,35 +188,28 @@ export function QuestionRevisionAction({
   const revisedVersion = revisedVersionId
     ? state.versions.find((version) => version.id === revisedVersionId)
     : undefined
-  const replanSourceRequestId =
-    state.revisionRequest?.status === 'replan_questions'
-      ? state.revisionRequest.request_id
-      : state.revisionRequest?.status === 'failed' &&
-          state.revisionRequest.operation === 'replan_questions'
-        ? state.revisionRequest.source_request_id
-        : undefined
+  const replanAvailable =
+    state.availableAction === 'confirm_replan' ||
+    state.availableAction === 'retry_replan'
   const canReplan =
-    Boolean(replanSourceRequestId) &&
-    state.revisionRequest?.base_version_id === state.activeVersionId &&
+    replanAvailable &&
+    Boolean(state.actionSourceRequestId) &&
     viewingActive &&
     !state.loading &&
     !state.adopting &&
     !state.revisionStage
-  const materialSourceRequestId =
-    state.revisionRequest?.status === 'needs_material_revision'
-      ? state.revisionRequest.request_id
-      : state.revisionRequest?.status === 'failed' &&
-          state.revisionRequest.operation === 'revise_material'
-        ? state.revisionRequest.source_request_id
-        : undefined
+  const materialAvailable =
+    state.availableAction === 'confirm_material' ||
+    state.availableAction === 'retry_material'
   const canReviseMaterial =
-    Boolean(materialSourceRequestId) &&
-    state.revisionRequest?.base_version_id === state.activeVersionId &&
+    materialAvailable &&
+    Boolean(state.actionSourceRequestId) &&
     viewingActive &&
     !state.loading &&
     !state.adopting &&
     !state.revisionStage
   const isMaterialRevision =
+    state.inFlightOperation === 'revise_material' ||
     request?.operation === 'revise_material' ||
     currentStage === 'material_revising' ||
     currentStage === 'material_auditing' ||
@@ -224,6 +217,7 @@ export function QuestionRevisionAction({
     currentStage === 'validating_material' ||
     currentStage === 'auditing_material'
   const isReplanning =
+    state.inFlightOperation === 'replan_questions' ||
     request?.operation === 'replan_questions' ||
     (request?.status === 'replan_questions' && Boolean(currentStage)) ||
     currentStage === 'planning' ||
@@ -323,8 +317,11 @@ export function QuestionRevisionAction({
             >
               确认修改材料
             </button>
-            {!canReviseMaterial && !viewingActive && (
-              <span className="muted">请先切回当前采用版本。</span>
+            {!canReviseMaterial && (
+              <span className="muted">
+                {state.actionUnavailableReason ??
+                  (!viewingActive ? '请先切回当前采用版本。' : '此修改请求当前不可执行。')}
+              </span>
             )}
           </div>
         </RevisionResultShell>
@@ -347,8 +344,11 @@ export function QuestionRevisionAction({
             >
               确认重新命题
             </button>
-            {!canReplan && !viewingActive && (
-              <span className="muted">请先切回当前采用版本。</span>
+            {!canReplan && (
+              <span className="muted">
+                {state.actionUnavailableReason ??
+                  (!viewingActive ? '请先切回当前采用版本。' : '此修改请求当前不可执行。')}
+              </span>
             )}
           </div>
         </RevisionResultShell>
@@ -364,7 +364,7 @@ export function QuestionRevisionAction({
           state={state}
           className="failed"
           title="修改未完成"
-          dismissable={!replanSourceRequestId && !materialSourceRequestId}
+          dismissable={!replanAvailable && !materialAvailable}
         >
           <p>{state.revisionResult.message}</p>
           {state.revisionResult.blockers.length > 0 && (
@@ -374,7 +374,7 @@ export function QuestionRevisionAction({
               ))}
             </ul>
           )}
-          {replanSourceRequestId && (
+          {state.availableAction === 'retry_replan' && (
             <div className="question-replan-confirm">
               <button
                 type="button"
@@ -386,7 +386,7 @@ export function QuestionRevisionAction({
               </button>
             </div>
           )}
-          {materialSourceRequestId && (
+          {state.availableAction === 'retry_material' && (
             <div className="question-replan-confirm">
               <button
                 type="button"
@@ -397,6 +397,9 @@ export function QuestionRevisionAction({
                 重新尝试修改材料
               </button>
             </div>
+          )}
+          {!state.availableAction && state.actionUnavailableReason && (
+            <p className="muted">{state.actionUnavailableReason}</p>
           )}
         </RevisionResultShell>
       )}

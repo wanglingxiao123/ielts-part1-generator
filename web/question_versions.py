@@ -94,6 +94,7 @@ class QuestionVersionService:
             item["is_active"] = str(row["id"]) == active_id
             projected.append(item)
         revision = self._latest_request(material_id)
+        action = self._revision_action(material_id, revision, active_id)
         running = revision if revision and revision.get("status") == "running" else None
         return {
             "material_id": material_id,
@@ -101,6 +102,46 @@ class QuestionVersionService:
             "versions": projected,
             "running_request": running,
             "revision_request": revision,
+            **action,
+        }
+
+    def assessment_artifacts(
+        self,
+        material_id: str,
+        version_id: str,
+        original_record: Dict[str, Any],
+    ) -> Dict[str, Dict[str, Any]]:
+        """Load material, blueprint, and package from one assessment baseline."""
+        version = self.load(material_id, version_id)
+        package = version.get("package")
+        if not isinstance(package, dict):
+            raise QuestionVersionError(
+                "MATERIAL_ARTIFACTS_MISSING", "题目包不完整。", 409)
+
+        version_material = version.get("material")
+        version_blueprint = version.get("blueprint")
+        if version.get("operation") == "revise_material":
+            material = version_material
+            blueprint = version_blueprint
+        else:
+            material = (
+                version_material
+                if isinstance(version_material, dict)
+                else original_record.get("material")
+            )
+            blueprint = (
+                version_blueprint
+                if isinstance(version_blueprint, dict)
+                else original_record.get("blueprint")
+            )
+        if not isinstance(material, dict) or not isinstance(blueprint, dict):
+            raise QuestionVersionError(
+                "MATERIAL_ARTIFACTS_MISSING", "材料或信息点蓝图不完整。", 409)
+        return {
+            "material": material,
+            "blueprint": blueprint,
+            "package": package,
+            "base_version": version,
         }
 
     def load(self, material_id: str, version_id: str) -> Dict[str, Any]:
@@ -287,8 +328,16 @@ class QuestionVersionService:
                     "原修改记录没有合法的重新命题来源。",
                     409,
                 )
-        versions = self.list(material_id)
-        if not base_version_id or versions.get("active_version_id") != base_version_id:
+            if (
+                source.get("failure_phase") != "feasibility"
+                or source.get("failure_code") != "MATERIAL_INFEASIBLE"
+            ):
+                raise QuestionVersionError(
+                    "MATERIAL_REVISION_SOURCE_INVALID",
+                    "重新命题记录没有明确证明材料不可行。",
+                    409,
+                )
+        if not base_version_id or self._active_version_id(material_id) != base_version_id:
             raise QuestionVersionError(
                 "BASE_VERSION_NOT_ACTIVE", "只能基于当前采用版本修改材料。", 409)
         source_comments = source.get("source_comments")
@@ -301,6 +350,7 @@ class QuestionVersionService:
                 409,
             )
         dispositions: Dict[str, str] = {}
+        replan_scopes: Dict[str, str] = {}
         for row in outcomes:
             comment_id = str(row.get("comment_id") or "") if isinstance(row, dict) else ""
             outcome = str(row.get("outcome") or "") if isinstance(row, dict) else ""
@@ -317,6 +367,8 @@ class QuestionVersionService:
                     409,
                 )
             dispositions[comment_id] = outcome
+            if outcome == "replan_questions":
+                replan_scopes[comment_id] = str(row.get("replan_scope") or "")
         comments: List[Dict[str, Any]] = []
         seen: set[str] = set()
         for row in source_comments:
@@ -336,9 +388,21 @@ class QuestionVersionService:
                     409,
                 )
             seen.add(comment_id)
-            if dispositions[comment_id] != "no_change":
+            if (
+                dispositions[comment_id] == "revise_material"
+                or (
+                    operation == "replan_questions"
+                    and dispositions[comment_id] == "replan_questions"
+                    and replan_scopes.get(comment_id) == "retarget"
+                )
+            ):
                 comments.append(dict(row))
-        if set(dispositions) != seen or "revise_material" not in dispositions.values():
+        has_material_decision = (
+            "revise_material" in dispositions.values()
+            if operation != "replan_questions"
+            else "retarget" in replan_scopes.values()
+        )
+        if set(dispositions) != seen or not has_material_decision:
             raise QuestionVersionError(
                 "MATERIAL_REVISION_SOURCE_INVALID",
                 "原修改记录的批注结论不完整。",
@@ -373,8 +437,7 @@ class QuestionVersionService:
                 "QUESTION_REPLAN_NOT_AVAILABLE",
                 "这次修改不需要重新命题，不能启动该操作。", 409)
         base_version_id = str(source.get("base_version_id") or "")
-        versions = self.list(material_id)
-        if not base_version_id or versions.get("active_version_id") != base_version_id:
+        if not base_version_id or self._active_version_id(material_id) != base_version_id:
             raise QuestionVersionError(
                 "BASE_VERSION_NOT_ACTIVE", "只能基于当前采用版本重新命题。", 409)
         source_comments = source.get("source_comments")
@@ -455,6 +518,62 @@ class QuestionVersionService:
             "base_version_id": base_version_id,
             "comments": comments,
         }
+
+    def _revision_action(
+        self,
+        material_id: str,
+        revision: Optional[Dict[str, Any]],
+        active_version_id: str,
+    ) -> Dict[str, Any]:
+        projected = {
+            "available_action": None,
+            "action_source_request_id": None,
+            "action_unavailable_reason": None,
+        }
+        if not isinstance(revision, dict):
+            return projected
+
+        status = revision.get("status")
+        operation = revision.get("operation")
+        source_request_id = str(revision.get("request_id") or "")
+        validator = None
+        action = None
+        if status == "replan_questions":
+            validator = self.replan_source
+            action = "confirm_replan"
+        elif status == "needs_material_revision":
+            validator = self.material_revision_source
+            action = "confirm_material"
+        elif status == "failed" and operation == "replan_questions":
+            source_request_id = str(revision.get("source_request_id") or "")
+            validator = self.replan_source
+            action = "retry_replan"
+        elif status == "failed" and operation == "revise_material":
+            source_request_id = str(revision.get("source_request_id") or "")
+            validator = self.material_revision_source
+            action = "retry_material"
+        else:
+            return projected
+
+        base_version_id = str(revision.get("base_version_id") or "")
+        if base_version_id != active_version_id:
+            projected["action_unavailable_reason"] = (
+                "该修改基于的版本已不是当前采用版本，请在当前版本重新提交批注。"
+            )
+            return projected
+        try:
+            validator(material_id, source_request_id)
+        except QuestionVersionError as exc:
+            projected["action_unavailable_reason"] = exc.message
+            return projected
+        projected["available_action"] = action
+        projected["action_source_request_id"] = source_request_id
+        return projected
+
+    def _active_version_id(self, material_id: str) -> str:
+        active_doc = self._read(
+            "%s%s/active.json" % (QUESTION_VERSION_PREFIX, material_id))
+        return str((active_doc or {}).get("version_id") or "original")
 
     def _replan_execution(
         self, material_id: str, source_request_id: str

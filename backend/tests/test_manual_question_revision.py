@@ -52,6 +52,7 @@ async def test_material_required_outcome_stores_no_version(monkeypatch):
     assert store.load_question_version("mat-1", "req-1") is None
     request = store._read("_question_revisions/mat-1/req-1.json")
     assert request["status"] == "needs_material_revision"
+    assert request["operation"] == "revise_questions"
 
 
 @pytest.mark.asyncio
@@ -89,6 +90,7 @@ async def test_no_change_stores_reason_without_creating_version(monkeypatch):
     assert store.load_question_version("mat-1", "req-1") is None
     stored = store._read("_question_revisions/mat-1/req-1.json")
     assert stored["status"] == "no_change"
+    assert stored["operation"] == "revise_questions"
     assert stored["reasons"][0]["references"] == references
 
 
@@ -113,6 +115,7 @@ async def test_replan_questions_is_distinct_from_material_revision(monkeypatch):
     assert events[-1]["type"] == "question_revision_needs_replan"
     record = store._read("_question_revisions/mat-1/req-1.json")
     assert record["status"] == "replan_questions"
+    assert record["operation"] == "revise_questions"
     assert record["comment_outcomes"][0]["replan_scope"] == "retarget"
     assert store.load_question_version("mat-1", "req-1") is None
 
@@ -172,6 +175,9 @@ async def test_agent_failure_stores_failed_request_without_version(monkeypatch):
     assert store.load_question_version("mat-1", "req-1") is None
     record = store._read("_question_revisions/mat-1/req-1.json")
     assert record["status"] == "failed"
+    assert record["operation"] == "revise_questions"
+    assert record["failure_phase"] == "revising"
+    assert record["failure_code"] == "RuntimeError"
     assert record["comment_outcomes"] == [{
         "comment_id": "c1",
         "question_number": 1,
@@ -297,6 +303,7 @@ async def test_only_a_fully_checked_package_becomes_an_immutable_version(monkeyp
     assert version["source_comment_ids"] == ["c1"]
     assert revised_comment_ids == ["c1"]
     record = store._read("_question_revisions/mat-1/req-1.json")
+    assert record["operation"] == "revise_questions"
     assert {row["comment_id"]: row["outcome"] for row in record["comment_outcomes"]} == {
         "c1": "question_only",
         "c2": "no_change",

@@ -86,6 +86,7 @@ async def revise_from_comments(
     request.update({
         "request_id": request_id,
         "material_id": material_id,
+        "operation": "revise_questions",
         "status": "running",
         "stage": "analysing",
         "base_version_id": base_version_id,
@@ -133,20 +134,15 @@ async def revise_from_comments(
                 "replan_questions": "question_revision_needs_replan",
                 "revise_material": "question_revision_needs_material",
             }[route]
-            record = {
-                "request_id": request_id,
-                "material_id": material_id,
+            record = dict(request)
+            record.update({
                 "status": status,
-                "base_version_id": base_version_id,
-                "source_comments": comments,
-                "comment_count": len(comments),
                 "reasons": [
                     row for row in reasons if row["outcome"] == route
                 ],
                 "comment_outcomes": comment_outcomes,
-                "actor": actor,
                 "completed_at": _now(),
-            }
+            })
             store.save_question_revision(material_id, request_id, record)
             yield {
                 "type": event_type,
@@ -196,21 +192,18 @@ async def revise_from_comments(
         blockers, baseline_advisories, changed_questions = _revision_gate(
             candidate, base_version)
         if blockers:
-            record = {
-                "request_id": request_id,
-                "material_id": material_id,
+            record = dict(request)
+            record.update({
                 "status": "failed",
-                "base_version_id": base_version_id,
-                "source_comments": comments,
                 "blockers": blockers,
                 "baseline_advisories": baseline_advisories,
                 "changed_questions": changed_questions,
                 "comment_outcomes": comment_outcomes,
-                "comment_count": len(comments),
-                "actor": actor,
+                "failure_phase": "auditing",
+                "failure_code": "QUESTION_QUALITY_FAILED",
                 "message": "修改后的题目未通过完整质量检查。",
                 "completed_at": _now(),
-            }
+            })
             store.save_question_revision(material_id, request_id, record)
             yield {
                 "type": "question_revision_failed",
@@ -240,21 +233,17 @@ async def revise_from_comments(
         }
         store.save_question_version(material_id, request_id, version)
         try:
-            store.save_question_revision(material_id, request_id, {
-                "request_id": request_id,
-                "material_id": material_id,
+            terminal = dict(request)
+            terminal.update({
                 "status": "completed",
-                "base_version_id": base_version_id,
-                "source_comments": comments,
                 "version_id": request_id,
-                "comment_count": len(comments),
                 "baseline_advisories": baseline_advisories,
                 "changed_questions": changed_questions,
                 "field_changes": version["field_changes"],
                 "comment_outcomes": comment_outcomes,
-                "actor": actor,
                 "completed_at": _now(),
             })
+            store.save_question_revision(material_id, request_id, terminal)
         except Exception:
             # The immutable version is the delivered artifact and has already been durably created.
             # A status-sidecar failure must not turn that success into a reported failure; the Web
@@ -269,17 +258,14 @@ async def revise_from_comments(
         }
     except Exception as exc:
         try:
-            failed_record = {
-                "request_id": request_id,
-                "material_id": material_id,
+            failed_record = dict(request)
+            failed_record.update({
                 "status": "failed",
-                "base_version_id": base_version_id,
-                "source_comments": comments,
-                "comment_count": len(comments),
+                "failure_phase": str(request.get("stage") or "unknown"),
+                "failure_code": type(exc).__name__,
                 "message": "%s: %s" % (type(exc).__name__, str(exc)[:500]),
-                "actor": actor,
                 "completed_at": _now(),
-            }
+            })
             if comment_outcomes:
                 failed_record["comment_outcomes"] = comment_outcomes
             store.save_question_revision(material_id, request_id, failed_record)

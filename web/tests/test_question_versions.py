@@ -33,6 +33,49 @@ def test_existing_delivered_questions_are_projected_as_v1_and_active(versions):
             for row in document["versions"]] == [("original", 1, True)]
 
 
+def test_assessment_artifacts_use_one_adopted_material_version(versions):
+    service, store = versions
+    put(store, "_question_versions/mat-1/versions/v2.json", {
+        "id": "v2",
+        "created_at": "2026-08-13T10:00:00Z",
+        "operation": "revise_material",
+        "material": {"title": "version material"},
+        "blueprint": {"title": "version blueprint"},
+        "package": {"title": "version package"},
+        "audio": {"status": "needs_synthesis"},
+    })
+
+    artifacts = service.assessment_artifacts("mat-1", "v2", {
+        "material": {"title": "original material"},
+        "blueprint": {"title": "original blueprint"},
+    })
+
+    assert artifacts["material"]["title"] == "version material"
+    assert artifacts["blueprint"]["title"] == "version blueprint"
+    assert artifacts["package"]["title"] == "version package"
+    assert artifacts["base_version"]["id"] == "v2"
+
+
+def test_incomplete_material_version_does_not_mix_original_artifacts(versions):
+    service, store = versions
+    put(store, "_question_versions/mat-1/versions/v2.json", {
+        "id": "v2",
+        "created_at": "2026-08-13T10:00:00Z",
+        "operation": "revise_material",
+        "material": {"title": "version material"},
+        "package": {"title": "version package"},
+        "audio": {"status": "needs_synthesis"},
+    })
+
+    with pytest.raises(QuestionVersionError) as found:
+        service.assessment_artifacts("mat-1", "v2", {
+            "material": {"title": "original material"},
+            "blueprint": {"title": "original blueprint"},
+        })
+
+    assert found.value.code == "MATERIAL_ARTIFACTS_MISSING"
+
+
 def test_immutable_versions_sort_after_original_and_can_be_adopted(versions):
     service, store = versions
     put(store, "_question_versions/mat-1/versions/later.json", {
@@ -49,6 +92,71 @@ def test_immutable_versions_sort_after_original_and_can_be_adopted(versions):
     ]
     assert document["active_version_id"] == "earlier"
     assert document["versions"][1]["is_active"] is True
+
+
+def test_revision_action_is_server_projected_and_expires_after_adoption(versions):
+    service, store = versions
+    source = service.reserve("mat-1", "original", [{
+        "id": "c1",
+        "anchor": {"type": "question", "index": 1},
+        "text": "Change the group layout.",
+    }], "reviewer")
+    terminal = dict(
+        source,
+        status="replan_questions",
+        comment_outcomes=[{
+            "comment_id": "c1",
+            "outcome": "replan_questions",
+            "replan_scope": "layout_only",
+        }],
+    )
+    put(store, "_question_revisions/mat-1/%s.json" % source["request_id"], terminal)
+    put(store, "_question_revisions/mat-1/running.json", terminal)
+
+    actionable = service.list("mat-1")
+    assert actionable["available_action"] == "confirm_replan"
+    assert actionable["action_source_request_id"] == source["request_id"]
+    assert actionable["action_unavailable_reason"] is None
+    assert "available_action" not in actionable["revision_request"]
+
+    put(store, "_question_versions/mat-1/versions/v2.json", {
+        "id": "v2",
+        "created_at": "2026-08-13T10:00:00Z",
+        "package": {"question_face": {}},
+    })
+    service.adopt("mat-1", "v2", "reviewer")
+
+    expired = service.list("mat-1")
+    assert expired["available_action"] is None
+    assert expired["action_source_request_id"] is None
+    assert "当前采用版本" in expired["action_unavailable_reason"]
+
+
+def test_failed_material_execution_projects_retry_from_original_source(versions):
+    service, store = versions
+    source = service.reserve("mat-1", "original", [{
+        "id": "c1",
+        "anchor": {"type": "question", "index": 1},
+        "text": "Change the listening script.",
+    }], "reviewer")
+    decision = dict(
+        source,
+        status="needs_material_revision",
+        comment_outcomes=[{
+            "comment_id": "c1",
+            "outcome": "revise_material",
+        }],
+    )
+    put(store, "_question_revisions/mat-1/%s.json" % source["request_id"], decision)
+    put(store, "_question_revisions/mat-1/running.json", decision)
+    execution = service.reserve_material_revision(
+        "mat-1", source["request_id"], "reviewer")
+    service.fail_request("mat-1", execution, "model unavailable")
+
+    projected = service.list("mat-1")
+    assert projected["available_action"] == "retry_material"
+    assert projected["action_source_request_id"] == source["request_id"]
+    assert projected["action_unavailable_reason"] is None
 
 
 def test_only_one_running_revision_is_reserved_per_material(versions):
@@ -288,6 +396,7 @@ def test_material_revision_reservation_accepts_replan_escalation(versions):
         comment_outcomes=[{
             "comment_id": "c1",
             "outcome": "replan_questions",
+            "replan_scope": "retarget",
         }],
     )
     put(store, "_question_revisions/mat-1/%s.json" % source["request_id"], classified)
@@ -297,9 +406,12 @@ def test_material_revision_reservation_accepts_replan_escalation(versions):
     escalation = dict(
         execution,
         status="needs_material_revision",
+        failure_phase="feasibility",
+        failure_code="MATERIAL_INFEASIBLE",
         comment_outcomes=[{
             "comment_id": "c1",
-            "outcome": "revise_material",
+            "outcome": "replan_questions",
+            "replan_scope": "retarget",
             "reason": "the unchanged script cannot support a valid question set",
         }],
     )
@@ -410,6 +522,7 @@ def test_material_revision_source_rejects_replan_escalation_with_changed_snapsho
         comment_outcomes=[{
             "comment_id": "c1",
             "outcome": "replan_questions",
+            "replan_scope": "retarget",
         }],
     )
     put(store, "_question_revisions/mat-1/%s.json" % source["request_id"], classified)
@@ -425,9 +538,12 @@ def test_material_revision_source_rejects_replan_escalation_with_changed_snapsho
             "replan_scope": "retarget",
         }],
         status="needs_material_revision",
+        failure_phase="feasibility",
+        failure_code="MATERIAL_INFEASIBLE",
         comment_outcomes=[{
             "comment_id": "c1",
-            "outcome": "revise_material",
+            "outcome": "replan_questions",
+            "replan_scope": "retarget",
         }],
     )
     put(
@@ -627,6 +743,61 @@ def test_revision_route_snapshots_question_comments_and_relays_runtime(
     assert payload["comments"][0]["anchor"] == {"type": "question", "index": 3}
 
 
+def test_revision_route_uses_adopted_material_version_artifacts(
+    auth, runtime, static_dir,
+):
+    backing = InMemoryObjectStore()
+    put(backing, "_questions/mat-1.json", {
+        "ok": True,
+        "package": {"title": "original package"},
+    })
+    put(backing, "_question_versions/mat-1/versions/v2.json", {
+        "id": "v2",
+        "created_at": "2026-08-13T10:00:00Z",
+        "operation": "revise_material",
+        "material": {"title": "version material"},
+        "blueprint": {"title": "version blueprint"},
+        "package": {"title": "version package"},
+        "audio": {"status": "needs_synthesis"},
+    })
+    versions = QuestionVersionService(backing)
+    versions.adopt("mat-1", "v2", "reviewer")
+    comments = CommentService(InMemoryCommentStore())
+    comments.create("mat-1", {
+        "anchor": {"type": "question", "index": 3},
+        "severity": "major",
+        "text": "Clarify the question.",
+        "version_id": "v2",
+    })
+    stream = FakeStreamingBody()
+    stream.push_event({
+        "type": "question_revision_failed",
+        "request_id": "execution",
+        "message": "test stop",
+    })
+    stream.finish()
+    runtime.stream = stream
+    tier = WebTier(
+        auth, runtime, str(static_dir), history=_History(), comments=comments,
+        question_versions=versions,
+    )
+    from fastapi.testclient import TestClient
+
+    with TestClient(tier.app) as client:
+        register(client)
+        response = client.post(
+            "/api/material-question-revisions/mat-1",
+            json={"base_version_id": "v2"},
+        )
+
+    assert response.status_code == 200
+    payload = runtime.calls[-1]
+    assert payload["material"]["title"] == "version material"
+    assert payload["blueprint"]["title"] == "version blueprint"
+    assert payload["package"]["title"] == "version package"
+    assert payload["base_version"]["id"] == "v2"
+
+
 def test_revision_route_excludes_handled_and_other_version_comments(
     auth, runtime, static_dir,
 ):
@@ -819,6 +990,88 @@ def test_completed_replan_resolves_the_previous_needs_replan_comment(
     settled = comments.list("mat-1")["comments"][0]
     assert settled["status"] == "resolved"
     assert settled["resolved_by_version_id"] == "replan-execution"
+
+
+def test_replan_material_escalation_projects_top_level_action_and_settles_comment(
+    auth, runtime, static_dir,
+):
+    backing = InMemoryObjectStore()
+    put(backing, "_questions/mat-1.json", {
+        "ok": True, "package": {"question_face": {}},
+    })
+    comments = CommentService(InMemoryCommentStore())
+    source_comment = comments.create("mat-1", {
+        "anchor": {"type": "question", "index": 3},
+        "severity": "major",
+        "text": "Change the target to information absent from the material.",
+    })["comments"][0]
+    versions = QuestionVersionService(backing)
+    classification = versions.reserve(
+        "mat-1", "original", [source_comment], "reviewer")
+    classified = dict(
+        classification,
+        status="replan_questions",
+        comment_outcomes=[{
+            "comment_id": source_comment["id"],
+            "question_number": 3,
+            "outcome": "replan_questions",
+            "replan_scope": "retarget",
+            "reason": "a different information point is required",
+        }],
+    )
+    put(
+        backing,
+        "_question_revisions/mat-1/%s.json" % classification["request_id"],
+        classified,
+    )
+    put(backing, "_question_revisions/mat-1/running.json", classified)
+    comments.settle_revision(
+        "mat-1",
+        comment_ids=[source_comment["id"]],
+        base_version_id="original",
+        request_id=classification["request_id"],
+        outcome="needs_replan",
+    )
+    execution = versions.reserve_replan(
+        "mat-1", classification["request_id"], "reviewer")
+    escalation = dict(
+        execution,
+        status="needs_material_revision",
+        failure_phase="feasibility",
+        failure_code="MATERIAL_INFEASIBLE",
+        comment_outcomes=[{
+            "comment_id": source_comment["id"],
+            "question_number": 3,
+            "outcome": "replan_questions",
+            "replan_scope": "retarget",
+            "reason": "the unchanged material cannot support the requested target",
+        }],
+    )
+    put(
+        backing,
+        "_question_revisions/mat-1/%s.json" % execution["request_id"],
+        escalation,
+    )
+    put(backing, "_question_revisions/mat-1/running.json", escalation)
+    tier = WebTier(
+        auth, runtime, str(static_dir), history=_History(), comments=comments,
+        question_versions=versions,
+    )
+    from fastapi.testclient import TestClient
+
+    with TestClient(tier.app) as client:
+        register(client)
+        response = client.get("/api/material-question-versions/mat-1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["available_action"] == "confirm_material"
+    assert payload["action_source_request_id"] == execution["request_id"]
+    assert payload["action_unavailable_reason"] is None
+    assert "available_action" not in payload["revision_request"]
+    settled = comments.list("mat-1")["comments"][0]
+    assert settled["status"] == "needs_material"
+    assert settled["revision_request_id"] == execution["request_id"]
 
 
 def test_versions_route_settles_mixed_snapshot_per_comment_without_false_success(
@@ -1136,6 +1389,7 @@ def test_material_revision_route_dispatches_replan_escalation(
         comment_outcomes=[{
             "comment_id": "c1",
             "outcome": "replan_questions",
+            "replan_scope": "retarget",
         }],
     )
     put(backing, "_question_revisions/mat-1/%s.json" % source["request_id"], classified)
@@ -1145,9 +1399,12 @@ def test_material_revision_route_dispatches_replan_escalation(
     escalation = dict(
         execution,
         status="needs_material_revision",
+        failure_phase="feasibility",
+        failure_code="MATERIAL_INFEASIBLE",
         comment_outcomes=[{
             "comment_id": "c1",
-            "outcome": "revise_material",
+            "outcome": "replan_questions",
+            "replan_scope": "retarget",
             "reason": "the unchanged script cannot support a valid question set",
         }],
     )
