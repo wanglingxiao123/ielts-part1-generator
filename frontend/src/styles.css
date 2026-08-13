@@ -2939,6 +2939,20 @@ h3 {
   background: var(--bad-bg);
 }
 
+.question-revision-failure-details {
+  max-height: clamp(120px, 32vh, 280px);
+  margin-top: 4px;
+  padding-right: 6px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.question-revision-failure-details:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .comment-card.no_change,
 .comment-card.needs_replan {
   color: var(--ink-3);

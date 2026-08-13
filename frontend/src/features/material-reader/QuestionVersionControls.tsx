@@ -366,14 +366,20 @@ export function QuestionRevisionAction({
           title="修改未完成"
           dismissable={!replanAvailable && !materialAvailable}
         >
-          <p>{state.revisionResult.message}</p>
-          {state.revisionResult.blockers.length > 0 && (
-            <ul>
-              {state.revisionResult.blockers.map((blocker) => (
-                <li key={blocker}>{blocker}</li>
-              ))}
-            </ul>
-          )}
+          <div
+            className="question-revision-failure-details"
+            aria-label="修改失败详情"
+            tabIndex={0}
+          >
+            <p>{state.revisionResult.message}</p>
+            {state.revisionResult.blockers.length > 0 && (
+              <ul>
+                {state.revisionResult.blockers.map((blocker) => (
+                  <li key={blocker}>{blocker}</li>
+                ))}
+              </ul>
+            )}
+          </div>
           {state.availableAction === 'retry_replan' && (
             <div className="question-replan-confirm">
               <button

@@ -342,6 +342,44 @@ describe('根据批注修改题目', () => {
     expect(replan).toHaveBeenCalledOnce()
   })
 
+  it('材料修改的长错误在独立滚动区展示，重试按钮留在滚动区外', async () => {
+    const reviseMaterial = vi.fn()
+    const blockers = Array.from(
+      { length: 12 },
+      (_, index) => `第 ${index + 1} 条完整质量检查失败原因`,
+    )
+    render(
+      <QuestionRevisionAction
+        state={state({
+          reviseMaterial,
+          availableAction: 'retry_material',
+          actionSourceRequestId: 'request-needs-material',
+          revisionRequest: {
+            request_id: 'request-failed-material',
+            status: 'failed',
+            operation: 'revise_material',
+            source_request_id: 'request-needs-material',
+            base_version_id: 'version-3',
+          },
+          revisionResult: {
+            kind: 'failed',
+            message: '材料交叉检查未通过',
+            blockers,
+          },
+        })}
+        comments={[]}
+      />,
+    )
+
+    const details = screen.getByLabelText('修改失败详情')
+    const retry = screen.getByRole('button', { name: '重新尝试修改材料' })
+    expect(details).toHaveClass('question-revision-failure-details')
+    expect(details).toHaveTextContent(blockers[11]!)
+    expect(details).not.toContainElement(retry)
+    await userEvent.click(retry)
+    expect(reviseMaterial).toHaveBeenCalledOnce()
+  })
+
   it('服务端判定动作已失效时显示原因而不是无解释禁用', () => {
     render(
       <QuestionRevisionAction
