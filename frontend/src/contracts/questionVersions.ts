@@ -168,6 +168,7 @@ export interface QuestionRevisionFailedEvent {
   event: 'failed'
   request_id?: string
   message: string
+  blockers?: string[]
 }
 
 export type QuestionRevisionEvent =

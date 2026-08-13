@@ -707,6 +707,7 @@ async def revise_material_from_comments(
     material: Dict[str, Any],
     current_blueprint: Dict[str, Any],
     comments: List[Dict[str, Any]],
+    feedback: Optional[Dict[str, List[str]]] = None,
 ) -> GenOutput:
     """Rewrite a complete material and blueprint from confirmed reviewer comments."""
     agent = build_generate_agent()
@@ -721,6 +722,38 @@ async def revise_material_from_comments(
             json.dumps(current_blueprint, ensure_ascii=False, indent=2), encoding="utf-8")
         comments_path.write_text(
             json.dumps(comments, ensure_ascii=False, indent=2), encoding="utf-8")
+        feedback_sections: List[str] = []
+        feedback_labels = {
+            "validation": "Deterministic validation blockers",
+            "audit": "Blind-audit blockers",
+            "cross_check": "Material/blueprint cross-check blockers",
+            "feasibility": "Question-feasibility blockers",
+            "questions": "Question-set quality blockers",
+            "no_progress": "No-progress blockers",
+        }
+        for category, label in feedback_labels.items():
+            rows = [
+                str(row).strip()
+                for row in (feedback or {}).get(category, [])
+                if str(row).strip()
+            ]
+            if rows:
+                feedback_sections.append(
+                    "### %s\n%s" % (
+                        label,
+                        "\n".join("- %s" % row for row in rows),
+                    )
+                )
+        correction = ""
+        if feedback_sections:
+            correction = "\n\n".join([
+                "## Independent quality-check feedback from earlier candidates\n\n"
+                "Every blocker below is mandatory. Correct all of them while keeping the original "
+                "reviewer comments authoritative. Do not regress blockers fixed in an earlier "
+                "candidate. Return a complete revised material and matching complete blueprint, "
+                "and recompute every evidence anchor and turn index.",
+                "\n\n".join(feedback_sections),
+            ])
         message = "\n\n".join([
             "Revise this complete IELTS Listening Part 1 material to satisfy the confirmed "
             "reviewer comments. Return a complete replacement material and a complete replacement "
@@ -735,7 +768,7 @@ async def revise_material_from_comments(
             '{"material": <complete revised material>, '
             '"blueprint": <complete revised blueprint>}. '
             "Do not include questions, an answer key, or commentary.",
-        ]) + workspace.instructions()
+        ]) + workspace.instructions() + correction
         reply = await _invoke(agent, message, "material revision")
     finally:
         workspace.remove()

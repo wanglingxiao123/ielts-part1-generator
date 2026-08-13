@@ -239,7 +239,11 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
         const recovery = await recoverDurableResult()
         keepQueued = recovery === 'running'
         if (recovery === 'missing') {
-          setRevisionResult({ kind: 'failed', message: terminal.message, blockers: [] })
+          setRevisionResult({
+            kind: 'failed',
+            message: terminal.message,
+            blockers: terminal.blockers ?? [],
+          })
         }
       }
     } catch (err) {

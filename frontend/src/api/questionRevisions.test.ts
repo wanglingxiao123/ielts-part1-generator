@@ -99,4 +99,17 @@ describe('question revision SSE wire adapter', () => {
       }],
     })
   })
+
+  it('preserves valid blockers from a failed Runtime frame', () => {
+    expect(
+      decodeRevisionFrame(
+        'data: {"type":"question_revision_failed","request_id":"request-3","message":"材料修改未通过质量检查","blockers":[" Q6 evidence is missing ",null,7,"  ","Q9 has a rival answer"]}',
+      ),
+    ).toEqual({
+      event: 'failed',
+      request_id: 'request-3',
+      message: '材料修改未通过质量检查',
+      blockers: ['Q6 evidence is missing', 'Q9 has a rival answer'],
+    })
+  })
 })

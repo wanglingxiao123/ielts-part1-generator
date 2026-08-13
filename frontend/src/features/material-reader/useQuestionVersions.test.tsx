@@ -413,6 +413,43 @@ describe('useQuestionVersions', () => {
     )
   })
 
+  it('材料修改实时失败时无需刷新即可显示 blockers', async () => {
+    const decision: MaterialQuestionVersionsResponse = {
+      ...response(),
+      available_action: 'confirm_material',
+      action_source_request_id: 'request-material-source',
+      revision_request: {
+        request_id: 'request-material-decision',
+        status: 'needs_material_revision',
+        base_version_id: 'original',
+        reasons: [],
+      },
+    }
+    listVersions.mockResolvedValue(decision)
+    streamMaterial.mockResolvedValue({
+      event: 'failed',
+      request_id: 'request-material-execution',
+      message: '修改后的材料未通过完整质量检查。',
+      blockers: [
+        'Q6 evidence is missing from the revised material',
+        'Q9 has an equally-supported rival answer',
+      ],
+    })
+
+    const { result } = renderHook(() => useQuestionVersions('material-1', true))
+    await waitFor(() => expect(result.current.availableAction).toBe('confirm_material'))
+    await act(() => result.current.reviseMaterial())
+
+    expect(result.current.revisionResult).toEqual({
+      kind: 'failed',
+      message: '修改后的材料未通过完整质量检查。',
+      blockers: [
+        'Q6 evidence is missing from the revised material',
+        'Q9 has an equally-supported rival answer',
+      ],
+    })
+  })
+
   it('材料修改失败后可重试且连续点击只启动一次', async () => {
     listVersions.mockResolvedValue({
       ...response(),

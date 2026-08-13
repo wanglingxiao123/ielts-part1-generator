@@ -34,6 +34,7 @@ from backend.steps.agent_steps import (
     build_feasibility_payload,
     classify_question_revision,
     replan_blueprint,
+    revise_material_from_comments,
 )
 from backend.steps.call import ModelCallError
 
@@ -50,6 +51,36 @@ def _reply(**over) -> str:
 
 
 _ABSENT = object()
+
+
+@pytest.mark.asyncio
+async def test_material_revision_feedback_keeps_categories_distinct(monkeypatch):
+    seen = {}
+
+    async def invoke(_agent, message, _label):
+        seen["message"] = message
+        return json.dumps({
+            "material": {"material_id": "mat-1", "turns": [{"text": "new"}]},
+            "blueprint": {"items": []},
+        })
+
+    monkeypatch.setattr("backend.steps.agent_steps._invoke", invoke)
+    await revise_material_from_comments(
+        {"material_id": "mat-1", "turns": [{"text": "old"}]},
+        {"items": []},
+        [{"id": "c1", "text": "change it"}],
+        {
+            "validation": ["V-1"],
+            "cross_check": ["C-1"],
+            "questions": ["Q-1"],
+        },
+    )
+
+    message = seen["message"]
+    assert "Deterministic validation blockers\n- V-1" in message
+    assert "Material/blueprint cross-check blockers\n- C-1" in message
+    assert "Question-set quality blockers\n- Q-1" in message
+    assert "original reviewer comments authoritative" in message
 
 
 @pytest.mark.asyncio

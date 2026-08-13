@@ -94,6 +94,12 @@ export function decodeRevisionFrame(frame: string): QuestionRevisionEvent | null
         event: 'failed',
         request_id: requestId,
         message: typeof payload.message === 'string' ? payload.message : '题目修改没有完成',
+        blockers: Array.isArray(payload.blockers)
+          ? payload.blockers
+              .filter((value): value is string => typeof value === 'string')
+              .map((value) => value.trim())
+              .filter(Boolean)
+          : [],
       }
     }
     return null
