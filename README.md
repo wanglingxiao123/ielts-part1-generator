@@ -9,6 +9,8 @@
   审核结果。
 - **材料和题目分别审核**：材料审核看不到生成者的 `blueprint`；题目审核看不到答案键，再由 Python
   将独立重建结果交叉检查。
+- **交付后可从题目批注发起修订**：系统先把意见分类为无需修改、局部修题、重新规划题组或修改材料，
+  再生成不可变的新版本；当前采用版本不会被自动覆盖。
 - **不在生成流程中合成音频**：用户点击试听或选中材料后，系统才按需调用 Polly。
 
 本 README 面向开发、部署和运维人员。出题人员请阅读
@@ -61,6 +63,9 @@
 │   ├── orchestration/
 │   │   ├── loop.py                   # 单套材料 Agent Loop
 │   │   ├── question_loop.py          # 单套题目生成、审核与最多两轮修改
+│   │   ├── manual_question_revision.py # 题面级批注修订
+│   │   ├── manual_question_replan.py # 保持材料不变的完整重命题
+│   │   ├── manual_material_revision.py # 修改材料并重建蓝图与十题
 │   │   ├── delivery.py               # 完整套件、换材料、断点与精确数量交付
 │   │   ├── batch.py                  # 旧的仅材料 action 与测试入口
 │   │   ├── candidate_store.py        # 候选材料注册
@@ -82,6 +87,7 @@
 │   ├── auth.py                       # 登录、session 和用户存储
 │   ├── batch_store.py                # 批次持久化
 │   ├── comment_store.py              # `_comments/` 单人批注存储与校验
+│   ├── question_versions.py           # 修订请求与不可变版本的持久化/采用
 │   └── tests/
 ├── frontend/                         # React + TypeScript + Vite 审阅界面
 │   ├── src/
@@ -138,9 +144,9 @@ flowchart LR
 
 | 组件 | 职责 |
 |---|---|
-| 浏览器 | 选择场景、显示逐套生成进度、审阅原文和题目、添加批注、发起试听或选稿 |
+| 浏览器 | 选择场景、显示逐套生成进度、审阅原文和题目、提交题目批注、管理版本、发起试听或选稿 |
 | CloudFront + ALB | 提供稳定 HTTPS 地址，将动态请求转发到 Web 服务 |
-| Web / ECS | 登录与 session、批次历史、调用 Runtime、把多条结果流合并成 SSE |
+| Web / ECS | 登录、批次历史、后台执行、修订版本、调用 Runtime，并把运行进度投影为 SSE |
 | AgentCore Runtime | 创建 Strands Agent，执行材料与题目的生成、校验、盲审、修改和按需音频 action；`PUBLIC` 网络模式用于访问 AWS 公网服务 |
 | AgentCore Code Interpreter | 在空白远程环境中运行审核指标脚本；只接收脚本和当前 `material` |
 | Bedrock Mantle | 承载生成、审核和修改所需的 GPT-5.6 调用 |
@@ -160,6 +166,11 @@ flowchart LR
 `generate_sets` 使用 SSE，因此适用 AgentCore 的 60 分钟流式上限，而不是 15 分钟同步上限。
 每套拥有独立的 Runtime invocation 和 55 分钟工作窗口；Web 使用独立线程池承载阻塞式 boto3
 长连接，避免占满 FastAPI/anyio 默认线程池。
+
+浏览器只是进度观察者，不拥有生成任务。关闭 SSE、刷新或离开页面不会关闭 Runtime body，也不会
+取消批次或修订；Web 的后台 execution 持续消费结果并把终态写入 S3。重新打开页面后，前端从持久化
+状态恢复。批次某个 slot 失败时，“补生成这一套”启动独立 refill execution，但成功结果回填原批次
+原位置，不创建第二个用户可见批次。
 
 ### 2.3 音频为什么不在生成流程里
 
@@ -489,7 +500,29 @@ Form / Note / Table，同时检查蓝图的题型和分组符合材料的信息�
 - 所有阶段状态写入 S3；Runtime 中断时可以从最后完成的阶段继续，而不是重做已通过内容；
 - 请求 N 套时，只有 N 个 slot 都达到 `complete` 才返回 `succeeded`。
 
-### 3.9 并发与时间预算
+### 3.9 题目批注、路由与不可变版本
+
+交付后的人工修订从题目锚点批注开始。当前前端只开放 Q1-Q10 的评价入口；Turn 批注 API 与历史数据
+仍保留，但对话原文页暂不展示创建、数量徽标或批注列表。
+
+`classify_question_revision` 先评价意见，不修改产物，并为每条批注给出四种结果之一：
+
+| 结果 | 行为 |
+|---|---|
+| `no_change` | 记录理由和材料/题目引证，不创建版本 |
+| `question_only` | 只允许修改批注锚定题目的题面、答案键或证据；材料和蓝图不变 |
+| `replan_questions` | 用户确认后重建蓝图和完整十题；可用 `layout_only` 保留原信息点，仅调整 Form/Note/Table 和题组边界 |
+| `revise_material` | 用户确认后修改听力稿，并从新材料重建蓝图、完整十题和对应音频归属 |
+
+所有成功修订都写成新的不可变版本，记录 `based_on_version_id`、来源批注和质量结果。新版本生成后不会
+自动采用；用户可以先比较、试听，再显式采用。采用版本时材料、蓝图、题包、答案、证据和音频归属作为
+一个快照切换，不能把不同版本的产物混在一起。
+
+修订由 Web 后台 execution 持有，SSE 只负责观察；刷新页面不会中断。题面修改、重新命题和材料修改
+每次执行都使用新的 `runtimeSessionId`，避免两个长任务共享 AgentCore microVM，也避免 Runtime 部署后
+旧 session 继续运行旧镜像。相同 durable request 的重复点击由 execution id 去重，不会产生两个版本。
+
+### 3.10 并发与时间预算
 
 生产环境由 `web/fanout.py` 为每套材料发起一个独立 Runtime invocation，每个请求使用新的
 `runtimeSessionId`。`WEB_FANOUT_CONCURRENCY=6` 表示同时最多运行 6 套，不是每批最多 6 套：
@@ -504,16 +537,20 @@ Runtime read timeout 为 3450 秒。
 开始材料或题目阶段前，Python 会确认剩余时间足以覆盖该阶段的保守耗时。若不足则保存断点并诚实
 返回 `incomplete`，不会把少于请求数量的结果标为成功。
 
-### 3.10 核心代码索引
+### 3.11 核心代码索引
 
 | 路径 | 作用 |
 |---|---|
 | `web/fanout.py` | 将批次拆成每套一次 Runtime 调用，限制并发并合并 SSE |
 | `web/runtime_client.py` | SigV4 调用 AgentCore，为每次调用设置独立 `runtimeSessionId` |
+| `web/question_versions.py` | 修订决策、执行记录、不可变版本和采用状态 |
 | `backend/app.py` | AgentCore Python 入口和 action 路由 |
 | `backend/request.py` | 把场景 id、数量和自定义场景解析为 slot |
 | `backend/orchestration/loop.py` | 单套材料的重试、校验、盲审、修改、复评和择优 |
 | `backend/orchestration/question_loop.py` | 十道题的生成、校验、盲审、交叉检查和最多两轮修改 |
+| `backend/orchestration/manual_question_revision.py` | 批注范围内的局部题目修改 |
+| `backend/orchestration/manual_question_replan.py` | 材料不变的蓝图重规划和完整重命题 |
+| `backend/orchestration/manual_material_revision.py` | 材料、蓝图和十题的一致修订 |
 | `backend/orchestration/delivery.py` | slot 状态、可行性预检、题目重启、换材料、断点和精确数量交付 |
 | `backend/orchestration/slot_store.py` | `_slots/` 与 `_questions/` 的 S3 持久化 |
 | `backend/orchestration/batch.py` | 旧的仅材料 `generate` action 与测试入口 |
@@ -524,7 +561,7 @@ Runtime read timeout 为 3450 秒。
 | `backend/deterministic/crosscheck.py` | blueprint 与盲审信息图交叉检查 |
 | `backend/sandboxed_metrics.py` | Code Interpreter session 与白名单文件上传 |
 
-### 3.11 如何扩展到其他 IELTS 能力
+### 3.12 如何扩展到其他 IELTS 能力
 
 **增加采用同类工作流的 Skill**：在对应池中增加一个包含 `SKILL.md` 的目录，并提供它声明的
 references、Schema 和 scripts。`Skill.from_directory()` 会自动发现 Skill，无需在 `agents.py`
