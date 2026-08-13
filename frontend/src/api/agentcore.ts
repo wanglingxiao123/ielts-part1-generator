@@ -809,14 +809,12 @@ async function* readWireFrames(body: NonNullable<Response['body']>): AsyncGenera
 }
 
 /**
- * POST `generate` and wait for `batch_started` — no further.
+ * POST `generate` and return once the Web tier exposes the reserved batch id.
  *
- * That frame is the handshake: `web/fanout.py` yields it before invoking any child, so it costs one
- * round trip and no model time, and it carries the `batch_id` the web tier minted. Waiting for it is
- * what makes the backend's id authoritative: `createBatch` cannot return an id, put it in the URL, or
- * key a session on it before knowing which id the batch will be RECORDED under
- * (`web/batch_history.py`). The alternative — mint locally, adopt later — is what the client hit:
- * 历史记录 keyed on `web-…`, URL keyed on `batch-…`, and 「没有找到批次 … 的历史记录」 after a reload.
+ * New Web tiers put the authoritative id in `X-Batch-ID`, which arrives with the response headers
+ * before any event body. This closes the window where generation was reserved but the page could
+ * not navigate because its observer disconnected before `batch_started`. The frame remains a
+ * compatibility fallback for older Web tiers.
  *
  * An error here is thrown rather than folded into a session, because there is no session yet. The
  * scenario page already renders a thrown error as 「无法提交」, which is the honest place for
@@ -825,11 +823,23 @@ async function* readWireFrames(body: NonNullable<Response['body']>): AsyncGenera
  */
 async function openGenerateStream(
   payload: unknown,
-): Promise<{ batchId: string; started: WireBatchStarted; frames: AsyncGenerator<WireEvent> }> {
+): Promise<{
+  batchId: string
+  started: WireBatchStarted
+  startedFromHeader: boolean
+  frames: AsyncGenerator<WireEvent>
+}> {
+  const idempotencyKey =
+    globalThis.crypto?.randomUUID?.() ??
+    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
   const res = await fetch(invocationsUrl(), {
     method: 'POST',
     credentials: CREDENTIALS,
-    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+      'X-Idempotency-Key': idempotencyKey,
+    },
     body: JSON.stringify(payload),
   })
   if (res.status === 401) {
@@ -847,6 +857,21 @@ async function openGenerateStream(
   if (!res.body) throw new ApiError(502, 'BACKEND_ERROR', '后端没有返回事件流，批次没有开始')
 
   const frames = readWireFrames(res.body)
+  const headerBatchId = res.headers.get('X-Batch-ID')?.trim() ?? ''
+  if (headerBatchId) {
+    return {
+      batchId: headerBatchId,
+      started: {
+        type: 'batch_started',
+        batch_id: headerBatchId,
+        total: 0,
+        deadline_at: 0,
+        at: Date.now() / 1000,
+      },
+      startedFromHeader: true,
+      frames,
+    }
+  }
   for (;;) {
     const next = await frames.next()
     if (next.done) {
@@ -865,25 +890,23 @@ async function openGenerateStream(
         '后端没有下发批次编号（web 层版本过旧），这一批的结果将无法在历史里找回，已中止',
       )
     }
-    return { batchId, started, frames }
+    return { batchId, started, startedFromHeader: false, frames }
   }
 }
 
 /**
  * Drives the rest of the SSE response into the session.
  *
- * The POST is issued in `createBatch` rather than when the UI opens the stream: the batch cannot
- * exist without an in-flight request, so if generation only started when the SSE view mounted, a
- * user who navigated away mid-batch would kill it. This way the request lives in module scope,
- * exactly as batchStreamManager keeps the stream out of component scope.
+ * The POST is issued in `createBatch` rather than when the UI opens the stream. The Web producer is
+ * detached from this observer; this module drains progress only for the live-page experience.
  */
 function startBatch(session: Session, frames: AsyncGenerator<WireEvent>): Promise<void> {
   return (async () => {
     try {
       for await (const wire of frames) applyWire(session, wire)
       if (!session.done) {
-        // Stream ended without batch_completed: the connection died mid-batch and
-        // there is no job to reconnect to. Say so instead of spinning forever.
+        // The local observer ended without a terminal frame. Persisted batch history remains
+        // authoritative and recovers the real outcome after refresh.
         session.status = 'partial'
         session.done = true
         emit(session, (seq) => ({
@@ -904,7 +927,7 @@ function startBatch(session: Session, frames: AsyncGenerator<WireEvent>): Promis
         seq,
         material_id: `${session.batchId}::batch`,
         code: 'STREAM_LOST',
-        message: `与后端的生成连接中断：${message}。批次绑定在这次请求上，无法续接。`,
+        message: `进度连接中断：${message}。后台生成不受影响，请刷新后从批次记录继续查看。`,
         attempts: 1,
       }))
       emit(session, (seq) => ({
@@ -983,11 +1006,11 @@ async function createBatch(body: CreateBatchRequest): Promise<CreateBatchRespons
   const payload: Record<string, unknown> = { action: 'generate_sets', scenarios, counts }
   if (custom) payload.custom_scenario = custom
 
-  // The batch id comes from the BACKEND, and getting it is why this awaits before building
-  // anything. `batch_started` is emitted before the first child is invoked, so this costs one round
-  // trip and no model time — and it means the id in the URL, in the store, in `placeholderId` and
-  // in S3 are all one id. Nothing is minted client-side any more; see `openGenerateStream`.
-  const { batchId, started, frames } = await openGenerateStream(payload)
+  // The batch id comes from the BACKEND response headers (or the legacy `batch_started` fallback),
+  // so the URL, local store and durable history all use one authoritative id.
+  const { batchId, started, startedFromHeader, frames } = await openGenerateStream(payload)
+  started.total = total
+  if (custom) started.custom_label = custom.prompt_hint
 
   // Planned slots, so the progress grid has cards before the first stage event.
   const slots = new Map<string, Slot>()
@@ -1033,7 +1056,7 @@ async function createBatch(body: CreateBatchRequest): Promise<CreateBatchRespons
   // The handshake frame is applied like any other, so `hello` is emitted and `total` is taken from
   // the backend rather than from the local sum. Then the remainder of the stream is drained in
   // module scope, exactly as before.
-  applyWire(session, started)
+  if (!startedFromHeader) applyWire(session, started)
   session.finished = startBatch(session, frames)
 
   return {

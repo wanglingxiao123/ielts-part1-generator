@@ -225,6 +225,19 @@ class TestInterrupted:
         assert view["interrupted"] is False
         assert view["state"] == "running"
 
+    def test_recent_progress_keeps_an_old_running_batch_live(self):
+        now = time.time()
+        view = derive(
+            record(
+                state="running",
+                completed_at=None,
+                created_at=now - STALE_RUNNING_SECONDS - 100,
+                updated_at=now - 10,
+            ),
+            now=now,
+        )
+        assert view["interrupted"] is False
+
     def test_a_stale_running_record_is_reported_interrupted(self):
         """The web-task-died case. Nothing will ever come back to finalise this record.
 

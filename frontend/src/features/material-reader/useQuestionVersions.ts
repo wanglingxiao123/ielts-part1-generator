@@ -130,6 +130,8 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
     void load()
     return () => {
       revisionAttemptRef.current += 1
+      // Leaving the page detaches this observer only. The Web tier owns the producer and
+      // continues consuming Runtime output into the durable request record.
       abortRef.current?.abort()
       revisionInFlightRef.current = false
     }

@@ -167,7 +167,7 @@ export interface BatchHistoryEntry {
    * 'submitted'` would render it mutable and hand the user a control the backend will refuse.
    */
   read_only: boolean
-  /** The web task died mid-batch. The materials listed did arrive; the missing ones never will. */
+  /** The execution owner disappeared and this running record exceeded its stale threshold. */
   interrupted: boolean
   state: 'running' | 'complete' | string
   requested_total: number

@@ -693,7 +693,13 @@ class QuestionVersionService:
                 baseline_advisories=version.get("baseline_advisories") or [],
             )
         if pointer.get("status") == "running" and _is_stale(pointer):
-            return None
+            return dict(
+                pointer,
+                status="failed",
+                failure_code="EXECUTION_INTERRUPTED",
+                message="修改任务已中断，现有版本未改变，可以安全重试。",
+                completed_at=pointer.get("updated_at") or pointer.get("created_at"),
+            )
         return pointer
 
     def _read(self, key: str) -> Optional[Dict[str, Any]]:
@@ -743,7 +749,7 @@ def _version_key(material_id: str, version_id: str) -> str:
 
 
 def _is_stale(record: Dict[str, Any]) -> bool:
-    raw = record.get("created_at")
+    raw = record.get("updated_at") or record.get("created_at")
     if not isinstance(raw, str) or not raw:
         return True
     try:

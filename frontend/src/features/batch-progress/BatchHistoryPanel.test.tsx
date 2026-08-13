@@ -436,6 +436,22 @@ describe('只读的历史批次', () => {
     expect(screen.getByText(/不会再补齐/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /补生成/ })).toBeNull()
   })
+
+  it('刷新后的运行中批次不会显示成已结束或空批次', async () => {
+    historyBatches = [historyEntry({ batch_id: 'running', state: 'running' })]
+    detailFor = (batchId) =>
+      detail(batchId, {
+        state: 'running',
+        interrupted: false,
+        requested_total: 6,
+        materials: [],
+      })
+    renderAt('running')
+
+    await waitFor(() => expect(screen.getByText('这一批仍在后台生成')).toBeInTheDocument())
+    expect(screen.queryByText('本批次没有生成出材料。')).toBeNull()
+    expect(screen.queryByText(/已结束/)).toBeNull()
+  })
 })
 
 /* ── 3. 两条数据路径 ─────────────────────────────────────────────────────── */

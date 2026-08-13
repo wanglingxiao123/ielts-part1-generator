@@ -178,6 +178,7 @@ def derive(record: Dict[str, Any], *, now: Optional[float] = None) -> Dict[str, 
     """
     moment = time.time() if now is None else now
     created_at = _as_float(record.get("created_at"))
+    updated_at = _as_float(record.get("updated_at")) or created_at
     submitted_at = record.get("submitted_at")
     state = str(record.get("state") or "running")
 
@@ -204,7 +205,7 @@ def derive(record: Dict[str, Any], *, now: Optional[float] = None) -> Dict[str, 
         "read_only": bool(submitted_at) or candidates_expired,
         # A batch whose web task died mid-stream. Reported rather than smoothed over: the delivered
         # materials are genuinely usable and the missing ones are genuinely never coming.
-        "interrupted": state == "running" and (moment - created_at) >= STALE_RUNNING_SECONDS,
+        "interrupted": state == "running" and (moment - updated_at) >= STALE_RUNNING_SECONDS,
         "state": state,
         "requested_total": int(_as_float(record.get("requested_total"))),
         "arrived": len(materials),
@@ -436,6 +437,7 @@ class BatchRecorder:
             # Flipped to "complete" by `batch_completed`. A record left saying "running" is a batch
             # whose task died; `derive` is what notices.
             "state": "running",
+            "updated_at": time.time(),
             "completed_at": None,
             "submitted_at": None,
             "submitted_by": None,
@@ -529,6 +531,8 @@ class BatchRecorder:
         self._touch()
 
     def _touch(self) -> None:
+        with self._lock:
+            self._record["updated_at"] = time.time()
         self._dirty.set()
 
     def close(self) -> None:

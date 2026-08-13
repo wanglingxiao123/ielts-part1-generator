@@ -26,6 +26,7 @@ export interface HistoricalBatch {
   batchId: string
   readOnly: boolean
   interrupted: boolean
+  state: BatchHistoryDetail['state']
   /** 已提交 / 待选稿。用来在内容区顶部说清这是哪一种。 */
   status: BatchHistoryDetail['status']
   submittedMaterialIds: string[]
@@ -72,10 +73,15 @@ export function useHistoricalBatch(
     }
     let cancelled = false
     setState({ batch: null, loading: true, error: null })
-    void api
+    let timer: number | undefined
+    const refresh = () => void api
       .batchHistoryDetail(batchId)
       .then((detail) => {
-        if (!cancelled) setState({ batch: toHistorical(detail), loading: false, error: null })
+        if (cancelled) return
+        setState({ batch: toHistorical(detail), loading: false, error: null })
+        if (detail.state === 'running' && !detail.interrupted) {
+          timer = window.setTimeout(refresh, 5000)
+        }
       })
       .catch((err) => {
         if (!cancelled) {
@@ -88,8 +94,10 @@ export function useHistoricalBatch(
           })
         }
       })
+    refresh()
     return () => {
       cancelled = true
+      if (timer !== undefined) window.clearTimeout(timer)
     }
   }, [batchId, enabled, reloadToken])
 
@@ -126,6 +134,7 @@ function toHistorical(detail: BatchHistoryDetail): HistoricalBatch {
     batchId: detail.batch_id,
     readOnly: detail.read_only,
     interrupted: detail.interrupted,
+    state: detail.state,
     status: detail.status,
     submittedMaterialIds: detail.submitted_material_ids ?? [],
     requested: detail.scenarios.map((s) => ({ scenarioKey: s.scenario_key, count: s.count })),

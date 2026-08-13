@@ -137,7 +137,11 @@ function mergedFrames(plan: Array<{ scenario: string; ok: boolean }>): string[] 
 const sentPayloads: Array<Record<string, unknown>> = []
 
 /** Serves `frames` as the /invocations response; other actions answer the catalogue. */
-function installFanoutBackend(frames: string[], scenarios: string[]) {
+function installFanoutBackend(
+  frames: string[],
+  scenarios: string[],
+  options: { batchIdHeader?: string | null } = {},
+) {
   const original = globalThis.fetch
   globalThis.fetch = ((_url: RequestInfo | URL, init?: RequestInit) => {
     const body = init?.body ? (JSON.parse(String(init.body)) as { action?: string }) : {}
@@ -177,7 +181,15 @@ function installFanoutBackend(frames: string[], scenarios: string[]) {
             controller.close()
           },
         }),
-        { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+        {
+          status: 200,
+          headers: {
+            'Content-Type': 'text/event-stream',
+            ...(options.batchIdHeader === null
+              ? {}
+              : { 'X-Batch-ID': options.batchIdHeader ?? WEB_BATCH_ID }),
+          },
+        },
       ),
     )
   }) as typeof fetch
@@ -310,7 +322,7 @@ describe('the merged fan-out stream', () => {
     const frames = mergedFrames([{ scenario: 'a', ok: true }]).map((frame) =>
       frame.replace(`"batch_id": "${WEB_BATCH_ID}", `, '').replace(`"batch_id":"${WEB_BATCH_ID}",`, ''),
     )
-    restore = installFanoutBackend(frames, ['a'])
+    restore = installFanoutBackend(frames, ['a'], { batchIdHeader: null })
     const { transport } = installAgentCoreAdapter()
     setTransport(transport)
     await expect(

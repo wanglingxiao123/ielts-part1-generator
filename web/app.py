@@ -54,6 +54,7 @@ recorder from the fanned-out stream.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -90,6 +91,7 @@ from .fanout import (
     build_executor,
     plan_children,
 )
+from .execution_manager import Execution, ExecutionManager
 from .runtime_client import (
     SSE_CONTENT_TYPE,
     AgentCoreRuntimeClient,
@@ -207,7 +209,8 @@ class WebTier:
                  history: Optional[BatchHistory] = None,
                  slot_state: Optional[SlotStateReader] = None,
                  comments: Optional[CommentService] = None,
-                 question_versions: Optional[QuestionVersionService] = None) -> None:
+                 question_versions: Optional[QuestionVersionService] = None,
+                 executions: Optional[ExecutionManager] = None) -> None:
         self.auth = auth
         self.runtime = runtime
         self.static_dir = static_dir
@@ -224,6 +227,7 @@ class WebTier:
             question_versions if question_versions is not None
             else build_question_version_service()
         )
+        self.executions = executions if executions is not None else ExecutionManager()
         # email -> (runtimeSessionId, minted_at). Per-user so two reviewers do not share a
         # microVM, and so one user's long batch does not reset another's idle timer.
         #
@@ -710,30 +714,8 @@ class WebTier:
                 "comments": comments,
                 "actor": actor,
             }
-            session_id = self.session_for(actor)
-            try:
-                content_type, runtime_body, _ = await run_in_threadpool(
-                    self.runtime.invoke, payload, session_id=session_id)
-            except Exception as exc:
-                await run_in_threadpool(
-                    self.question_versions.fail_request, material_id, revision,
-                    "%s: %s" % (type(exc).__name__, str(exc)[:300]))
-                return JSONResponse(_infra_error_body(
-                    "QUESTION_REVISION_INVOKE_FAILED", "题目修改服务暂时没有响应。", exc),
-                    status_code=502)
-            if SSE_CONTENT_TYPE not in content_type:
-                await run_in_threadpool(
-                    self.question_versions.fail_request, material_id, revision,
-                    "Runtime returned a non-streaming response")
-                return JSONResponse(
-                    _error_body("QUESTION_REVISION_BAD_RESPONSE",
-                                "题目修改服务返回了错误格式。"), status_code=502)
-            return StreamingResponse(
-                _relay_question_revision(
-                    runtime_body, self.question_versions, material_id, revision),
-                media_type=SSE_CONTENT_TYPE,
-                headers=_SSE_HEADERS,
-            )
+            return self._start_revision_execution(
+                payload, material_id, revision, self.session_for(actor))
 
         @app.post("/api/material-question-replans/{material_id}")
         async def replan_material_questions(material_id: str, request: Request) -> Any:
@@ -790,30 +772,8 @@ class WebTier:
                 "comments": revision["source_comments"],
                 "actor": actor,
             }
-            session_id = self.session_for(actor)
-            try:
-                content_type, runtime_body, _ = await run_in_threadpool(
-                    self.runtime.invoke, payload, session_id=session_id)
-            except Exception as exc:
-                await run_in_threadpool(
-                    self.question_versions.fail_request, material_id, revision,
-                    "%s: %s" % (type(exc).__name__, str(exc)[:300]))
-                return JSONResponse(_infra_error_body(
-                    "QUESTION_REPLAN_INVOKE_FAILED", "重新命题服务暂时没有响应。", exc),
-                    status_code=502)
-            if SSE_CONTENT_TYPE not in content_type:
-                await run_in_threadpool(
-                    self.question_versions.fail_request, material_id, revision,
-                    "Runtime returned a non-streaming response")
-                return JSONResponse(
-                    _error_body("QUESTION_REPLAN_BAD_RESPONSE",
-                                "重新命题服务返回了错误格式。"), status_code=502)
-            return StreamingResponse(
-                _relay_question_revision(
-                    runtime_body, self.question_versions, material_id, revision),
-                media_type=SSE_CONTENT_TYPE,
-                headers=_SSE_HEADERS,
-            )
+            return self._start_revision_execution(
+                payload, material_id, revision, self.session_for(actor))
 
         @app.post("/api/material-revisions/{material_id}")
         async def revise_material(material_id: str, request: Request) -> Any:
@@ -871,36 +831,8 @@ class WebTier:
                 "comments": revision["source_comments"],
                 "actor": actor,
             }
-            session_id = self.session_for(actor)
-            try:
-                content_type, runtime_body, _ = await run_in_threadpool(
-                    self.runtime.invoke, payload, session_id=session_id)
-            except Exception as exc:
-                await run_in_threadpool(
-                    self.question_versions.fail_request, material_id, revision,
-                    "%s: %s" % (type(exc).__name__, str(exc)[:300]))
-                return JSONResponse(_infra_error_body(
-                    "MATERIAL_REVISION_INVOKE_FAILED",
-                    "材料修改服务暂时没有响应。",
-                    exc,
-                ), status_code=502)
-            if SSE_CONTENT_TYPE not in content_type:
-                await run_in_threadpool(
-                    self.question_versions.fail_request, material_id, revision,
-                    "Runtime returned a non-streaming response")
-                return JSONResponse(
-                    _error_body(
-                        "MATERIAL_REVISION_BAD_RESPONSE",
-                        "材料修改服务返回了错误格式。",
-                    ),
-                    status_code=502,
-                )
-            return StreamingResponse(
-                _relay_question_revision(
-                    runtime_body, self.question_versions, material_id, revision),
-                media_type=SSE_CONTENT_TYPE,
-                headers=_SSE_HEADERS,
-            )
+            return self._start_revision_execution(
+                payload, material_id, revision, self.session_for(actor))
 
         @app.post("/api/batch-history/{batch_id}/submit")
         async def submit_batch(batch_id: str, request: Request) -> JSONResponse:
@@ -1033,7 +965,11 @@ class WebTier:
                                 "call"),
                     status_code=503,
                 )
-            return self._fanned_out_generate(payload, owner=str(user.get("email") or ""))
+            return self._fanned_out_generate(
+                payload,
+                owner=str(user.get("email") or ""),
+                idempotency_key=str(request.headers.get("x-idempotency-key") or ""),
+            )
 
         session_id = self.session_for(str(user.get("email") or "anonymous"))
 
@@ -1060,8 +996,45 @@ class WebTier:
                                      headers=_SSE_HEADERS)
         return JSONResponse(read_json(body))
 
-    def _fanned_out_generate(self, payload: Dict[str, Any], *,
-                             owner: str = "") -> StreamingResponse:
+    def _start_revision_execution(
+        self,
+        payload: Dict[str, Any],
+        material_id: str,
+        revision: Dict[str, Any],
+        session_id: str,
+    ) -> StreamingResponse:
+        request_id = str(revision.get("request_id") or "")
+
+        def producer(publish) -> None:
+            try:
+                content_type, runtime_body, _ = self.runtime.invoke(
+                    payload, session_id=session_id)
+                if SSE_CONTENT_TYPE not in content_type:
+                    self.question_versions.fail_request(
+                        material_id, revision, "Runtime returned a non-streaming response")
+                    publish(_revision_failed_frame(
+                        request_id, "修改服务返回了错误格式，当前版本未改变。"))
+                    return
+                for frame in _relay_question_revision(
+                    runtime_body, self.question_versions, material_id, revision
+                ):
+                    publish(frame)
+            except Exception as exc:
+                message = "%s: %s" % (type(exc).__name__, str(exc)[:300])
+                self.question_versions.fail_request(material_id, revision, message)
+                publish(_revision_failed_frame(
+                    request_id, "修改服务暂时没有响应，当前版本未改变。"))
+
+        execution, _ = self.executions.start("revision:%s" % request_id, producer)
+        return _execution_response(execution)
+
+    def _fanned_out_generate(
+        self,
+        payload: Dict[str, Any],
+        *,
+        owner: str = "",
+        idempotency_key: str = "",
+    ) -> StreamingResponse:
         """One invocation per material, merged into the single stream the frontend already reads.
 
         Returns immediately with headers: the children are started by the generator, so the browser
@@ -1078,8 +1051,14 @@ class WebTier:
         The recorder is attached here and fed by `_frames`. It is what makes a batch survive the
         request that created it -- see web/batch_history.py.
         """
-        self._batch_counter += 1
-        batch_id = new_batch_id(self._batch_counter)
+        if idempotency_key:
+            digest = hashlib.sha256(
+                ("%s\0%s" % (owner, idempotency_key)).encode("utf-8")
+            ).hexdigest()[:24]
+            batch_id = "web-%s" % digest
+        else:
+            self._batch_counter += 1
+            batch_id = new_batch_id(self._batch_counter)
         children, slot_ids = plan_children(payload, batch_id=batch_id)
         # `batch_id` reaches the browser through `batch_started`. Without it the frontend minted its
         # own id, put that in `/batches/:batchId`, and the history panel then asked about a batch id
@@ -1097,8 +1076,15 @@ class WebTier:
             # 是模型扩写的完整英文句，场景目录里也没有自定义场景的条目。
             custom_label=fan.custom_label(),
         )
-        return StreamingResponse(_frames(fan, recorder), media_type=SSE_CONTENT_TYPE,
-                                 headers=_SSE_HEADERS)
+        def producer(publish) -> None:
+            async def consume() -> None:
+                async for frame in _frames(fan, recorder):
+                    publish(frame)
+            import asyncio
+            asyncio.run(consume())
+
+        execution, _ = self.executions.start("batch:%s" % batch_id, producer)
+        return _execution_response(execution, extra_headers={"X-Batch-ID": batch_id})
 
     def _serve_static(self, full_path: str, request: Request) -> Any:
         """The frontend build, with SPA fallback.
@@ -1138,6 +1124,29 @@ _SSE_HEADERS = {
     "X-Accel-Buffering": "no",  # harmless here, and correct if a proxy appears
     "Connection": "keep-alive",
 }
+
+
+def _execution_response(
+    execution: Execution,
+    *,
+    extra_headers: Optional[Dict[str, str]] = None,
+) -> StreamingResponse:
+    headers = dict(_SSE_HEADERS)
+    headers.update(extra_headers or {})
+    return StreamingResponse(
+        execution.observe(heartbeat_seconds=HEARTBEAT_SECONDS),
+        media_type=SSE_CONTENT_TYPE,
+        headers=headers,
+    )
+
+
+def _revision_failed_frame(request_id: str, message: str) -> bytes:
+    event = {
+        "type": "question_revision_failed",
+        "request_id": request_id,
+        "message": message,
+    }
+    return ("data: %s\n\n" % json.dumps(event, ensure_ascii=False)).encode("utf-8")
 
 
 def _scenario_shape(children: Any) -> list:

@@ -426,6 +426,56 @@ def test_batch_started_carries_the_id_the_history_is_keyed_on(
     assert announced.startswith("web-")
 
 
+def test_batch_id_is_available_in_response_headers(
+    fanout_runtime, auth, static_dir,
+):
+    body = fanout_runtime.body_for("slot-1")
+    body.push_event({"type": "batch_started", "total": 1})
+    body.push_event({"type": "batch_completed", "succeeded": 0, "failed": 1})
+    body.finish()
+    tier = WebTier(auth, fanout_runtime, str(static_dir))
+    from fastapi.testclient import TestClient
+
+    with TestClient(tier.app) as test_client:
+        register(test_client)
+        response = test_client.post(
+            "/api/invocations",
+            json={"action": "generate", "scenarios": ["a"], "count": 1},
+            headers={"X-Idempotency-Key": "submission-1"},
+        )
+
+    assert response.headers["x-batch-id"].startswith("web-")
+    assert _sse_events(response.text)[0]["batch_id"] == response.headers["x-batch-id"]
+
+
+def test_duplicate_batch_submission_key_reuses_one_execution(
+    fanout_runtime, auth, static_dir,
+):
+    body = fanout_runtime.body_for("slot-1")
+    body.push_event({"type": "batch_started", "total": 1})
+    body.push_event({"type": "batch_completed", "succeeded": 1})
+    body.finish()
+    tier = WebTier(auth, fanout_runtime, str(static_dir))
+    from fastapi.testclient import TestClient
+
+    with TestClient(tier.app) as test_client:
+        register(test_client)
+        headers = {"X-Idempotency-Key": "same-submission"}
+        first = test_client.post(
+            "/api/invocations",
+            json={"action": "generate", "scenarios": ["a"], "count": 1},
+            headers=headers,
+        )
+        second = test_client.post(
+            "/api/invocations",
+            json={"action": "generate", "scenarios": ["a"], "count": 1},
+            headers=headers,
+        )
+
+    assert first.headers["x-batch-id"] == second.headers["x-batch-id"]
+    assert len(fanout_runtime.calls) == 1
+
+
 def test_an_empty_history_is_a_success_not_a_failure(client):
     """First use. `[]` with a 200, never an error -- see BatchHistoryPanel's empty state.
 

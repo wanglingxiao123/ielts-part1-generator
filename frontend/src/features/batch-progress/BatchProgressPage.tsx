@@ -595,7 +595,8 @@ export function BatchProgressPage() {
         requested: store.requested,
         items: store.itemOrder.map((id) => store.items[id]).filter((i) => i !== undefined),
         materials: store.materials,
-        // 活批次跑完了才算完；历史批次按定义已经完了。
+        // A refreshed running batch is historical only in the sense that its in-memory SSE
+        // session is gone. Its persisted state still says whether generation is finished.
         finished: store.status === 'done' || store.status === 'partial',
         total: store.total,
       }
@@ -604,7 +605,8 @@ export function BatchProgressPage() {
       requested: historical.batch.requested,
       items: [],
       materials: historical.batch.materials,
-      finished: true,
+      finished:
+        historical.batch.state !== 'running' || historical.batch.interrupted,
       total: historical.batch.requestedTotal,
     }
   }, [
@@ -886,6 +888,15 @@ export function BatchProgressPage() {
           <div>
             已到达的 {historical.batch.materials ? Object.keys(historical.batch.materials).length : 0}{' '}
             套是完整的、可以照常使用；缺的部分不会再补齐。需要补的话请重新提交一批。
+          </div>
+        </div>
+      )}
+
+      {historical.batch?.state === 'running' && !historical.batch.interrupted && (
+        <div className="banner banner-info">
+          <strong>这一批仍在后台生成</strong>
+          <div>
+            页面会自动刷新已到达的材料。离开或刷新页面不会中断生成，也不需要重复提交。
           </div>
         </div>
       )}

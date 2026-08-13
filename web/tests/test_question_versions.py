@@ -242,6 +242,22 @@ def test_revision_relay_emits_heartbeats_while_runtime_is_silent(
         thread.name == "question-revision-sse" for thread in threading.enumerate())
 
 
+def test_stale_running_revision_is_projected_as_retryable_interruption(versions):
+    service, store = versions
+    stale = service.reserve("mat-1", "original", [{"id": "c1"}], "reviewer")
+    stale["created_at"] = "2020-01-01T00:00:00Z"
+    stale["operation"] = "revise_material"
+    stale["source_request_id"] = "source-1"
+    put(store, "_question_revisions/mat-1/%s.json" % stale["request_id"], stale)
+    put(store, "_question_revisions/mat-1/running.json", stale)
+
+    document = service.list("mat-1")
+
+    assert document["running_request"] is None
+    assert document["revision_request"]["status"] == "failed"
+    assert document["revision_request"]["failure_code"] == "EXECUTION_INTERRUPTED"
+
+
 def test_sidecar_failure_marks_pointer_failed_instead_of_leaving_a_ghost_lock(
     versions, monkeypatch,
 ):
