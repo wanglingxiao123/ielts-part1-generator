@@ -690,6 +690,222 @@ class TestSurvivesRestart:
         assert {m["material_id"] for m in view["materials"]} == {"m-1", "m-2"}
 
 
+class TestFailedSlotRefill:
+    def _partial_record(self):
+        materials = []
+        for index in range(8):
+            materials.append({
+                "material_id": "m-%d" % index,
+                "scenario_key": "booking-hotel",
+                "index": index,
+                "slot_id": "slot-%d" % (index + 1),
+            })
+        return record(
+            batch_id="b-refill",
+            requested_total=9,
+            scenarios=[{"scenario_key": "booking-hotel", "count": 9}],
+            materials=materials,
+            counts={"succeeded": 8, "failed": 1, "skipped": 0, "degraded": 0},
+        )
+
+    def test_success_fills_the_exact_seat_and_clears_the_shortfall(
+        self, history: BatchHistory, batch_store: InMemoryBatchStore,
+    ):
+        batch_store.save_index("b-refill", self._partial_record())
+        reserved = history.reserve_refill(
+            "b-refill", [{"scenario_key": "booking-hotel", "index": 8}],
+            owner="a@amazon.com")
+        recorder = history.refill_recorder(
+            "b-refill", reserved["execution_id"], reserved["targets"])
+        recorder.start()
+        recorder.on_event(material_event(
+            "slot-9", "booking-hotel", "m-replacement"))
+        recorder.on_event({
+            "type": "batch_completed", "succeeded": 1, "failed": 0,
+            "skipped": 0, "degraded": 0, "at": time.time(),
+        })
+        recorder.close()
+
+        stored = batch_store.load_index("b-refill")
+        replacement = next(
+            row for row in stored["materials"]
+            if row["material_id"] == "m-replacement")
+        assert (replacement["slot_id"], replacement["index"]) == ("slot-9", 8)
+        assert stored["counts"] == {
+            "succeeded": 9, "failed": 0, "skipped": 0, "degraded": 0}
+        assert stored["state"] == "complete"
+        assert stored["refill_execution"]["status"] == "completed"
+
+    def test_duplicate_click_reuses_the_running_execution(
+        self, history: BatchHistory, batch_store: InMemoryBatchStore,
+    ):
+        batch_store.save_index("b-refill", self._partial_record())
+        first = history.reserve_refill(
+            "b-refill", [{"scenario_key": "booking-hotel", "index": 8}],
+            owner="a@amazon.com")
+        second = history.reserve_refill(
+            "b-refill", [{"scenario_key": "booking-hotel", "index": 8}],
+            owner="a@amazon.com")
+        assert second["execution_id"] == first["execution_id"]
+        assert second["reused"] is True
+        assert batch_store.load_index("b-refill")["refill_attempts"] == 1
+
+    def test_refill_rejects_forged_or_nonexistent_seats(
+        self, history: BatchHistory, batch_store: InMemoryBatchStore,
+    ):
+        batch_store.save_index("b-refill", self._partial_record())
+        with pytest.raises(ValueError):
+            history.reserve_refill(
+                "b-refill",
+                [{"scenario_key": "booking-hotel", "index": 8, "slot_id": "slot-1"}],
+                owner="a@amazon.com")
+        with pytest.raises(ValueError):
+            history.reserve_refill(
+                "b-refill", [{"scenario_key": "not-in-plan", "index": 0}],
+                owner="a@amazon.com")
+        with pytest.raises(ValueError):
+            history.reserve_refill(
+                "b-refill", [{"scenario_key": "booking-hotel", "index": "8"}],
+                owner="a@amazon.com")
+
+    def test_refill_rejects_another_owner(
+        self, history: BatchHistory, batch_store: InMemoryBatchStore,
+    ):
+        batch_store.save_index(
+            "b-refill", dict(self._partial_record(), owner="owner@amazon.com"))
+        with pytest.raises(PermissionError):
+            history.reserve_refill(
+                "b-refill", [{"scenario_key": "booking-hotel", "index": 8}],
+                owner="other@amazon.com")
+
+    def test_refill_does_not_overwrite_a_concurrent_submission(
+        self, history: BatchHistory, batch_store: InMemoryBatchStore,
+    ):
+        batch_store.save_index("b-refill", self._partial_record())
+        reserved = history.reserve_refill(
+            "b-refill", [{"scenario_key": "booking-hotel", "index": 8}],
+            owner="a@amazon.com")
+        recorder = history.refill_recorder(
+            "b-refill", reserved["execution_id"], reserved["targets"])
+        recorder.start()
+        history.submit("b-refill", ["m-0"], actor="a@amazon.com")
+        recorder.on_event(material_event(
+            "slot-9", "booking-hotel", "m-replacement"))
+        recorder.on_event({
+            "type": "batch_completed", "succeeded": 1, "failed": 0,
+            "skipped": 0, "degraded": 0, "at": time.time(),
+        })
+        recorder.close()
+
+        stored = batch_store.load_index("b-refill")
+        assert stored["submitted_material_ids"] == ["m-0"]
+        assert stored["submitted_by"] == "a@amazon.com"
+        assert stored["submitted_at"]
+        assert len(stored["materials"]) == 9
+
+    def test_failed_refill_restores_a_retryable_partial_batch(
+        self, history: BatchHistory, batch_store: InMemoryBatchStore,
+    ):
+        batch_store.save_index("b-refill", self._partial_record())
+        first = history.reserve_refill(
+            "b-refill", [{"scenario_key": "booking-hotel", "index": 8}],
+            owner="a@amazon.com")
+        recorder = history.refill_recorder(
+            "b-refill", first["execution_id"], first["targets"])
+        recorder.start()
+        recorder.on_event({
+            "type": "batch_completed", "succeeded": 0, "failed": 1,
+            "skipped": 0, "degraded": 0, "at": time.time(),
+        })
+        recorder.close()
+        failed = batch_store.load_index("b-refill")
+        assert failed["state"] == "complete"
+        assert failed["counts"]["failed"] == 1
+        assert failed["refill_execution"]["status"] == "failed"
+
+        second = history.reserve_refill(
+            "b-refill", [{"scenario_key": "booking-hotel", "index": 8}],
+            owner="a@amazon.com")
+        assert second["execution_id"] != first["execution_id"]
+        assert second["reused"] is False
+
+    def test_duplicate_http_refill_starts_one_paid_invocation(
+        self, auth, static_dir, fanout_runtime: FanOutRuntimeClient,
+        history: BatchHistory, batch_store: InMemoryBatchStore,
+    ):
+        from fastapi.testclient import TestClient
+
+        batch_store.save_index("b-refill", self._partial_record())
+        tier = WebTier(auth, fanout_runtime, str(static_dir), history=history)
+        with TestClient(tier.app) as client:
+            register(client, "a@amazon.com")
+            body = {"seats": [{"scenario_key": "booking-hotel", "index": 8}]}
+            first = client.post("/api/batch-history/b-refill/refill", json=body)
+            second = client.post("/api/batch-history/b-refill/refill", json=body)
+            assert first.status_code == second.status_code == 202
+            assert first.json()["execution_id"] == second.json()["execution_id"]
+            assert second.json()["reused"] is True
+
+            runtime_body = fanout_runtime.body_for("slot-9")
+            runtime_body.push_event(material_event(
+                "slot-1", "booking-hotel", "m-http-replacement"))
+            runtime_body.push_event(request_completed("m-http-replacement"))
+            runtime_body.finish()
+            _await_materials(batch_store, "b-refill", 9)
+
+        assert len(fanout_runtime.calls) == 1
+
+    def test_refill_route_enforces_owner(
+        self, auth, static_dir, fanout_runtime: FanOutRuntimeClient,
+        history: BatchHistory, batch_store: InMemoryBatchStore,
+    ):
+        from fastapi.testclient import TestClient
+
+        batch_store.save_index(
+            "b-refill", dict(self._partial_record(), owner="owner@amazon.com"))
+        tier = WebTier(auth, fanout_runtime, str(static_dir), history=history)
+        with TestClient(tier.app) as client:
+            register(client, "other@amazon.com")
+            response = client.post(
+                "/api/batch-history/b-refill/refill",
+                json={"seats": [{"scenario_key": "booking-hotel", "index": 8}]},
+            )
+        assert response.status_code == 403
+        assert response.json()["error"]["code"] == "BATCH_FORBIDDEN"
+        assert fanout_runtime.calls == []
+
+    def test_custom_refill_reuses_the_original_custom_text(
+        self, auth, static_dir, fanout_runtime: FanOutRuntimeClient,
+        history: BatchHistory, batch_store: InMemoryBatchStore,
+    ):
+        from fastapi.testclient import TestClient
+
+        partial = record(
+            batch_id="b-custom", owner="a@amazon.com", requested_total=1,
+            custom_label="预订社区活动室",
+            scenarios=[{"scenario_key": "custom", "count": 1}],
+            materials=[],
+            counts={"succeeded": 0, "failed": 1, "skipped": 0, "degraded": 0},
+        )
+        batch_store.save_index("b-custom", partial)
+        tier = WebTier(auth, fanout_runtime, str(static_dir), history=history)
+        with TestClient(tier.app) as client:
+            register(client, "a@amazon.com")
+            response = client.post(
+                "/api/batch-history/b-custom/refill",
+                json={"seats": [{"scenario_key": "custom", "index": 0}]},
+            )
+            assert response.status_code == 202
+            deadline = time.monotonic() + 2
+            while not fanout_runtime.calls and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert len(fanout_runtime.calls) == 1
+            payload = fanout_runtime.calls[0]
+            assert payload["scenarios"] == []
+            assert payload["custom_scenario"] == {
+                "text": "预订社区活动室", "count": 1}
+
+
 # ── the added transition, and read-only ──────────────────────────────────────
 
 

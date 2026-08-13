@@ -39,8 +39,15 @@ export const api = {
     return request<BatchListResponse>({ method: 'GET', path: `/batches${qs ? `?${qs}` : ''}` })
   },
 
-  retryBatch: (batchId: string, body: { material_ids?: string[]; scenario_keys?: string[] }) =>
-    request<{ batch_id: string }>({ method: 'POST', path: `/batches/${batchId}/retry`, body }),
+  retryBatch: (
+    batchId: string,
+    body: { seats: Array<{ scenario_key: string; index: number }> },
+  ) =>
+    request<{ batch_id: string; execution_id: string; status: 'running'; reused: boolean }>({
+      method: 'POST',
+      path: `/batch-history/${batchId}/refill`,
+      body,
+    }),
 
   /**
    * 历史批次列表。served by the WEB TIER, not the Runtime.

@@ -386,6 +386,52 @@ class WebTier:
                 )
             return JSONResponse(found)
 
+        @app.post("/api/batch-history/{batch_id}/refill")
+        async def refill_batch(batch_id: str, request: Request) -> JSONResponse:
+            """Start an isolated refill whose results merge into the source batch."""
+            body = _as_dict(await _json_body(request))
+            raw = body.get("seats")
+            if not isinstance(raw, list):
+                return JSONResponse(
+                    _error_body("bad_request", "seats must be a list"), status_code=400)
+            user = request.scope.get(USER_SCOPE_KEY) or {}
+            from starlette.concurrency import run_in_threadpool
+            try:
+                reservation = await run_in_threadpool(
+                    self.history.reserve_refill, batch_id,
+                    [row for row in raw if isinstance(row, dict)],
+                    owner=str(user.get("email") or ""),
+                )
+            except KeyError:
+                return JSONResponse(
+                    _error_body("BATCH_NOT_FOUND",
+                                "没有找到批次 %s 的历史记录" % batch_id),
+                    status_code=404)
+            except PermissionError:
+                return JSONResponse(
+                    _error_body("BATCH_FORBIDDEN", "你不能补生成其他人的批次。"),
+                    status_code=403)
+            except ValueError:
+                return JSONResponse(
+                    _error_body("REFILL_EMPTY", "这些版位已经补齐，无需再次生成。"),
+                    status_code=409)
+            except Exception as exc:  # noqa: BLE001
+                return JSONResponse(_infra_error_body(
+                    "REFILL_RESERVE_FAILED", "补生成任务没有创建成功。", exc),
+                    status_code=502)
+
+            execution_id = str(reservation["execution_id"])
+            if not reservation.get("reused"):
+                self._start_batch_refill(
+                    batch_id, execution_id, list(reservation["targets"]),
+                    custom_label=str(reservation.get("custom_label") or ""))
+            return JSONResponse({
+                "batch_id": batch_id,
+                "execution_id": execution_id,
+                "status": "running",
+                "reused": bool(reservation.get("reused")),
+            }, status_code=202)
+
         @app.get("/api/batch-history-material/{material_id}")
         async def get_history_material(
             material_id: str, version_id: str = ""
@@ -1085,6 +1131,48 @@ class WebTier:
 
         execution, _ = self.executions.start("batch:%s" % batch_id, producer)
         return _execution_response(execution, extra_headers={"X-Batch-ID": batch_id})
+
+    def _start_batch_refill(
+        self, batch_id: str, execution_id: str, targets: List[Dict[str, Any]],
+        *, custom_label: str = "",
+    ) -> None:
+        children = []
+        slot_ids: List[str] = []
+        for target in targets:
+            slot_id = str(target["slot_id"])
+            scenario = str(target["scenario_key"])
+            payload: Dict[str, Any] = {
+                "action": "generate_sets", "scenarios": [scenario], "count": 1}
+            if scenario == "custom":
+                payload["scenarios"] = []
+                payload["custom_scenario"] = {"text": custom_label, "count": 1}
+            planned, _ = plan_children(
+                payload, batch_id="%s-%s" % (execution_id, slot_id))
+            if not planned:
+                continue
+            child = planned[0]
+            child.index = len(children)
+            child.slot_ids = [slot_id]
+            child.seats = {slot_id: int(target["index"])}
+            child.payload["batch_id"] = "%s-%s" % (execution_id, slot_id)
+            child.payload["group_id"] = batch_id
+            children.append(child)
+            slot_ids.append(slot_id)
+        fan = FanOut(
+            self.runtime, children, slot_ids, executor=self.executor(),
+            concurrency=self.fanout_concurrency, batch_id=execution_id,
+        )
+        recorder = self.history.refill_recorder(
+            batch_id, execution_id, targets)
+
+        def producer(publish) -> None:
+            async def consume() -> None:
+                async for frame in _frames(fan, recorder):
+                    publish(frame)
+            import asyncio
+            asyncio.run(consume())
+
+        self.executions.start("batch-refill:%s" % execution_id, producer)
 
     def _serve_static(self, full_path: str, request: Request) -> Any:
         """The frontend build, with SPA fallback.

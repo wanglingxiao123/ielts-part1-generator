@@ -679,6 +679,39 @@ const mockTransport = async (spec: RequestSpec): Promise<unknown> => {
     return detail
   }
 
+  if (spec.method === 'POST' && resource === 'batch-history' && sub === 'refill') {
+    const entry = loadHistory().find((b) => b.batch_id === id)
+    if (!entry) throw new ApiError(404, 'BATCH_NOT_FOUND', `没有找到批次 ${id} 的历史记录`)
+    const body = spec.body as { seats?: Array<{ scenario_key: string; index: number }> }
+    const seats = body.seats ?? []
+    const additions = seats.map((seat, offset) => ({
+      material_id: nextMaterialId(seat.scenario_key),
+      scenario_key: seat.scenario_key,
+      index: seat.index,
+      slot_id: `slot-refill-${offset + 1}`,
+      verdict: 'PASS' as const,
+      degraded: false,
+    }))
+    upsertHistory({
+      ...entry,
+      materials: [...entry.materials, ...additions],
+      state: 'complete',
+      completed_at: Date.now() / 1000,
+      counts: {
+        succeeded: entry.materials.length + additions.length,
+        failed: Math.max(0, entry.requested_total - entry.materials.length - additions.length),
+        skipped: 0,
+        degraded: 0,
+      },
+    })
+    return {
+      batch_id: id,
+      execution_id: `${id}-refill-1`,
+      status: 'running',
+      reused: false,
+    }
+  }
+
   if (spec.method === 'POST' && resource === 'batch-history' && sub === 'submit') {
     const entry = loadHistory().find((b) => b.batch_id === id)
     if (!entry) throw new ApiError(404, 'BATCH_NOT_FOUND', `没有找到批次 ${id} 的历史记录`)

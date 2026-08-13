@@ -7,7 +7,7 @@
  * point of the first describe block.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import type { MaterialRecord, SseEvent } from '@/contracts/api'
@@ -15,6 +15,7 @@ import { buildRecord, type FixtureKind } from '@/mocks/fixtures'
 import { useBatchStore } from '@/stores/batchStore'
 import { useReviewQueue } from '@/stores/reviewQueueStore'
 import { BatchProgressPage } from './BatchProgressPage'
+import { api } from '@/api/endpoints'
 
 /* ── harness ─────────────────────────────────────────────────────────────── */
 
@@ -326,6 +327,93 @@ describe('generate_sets 的收尾', () => {
     expect(screen.queryByText(/已存断点/)).not.toBeInTheDocument()
     expect(screen.getByText(/有 3 套未能生成/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /补生成/ })).toBeInTheDocument()
+  })
+
+  it('补生成留在原批次并提交精确缺失版位', async () => {
+    const user = userEvent.setup()
+    halfDeliveredThen({
+      request_status: 'incomplete',
+      requested: 4,
+      delivered: 1,
+      resumable_slots: [],
+    })
+    const retry = vi.spyOn(api, 'retryBatch').mockResolvedValue({
+      batch_id: BATCH,
+      execution_id: `${BATCH}-refill-1`,
+      status: 'running',
+      reused: false,
+    })
+    vi.spyOn(api, 'batchHistoryDetail').mockImplementation(() => new Promise(() => {}))
+    renderPage()
+
+    await user.click(screen.getByRole('button', { name: /补生成/ }))
+
+    expect(retry).toHaveBeenCalledWith(BATCH, {
+      seats: [
+        { scenario_key: 'accommodation-rental', index: 1 },
+        { scenario_key: 'booking-hotel', index: 0 },
+        { scenario_key: 'booking-hotel', index: 1 },
+      ],
+    })
+    expect(navigations).toEqual([])
+  })
+
+  it('补生成完成后轮询原批次并自动移除缺口告警', async () => {
+    const user = userEvent.setup()
+    halfDeliveredThen({
+      request_status: 'incomplete',
+      requested: 4,
+      delivered: 1,
+      resumable_slots: [],
+    })
+    vi.spyOn(api, 'retryBatch').mockResolvedValue({
+      batch_id: BATCH,
+      execution_id: `${BATCH}-refill-1`,
+      status: 'running',
+      reused: false,
+    })
+    const records = TWO_SCENARIOS.map((plan) =>
+      buildRecord(plan.kind, {
+        materialId: plan.materialId,
+        batchId: BATCH,
+        scenarioKey: plan.scenarioKey,
+        index: plan.index,
+      }),
+    )
+    vi.spyOn(api, 'batchHistoryDetail').mockResolvedValue({
+      batch_id: BATCH,
+      created_at: Date.now() / 1000,
+      completed_at: Date.now() / 1000,
+      status: 'pending_selection',
+      read_only: false,
+      interrupted: false,
+      state: 'complete',
+      requested_total: 4,
+      arrived: 4,
+      scenarios: [
+        { scenario_key: 'accommodation-rental', count: 2 },
+        { scenario_key: 'booking-hotel', count: 2 },
+      ],
+      custom_label: '',
+      counts: { succeeded: 4, failed: 0, skipped: 0, degraded: 0 },
+      submitted_at: null,
+      submitted_by: null,
+      submitted_material_ids: [],
+      materials: records.map((record, index) => ({
+        ...record,
+        slot_id: `slot-${index + 1}`,
+      })),
+    })
+    renderPage()
+
+    await user.click(screen.getByRole('button', { name: /补生成/ }))
+
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: /补生成/ })).not.toBeInTheDocument(),
+    )
+    expect(screen.queryByText(/套未能生成/)).not.toBeInTheDocument()
+    expect(screen.getByText(/已完成 4\/4/)).toBeInTheDocument()
+    expect(navigations).toEqual([])
   })
 
   it('系统故障说清「重试没用」，不混进材料质量', () => {

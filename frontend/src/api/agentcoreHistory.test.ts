@@ -101,38 +101,6 @@ describe('a material not in this page session falls back to history', () => {
   })
 })
 
-describe('补生成 after a reload', () => {
-  /**
-   * 补生成 used to resolve each pending slot's scenario through the adapter's in-memory `sessions`
-   * map. That map is empty after a reload and for any historical batch, so `keys.length === 0` and
-   * the call threw 「没有可补生成的场景」 — in exactly the situations a user reaches for it. The page
-   * always knows the scenario, so the caller now sends `scenario_keys`.
-   *
-   * Asserted by its observable consequence: with keys supplied and NO page session, the adapter
-   * must get past the resolution step and start a batch (it then needs an SSE stream, which this
-   * transport-level harness does not serve — reaching that point is the proof). With no keys it
-   * must still refuse, so the guard is not simply gone.
-   */
-  it('gets past scenario resolution with no page session', async () => {
-    const failure = await transport({
-      method: 'POST',
-      path: '/batches/web-1785395193789-2/retry',
-      body: { scenario_keys: ['booking-hotel', 'daily-driving-lessons'] },
-    }).catch((e: { code?: string }) => e)
-    expect((failure as { code?: string }).code).not.toBe('RETRY_EMPTY')
-  })
-
-  it('still refuses when there is nothing to regenerate', async () => {
-    await expect(
-      transport({
-        method: 'POST',
-        path: '/batches/web-1785395193789-2/retry',
-        body: { scenario_keys: [] },
-      }),
-    ).rejects.toMatchObject({ code: 'RETRY_EMPTY' })
-  })
-})
-
 /**
  * 试听历史批次的材料。
  *

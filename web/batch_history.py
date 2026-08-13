@@ -343,21 +343,22 @@ class BatchHistory:
         creating a record for a batch that never ran.
         """
         moment = time.time() if now is None else now
-        record = self.store.load_index(batch_id)
-        if record is None:
-            raise KeyError(batch_id)
-        record["submitted_at"] = record.get("submitted_at") or moment
-        record["submitted_by"] = actor
-        # De-duplicated while preserving order: the same material submitted twice is one pick, and
-        # a set would make the stored order arbitrary between runs.
-        seen, ordered = set(), []
-        for material_id in material_ids:
-            token = str(material_id)
-            if token and token not in seen:
-                seen.add(token)
-                ordered.append(token)
-        record["submitted_material_ids"] = ordered
-        self.store.save_index(batch_id, record)
+        with self._lock:
+            record = self.store.load_index(batch_id)
+            if record is None:
+                raise KeyError(batch_id)
+            record["submitted_at"] = record.get("submitted_at") or moment
+            record["submitted_by"] = actor
+            # De-duplicated while preserving order: the same material submitted twice is one pick,
+            # and a set would make the stored order arbitrary between runs.
+            seen, ordered = set(), []
+            for material_id in material_ids:
+                token = str(material_id)
+                if token and token not in seen:
+                    seen.add(token)
+                    ordered.append(token)
+            record["submitted_material_ids"] = ordered
+            self.store.save_index(batch_id, record)
         return derive(record, now=moment)
 
     def withdraw(self, batch_id: str, material_ids: Optional[List[str]] = None, *,
@@ -382,22 +383,23 @@ class BatchHistory:
         request as withdrawing once, and the caller is trying to reach a state, not perform a delta.
         """
         moment = time.time() if now is None else now
-        record = self.store.load_index(batch_id)
-        if record is None:
-            raise KeyError(batch_id)
+        with self._lock:
+            record = self.store.load_index(batch_id)
+            if record is None:
+                raise KeyError(batch_id)
 
-        if material_ids is None:
-            remaining: List[str] = []
-        else:
-            dropped = {str(m) for m in material_ids}
-            remaining = [str(m) for m in (record.get("submitted_material_ids") or [])
-                         if str(m) not in dropped]
+            if material_ids is None:
+                remaining: List[str] = []
+            else:
+                dropped = {str(m) for m in material_ids}
+                remaining = [str(m) for m in (record.get("submitted_material_ids") or [])
+                             if str(m) not in dropped]
 
-        record["submitted_material_ids"] = remaining
-        if not remaining:
-            record["submitted_at"] = None
-            record["submitted_by"] = None
-        self.store.save_index(batch_id, record)
+            record["submitted_material_ids"] = remaining
+            if not remaining:
+                record["submitted_at"] = None
+                record["submitted_by"] = None
+            self.store.save_index(batch_id, record)
         return derive(record, now=moment)
 
     # ── writes used by the recorder ──────────────────────────────────────────
@@ -407,6 +409,97 @@ class BatchHistory:
                  scenarios: List[Dict[str, Any]]) -> "BatchRecorder":
         return BatchRecorder(self, batch_id, owner=owner, requested_total=requested_total,
                              scenarios=scenarios, custom_label=custom_label)
+
+    def reserve_refill(
+        self, batch_id: str, seats: List[Dict[str, Any]], *, owner: str
+    ) -> Dict[str, Any]:
+        """Reserve one isolated execution for the exact empty seats of an existing batch."""
+        with self._lock:
+            record = self.store.load_index(batch_id)
+            if record is None:
+                raise KeyError(batch_id)
+            record_owner = str(record.get("owner") or "")
+            if record_owner and record_owner != owner:
+                raise PermissionError(batch_id)
+            if record.get("submitted_at"):
+                raise ValueError("submitted batches cannot be refilled")
+            present = {
+                (str(row.get("scenario_key") or ""), _as_int(row.get("index")))
+                for row in record.get("materials") or [] if isinstance(row, dict)
+            }
+            slot_for: Dict[Tuple[str, int], str] = {}
+            slot_number = 1
+            for scenario_row in record.get("scenarios") or []:
+                if not isinstance(scenario_row, dict):
+                    continue
+                scenario_key = str(scenario_row.get("scenario_key") or "")
+                count = int(_as_float(scenario_row.get("count")))
+                for index in range(max(0, count)):
+                    slot_for[(scenario_key, index)] = "slot-%d" % slot_number
+                    slot_number += 1
+            targets, seen = [], set()
+            for row in seats:
+                scenario = str(row.get("scenario_key") or "").strip()
+                raw_index = row.get("index")
+                if isinstance(raw_index, bool) or not isinstance(raw_index, int):
+                    raise ValueError("invalid refill seat index")
+                index = raw_index
+                key = (scenario, index)
+                canonical_slot = slot_for.get(key)
+                supplied_slot = str(row.get("slot_id") or "").strip()
+                if canonical_slot is None or (supplied_slot and supplied_slot != canonical_slot):
+                    raise ValueError("refill seat does not belong to source batch")
+                if key in present or key in seen:
+                    continue
+                seen.add(key)
+                targets.append({
+                    "scenario_key": scenario, "index": index, "slot_id": canonical_slot})
+            if not targets:
+                raise ValueError("no missing seats to refill")
+            if any(row["scenario_key"] == "custom" for row in targets) and not str(
+                record.get("custom_label") or ""
+            ).strip():
+                raise ValueError("custom refill is missing its original scenario text")
+
+            active = record.get("refill_execution")
+            if isinstance(active, dict) and active.get("status") == "running":
+                return dict(active, targets=active.get("targets") or targets, reused=True)
+
+            attempt = int(_as_float(record.get("refill_attempts"))) + 1
+            execution_id = "%s-refill-%d" % (batch_id, attempt)
+            refill = {
+                "execution_id": execution_id,
+                "status": "running",
+                "targets": targets,
+                "owner": owner,
+                "started_at": time.time(),
+            }
+            record["refill_attempts"] = attempt
+            record["refill_execution"] = refill
+            record["state"] = "running"
+            record["completed_at"] = None
+            record["updated_at"] = time.time()
+            self.store.save_index(batch_id, record)
+            return dict(
+                refill, reused=False,
+                custom_label=str(record.get("custom_label") or ""),
+            )
+
+    def refill_recorder(
+        self, batch_id: str, execution_id: str, targets: List[Dict[str, Any]]
+    ) -> "BatchRecorder":
+        record = self.store.load_index(batch_id)
+        if record is None:
+            raise KeyError(batch_id)
+        target_by_slot = {str(row["slot_id"]): dict(row) for row in targets}
+        return BatchRecorder(
+            self, batch_id, owner=str(record.get("owner") or ""),
+            requested_total=int(_as_float(record.get("requested_total"))),
+            scenarios=list(record.get("scenarios") or []),
+            custom_label=str(record.get("custom_label") or ""),
+            initial_record=record, refill_execution_id=execution_id,
+            refill_targets=target_by_slot,
+        )
 
 
 class BatchRecorder:
@@ -418,11 +511,13 @@ class BatchRecorder:
 
     def __init__(self, history: BatchHistory, batch_id: str, *, owner: str,
                  requested_total: int, scenarios: List[Dict[str, Any]],
-                 custom_label: str = "") -> None:
+                 custom_label: str = "", initial_record: Optional[Dict[str, Any]] = None,
+                 refill_execution_id: str = "",
+                 refill_targets: Optional[Dict[str, Dict[str, Any]]] = None) -> None:
         self._history = history
         self._batch_id = batch_id
         self._lock = threading.Lock()
-        self._record: Dict[str, Any] = {
+        self._record: Dict[str, Any] = dict(initial_record or {
             "record_version": RECORD_VERSION,
             "batch_id": batch_id,
             "owner": owner,
@@ -442,7 +537,9 @@ class BatchRecorder:
             "submitted_at": None,
             "submitted_by": None,
             "submitted_material_ids": [],
-        }
+        })
+        self._refill_execution_id = refill_execution_id
+        self._refill_targets = dict(refill_targets or {})
         # (batch_id, material_id, artifacts) pending an artifact write. A list because each is a
         # distinct object and one cannot replace another -- unlike the index, which coalesces.
         self._artifacts: List[Tuple[str, Dict[str, Any]]] = []
@@ -484,15 +581,22 @@ class BatchRecorder:
             # no id to key an artifact on and nothing later could resolve it. It still counts toward
             # the batch's totals through `batch_completed`; it just cannot be a history row.
             return
+        target = self._refill_targets.get(str(event.get("slot_id") or ""))
+        if self._refill_execution_id and target is None:
+            LOG.warning("batch refill %s returned unknown slot %s",
+                        self._refill_execution_id, event.get("slot_id"))
+            return
         summary = {
             "material_id": str(material_id),
-            "scenario_key": str(event.get("scenario_key") or event.get("scenario") or ""),
-            "slot_id": str(event.get("slot_id") or ""),
+            "scenario_key": str((target or {}).get("scenario_key")
+                                or event.get("scenario_key") or event.get("scenario") or ""),
+            "slot_id": str((target or {}).get("slot_id") or event.get("slot_id") or ""),
             # Read back by `get_batch` and used to seat the card at `(scenario_key, index)`. It was
             # absent here while being read there, so every historical material came back with
             # `index: None`, the frontend defaulted it to 0, and the second material of a scenario
             # landed on the first one's slot -- half a batch vanishing from its own history.
-            "index": _as_int(event.get("index")),
+            "index": _as_int((target or {}).get("index")
+                             if target is not None else event.get("index")),
             "verdict": str((event.get("audit") or {}).get("verdict") or ""),
             "degraded": bool(event.get("degraded")),
             "created_at": _as_float(event.get("at")) or time.time(),
@@ -513,21 +617,52 @@ class BatchRecorder:
             if event.get(key) is not None
         })
         with self._lock:
-            existing = [m for m in self._record["materials"]
-                        if m.get("material_id") == summary["material_id"]]
-            if not existing:
+            if self._refill_execution_id:
+                seat = (summary["scenario_key"], summary["index"])
+                self._record["materials"] = [
+                    row for row in self._record["materials"]
+                    if (str(row.get("scenario_key") or ""), _as_int(row.get("index"))) != seat
+                ]
+                self._record["materials"].append(summary)
+            elif not any(m.get("material_id") == summary["material_id"]
+                         for m in self._record["materials"]):
                 self._record["materials"].append(summary)
             self._artifacts.append((summary["material_id"], artifacts))
         self._touch()
 
     def _on_completed(self, event: Dict[str, Any]) -> None:
         with self._lock:
-            self._record["counts"] = {
-                key: int(_as_float(event.get(key)))
-                for key in ("succeeded", "failed", "skipped", "degraded")
-            }
+            if self._refill_execution_id:
+                arrived = len({
+                    (str(row.get("scenario_key") or ""), _as_int(row.get("index")))
+                    for row in self._record.get("materials") or [] if isinstance(row, dict)
+                })
+                requested = int(_as_float(self._record.get("requested_total")))
+                self._record["counts"] = {
+                    "succeeded": arrived,
+                    "failed": max(0, requested - arrived),
+                    "skipped": 0,
+                    "degraded": sum(1 for row in self._record.get("materials") or []
+                                    if row.get("degraded")),
+                }
+            else:
+                self._record["counts"] = {
+                    key: int(_as_float(event.get(key)))
+                    for key in ("succeeded", "failed", "skipped", "degraded")
+                }
             self._record["state"] = "complete"
             self._record["completed_at"] = _as_float(event.get("at")) or time.time()
+            if self._refill_execution_id:
+                arrived = len({
+                    (str(row.get("scenario_key") or ""), _as_int(row.get("index")))
+                    for row in self._record.get("materials") or [] if isinstance(row, dict)
+                })
+                requested = int(_as_float(self._record.get("requested_total")))
+                refill = dict(self._record.get("refill_execution") or {})
+                if refill.get("execution_id") == self._refill_execution_id:
+                    refill["status"] = "completed" if arrived >= requested else "failed"
+                    refill["completed_at"] = self._record["completed_at"]
+                    self._record["refill_execution"] = refill
         self._touch()
 
     def _touch(self) -> None:
@@ -611,6 +746,21 @@ class BatchRecorder:
                 LOG.warning("batch history: artifact write failed for %s", material_id,
                             exc_info=True)
         try:
-            store.save_index(self._batch_id, snapshot)
+            if self._refill_execution_id:
+                # Submission/withdrawal may happen while a refill is running. Merge only the
+                # aggregate fields owned by this execution into the latest record so its old
+                # opening snapshot cannot erase a newer reviewer decision.
+                with self._history._lock:
+                    latest = store.load_index(self._batch_id) or {}
+                    latest.update({
+                        key: snapshot.get(key)
+                        for key in (
+                            "materials", "counts", "state", "updated_at", "completed_at",
+                            "refill_execution",
+                        )
+                    })
+                    store.save_index(self._batch_id, latest)
+            else:
+                store.save_index(self._batch_id, snapshot)
         except Exception:  # noqa: BLE001
             LOG.warning("batch history: index write failed for %s", self._batch_id, exc_info=True)

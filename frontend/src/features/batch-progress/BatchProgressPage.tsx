@@ -446,6 +446,7 @@ export function BatchProgressPage() {
   const thresholds = getThresholds()
   const [now, setNow] = useState(Date.now())
   const [retryBusy, setRetryBusy] = useState(false)
+  const [refillWatching, setRefillWatching] = useState(false)
   const [snapshotError, setSnapshotError] = useState<string | null>(null)
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set<string>())
   /** 正在对比的场景 key；null = 不在对比模式。 */
@@ -465,7 +466,7 @@ export function BatchProgressPage() {
    * 从历史面板点了另一批——那一批没有 SSE 可接、store 里也没有它的材料，只能从
    * `/api/batch-history/{id}` 取。这个判据是两条数据路径的唯一分岔点。
    */
-  const isLiveBatch = Boolean(batchId) && store.batchId === batchId
+  const isLiveBatch = Boolean(batchId) && store.batchId === batchId && !refillWatching
   const historical = useHistoricalBatch(batchId, !isLiveBatch, historyToken)
 
   // Refresh / revisit: reattach to the in-flight batch (prd R3).
@@ -572,8 +573,6 @@ export function BatchProgressPage() {
     [store.total],
   )
   const runningLong = estimateCeilingMs > 0 && elapsedMs >= estimateCeilingMs
-  const items = store.itemOrder.map((id) => store.items[id]).filter((i) => i !== undefined)
-  const pending = items.filter((i) => i!.status !== 'done')
 
   /**
    * 只读。**后端给的**（`read_only`），不在这里按状态重算——见文件头。
@@ -673,6 +672,11 @@ export function BatchProgressPage() {
 
   const completed = groups.reduce((n, g) => n + g.arrived, 0)
   const finished = batchFinished
+  const missingSlots = groups.flatMap((group) =>
+    group.slots
+      .filter((slot) => slot.state !== 'material')
+      .map((slot) => ({ scenario_key: group.scenarioKey, index: slot.index })),
+  )
   /**
    * checkpoint：请求没交付齐，而余下的卡位后端说得出「下一次能接着做」。
    *
@@ -714,11 +718,12 @@ export function BatchProgressPage() {
       // user most wants it. The page already knows each pending slot's scenario; there is nothing
       // to look up.
       const res = await api.retryBatch(batchId, {
-        scenario_keys: pending
-          .map((i) => i!.scenario_key)
-          .filter((k): k is string => Boolean(k)),
+        seats: missingSlots,
       })
-      navigate(`/batches/${res.batch_id}`)
+      if (res.batch_id === batchId) {
+        setRefillWatching(true)
+        setHistoryToken((n) => n + 1)
+      }
     } finally {
       setRetryBusy(false)
     }
@@ -939,9 +944,10 @@ export function BatchProgressPage() {
 
       {/* 「有几套没生成出来」是结果，不是环节：这里只说数量和补生成的入口，
           不再逐套播报它卡在哪个内部环节、试了几次。 */}
-      {isLiveBatch && !checkpointed && store.status === 'partial' && pending.length > 0 && (
+      {!checkpointed && finished && missingSlots.length > 0 &&
+        !historical.batch?.interrupted && !readOnly && (
         <div className="banner banner-warn">
-          <strong>有 {pending.length} 套未能生成</strong>
+          <strong>有 {missingSlots.length} 套未能生成</strong>
           <div>
             已生成的 {completed} 套可以照常选用。缺的部分可以单独补生成，不必重跑整批。
             <div style={{ marginTop: 8 }}>
@@ -951,7 +957,7 @@ export function BatchProgressPage() {
                 disabled={retryBusy}
                 onClick={() => void doRetry()}
               >
-                补生成这 {pending.length} 套
+                补生成这 {missingSlots.length} 套
               </button>
             </div>
           </div>

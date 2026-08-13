@@ -1346,35 +1346,6 @@ const agentCoreTransport: Transport = async (spec: RequestSpec): Promise<unknown
     return response
   }
 
-  if (spec.method === 'POST' && resource === 'batches' && sub === 'retry') {
-    const body = spec.body as { material_ids?: string[]; scenario_keys?: string[] }
-    const source = sessions.get(id!)
-    // Resolve each id back to its scenario. Both shapes reach here: a failed slot is keyed on its
-    // placeholder (`<batchId>::slot-N`), a delivered one on the backend's material_id. Matching
-    // against BOTH fields rather than parsing the string is what keeps this working now that the
-    // two id spaces are no longer interchangeable.
-    const keys =
-      body.scenario_keys ??
-      (body.material_ids ?? [])
-        .map(
-          (mid) =>
-            [...(source?.slots.values() ?? [])].find(
-              (s) => s.materialId === mid || s.placeholderId === mid,
-            )?.scenarioKey,
-        )
-        .filter((k): k is string => Boolean(k))
-    if (keys.length === 0) {
-      throw new ApiError(400, 'RETRY_EMPTY', '没有可补生成的场景')
-    }
-    const counts: Record<string, number> = {}
-    for (const k of keys) counts[k] = (counts[k] ?? 0) + 1
-    const created = await createBatch({
-      requests: Object.entries(counts).map(([scenario_key, count]) => ({ scenario_key, count })),
-      options: { narration_mode: 'full' },
-    })
-    return { batch_id: created.batch_id }
-  }
-
   if (spec.method === 'GET' && resource === 'materials' && id && !sub) {
     const hit = findSlotByMaterial(id)
     if (hit?.slot.record) return hit.slot.record
