@@ -1056,8 +1056,7 @@ h3 {
   z-index: 2;
 }
 
-/* form_group 括号：括号长度就是那一组题的轮次跨度——宽括号意味着考生要跨半篇回忆
-   才能填完一张表。只有被声明过的组才画。 */
+/* form_group 括号：括号长度展示该题组覆盖的轮次范围。只有被声明过的组才画。 */
 .dist-thumb-bracket {
   position: absolute;
   top: 22px;

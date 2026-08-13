@@ -482,16 +482,14 @@ describe('formGroups', () => {
     const b = gBal.groups.find((g) => g.name === 'B')!
     expect(b.numbers).toEqual([8, 9, 10])
     expect(b.turnSpan).toBe(5)
-    expect(b.spanWarn).toBe(false)
   })
 
   it('widens the table group span when its first point is pulled into the cluster', () => {
     const b = gClu.groups.find((g) => g.name === 'B')!
     expect(b.turnSpan).toBe(11) // 29 → 40, vs 5 when balanced
-    expect(b.spanWarn).toBe(false) // still under GROUP_SPAN_WARN = 12
   })
 
-  it('flags a group whose turn span exceeds GROUP_SPAN_WARN', () => {
+  it('reports a wide group span without treating it as a quality defect', () => {
     const bp = structuredClone(balanced.blueprint) as Blueprint
     const item8 = bp.items.find((i) => i.number === 8)!
     item8.turn_index = 24
@@ -499,7 +497,6 @@ describe('formGroups', () => {
     const g = analyseFormGroups(viewWith(bp), T)
     const b = g.groups.find((x) => x.name === 'B')!
     expect(b.turnSpan).toBe(16)
-    expect(b.spanWarn).toBe(true)
   })
 
   it('confirms the layout coverage covers 1..10 and agrees with item_form', () => {
@@ -562,10 +559,8 @@ describe('formGroups', () => {
    * `form_group: null` still lives. The three note points are chosen because they
    * are the ones the real generator left ungrouped.
    *
-   * The turn indices are set explicitly: the fixture's natural spacing happens to
-   * land exactly ON GROUP_SPAN_WARN, and a regression test that depends on fixture
-   * spacing staying one side of a threshold breaks for reasons unrelated to the
-   * bug it guards.
+   * The turn indices are set explicitly so the test proves that a wide span remains
+   * available as descriptive data without becoming a defect.
    */
   const LOOSE_TURNS = [7, 17, 27] // spread over a 20-turn span, all non-narrator turns
   const looseNotes = (bp: Blueprint) => {
@@ -588,18 +583,17 @@ describe('formGroups', () => {
     const g = analyseFormGroups(viewWith(bp), T)
     const nullBucket = g.groups.find((x) => x.itemForm === 'note' && x.ungrouped)!
     expect(nullBucket.turnSpan).toBe(20) // still reported as raw data
-    expect(nullBucket.spanWarn).toBe(false) // but NOT flagged as a defect
     expect(nullBucket.canFormQuestion).toBe(false)
   })
 
-  it('still flags span on a DECLARED group of the same shape', () => {
+  it('reports span on a declared group without judging it', () => {
     const bp = structuredClone(balanced.blueprint) as Blueprint
     // Same points, same turns — the only change is that they now claim to belong together.
     for (const i of looseNotes(bp)) i.form_group = 'C'
     const g = analyseFormGroups(viewWith(bp), T)
     const declared = g.groups.find((x) => x.name === 'C')!
     expect(declared.ungrouped).toBe(false)
-    expect(declared.spanWarn).toBe(true)
+    expect(declared.turnSpan).toBe(20)
   })
 
   /**

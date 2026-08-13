@@ -83,20 +83,6 @@ export function buildFacts(
   }
 }
 
-/**
- * Widest span among DECLARED groups only.
- *
- * The form_group=null bucket holds points that were never claimed to belong
- * together, so its span says nothing about whether a table question is
- * answerable. Including it let an unrelated pair of standalone points 20 turns
- * apart decide priority 4 between two candidates.
- */
-function widestGroupSpan(f: CandidateFacts): number {
-  return f.groups.groups
-    .filter((g) => !g.ungrouped)
-    .reduce((max, g) => Math.max(max, g.turnSpan), 0)
-}
-
 export function compareCandidates(
   a: CandidateFacts,
   b: CandidateFacts,
@@ -165,21 +151,6 @@ export function compareCandidates(
       favour,
       `${worse.label} 出不了成组完成题——同类信息点凑不满 3 个`,
     )
-  } else {
-    const spanA = widestGroupSpan(a)
-    const spanB = widestGroupSpan(b)
-    const aWarn = spanA > thresholds.GROUP_SPAN_WARN
-    const bWarn = spanB > thresholds.GROUP_SPAN_WARN
-    if (aWarn !== bWarn) {
-      const favour: Lean = aWarn ? 'B' : 'A'
-      const worse = aWarn ? a : b
-      decide(
-        4,
-        favour,
-        `${worse.label} 有一组表格题的信息点前后隔了 ${Math.max(spanA, spanB)} 轮，` +
-          `考生要跨半篇回忆才能填完`,
-      )
-    }
   }
 
   // 5 defect counts by severity, not by wording.

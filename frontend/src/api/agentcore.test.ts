@@ -271,11 +271,10 @@ describe('form groups on real output', () => {
     expect(Math.max(...byForm.values())).toBeGreaterThan(1)
   })
 
-  it('raises no span or viability flag against undeclared groups', () => {
+  it('raises no viability flag against undeclared groups', () => {
     const analysis = analyseFormGroups(view, FALLBACK_CONFIG.thresholds)
     for (const g of analysis.groups) {
       if (!g.ungrouped) continue
-      expect(g.spanWarn, `${g.itemForm} null bucket`).toBe(false)
       expect(g.canFormQuestion).toBe(false)
     }
   })

@@ -60,7 +60,7 @@ export interface AxisBracket {
   widthPercent: number
   /** 一句话说明，用作 title/图例文字。 */
   label: string
-  /** 跨度过宽（form_group）或密度过高（cluster）。 */
+  /** 密度过高（cluster）。题组跨度本身不是质量缺陷。 */
   warn: boolean
   numbers: number[]
 }
@@ -86,9 +86,8 @@ export function declaredGroupBrackets(
         widthPercent: axisWidthPercent(startOrd, endOrd, span),
         label:
           `${layoutLabel(g.itemForm)}${g.name ? ` ${g.name}` : ''}：` +
-          `${g.numbers.map((n) => circled(n)).join('')}` +
-          (g.spanWarn ? ' ⚠ 跨度太宽，考生要跨半篇回忆' : ''),
-        warn: g.spanWarn,
+          `${g.numbers.map((n) => circled(n)).join('')}`,
+        warn: false,
         numbers: g.numbers,
       }
     })

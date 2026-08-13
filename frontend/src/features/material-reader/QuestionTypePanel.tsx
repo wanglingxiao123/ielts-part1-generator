@@ -49,10 +49,8 @@ export function QuestionTypePanel({ analysis }: { analysis: FormGroupAnalysis })
                   {groups.map((g) => (
                     <div key={`${g.name ?? 'null'}`}>
                       {g.name ? `${g.name} 组` : '各自独立的点'} · {g.numbers.length} 个
-                      {/* Span is only a property of a declared group; showing it
-                          for the null bucket reads as a defect that is not one. */}
+                      {/* Span is descriptive context for declared groups, not a defect. */}
                       {!g.ungrouped && ` · 前后隔 ${g.turnSpan} 轮`}{' '}
-                      {g.spanWarn && <span className="flag flag-warn">隔太远，要跨半篇回忆</span>}
                       {g.canFormQuestion ? (
                         <span className="flag flag-good">可成题</span>
                       ) : (

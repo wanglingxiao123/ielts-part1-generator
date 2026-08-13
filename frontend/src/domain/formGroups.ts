@@ -29,15 +29,14 @@ export interface FormGroupSummary {
   itemForm: ItemForm
   /**
    * True when `form_group` is null, i.e. these points were never declared to
-   * belong together. Their turn span is not a defect — see `spanWarn`.
+   * belong together.
    */
   ungrouped: boolean
   numbers: number[]
   turnStart: number
   turnEnd: number
-  /** Turn-index span. Wide span = candidate must recall across half the audio. */
+  /** Turn-index span, shown as descriptive information rather than a quality judgement. */
   turnSpan: number
-  spanWarn: boolean
   /** A coherent Form, Note, or Table completion group needs >= 3 homogeneous points. */
   canFormQuestion: boolean
 }
@@ -91,7 +90,7 @@ const FORMS: readonly CurrentLayout[] = CURRENT_LAYOUTS
 
 export function analyseFormGroups(
   view: ViewMaterial,
-  thresholds: Thresholds,
+  _thresholds: Thresholds,
 ): FormGroupAnalysis {
   const items = view.blueprint.items
 
@@ -139,14 +138,6 @@ export function analyseFormGroups(
       turnStart,
       turnEnd,
       turnSpan,
-      // Span only means something for a DECLARED group. Real blueprints leave
-      // form_group null on standalone points, so the null bucket collects points
-      // that were never claimed to belong together — flagging the distance
-      // between an unrelated turn-7 standalone note and a turn-20 one as
-      // "跨度过大" invents a defect. Every fixture happened to have at most one
-      // null-group point per item_form, so this never showed up before real
-      // output arrived with two.
-      spanWarn: !ungrouped && turnSpan > thresholds.GROUP_SPAN_WARN,
       // Likewise "可成题" is a claim about a declared group.
       canFormQuestion:
         !ungrouped &&
