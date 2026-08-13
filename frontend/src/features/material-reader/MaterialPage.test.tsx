@@ -283,7 +283,10 @@ describe('MaterialPage 结构校验意见', () => {
     record = {
       ...baseRecord,
       degraded: true,
-      audit_rejection: { message: '原始材料盲审未通过' },
+      audit_rejection: {
+        code: 'VERDICT_FAIL',
+        message: '原始材料盲审未通过',
+      },
       validation_findings: ['dialogue words outside 450-750: 812'],
     }
     questions = {
