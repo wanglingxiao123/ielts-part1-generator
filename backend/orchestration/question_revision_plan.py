@@ -84,11 +84,12 @@ def build_question_revise_instruction(
     review: Dict[str, Any],
     cross_check: Any,
     validate_warnings: Optional[List[str]] = None,
+    validate_errors: Optional[List[str]] = None,
 ) -> ReviseInstruction:
     """Sort every question-stage signal into must-fix or advisory.
 
-    must-fix: CRITICAL/MAJOR audit findings (item-level and group-level), plus every cross-check hard
-    defect, plus leakage and equally-supported rivals.
+    must-fix: CRITICAL/MAJOR audit findings (item-level and group-level), every cross-check hard
+    defect, leakage, equally-supported rivals, and validator errors.
     advisory: MINOR and ADVISORY_WARNING findings, one-turn anchor gaps, validator warnings.
 
     Leakage and rivals are must-fix even though the auditor may already have raised a finding for the
@@ -179,6 +180,8 @@ def build_question_revise_instruction(
         # be visible as such in the prompt rather than only in a log.
         advisory.append("[review inconsistency] %s" % message)
 
+    for error in validate_errors or []:
+        must_fix.append("[validator error] %s" % error)
     for warning in validate_warnings or []:
         advisory.append("[validator warning] %s" % warning)
 

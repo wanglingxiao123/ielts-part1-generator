@@ -214,7 +214,16 @@ async def revise_material_from_comments(
 
             revised = await agent_steps.revise_material_from_comments(
                 current_material, current_blueprint, comments, feedback or None)
-            no_progress = revised.material == current_material
+            # The reviewer requested a material revision, so the accepted chain must differ from the
+            # original material. After that substantive edit, however, a retry may legitimately need
+            # to change only the blueprint (for example, correcting answer_category semantics found
+            # by feasibility). Comparing only the material against the previous attempt rejected that
+            # valid blueprint-only correction and spent one of three attempts without running it
+            # through validation or question generation.
+            no_progress = (
+                revised.material == current_material
+                and revised.blueprint == current_blueprint
+            ) or revised.material == material
             if no_progress:
                 last_failure = _failure(
                     "revising_material",

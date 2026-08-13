@@ -547,6 +547,20 @@ class TestTheRealQ1AndQ8Divergences:
         assert instruction.must_fix == []
         assert len(instruction.advisory) == 3
 
+    def test_validator_errors_are_must_fix_instructions(self, question_package, material):
+        review = _review(question_package)
+        result = crosscheck_questions(question_package, review, material)
+        instruction = build_question_revise_instruction(
+            review,
+            result,
+            ["a warning"],
+            ["Q7 canonical 'secure' is not blueprint target 'parking'"],
+        )
+        assert instruction.must_fix == [
+            "[validator error] Q7 canonical 'secure' is not blueprint target 'parking'",
+        ]
+        assert instruction.advisory == ["[validator warning] a warning"]
+
 
 class TestTheRealRevisedTwoAdjacencies:
     """The 2026-08-08 run's ``revised-2`` candidate, and the two things a one-turn gap can be.
@@ -1487,6 +1501,7 @@ class TestTheLoopWiring:
                 self.calls = []
                 self.audit_inputs = []
                 self.reviews = []
+                self.instructions = []
                 self.revised_package = copy.deepcopy(question_package)
                 self.validation = ValidationResult([], [], {})
 
@@ -1506,6 +1521,7 @@ class TestTheLoopWiring:
             async def revise_questions(self, mat, bp, package, instruction):
                 self.calls.append("revise")
                 self.instruction = instruction
+                self.instructions.append(instruction)
                 return self.revised_package
 
         h = Harness()
@@ -1697,22 +1713,22 @@ class TestTheLoopWiring:
         assert any("MAJOR" in line for line in result.blockers)
 
     @pytest.mark.asyncio
-    async def test_an_unactionable_blocker_stops_the_loop_without_delivering(
+    async def test_a_validator_error_is_sent_through_both_revision_rounds(
             self, harness, question_package):
-        """Blocked with an empty instruction used to DELIVER. It must now refuse.
-
-        A validator error the instruction builder does not translate into prose leaves nothing to ask
-        for -- which is not evidence the defect is gone.
-        """
+        """A deterministic error must reach the reviser rather than stopping before revision."""
         from backend.deterministic.validate import ValidationResult
         from backend.orchestration.question_loop import run_questions
 
         harness.validation = ValidationResult(["QR-021: two answers share a carrier"], [], {})
-        harness.reviews = [_review(question_package)]
+        harness.reviews = [_review(question_package) for _ in range(3)]
         result = await run_questions(harness.material, harness.blueprint)
-        assert harness.calls == ["generate", "validate", "audit"]
+        assert harness.calls.count("revise") == 2
+        assert all(
+            any("QR-021" in line for line in instruction.must_fix)
+            for instruction in harness.instructions
+        )
         assert not result.ok
-        assert result.rounds == 0
+        assert result.rounds == 2
         assert any("QR-021" in line for line in result.blockers)
 
     @pytest.mark.asyncio

@@ -817,7 +817,11 @@ async def run_questions(
             break
 
         instruction = build_question_revise_instruction(
-            current.review, current.cross_check, current.validation.warnings)
+            current.review,
+            current.cross_check,
+            current.validation.warnings,
+            current.validation.errors,
+        )
         if instruction.empty:
             # Open findings with nothing to instruct. Possible when the only entry is one the
             # instruction builder does not translate into prose -- a validator error, or a coverage

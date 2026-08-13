@@ -238,6 +238,74 @@ async def test_cross_check_failure_is_fed_to_second_attempt(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_blueprint_only_retry_after_material_change_is_not_no_progress(monkeypatch):
+    base_material = {"material_id": "mat-1", "turns": [{"text": "deluxe double"}]}
+    revised_material = {"material_id": "mat-1", "turns": [{"text": "twin room"}]}
+    candidates = [
+        GenOutput(
+            revised_material,
+            {"items": [{"number": 2, "target": "twin room", "answer_category": "preference"}]},
+        ),
+        GenOutput(
+            revised_material,
+            {"items": [{"number": 2, "target": "twin room", "answer_category": "requirement"}]},
+        ),
+    ]
+    feedback_seen = []
+
+    async def revise(_material, _blueprint, _comments, feedback=None):
+        feedback_seen.append(feedback)
+        return candidates[len(feedback_seen) - 1]
+
+    feasibility_results = iter([
+        {"feasible": False, "category_semantics_ok": False,
+         "reasons": ["twin room is a requirement, not a preference"]},
+        {"feasible": True, "category_semantics_ok": True, "reasons": []},
+    ])
+    runner = MetricsRunner()
+    monkeypatch.setattr(subject.agent_steps, "revise_material_from_comments", revise)
+    monkeypatch.setattr(subject, "validate", lambda *_args: _async(Validation()))
+    monkeypatch.setattr(subject, "run_metrics_remote", lambda *_args: _async(Metrics()))
+    monkeypatch.setattr(subject.agent_steps, "audit_blind", lambda *_args: _async({
+        "verdict": "PASS", "score": {"total": 90}, "findings": [], "warnings": [],
+    }))
+    monkeypatch.setattr(subject, "crosscheck", lambda *_args: CrossCheck())
+    monkeypatch.setattr(
+        subject.agent_steps,
+        "feasibility_audit",
+        lambda *_args: _async(next(feasibility_results)),
+    )
+    monkeypatch.setattr(subject, "run_questions", lambda *_args, **_kwargs: _async(
+        SimpleNamespace(
+            ok=True,
+            candidate=QuestionCandidate({"question_face": {"questions": []}}),
+            advisories=[],
+            blockers=[],
+            detail=None,
+        )))
+    monkeypatch.setattr(subject, "_build_metrics_runner", lambda *_args: runner)
+    store = SlotStore(InMemoryObjectStore())
+
+    events = await collect(subject.revise_material_from_comments(
+        store=store, material_id="mat-1", request_id="blueprint-retry",
+        source_request_id="source", base_version_id="original",
+        material=base_material,
+        blueprint={"items": [{"number": 2, "target": "deluxe double"}]},
+        package={"question_face": {}},
+        comments=[{"id": "c1", "anchor": {"type": "question", "index": 2}}],
+        actor="reviewer",
+    ))
+
+    assert events[-1]["type"] == "question_revision_completed"
+    assert len(feedback_seen) == 2
+    assert "twin room is a requirement, not a preference" in feedback_seen[1]["feasibility"]
+    version = store.load_question_version("mat-1", "blueprint-retry")
+    assert version["material"] == revised_material
+    assert version["blueprint"]["items"][0]["answer_category"] == "requirement"
+    assert version["attempt_count"] == 2
+
+
+@pytest.mark.asyncio
 async def test_validation_exhaustion_persists_all_blockers(monkeypatch):
     calls = []
 
