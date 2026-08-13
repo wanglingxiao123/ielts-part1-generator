@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import time
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Dict, List
@@ -167,7 +168,9 @@ async def revise_from_comments(
         yield {"type": "question_revision_revising", "request_id": request_id}
         result = await agent_steps.revise_questions_from_comments(
             material, blueprint, package, actionable_comments)
-        revised = result["package"]
+        allowed_questions = _anchored_question_numbers(actionable_comments)
+        revised = _normalize_question_only_package(
+            package, result["package"], allowed_questions)
         if revised == package:
             raise ValueError(
                 "question revision produced a byte-equivalent package despite actionable comments"
@@ -333,11 +336,15 @@ def _revision_gate(
 
     cross = candidate.cross_check
     for row in cross.hard_defects:
-        blockers.append(
-            "cross-check %s on Q%s" % (row.get("outcome"), row.get("number")))
+        audit_issue(
+            row.get("number"),
+            "cross-check %s on Q%s" % (row.get("outcome"), row.get("number")),
+        )
     for row in cross.leakage:
-        blockers.append(
-            "Q%s is answerable from the printed page alone (QR-040)" % row.get("number"))
+        audit_issue(
+            row.get("number"),
+            "Q%s is answerable from the printed page alone (QR-040)" % row.get("number"),
+        )
     for row in cross.equally_supported_rivals:
         audit_issue(
             row.get("number"),
@@ -345,9 +352,11 @@ def _revision_gate(
             % (row.get("number"), row.get("text")),
         )
     for row in cross.needs_review:
-        blockers.append(
+        audit_issue(
+            row.get("number"),
             "Q%s's evidence anchor is one turn from the writer's and unconfirmed"
-            % row.get("number"))
+            % row.get("number"),
+        )
 
     reviewed = ((cross.consistency or {}).get("computed") or {}).get(
         "reviewed_question_ids") or []
@@ -358,23 +367,26 @@ def _revision_gate(
     for error in getattr(candidate.validation, "errors", None) or []:
         blockers.append("validator error: %s" % error)
 
-    named = {
+    individually_reported = {
         row.get("number")
         for rows in (cross.hard_defects, cross.needs_review)
         for row in rows
         if isinstance(row, dict)
     }
+    non_agree_numbers: set[Any] = set()
     for row in getattr(cross, "items", []) or []:
         if not isinstance(row, dict) or row.get("outcome") == "agree":
             continue
         number = row.get("number")
-        if number not in named:
-            blockers.append("the cross-check does not agree on Q%s" % number)
+        non_agree_numbers.add(number)
+        if number not in individually_reported:
+            audit_issue(number, "the cross-check does not agree on Q%s" % number)
+            individually_reported.add(number)
     shortfall = (cross.compared - cross.agreed) if cross.compared else 0
-    if shortfall and shortfall != len(named):
+    if shortfall and shortfall != len(non_agree_numbers):
         blockers.append(
             "the cross-check agrees on %d of %d items beyond the %d individually reported"
-            % (cross.agreed, cross.compared, len(named)))
+            % (cross.agreed, cross.compared, len(non_agree_numbers)))
     return blockers, advisories, sorted(changed_questions)
 
 
@@ -432,19 +444,99 @@ def _changed_scope(
         if (base_groups.get(group_id) != new_groups.get(group_id)
             or base_instructions.get(group_id) != new_instructions.get(group_id))
     }
-    for number in tuple(changed):
+    for number in changed:
         for row in (base_questions.get(number), new_questions.get(number)):
             if isinstance(row, dict) and str(row.get("group_id") or ""):
                 changed_groups.add(str(row["group_id"]))
-    for number in QUESTION_NUMBERS:
-        group_ids = {
-            str(row.get("group_id") or "")
-            for row in (base_questions.get(number), new_questions.get(number))
-            if isinstance(row, dict)
-        }
-        if any(group_id in changed_groups for group_id in group_ids):
-            changed.add(number)
     return changed, changed_groups
+
+
+def _anchored_question_numbers(comments: List[Dict[str, Any]]) -> set[int]:
+    """Derive the only editable question scope from persisted comment anchors."""
+    numbers: set[int] = set()
+    for comment in comments:
+        anchor = comment.get("anchor")
+        if not isinstance(anchor, dict) or anchor.get("type") != "question":
+            continue
+        number = anchor.get("index")
+        if (
+            isinstance(number, int)
+            and not isinstance(number, bool)
+            and number in QUESTION_NUMBERS
+        ):
+            numbers.add(number)
+    if not numbers:
+        raise ValueError("question-only revision has no valid question anchors")
+    return numbers
+
+
+def _normalize_question_only_package(
+    base: Dict[str, Any],
+    candidate: Dict[str, Any],
+    allowed_questions: set[int],
+) -> Dict[str, Any]:
+    """Treat the model result as a local patch, restoring everything outside its scope."""
+    if not isinstance(candidate, dict):
+        raise ValueError("question revision returned no package")
+    revised = copy.deepcopy(candidate)
+    base_face = base.get("question_face") if isinstance(base.get("question_face"), dict) else {}
+    new_face = revised.get("question_face")
+    if not isinstance(new_face, dict):
+        raise ValueError("question revision returned no question_face")
+    projected_face = copy.deepcopy(new_face)
+    for key in ("groups", "instructions"):
+        if key in base_face:
+            projected_face[key] = copy.deepcopy(base_face[key])
+        else:
+            projected_face.pop(key, None)
+    projected_face["questions"] = _project_numbered_rows(
+        base_face.get("questions"), new_face.get("questions"), allowed_questions)
+    revised["question_face"] = projected_face
+    revised["answer_key"] = _project_numbered_rows(
+        base.get("answer_key"), revised.get("answer_key"), allowed_questions)
+    revised["evidence"] = _project_numbered_rows(
+        base.get("evidence"), revised.get("evidence"), allowed_questions)
+    return revised
+
+
+def _project_numbered_rows(
+    base_rows: Any, candidate_rows: Any, allowed_questions: set[int]
+) -> List[Dict[str, Any]]:
+    if not isinstance(candidate_rows, list):
+        raise ValueError("question revision returned an incomplete numbered section")
+    candidate = _numbered(candidate_rows)
+    candidate_numbers = [
+        row.get("number")
+        for row in candidate_rows
+        if isinstance(row, dict)
+        and isinstance(row.get("number"), int)
+        and not isinstance(row.get("number"), bool)
+    ]
+    duplicates = {
+        number for number in candidate_numbers if candidate_numbers.count(number) > 1
+    }
+    missing = allowed_questions - set(candidate)
+    if missing or duplicates & allowed_questions:
+        details = []
+        if missing:
+            details.append("missing Q%s" % ", Q".join(str(number) for number in sorted(missing)))
+        if duplicates & allowed_questions:
+            details.append(
+                "duplicated Q%s"
+                % ", Q".join(str(number) for number in sorted(duplicates & allowed_questions))
+            )
+        raise ValueError(
+            "question revision returned an invalid anchored patch: %s" % "; ".join(details)
+        )
+    projected: List[Dict[str, Any]] = []
+    for row in base_rows or []:
+        if not isinstance(row, dict):
+            projected.append(copy.deepcopy(row))
+            continue
+        number = row.get("number")
+        replacement = candidate.get(number) if number in allowed_questions else None
+        projected.append(copy.deepcopy(replacement if replacement is not None else row))
+    return projected
 
 
 def _question_only_boundary_errors(
@@ -477,6 +569,7 @@ def _question_only_boundary_errors(
         if isinstance(row, dict) and isinstance(row.get("number"), int)
     }
     revised_answers = _numbered(revised.get("answer_key"))
+    revised_evidence = _numbered(revised.get("evidence"))
     for number, item in planned.items():
         answer = revised_answers.get(number) or {}
         planned_answer = str(
@@ -488,6 +581,14 @@ def _question_only_boundary_errors(
             != planned_answer.casefold()
         ):
             errors.append("Q%d changed its blueprint answer target" % number)
+        planned_turn = item.get("turn_index")
+        evidence_turn = (revised_evidence.get(number) or {}).get("turn_index")
+        if (
+            isinstance(planned_turn, int)
+            and not isinstance(planned_turn, bool)
+            and evidence_turn != planned_turn
+        ):
+            errors.append("Q%d changed its blueprint evidence turn" % number)
     return errors
 
 
