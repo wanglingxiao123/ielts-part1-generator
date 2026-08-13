@@ -43,7 +43,11 @@ from ..deterministic.guards import (
     assert_no_answers_on_disk,
     assert_no_plan_on_disk,
 )
-from ..deterministic.question_crosscheck import quote_anchor_errors, review_consistency
+from ..deterministic.question_crosscheck import (
+    normalise_unique_quote_anchors,
+    quote_anchor_errors,
+    review_consistency,
+)
 from ..model import provider
 from .call import ModelCallError, extract_json
 
@@ -516,6 +520,7 @@ def _question_audit_envelope(reply: str, label: str,
             % (label, "; ".join(consistency["errors"]))
         )
     if material is not None:
+        normalise_unique_quote_anchors(audit, material)
         drifted = quote_anchor_errors(audit, material)
         if drifted:
             raise ModelCallError(

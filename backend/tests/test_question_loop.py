@@ -695,25 +695,37 @@ class TestTheRealRevisedTwoAdjacencies:
         assert "does not even pin one of them" in parked["reason"]
         assert result.adjacency_normalised == []
 
-    def test_the_auditors_own_drifted_anchor_is_a_retry_not_a_deliberation(
+    def test_the_auditors_unique_quote_repairs_a_drifted_anchor(
             self, question_package, material):
-        """Same fixture, one stage earlier: the envelope rejects it before anyone has to classify it.
-
-        This is the fix that makes the branch above unreachable on a well-formed review. A mistyped
-        integer is cheap to retry with a fresh agent and expensive to adjudicate three stages later as
-        a question about two sentences.
-        """
+        """A unique verbatim quote proves which turn the auditor read despite a mistyped integer."""
         turns = material["listening_material_parts"][0]["script"]["turns"]
-        review = self._drifted_index(_review(question_package), turns, (1, 2, 5))
-        with pytest.raises(ModelCallError) as exc:
-            _question_audit_envelope(json.dumps(review), "question audit", material)
-        message = str(exc.value)
-        assert "anchors quotes on turns they are not in" in message
+        review = _review(question_package)
+        original_turns = {
+            row["number"]: row["turn_index"] for row in review["reconstructed_answers"]
+        }
+        review = self._drifted_index(review, turns, (1, 2, 5))
+        parsed = _question_audit_envelope(json.dumps(review), "question audit", material)
         for number in (1, 2, 5):
-            assert "Q%d quotes" % number in message
-        assert "AL-007" in message
+            assert (
+                parsed["reconstructed_answers"][number - 1]["turn_index"]
+                == original_turns[number]
+            )
         # Without the script the check cannot run, and not running is not the same as passing.
         assert _question_audit_envelope(json.dumps(review), "question audit")
+
+    def test_an_ambiguous_quote_anchor_is_still_rejected(
+            self, question_package, material):
+        turns = material["listening_material_parts"][0]["script"]["turns"]
+        turns[1]["text"] = "The repeated evidence phrase."
+        turns[2]["text"] = "The repeated evidence phrase."
+        review = _review(question_package)
+        row = review["reconstructed_answers"][0]
+        row["turn_index"] = 0
+        row["quote"] = "repeated evidence phrase"
+        with pytest.raises(ModelCallError) as exc:
+            _question_audit_envelope(json.dumps(review), "question audit", material)
+        assert "anchors quotes on turns they are not in" in str(exc.value)
+        assert row["turn_index"] == 0
 
     def test_a_clean_review_passes_the_new_anchor_check(self, question_package, material):
         """The anti-false-positive half. Every quote in the turn it names, and nothing fires."""

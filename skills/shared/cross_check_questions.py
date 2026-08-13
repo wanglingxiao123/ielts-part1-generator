@@ -241,6 +241,39 @@ def _unique_quote_turn(turns: list, index, quote: object):
     return found[0] if len(found) == 1 else None
 
 
+def normalise_unique_quote_anchors(review: object, material: object) -> list:
+    """Correct a declared turn when its quote identifies exactly one script turn.
+
+    This repairs only a mechanical indexing error. A quote found in zero turns cannot be verified,
+    and a quote found in several turns does not identify which sentence the auditor read; both are
+    left untouched for the existing strict checks to classify.
+    """
+    turns = _turns(material)
+    if not turns or not isinstance(review, dict):
+        return []
+    corrected = []
+    for number, row in sorted(_by_number(review.get("reconstructed_answers")).items()):
+        quote = row.get("quote")
+        if not normalise(quote):
+            continue
+        declared = _anchor_of(row)
+        if declared is not None and _quote_is_in_turn(turns, declared, quote):
+            continue
+        matches = [
+            index for index in range(len(turns))
+            if _quote_is_in_turn(turns, index, quote)
+        ]
+        if len(matches) != 1:
+            continue
+        row["turn_index"] = matches[0]
+        corrected.append({
+            "number": number,
+            "declared_turn_index": declared,
+            "normalised_turn_index": matches[0],
+        })
+    return corrected
+
+
 def quote_anchor_errors(review: object, material: object) -> list:
     """Every rebuilt answer whose ``quote`` is not verbatim in the ``turn_index`` it declares.
 

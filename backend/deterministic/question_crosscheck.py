@@ -30,6 +30,7 @@ from .. import paths
 __all__ = [
     "QuestionCrossCheckResult",
     "crosscheck_questions",
+    "normalise_unique_quote_anchors",
     "quote_anchor_errors",
     "review_consistency",
 ]
@@ -37,22 +38,27 @@ __all__ = [
 _compare = None
 _review_consistency = None
 _quote_anchor_errors = None
+_normalise_unique_quote_anchors = None
 
 
 def _load():
     """Import the shared implementation from the skill's shared/ directory on first use."""
-    global _compare, _review_consistency, _quote_anchor_errors
+    global _compare, _review_consistency, _quote_anchor_errors, _normalise_unique_quote_anchors
     if _compare is None:
         shared = str(paths.skills_root() / "shared")
         if shared not in sys.path:
             sys.path.insert(0, shared)
         from cross_check_questions import (  # noqa: PLC0415 - path must be set up first
             compare,
+            normalise_unique_quote_anchors as normalise_anchors,
             quote_anchor_errors as anchors,
             review_consistency as consistency,
         )
 
-        _compare, _review_consistency, _quote_anchor_errors = compare, consistency, anchors
+        _compare = compare
+        _review_consistency = consistency
+        _quote_anchor_errors = anchors
+        _normalise_unique_quote_anchors = normalise_anchors
     return _compare, _review_consistency
 
 
@@ -76,6 +82,14 @@ def quote_anchor_errors(review: Dict[str, Any], material: Dict[str, Any]) -> Lis
     """
     _load()
     return _quote_anchor_errors(review, material)
+
+
+def normalise_unique_quote_anchors(
+    review: Dict[str, Any], material: Dict[str, Any]
+) -> List[Dict[str, Any]]:
+    """Correct model-declared turn indices only when the quote has one script location."""
+    _load()
+    return _normalise_unique_quote_anchors(review, material)
 
 
 class QuestionCrossCheckResult(object):
