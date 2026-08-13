@@ -275,6 +275,173 @@ def test_material_revision_reservation_is_idempotent(versions):
     assert first["source_request_id"] == source["request_id"]
 
 
+def test_material_revision_reservation_accepts_replan_escalation(versions):
+    service, store = versions
+    source = service.reserve("mat-1", "original", [{
+        "id": "c1",
+        "anchor": {"type": "question", "index": 6},
+        "text": "Change the group layout.",
+    }], "reviewer")
+    classified = dict(
+        source,
+        status="replan_questions",
+        comment_outcomes=[{
+            "comment_id": "c1",
+            "outcome": "replan_questions",
+        }],
+    )
+    put(store, "_question_revisions/mat-1/%s.json" % source["request_id"], classified)
+    put(store, "_question_revisions/mat-1/running.json", classified)
+    execution = service.reserve_replan(
+        "mat-1", source["request_id"], "reviewer")
+    escalation = dict(
+        execution,
+        status="needs_material_revision",
+        comment_outcomes=[{
+            "comment_id": "c1",
+            "outcome": "revise_material",
+            "reason": "the unchanged script cannot support a valid question set",
+        }],
+    )
+    put(
+        store,
+        "_question_revisions/mat-1/%s.json" % execution["request_id"],
+        escalation,
+    )
+    put(store, "_question_revisions/mat-1/running.json", escalation)
+
+    first = service.reserve_material_revision(
+        "mat-1", execution["request_id"], "reviewer")
+    second = service.reserve_material_revision(
+        "mat-1", execution["request_id"], "reviewer")
+
+    assert first["request_id"] == second["request_id"]
+    assert first["operation"] == "revise_material"
+    assert first["source_request_id"] == execution["request_id"]
+    assert [row["id"] for row in first["source_comments"]] == ["c1"]
+
+
+def test_material_revision_source_rejects_ordinary_replan_decision(versions):
+    service, store = versions
+    source = service.reserve("mat-1", "original", [{
+        "id": "c1",
+        "anchor": {"type": "question", "index": 6},
+        "text": "Change the group layout.",
+    }], "reviewer")
+    terminal = dict(
+        source,
+        status="replan_questions",
+        comment_outcomes=[{
+            "comment_id": "c1",
+            "outcome": "replan_questions",
+        }],
+    )
+    put(store, "_question_revisions/mat-1/%s.json" % source["request_id"], terminal)
+
+    with pytest.raises(QuestionVersionError) as found:
+        service.material_revision_source("mat-1", source["request_id"])
+
+    assert found.value.code == "MATERIAL_REVISION_NOT_AVAILABLE"
+
+
+def test_material_revision_source_rejects_unlinked_replan_escalation(versions):
+    service, store = versions
+    source = service.reserve("mat-1", "original", [{
+        "id": "c1",
+        "anchor": {"type": "question", "index": 6},
+        "text": "Change the group layout.",
+    }], "reviewer")
+    escalation = dict(
+        source,
+        operation="replan_questions",
+        status="needs_material_revision",
+        comment_outcomes=[{
+            "comment_id": "c1",
+            "outcome": "revise_material",
+        }],
+    )
+    put(store, "_question_revisions/mat-1/%s.json" % source["request_id"], escalation)
+
+    with pytest.raises(QuestionVersionError) as found:
+        service.material_revision_source("mat-1", source["request_id"])
+
+    assert found.value.code == "MATERIAL_REVISION_SOURCE_INVALID"
+
+
+@pytest.mark.parametrize("operation", ["revise_material", "unknown_operation"])
+def test_material_revision_source_rejects_non_source_operations(
+    versions, operation,
+):
+    service, store = versions
+    source = service.reserve("mat-1", "original", [{
+        "id": "c1",
+        "anchor": {"type": "question", "index": 6},
+        "text": "Change the listening script.",
+    }], "reviewer")
+    terminal = dict(
+        source,
+        operation=operation,
+        status="needs_material_revision",
+        comment_outcomes=[{
+            "comment_id": "c1",
+            "outcome": "revise_material",
+        }],
+    )
+    put(store, "_question_revisions/mat-1/%s.json" % source["request_id"], terminal)
+
+    with pytest.raises(QuestionVersionError) as found:
+        service.material_revision_source("mat-1", source["request_id"])
+
+    assert found.value.code == "MATERIAL_REVISION_NOT_AVAILABLE"
+
+
+def test_material_revision_source_rejects_replan_escalation_with_changed_snapshot(
+    versions,
+):
+    service, store = versions
+    source = service.reserve("mat-1", "original", [{
+        "id": "c1",
+        "anchor": {"type": "question", "index": 6},
+        "text": "Change the group layout.",
+    }], "reviewer")
+    classified = dict(
+        source,
+        status="replan_questions",
+        comment_outcomes=[{
+            "comment_id": "c1",
+            "outcome": "replan_questions",
+        }],
+    )
+    put(store, "_question_revisions/mat-1/%s.json" % source["request_id"], classified)
+    put(store, "_question_revisions/mat-1/running.json", classified)
+    execution = service.reserve_replan(
+        "mat-1", source["request_id"], "reviewer")
+    escalation = dict(
+        execution,
+        source_comments=[{
+            "id": "c1",
+            "anchor": {"type": "question", "index": 6},
+            "text": "Change unrelated material content.",
+            "replan_scope": "retarget",
+        }],
+        status="needs_material_revision",
+        comment_outcomes=[{
+            "comment_id": "c1",
+            "outcome": "revise_material",
+        }],
+    )
+    put(
+        store,
+        "_question_revisions/mat-1/%s.json" % execution["request_id"],
+        escalation,
+    )
+
+    with pytest.raises(QuestionVersionError) as found:
+        service.material_revision_source("mat-1", execution["request_id"])
+
+    assert found.value.code == "MATERIAL_REVISION_SOURCE_INVALID"
+
+
 def test_material_revision_source_rejects_inactive_baseline(versions):
     service, store = versions
     source = service.reserve("mat-1", "original", [{
@@ -942,6 +1109,82 @@ def test_material_revision_route_dispatches_durable_source(
     assert payload["action"] == "revise_material_from_comments"
     assert payload["base_version_id"] == "original"
     assert payload["source_request_id"] == source["request_id"]
+
+
+def test_material_revision_route_dispatches_replan_escalation(
+    auth, runtime, static_dir,
+):
+    backing = InMemoryObjectStore()
+    put(backing, "_questions/mat-1.json", {
+        "ok": True,
+        "package": {
+            "material_id": "mat-1",
+            "question_face": {},
+            "answer_key": [],
+            "evidence": [],
+        },
+    })
+    versions = QuestionVersionService(backing)
+    source = versions.reserve("mat-1", "original", [{
+        "id": "c1",
+        "anchor": {"type": "question", "index": 6},
+        "text": "Change the group layout.",
+    }], "reviewer")
+    classified = dict(
+        source,
+        status="replan_questions",
+        comment_outcomes=[{
+            "comment_id": "c1",
+            "outcome": "replan_questions",
+        }],
+    )
+    put(backing, "_question_revisions/mat-1/%s.json" % source["request_id"], classified)
+    put(backing, "_question_revisions/mat-1/running.json", classified)
+    execution = versions.reserve_replan(
+        "mat-1", source["request_id"], "reviewer")
+    escalation = dict(
+        execution,
+        status="needs_material_revision",
+        comment_outcomes=[{
+            "comment_id": "c1",
+            "outcome": "revise_material",
+            "reason": "the unchanged script cannot support a valid question set",
+        }],
+    )
+    put(
+        backing,
+        "_question_revisions/mat-1/%s.json" % execution["request_id"],
+        escalation,
+    )
+    put(backing, "_question_revisions/mat-1/running.json", escalation)
+    stream = FakeStreamingBody()
+    stream.push_event({
+        "type": "question_revision_failed",
+        "request_id": "material-execution",
+        "message": "test stop",
+    })
+    stream.finish()
+    runtime.stream = stream
+    tier = WebTier(
+        auth, runtime, str(static_dir), history=_History(),
+        comments=CommentService(InMemoryCommentStore()),
+        question_versions=versions,
+    )
+    from fastapi.testclient import TestClient
+
+    with TestClient(tier.app) as client:
+        register(client)
+        response = client.post(
+            "/api/material-revisions/mat-1",
+            json={"source_request_id": execution["request_id"]},
+        )
+
+    assert response.status_code == 200
+    payload = runtime.calls[-1]
+    assert payload["action"] == "revise_material_from_comments"
+    assert payload["base_version_id"] == "original"
+    assert payload["source_request_id"] == execution["request_id"]
+    assert [row["id"] for row in payload["comments"]] == ["c1"]
 
 
 def test_revision_route_rejects_a_non_active_base(auth, runtime, static_dir):

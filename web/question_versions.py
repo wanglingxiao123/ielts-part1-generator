@@ -252,10 +252,11 @@ class QuestionVersionService:
         material_id = _material_id(material_id)
         source_request_id = _record_id(source_request_id, "INVALID_REQUEST_ID")
         source = self.load_request(material_id, source_request_id)
+        operation = source.get("operation")
         if (
             source.get("request_id") != source_request_id
             or source.get("material_id") != material_id
-            or source.get("operation") in {"replan_questions", "revise_material"}
+            or operation not in {None, "revise_questions", "replan_questions"}
             or source.get("status") != "needs_material_revision"
         ):
             raise QuestionVersionError(
@@ -264,6 +265,28 @@ class QuestionVersionService:
                 409,
             )
         base_version_id = str(source.get("base_version_id") or "")
+        if operation == "replan_questions":
+            parent_request_id = str(source.get("source_request_id") or "")
+            try:
+                parent_request_id = _record_id(
+                    parent_request_id, "INVALID_REQUEST_ID")
+                parent_source = self.replan_source(
+                    material_id, parent_request_id)
+            except QuestionVersionError:
+                raise QuestionVersionError(
+                    "MATERIAL_REVISION_SOURCE_INVALID",
+                    "原修改记录没有合法的重新命题来源。",
+                    409,
+                ) from None
+            if (
+                str(parent_source.get("base_version_id") or "") != base_version_id
+                or parent_source.get("comments") != source.get("source_comments")
+            ):
+                raise QuestionVersionError(
+                    "MATERIAL_REVISION_SOURCE_INVALID",
+                    "原修改记录没有合法的重新命题来源。",
+                    409,
+                )
         versions = self.list(material_id)
         if not base_version_id or versions.get("active_version_id") != base_version_id:
             raise QuestionVersionError(
