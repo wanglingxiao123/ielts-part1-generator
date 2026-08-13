@@ -223,7 +223,7 @@ export function ScenarioSelectPage() {
             <textarea
               rows={2}
               maxLength={CATALOG.customScenario.maxLength}
-              placeholder="例如：A student phones a bike shop about repairing a bicycle…"
+              placeholder="例如：餐厅点餐"
               value={customText}
               onChange={(e) => setCustomText(e.target.value)}
             />
