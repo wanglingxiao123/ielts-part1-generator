@@ -140,7 +140,7 @@ flowchart LR
     RT --> MODEL
     RT --> CI
     RT <--> S3
-    RT -. "用户试听/选稿后" .-> POLLY
+    RT -. "用户生成音频后" .-> POLLY
 ```
 
 ### 2.1 每个组件负责什么
