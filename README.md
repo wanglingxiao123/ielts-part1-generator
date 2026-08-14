@@ -216,7 +216,7 @@ flowchart TB
 
     subgraph MATERIAL["模块一 · 听力材料生成"]
         direction LR
-        M["听力材料"] --> G["生成 Agent<br/>选 Skill 并生成"]
+        G["生成 Agent<br/>选 Skill 并生成"]
         G --> V{"Python 校验"}
         V -- "错误，最多 3 次" --> G
         V -- "通过或次数用完" --> A["独立审核 Agent<br/>盲审原稿"]
@@ -229,7 +229,7 @@ flowchart TB
         E --> B["原稿 / 修改稿择优"]
     end
 
-    F --> M
+    F --> G
     O --> P
     B --> P
 
@@ -268,8 +268,6 @@ flowchart TB
     classDef code fill:#f3f4f6,stroke:#6b7280,color:#111827;
     classDef done fill:#dcfce7,stroke:#16a34a,color:#14532d;
     classDef optional fill:#f3e8ff,stroke:#9333ea,color:#581c87;
-    classDef moduleLabel fill:#fde68a,stroke:#b45309,color:#78350f,font-weight:bold;
-    class M moduleLabel;
     class G,R,T,J,QR,RP,MR ai;
     class A,E,H,QA audit;
     class Q,F,V,X,C,B,P,K,W,CL code;
