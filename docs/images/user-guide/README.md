@@ -11,11 +11,16 @@ Place the User Guide screenshots in this directory as PNG files.
 | `05-refill-failed-slot.png` | 单套生成失败提示和“补生成这一套”按钮 |
 | `06-material-transcript.png` | 对话原文页，包含信息点分布、原文高亮和旁注 |
 | `07-question-preview.png` | 题目预览页，包含题目、答案开关和评价栏 |
+| `07-question-answers-evidence.png` | 打开“显示答案和证据”后的题目详情 |
 | `08-audio-player.png` | 音频播放器和正在播放的原文高亮 |
 | `09-submit-question-comment.png` | 选中一道题并填写评价 |
+| `09-question-revision-running.png` | 评价提交后的题目修改进度 |
+| `09-question-revision-completed.png` | 局部题目修改完成并生成新版本 |
 | `10-revision-results.png` | 一至两个评价处理结果卡片 |
 | `11-confirm-question-replan.png` | “需要重新命题”提示和确认按钮 |
+| `11-question-replan-completed.png` | 重新命题完成后的新题目和修改摘要 |
 | `12-confirm-material-revision.png` | “需要修改材料”提示和确认按钮 |
+| `12-material-revision-completed.png` | 材料修改完成及新音频提示 |
 | `13-revision-progress-retry.png` | 修改进度条和重新尝试按钮 |
 | `14-version-selection.png` | 版本选择器、当前采用标记和采用按钮 |
 | `15-material-comparison.png` | 同场景材料 A/B 对比页面 |
