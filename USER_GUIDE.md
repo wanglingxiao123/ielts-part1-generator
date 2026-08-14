@@ -115,7 +115,7 @@
 
 ![选中题目并填写评价](docs/images/user-guide/09-submit-question-comment.png)
 
-提交后，页面会显示当前修改步骤。处理过程中无需重复提交。
+添加批注后，点击“提交修改”才会开始处理。页面随后会显示当前修改步骤；处理过程中无需重复提交。
 
 ![系统正在处理题目评价](docs/images/user-guide/09-question-revision-running.png)
 
