@@ -50,15 +50,9 @@ fi
 echo "== ECR repositories =="
 for repo in "$ECR_BACKEND" "$ECR_FRONTEND"; do
     if aws ecr describe-repositories --repository-names "$repo" >/dev/null 2>&1; then
-        # Keep repos MUTABLE so an existing tag can be re-pushed -- convenient for iterative/demo
-        # builds. (Tradeoff: overwriting a tag loses the previous image behind it, so rollback by
-        # tag is only as reliable as the discipline of not reusing tags.) Idempotent to re-apply.
-        aws ecr put-image-tag-mutability --repository-name "$repo" \
-            --image-tag-mutability MUTABLE >/dev/null
-        echo "  $repo already exists (MUTABLE)"
+        echo "  $repo already exists"
     else
         aws ecr create-repository --repository-name "$repo" \
-            --image-tag-mutability MUTABLE \
             --image-scanning-configuration scanOnPush=true \
             --query 'repository.repositoryUri' --output text
     fi
