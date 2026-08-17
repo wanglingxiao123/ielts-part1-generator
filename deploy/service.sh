@@ -48,9 +48,12 @@ aws iam put-role-policy --role-name "${PROJECT}-ecs-exec" \
         \"Resource\":\"arn:aws:ssm:${AWS_REGION}:${ACCOUNT_ID}:parameter${SECRET_PARAM}\"}]}"
 
 if [ -z "${ALLOWED_EMAIL_DOMAINS:-}" ] || [ "${ALLOWED_EMAIL_DOMAINS}" = "*" ]; then
-    echo "NOTE: ALLOWED_EMAIL_DOMAINS is unset, so ANY email address may register."
-    echo "      Restrict it before exposing the service, e.g.:"
-    echo "        ALLOWED_EMAIL_DOMAINS=example.com bash deploy/service.sh"
+    # Fail closed. Defaulting to "*" once silently opened public registration on a delivered URL,
+    # and a warning that still deploys is too easy to miss. Require an explicit allow-list instead.
+    echo "ERROR: ALLOWED_EMAIL_DOMAINS is unset or '*', which would let ANY email address register." >&2
+    echo "       Refusing to deploy an open-registration service. Set it explicitly, e.g.:" >&2
+    echo "         ALLOWED_EMAIL_DOMAINS=example.com bash deploy/service.sh ${TAG}" >&2
+    exit 1
 fi
 
 echo "== build + push web image =="
