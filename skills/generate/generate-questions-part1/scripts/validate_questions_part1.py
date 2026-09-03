@@ -89,10 +89,16 @@ PLACEHOLDER_RE = re.compile(r"^(?:tbd|todo|n/?a|xxx+|\?+|-+|\.+)$", re.I)
 # would let `10 ....` satisfy Q1: with ten items, "1" is a substring of "10" and the two items whose
 # numbers overlap are exactly the pair a mislabelled form line confuses.
 DIGIT_RUN_RE = re.compile(r"\d+")
+THOUSANDS_GROUP_RE = re.compile(r"^\d{1,3}(?:[ ,]\d{3})+$")
 
 
 def norm(value: object) -> str:
     return str(value or "").strip()
+
+
+def concatenated_ascii_digits(value: object) -> str:
+    """Return the ASCII digit sequence while ignoring separators and surrounding text."""
+    return "".join(DIGIT_RUN_RE.findall(norm(value)))
 
 
 def ambiguous_anchor(turns: list, index: object, phrase: str) -> bool:
@@ -630,9 +636,29 @@ def validate_answers(numbers: list, questions: dict, answers: dict, groups: dict
         if not norm(answer.get("counting_rule")):
             errors.append("Q%d states no counting_rule; QR-017 requires the word-count basis used "
                           "to be recorded" % number)
-        for alternative in (answer.get("alternatives") or []):
-            if not norm(alternative):
+        canonical_digits = concatenated_ascii_digits(canonical)
+        seen = {canonical} if canonical else set()
+        for position, alternative in enumerate(answer.get("alternatives") or [], start=1):
+            value = norm(alternative)
+            if not value:
                 errors.append("Q%d carries an empty accepted alternative" % number)
+                continue
+            if value in seen:
+                errors.append(
+                    "Q%d alternative %d %r exactly duplicates the trimmed canonical or an earlier "
+                    "alternative"
+                    % (number, position, value)
+                )
+            else:
+                seen.add(value)
+            alternative_digits = concatenated_ascii_digits(value)
+            if (canonical_digits and alternative_digits
+                    and canonical_digits != alternative_digits):
+                errors.append(
+                    "Q%d alternative %d %r changes the canonical ASCII digit sequence %r to %r; "
+                    "separator and date-order variants must preserve all digits"
+                    % (number, position, value, canonical_digits, alternative_digits)
+                )
 
     for key in sorted(members):
         instruction = instructions.get(key)
@@ -677,6 +703,34 @@ def validate_answers(numbers: list, questions: dict, answers: dict, groups: dict
             if answers[number].get("numeral_allowance") != allowance:
                 errors.append("Q%d's answer_key numeral_allowance %r differs from its group's %d"
                               % (number, answers[number].get("numeral_allowance"), allowance))
+            for position, alternative in enumerate(
+                    answers[number].get("alternatives") or [], start=1):
+                value = norm(alternative)
+                if not value:
+                    continue
+                lexical, numeric = budget_of(value)
+                # A telephone or long-number separator variant is still one answer number.
+                # `budget_of("07840 051 963")` sees three whitespace-delimited numerals, but when
+                # concatenating them reproduces a one-number canonical exactly, charging three
+                # numeral slots would contradict the accepted separator rule above.
+                canonical_digits = concatenated_ascii_digits(canonical)
+                alternative_digits = concatenated_ascii_digits(value)
+                canonical_lexical, canonical_numeric = budget_of(canonical)
+                answer_category = norm(questions[number].get("answer_category"))
+                separator_form_is_one_number = (
+                    answer_category == "contact"
+                    or bool(THOUSANDS_GROUP_RE.fullmatch(value))
+                )
+                if (canonical_digits and canonical_digits == alternative_digits
+                        and canonical_lexical == 0 and canonical_numeric <= allowance
+                        and separator_form_is_one_number):
+                    numeric = canonical_numeric
+                if lexical > max_words or numeric > allowance:
+                    errors.append(
+                        "Q%d alternative %d %r is %d word(s) and %d number(s), which its group's "
+                        "rubric %r does not permit (AR-004/QR-017)"
+                        % (number, position, value, lexical, numeric, declared)
+                    )
         strictest = strictest_limit([value for value in canonicals if value])
         if not strictest:
             errors.append("group %r's answers fit no standard rubric; at least one canonical is "

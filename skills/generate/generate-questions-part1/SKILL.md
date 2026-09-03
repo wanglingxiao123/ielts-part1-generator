@@ -165,8 +165,21 @@ Read nothing else. Everything you need is in this skill's own directory and in t
    complete token of the decisive evidence, with no substring credit in either direction; a
    multi-token answer needs every one of its words present in that evidence. A hyphenated compound
    counts as one word but must stay whole — do not pre-fill `eco-` in the carrier and leave the
-   candidate the second half (AR-014). Add `alternatives` only where a variant is genuinely
-   equivalent in this context and satisfies the same limit; empty is a normal answer.
+   candidate the second half (AR-014).
+
+   Then run the **answer-variant check for every item**. This is a check, not a quota:
+   `alternatives: []` is correct when the answer has no common, mechanically equivalent,
+   context-safe form. Where relevant, inspect date order/ordinals/month abbreviations; time
+   punctuation, leading zero, AM/PM and ordinary spoken forms; digits versus number words; amounts
+   whose currency is already printed; compound spacing/hyphenation; proper-name case; standard
+   abbreviations; British/American spelling; digit separators; and units. Read
+   `references/question-rules.md` §6 for the positive and negative boundaries.
+
+   Keep the set bounded. Do not build the Cartesian product of several dimensions. Common case,
+   punctuation, spacing and hyphen variants may be written explicitly when they prevent a plausible
+   correct answer from being missed (`5:30` / `5.30`, `baby cot` / `baby-cot`, and conventional
+   title/upper/lower case for a proper name). Do not repeat the exact same trimmed string. Every
+   listed alternative must independently satisfy the same word/numeral budget.
 
 6. **Choose each group's `word_limit`.** There is no default. Per group, take the **strictest**
    standard rubric that every one of that group's canonicals satisfies, print it verbatim inside

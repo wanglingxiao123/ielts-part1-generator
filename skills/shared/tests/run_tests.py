@@ -2143,16 +2143,27 @@ def _question_package() -> dict:
             "answer_key": answer_key, "evidence": evidence}
 
 
-def _validate_questions(mutate=None) -> dict:
+def _validate_questions(mutate=None, material_mutate=None, blueprint_mutate=None) -> dict:
     """Run the question validator over a (possibly mutated) package and return its JSON report."""
+    material = json.loads((FIXTURES / "material_valid.json").read_text(encoding="utf-8"))
+    blueprint = json.loads((FIXTURES / "blueprint_valid.json").read_text(encoding="utf-8"))
     package = _question_package()
+    if material_mutate is not None:
+        material_mutate(material)
+    if blueprint_mutate is not None:
+        blueprint_mutate(blueprint)
     if mutate is not None:
         mutate(package)
-    path = Path(tempfile.mkdtemp()) / "questions.json"
-    path.write_text(json.dumps(package, ensure_ascii=False), encoding="utf-8")
-    result = run(QUESTION_VALIDATE, str(FIXTURES / "material_valid.json"),
-                 "--blueprint", str(FIXTURES / "blueprint_valid.json"),
-                 "--questions", str(path), "--json")
+    scratch = Path(tempfile.mkdtemp())
+    material_path = scratch / "material.json"
+    blueprint_path = scratch / "blueprint.json"
+    questions_path = scratch / "questions.json"
+    material_path.write_text(json.dumps(material, ensure_ascii=False), encoding="utf-8")
+    blueprint_path.write_text(json.dumps(blueprint, ensure_ascii=False), encoding="utf-8")
+    questions_path.write_text(json.dumps(package, ensure_ascii=False), encoding="utf-8")
+    result = run(QUESTION_VALIDATE, str(material_path),
+                 "--blueprint", str(blueprint_path),
+                 "--questions", str(questions_path), "--json")
     try:
         return json.loads(result.stdout)
     except ValueError:
@@ -2799,6 +2810,165 @@ def test_question_ar003_tiers_follow_the_canonical() -> None:
           repr(ar003_errors(8, "two-bedroom")))
 
 
+def test_question_answer_alternatives_are_conditional_distinct_and_budgeted() -> None:
+    """Alternatives are optional, preserve useful typography, and obey mechanical guards."""
+    print("question validator: answer alternatives")
+
+    clean = _validate_questions()
+    check("ordinary answers may keep an empty alternatives list", clean["ok"] is True,
+          repr(clean["errors"])[:600])
+
+    def alternative(number: int, values: list[str]):
+        def mutate(package: dict) -> None:
+            package["answer_key"][number - 1]["alternatives"] = values
+        return mutate
+
+    def coherent_case(canonical: str, alternatives: list[str], evidence: str,
+                      carrier_before: str, response_form: str,
+                      answer_category: str = "contact", number: int = 4,
+                      turn_index: int = 12) -> dict:
+        """Replace one item consistently across material, blueprint, package, and evidence."""
+        quote = evidence
+        offset = number - 1
+
+        def mutate_material(material: dict) -> None:
+            material["listening_material_parts"][0]["script"]["turns"][turn_index]["text"] = quote
+
+        def mutate_blueprint(blueprint: dict) -> None:
+            item = blueprint["items"][offset]
+            item.update({
+                "target": canonical,
+                "evidence": quote,
+                "turn_index": turn_index,
+                "response_form": response_form,
+                "answer_category": answer_category,
+            })
+
+        def mutate_package(package: dict) -> None:
+            question = package["question_face"]["questions"][offset]
+            question.update({
+                "carrier_before": carrier_before,
+                "carrier_after": "",
+                "blank_position": "final",
+                "response_form": response_form,
+                "answer_category": answer_category,
+            })
+            package["answer_key"][offset].update({
+                "canonical": canonical,
+                "alternatives": alternatives,
+            })
+            package["evidence"][offset].update({
+                "turn_index": turn_index,
+                "quote": quote,
+                "paraphrase_relation": "exact",
+                "carrier_entity": "the requested detail",
+                "evidence_entity": "the detail stated by the caller",
+            })
+
+        return _validate_questions(
+            mutate_package,
+            material_mutate=mutate_material,
+            blueprint_mutate=mutate_blueprint,
+        )
+
+    proper_name = _validate_questions(alternative(1, ["ANNA WOODS", "anna woods"]))
+    check("proper-name title/upper/lower forms pass as a complete package",
+          proper_name["ok"] is True, repr(proper_name["errors"]))
+
+    for label, report in (
+        ("5:30 / 5.30", coherent_case(
+            "5:30", ["5.30"], "The appointment is at 5:30.",
+            "Appointment time:", "numeric", "time")),
+        ("baby cot / baby-cot", coherent_case(
+            "baby cot", ["baby-cot"], "We will need a baby cot.",
+            "Item required:", "phrase", "requirement", number=9, turn_index=37)),
+        ("15 / fifteen", coherent_case(
+            "15", ["fifteen"], "The total is 15.",
+            "Total:", "numeric", "count")),
+        ("date order, ordinal, and month abbreviation", coherent_case(
+            "14 September", ["September 14", "14th September", "14 Sept"],
+            "The booking is for 14 September.",
+            "Booking date:", "phrase", "date")),
+        ("printed currency with numeric answer", coherent_case(
+            "15", ["£15"], "The fee is £15.",
+            "Fee: £", "numeric", "price")),
+        ("unit full form / abbreviation", coherent_case(
+            "15 kilograms", ["15 kg"], "The parcel weighs 15 kilograms.",
+            "Parcel weight:", "phrase", "measurement")),
+        ("telephone separators", coherent_case(
+            "07840051963", ["07840 051 963", "07840-051-963", "07840.051.963"],
+            "My mobile number is 07840051963.",
+            "Mobile:", "numeric", "contact")),
+        ("British / American spelling", coherent_case(
+            "centre", ["center"], "The office is in the centre.",
+            "Office location:", "word", "facility", number=6, turn_index=29)),
+    ):
+        check("%s variants pass as a complete package" % label,
+              report["ok"] is True, repr(report["errors"]))
+
+    exact_duplicate = _validate_questions(alternative(10, [" office ", "office"]))
+    check("an exact trimmed canonical/alternative duplicate is rejected",
+          any("exactly duplicates" in e for e in exact_duplicate["errors"]),
+          repr(exact_duplicate["errors"]))
+
+    repeated_alternative = _validate_questions(alternative(10, ["OFFICE", "OFFICE"]))
+    check("an exact trimmed duplicate among alternatives is rejected",
+          any("alternative 2" in e and "exactly duplicates" in e
+              for e in repeated_alternative["errors"]),
+          repr(repeated_alternative["errors"]))
+
+    changed_digits = _validate_questions(alternative(4, ["07840 051 964"]))
+    check("a changed digit sequence is rejected",
+          any("changes the canonical ASCII digit sequence" in e
+              for e in changed_digits["errors"]), repr(changed_digits["errors"]))
+
+    split_short_number = coherent_case(
+        "15", ["1 5"], "The total is 15.",
+        "Total:", "numeric", "count")
+    check("an arbitrary split inside a short number is rejected",
+          any("alternative 1" in e and "does not permit" in e
+              for e in split_short_number["errors"]),
+          repr(split_short_number["errors"]))
+
+    over_budget = _validate_questions(alternative(10, ["a home working office"]))
+    check("an alternative over the group's word budget is rejected",
+          any("alternative 1" in e and "does not permit" in e for e in over_budget["errors"]),
+          repr(over_budget["errors"]))
+
+    numeral_forbidden = _validate_questions(alternative(10, ["15"]))
+    check("a digit alternative is rejected when the rubric permits no numeral",
+          any("alternative 1" in e and "1 number(s)" in e for e in numeral_forbidden["errors"]),
+          repr(numeral_forbidden["errors"]))
+
+
+def test_question_answer_variant_guidance_keeps_required_categories() -> None:
+    """The writer-facing contract must retain the requested examples and boundedness rules."""
+    print("question skill: answer-variant guidance")
+    skill = (QUESTION_VALIDATE.parents[1] / "SKILL.md").read_text(encoding="utf-8").lower()
+    rules = (QUESTION_VALIDATE.parents[1] / "references" / "question-rules.md").read_text(
+        encoding="utf-8").lower()
+    combined = skill + "\n" + rules
+
+    for label, needles in (
+        ("dates and month abbreviations", ("14 september", "september 14", "14 sept")),
+        ("time punctuation and words", ("5:30", "5.30", "half past five")),
+        ("digits and number words", ("15` / `fifteen",)),
+        ("amounts", ("£15",)),
+        ("compound spacing and hyphenation", ("baby cot", "baby-cot")),
+        ("proper-name case", ("title/upper/lower case",)),
+        ("common abbreviations", ("common abbreviations",)),
+        ("British/American spelling", ("centre", "center")),
+        ("digit separators", ("digit separators",)),
+        ("units", ("15 kilograms", "15 kg")),
+    ):
+        check("%s guidance remains explicit" % label,
+              all(needle in combined for needle in needles), label)
+    check("guidance says alternatives are conditional rather than mandatory",
+          "alternatives: []" in combined and "not a quota" in combined)
+    check("guidance documents the bounded ASCII digit-sequence rule",
+          "ascii digit runs" in combined and "concatenate" in combined)
+
+
 def test_question_blank_number_is_matched_as_a_whole_numeral() -> None:
     """A blank's printed number is compared as a whole numeral, not as a substring.
 
@@ -3229,6 +3399,8 @@ def main() -> int:
         test_question_structural_context_and_position_guidelines,
         test_form_table_semantics_are_consistent_across_agents,
         test_question_ar003_tiers_follow_the_canonical,
+        test_question_answer_alternatives_are_conditional_distinct_and_budgeted,
+        test_question_answer_variant_guidance_keeps_required_categories,
         test_question_blank_number_is_matched_as_a_whole_numeral,
         test_question_audit_schema_contract,
         test_question_audit_coverage_must_account_for_all_ten,

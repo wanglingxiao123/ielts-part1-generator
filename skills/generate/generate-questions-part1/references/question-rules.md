@@ -326,6 +326,46 @@ Other answer rules that apply here:
   number, a single letter, or an abbreviation. Low word frequency is a triage signal for a human, not
   a threshold that decides.
 
+### Conditional answer-variant check
+
+Run this check for every answer, but do not force a non-empty list. Add an alternative only when it
+is common, mechanically equivalent, unambiguous in this item, supported by the same recorded fact,
+and legal under the same printed word/numeral limit. Ordinary words with no stable variant,
+unpredictable nickname forms, synonyms, explanations, corrected-away values and different levels
+of precision keep `alternatives: []`.
+
+Common case, routine punctuation, whitespace and hyphen differences may be written explicitly when
+they are plausible candidate spellings that the answer key must accept. Thus `5:30` / `5.30`,
+`baby cot` / `baby-cot`, and conventional title/upper/lower case forms of a proper name are valid
+alternatives. Do not repeat the exact same trimmed string, enumerate obscure permutations, or build
+an unbounded Cartesian product: retain only variants with real scoring value.
+
+| Category | Accept when | Reject / do not enumerate |
+|---|---|---|
+| **Dates** | Unambiguous day/month order, cardinal/ordinal day, and standard month abbreviation: `14 September`, `September 14`, `14th September`, `14 Sept`, provided each fits the rubric. | Ambiguous numeric dates such as `09/10`; a regional order that changes the date; every punctuation/case permutation. |
+| **Times** | `5:30` / `5.30` and a predictable leading-zero form may be listed explicitly. A form such as `half past five` or `5:30 am` is accepted only when the recording fixes that meaning and the rubric permits it. | Adding AM/PM when the script does not establish it; treating `5:30` and `17:30` as interchangeable without clear 24-hour context; listing every punctuation/case/leading-zero combination. |
+| **Digits / number words** | `15` / `fifteen` when both express the same value and each independently fits the rubric. | A number word under `ONE WORD ONLY` does not license the digit if the rubric has no numeral allowance; do not accept rounded or differently precise values. |
+| **Amounts** | If the question face already prints `£`, `$`, `€`, a currency code, or an unambiguous currency word, key the numeric value without repeating it. A code/word variant may be accepted only when the currency is not pre-printed and the rubric permits it. | Repeating a pre-printed unit (`£ £15`), changing currency, or accepting `15` where the face and evidence do not fix what the amount measures. |
+| **Compounds** | Stable joined, spaced or hyphenated forms such as `baby cot` / `baby-cot` may be listed explicitly, subject to the rubric's actual counting rule. | Splitting that changes meaning, accepting only half a compound, or enumerating implausible separator permutations. |
+| **Proper-name case** | Conventional title case, all capitals and lowercase may be listed for a name whose letters are unchanged. | Case-sensitive codes or abbreviations where case carries meaning; spelling changes disguised as case variants. |
+| **Common abbreviations** | Standard, unambiguous forms such as `September` / `Sept`, `Street` / `St`, `Doctor` / `Dr`, or a conventional unit abbreviation when the context fixes the expansion. | Ad-hoc clipping, uncommon initials, ambiguous `St` where it could mean `Saint`, or an abbreviation that changes the word/numeral budget illegally. |
+| **British/American spelling** | Standard pairs the audio cannot distinguish, such as `centre` / `center` and `licence` / `license` in the relevant noun/verb use. | Different words, non-standard spellings, or pairs whose grammatical use is not equivalent in the carrier. |
+| **Digit separators** | Telephone, postcode and long-number renderings that preserve the exact alphanumeric sequence despite conventional spaces, hyphens or thousands separators may be listed explicitly. | Changed digit/letter order, inserted or missing digits, decimal/thousands ambiguity, or treating two distinct numeric sequences as equivalent. |
+| **Units** | If the face prints the unit, answer with the value only. If it does not, a full unit and its standard abbreviation may both be accepted when the rubric permits them and precision is unchanged (`15 kilograms` / `15 kg`). | Repeating a printed unit, converting to another unit, changing singular/plural meaning, or accepting a bare number when the item does not fix the unit. |
+
+Before saving the key:
+
+1. Count every alternative independently using the same rule as the canonical.
+2. Remove only exact duplicates after trimming surrounding whitespace. Case, punctuation, spacing
+   and hyphen variants may coexist when they are useful accepted forms.
+3. When both the canonical and alternative contain ASCII digit runs, concatenate the runs on each
+   side and require the resulting digit sequence to match. This accepts `5:30` / `5.30`, `£15` /
+   `15`, `14 September` / `September 14`, and separator changes, while rejecting inserted, missing,
+   reordered or changed digits. If either side has no ASCII digits (for example `15` / `fifteen`),
+   deterministic validation does not attempt semantic number-word comparison; the writer must
+   confirm equivalence from the evidence.
+4. Stop after the small set of independently useful variants; do not multiply dimensions.
+
 ## 7. Word Limits: No Default
 
 There is **no global default limit**. Per group, take the **strictest** standard rubric that every

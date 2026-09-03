@@ -391,7 +391,7 @@
             "type": "string",
             "minLength": 1
           },
-          "description": "Accepted variants, each independently satisfying the same limit and equivalent in this context (AR-004). Empty is a normal answer, not an omission -- inventing a variant that is not actually equivalent marks wrong answers as right."
+          "description": "Conditional accepted variants (AR-004), not a per-answer quota. Empty is normal when no common mechanically equivalent form exists. Every entry must independently satisfy the same word/numeral budget and remain equivalent in context. Useful case, punctuation, spacing and hyphen variants may be explicit; exact trimmed duplicates are forbidden. Keep the list bounded and do not enumerate obscure typographic permutations or Cartesian products."
         },
         "word_limit": {
           "enum": [
