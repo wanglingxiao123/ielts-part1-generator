@@ -29,6 +29,7 @@ import { ApiError, setTransport, type RequestSpec } from '@/api/http'
 import { estimateBatchSeconds } from '@/domain/batchEstimate'
 import { setSseFetch } from '@/api/sseClient'
 import { setAuthFetch } from '@/auth/authApi'
+import { setQtiFetch } from '@/api/qtiExport'
 import { buildRecord, mockManifest, QUESTION_PACKAGE, type FixtureKind } from './fixtures'
 import { MockBatch } from './mockSse'
 import { syntheticClipUrl } from './silentAudio'
@@ -1180,6 +1181,18 @@ export function installMocks() {
   setTransport(mockTransport)
   setSseFetch((url, init) => mockSseFetch(url, init))
   setAuthFetch(mockAuthFetch)
+  // QTI 导出是 web tier 上的纯服务端转换（qti_export/），mock 里不复刻它：给一个说明性的 501，
+  // 页面会把这句话渲染出来，而不是让 fetch 撞到 vite dev server 的 404 HTML。
+  setQtiFetch(() =>
+    Promise.resolve(
+      new Response(
+        JSON.stringify({
+          error: { code: 'NOT_IMPLEMENTED', message: 'mock 模式不支持导出 QTI，请连接真实后端' },
+        }),
+        { status: 501, headers: { 'Content-Type': 'application/json' } },
+      ),
+    ),
+  )
   console.info('[mock] API + SSE + auth mocked (VITE_MOCK=1)')
 }
 

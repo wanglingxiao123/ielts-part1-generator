@@ -12,6 +12,7 @@ Route map:
     GET  /api/batch-history/{id}             one historical batch, with its materials' artifacts
     GET  /api/batch-history-material/{id}    one material by id alone, for the reader page
     GET  /api/material-questions/{id}        the delivered question set, for the 题目预览 tab
+    GET  /api/material-qti/{id}              that set as a QTI 2.2.4 content package (qti_export/)
     GET/POST/DELETE /api/material-comments/* personal material comments
     POST /api/batch-history/{id}/submit      records the 已提交 status
     POST /api/batch-history/{id}/withdraw    undoes it, wholly or per material
@@ -70,8 +71,11 @@ from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
     RedirectResponse,
+    Response,
     StreamingResponse,
 )
+
+from qti_export import ExportRejected, export_document, summarize
 
 from .auth import (
     SESSION_COOKIE,
@@ -552,6 +556,89 @@ class WebTier:
                     body["request_status"] = state.get("request_status")
             return JSONResponse(body)
 
+        @app.get("/api/material-qti/{material_id}")
+        async def export_material_qti(
+            material_id: str, version_id: str = "", format: str = "zip"
+        ) -> Any:
+            """The delivered question set as a QTI 2.2.4 content package, for a downstream system.
+
+            `format=zip` (default) is the IMS Content Package: `imsmanifest.xml` + `items/*.xml` +
+            `reject_candidates.json` + `review.txt`. `format=item` is the bare `assessmentItem` XML
+            for a caller that has its own packaging. `format=summary` is JSON -- identifier, counts,
+            the review notes -- so the page can say what it is about to hand over without downloading it.
+
+            **`version_id` picks the question version; absent, the adopted one.** The reader page can
+            be looking at a historical version, and what it exports must be what it shows. The version
+            ordinal goes into the QTI identifier (`ielts-<material_id>-v<n>`), so two exports of the
+            same material never collide in a downstream item bank.
+
+            **Rejections are 422 with every reason listed, never a partial package.** The converter
+            re-runs the admission gates (upstream review passed, both auditors agree on every answer,
+            question numbers close, word limits self-consistent). A set that fails them is not
+            exported with the failing questions dropped -- a nine-question Part 1 that validates
+            against the XSD is exactly the kind of artefact that gets imported and only noticed by a
+            candidate. Conversion itself is pure and stdlib-only (`qti_export/`); it never touches
+            the network, so there is nothing to time out on.
+            """
+            from starlette.concurrency import run_in_threadpool
+
+            if format not in ("zip", "item", "summary"):
+                return JSONResponse(
+                    _error_body("bad_request", "format 只能是 zip、item 或 summary"),
+                    status_code=400,
+                )
+            if not self.slot_state.available:
+                return JSONResponse(
+                    _error_body("QTI_EXPORT_UNAVAILABLE",
+                                "题目存储未配置，无法导出。", material_id=material_id),
+                    status_code=503,
+                )
+            try:
+                source = await run_in_threadpool(self._qti_source, material_id, version_id)
+            except QuestionVersionError as exc:
+                return JSONResponse(_error_body(exc.code, exc.message), status_code=exc.status)
+            except Exception as exc:  # noqa: BLE001 - storage refusing is a 502, not a traceback
+                return JSONResponse(
+                    _infra_error_body("QTI_EXPORT_UNAVAILABLE",
+                                      "题目暂时读取不到，请稍后重试。", exc),
+                    status_code=502,
+                )
+            if source is None:
+                return JSONResponse(
+                    _error_body("QUESTIONS_NOT_FOUND",
+                                "这套材料还没有可导出的题目。", material_id=material_id),
+                    status_code=404,
+                )
+            document, ordinal = source
+            try:
+                bundle = await run_in_threadpool(
+                    export_document, document, material_id=material_id, version_ordinal=ordinal)
+            except ExportRejected as exc:
+                return JSONResponse(
+                    _error_body("QTI_EXPORT_REJECTED",
+                                "这套题目未通过导出门禁，不能生成 QTI 包。",
+                                material_id=material_id, version_ordinal=ordinal,
+                                reasons=exc.reasons),
+                    status_code=422,
+                )
+
+            summary = summarize(bundle)
+            if format == "summary":
+                return JSONResponse(summary.as_dict())
+            headers = {
+                # Read by the page after a download so it can say how many notes are in review.txt
+                # without a second request.
+                "X-QTI-Review-Count": str(len(bundle.review)),
+                "X-QTI-Item-Identifier": bundle.item_identifier,
+                "Cache-Control": "no-store",
+            }
+            if format == "item":
+                headers["Content-Disposition"] = (
+                    'attachment; filename="%s"' % bundle.material.item_filename)
+                return Response(bundle.item_xml, media_type="application/xml", headers=headers)
+            headers["Content-Disposition"] = 'attachment; filename="%s"' % bundle.zip_filename
+            return Response(bundle.zip_bytes(), media_type="application/zip", headers=headers)
+
         # ── personal material comments ─────────────────────────────────────
 
         @app.get("/api/material-comments/{material_id}")
@@ -963,6 +1050,39 @@ class WebTier:
         return app
 
     # ── helpers ──────────────────────────────────────────────────────────────
+
+    def _qti_source(self, material_id: str, version_id: str) -> Optional[Tuple[Dict[str, Any], int]]:
+        """The stored document to convert, and its version ordinal. None when there is no set.
+
+        The original delivery and a revision live in different shapes and places (`_questions/` vs
+        `_question_versions/`; `qti_export.service.normalize_document` explains the shapes). This
+        picks one: `version_id` if given, else the adopted version, else the original. The original
+        is read through `slot_state` rather than the version list because the list projects it down
+        to `package` + `quality` and the gates want the whole delivery document.
+
+        Blocking (S3 reads); the route runs it on a worker thread.
+        """
+        selected = version_id or ""
+        ordinal = 1
+        if self.question_versions is not None:
+            listing = self.question_versions.list(material_id)
+            rows = listing.get("versions") or []
+            if rows:
+                selected = selected or str(listing.get("active_version_id") or "original")
+                row = next((r for r in rows if str(r.get("id")) == selected), None)
+                if row is None:
+                    raise QuestionVersionError(
+                        "QUESTION_VERSION_NOT_FOUND", "没有找到这个题目版本。", 404)
+                ordinal = int(row.get("ordinal") or 1)
+                if selected != "original":
+                    return row, ordinal
+            elif selected and selected != "original":
+                raise QuestionVersionError(
+                    "QUESTION_VERSION_NOT_FOUND", "没有找到这个题目版本。", 404)
+        document = self.slot_state.load_questions(material_id)
+        if document is None:
+            return None
+        return document, ordinal
 
     def _with_session(self, response: JSONResponse, email: str) -> JSONResponse:
         response.set_cookie(
