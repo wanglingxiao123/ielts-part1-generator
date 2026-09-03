@@ -19,7 +19,7 @@ python3 -m qti_export _questions/20260808-booking-hotel-45425df4.json -o build/ 
 ielts-<material_id>-v<n>.zip
 ├── imsmanifest.xml                          IMS Content Package manifest（QTIv2.2 Package）
 ├── items/part1-<material_id>-v<n>.xml       assessmentItem：十题共一个 item，十个 textEntryInteraction
-├── reject_candidates.json                   每题的接受集 / 拒绝集，供下游判分回归与人工评审
+├── reject_candidates.json                   每题的接受集 / 拒绝集及答案来源，供下游判分回归与人工评审
 └── review.txt                               需人工确认的判分口径（存在时才有）
 ```
 
@@ -42,6 +42,11 @@ ielts-<material_id>-v<n>.zip
 5. **`package.material_id` 不能当标识符。** 实测常是自由文本（`"Test 1 Part 1"`），既不唯一也不是
    合法 NCName。存储键里的材料 id（`20260808-booking-hotel-45425df4`）才是身份：全部唯一、合法
    NCName、还能还原出场景键。
+
+新版题包中的 `answer_key[].alternatives` 是上游已经确认的可接受写法。转换器会先保留这些写法，
+再按本章规则寻找尚未覆盖且通过字数、题面 affix 与干扰项检查的补充写法。副文件分别记录
+`upstream_alternatives` 与 `qti_added_alternatives`；后一类同时进入 `review.txt`，不会静默扩大
+页面之外的判分范围。历史题包没有 alternatives 时仍可由规则推导，但同样留下人工复核记录。
 
 ## 1. 模块
 

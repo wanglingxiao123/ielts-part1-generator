@@ -77,6 +77,8 @@ class AnswerSpec:
     accept: list[str]
     reject: list[str] = field(default_factory=list)
     review: list[str] = field(default_factory=list)
+    upstream_alternatives: list[str] = field(default_factory=list)
+    qti_added_alternatives: list[str] = field(default_factory=list)
 
 
 def _dedup(values: list[str]) -> list[str]:
@@ -262,16 +264,19 @@ def _phrase(target: str, response_form: str) -> tuple[list[str], list[str], list
 def _affix_redundant(value: str, affix: str) -> bool:
     """affix 已经供了单位时，接受集里重复该单位的写法要剔除。
 
-    只对**词形**单位生效，不对货币符号生效，这个不对称是刻意的：
-      - "£ ___ per night" 里填 "128 pounds" → "£ 128 pounds per night"，句子重复，
-        考官会判错，收进接受集就是给错分。
-      - 同一格填 "£128" → "£ £128 per night"，符号重复是考生近乎普遍的无害习惯，
-        剔除它会造成**误扣分**，比多给分更糟。所以保留。
+    词形和符号都生效：
+      - "£ ___ per night" 里填 "128 pounds" → "£ 128 pounds per night"；
+      - 同一格填 "£128" → "£ £128 per night"。
+
+    两者都重复了题面已经提供的币种。上游题目规则明确只把裸数值作为答案，QTI 不得
+    通过自己的容错规则重新放宽这一点。
     """
     if not affix.strip():
         return False
     affix_low = affix.lower()
     symbols = {s for s in CURRENCY_WORDS.values() if s in affix}
+    if any(value.strip().startswith(symbol) for symbol in symbols):
+        return True
     # 货币符号出现在 affix 里 → 对应的词形（pound/pounds…）视为重复
     unit_words = {w for w, s in CURRENCY_WORDS.items() if s in symbols}
     unit_words |= {w for w in CURRENCY_WORDS if w in affix_low}
@@ -457,4 +462,34 @@ def build(
             f"target={target!r}。检查 DISTINCTIVE / EXTRA 或 correction 处理。"
         )
 
-    return AnswerSpec(number=number, target=target, accept=accept, reject=reject, review=review)
+    # Keep provenance after every filter has run. `alternatives` are the variants already approved
+    # by the question package; everything else the rule engine added is visible as a QTI supplement.
+    # Case-only variants collapse because the emitted mapEntries use caseSensitive=false.
+    accepted_keys = {value.casefold() for value in accept}
+    upstream = _dedup([
+        value for value in seeded
+        if value.casefold() in accepted_keys and value.casefold() != target.casefold()
+    ])
+    confirmed_keys = {target.casefold(), *(value.casefold() for value in upstream)}
+    added = [value for value in accept if value.casefold() not in confirmed_keys]
+    if added:
+        if upstream:
+            review.append(
+                "QTI 在上游 alternatives 之外自动补充可接受写法：%s"
+                % added
+            )
+        else:
+            review.append(
+                "上游未提供 alternatives；QTI 根据答案类别自动补充可接受写法：%s"
+                % added
+            )
+
+    return AnswerSpec(
+        number=number,
+        target=target,
+        accept=accept,
+        reject=reject,
+        review=review,
+        upstream_alternatives=upstream,
+        qti_added_alternatives=added,
+    )

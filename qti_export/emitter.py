@@ -94,6 +94,10 @@ class Gap:
     #: 上游标注的竞争答案（review.reconstructed_answers[].competing_candidates），
     #: 用于生成负向用例
     distractors: List[str] = field(default_factory=list)
+    #: Explicitly approved by the upstream question package.
+    upstream_alternatives: List[str] = field(default_factory=list)
+    #: Added by QTI category rules after all word-limit/carrier/conflict filters.
+    qti_added_alternatives: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -316,6 +320,8 @@ def build_material(
                 response_form=str(question.get("response_form") or ""),
                 answer_category=str(question.get("answer_category") or ""),
                 distractors=distractors_by_number.get(number, []),
+                upstream_alternatives=spec.upstream_alternatives,
+                qti_added_alternatives=spec.qti_added_alternatives,
             )
         )
 
@@ -761,7 +767,15 @@ def render(doc: dict, *, slug: str, version_ordinal: int = 1, raw: Optional[byte
         "version": mat.version_ordinal,
         "note": "自动推导的容错集与拒绝集，供下游判分回归与人工评审",
         "items": [
-            {"number": g.number, "target": g.target, "accept": g.accept, "reject": g.reject}
+            {
+                "number": g.number,
+                "target": g.target,
+                "canonical": g.target,
+                "upstream_alternatives": g.upstream_alternatives,
+                "qti_added_alternatives": g.qti_added_alternatives,
+                "accept": g.accept,
+                "reject": g.reject,
+            }
             for g in mat.gaps
         ],
     }

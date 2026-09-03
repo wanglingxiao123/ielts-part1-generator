@@ -154,9 +154,71 @@ def test_zip_contains_exactly_what_the_manifest_declares_plus_sidecars(bundle):
         assert "reject_candidates.json" in names
         rejects = json.loads(zf.read("reject_candidates.json"))
         assert [row["number"] for row in rejects["items"]] == list(range(1, 11))
+        assert all(
+            {"canonical", "upstream_alternatives", "qti_added_alternatives"} <= set(row)
+            for row in rejects["items"]
+        )
         # Every timestamp pinned: the zip must be byte-identical across runs.
         assert {info.date_time for info in zf.infolist()} == {(1980, 1, 1, 0, 0, 0)}
     assert bundle.missing_resources() == []
+
+
+def test_upstream_and_qti_added_alternatives_keep_their_provenance():
+    doc = load("20260808-booking-hotel-45425df4")
+    answer = doc["package"]["answer_key"][1]
+    answer["canonical"] = "14 June"
+    answer["alternatives"] = ["14th June", "June 14", "14 Jun"]
+    question = doc["package"]["question_face"]["questions"][1]
+    question["answer_category"] = "date"
+    bundle = export_document(doc, material_id="date-provenance")
+    sidecar = json.loads(bundle.reject_candidates)
+    row = sidecar["items"][1]
+
+    assert row["canonical"] == "14 June"
+    assert row["upstream_alternatives"] == ["14th June", "June 14", "14 Jun"]
+    assert row["qti_added_alternatives"] == ["June 14th", "14/6"]
+    assert row["accept"] == [
+        "14 June", "14th June", "June 14", "June 14th", "14 Jun", "14/6",
+    ]
+    assert any("QTI 在上游 alternatives 之外" in note for note in bundle.review)
+
+
+def test_two_groups_may_use_the_same_layout():
+    doc = load("20260809-employment-vacancy-344afebc")
+    groups = doc["package"]["question_face"]["groups"]
+    assert len(groups) == 2
+    for group in groups:
+        numbers = [
+            question["number"]
+            for question in doc["package"]["question_face"]["questions"]
+            if question["group_id"] == group["group_id"]
+        ]
+        group["layout"] = "form"
+        group["structure"] = {"row_labels": [f"Field {number}" for number in numbers]}
+
+    bundle = export_document(doc, material_id="same-layout-two-groups")
+    root = ET.fromstring(bundle.item_xml)
+    assert len(root.findall(f".//{{{QTI_NS}}}table[@class='ielts-form']")) == 2
+
+
+def test_a_preprinted_currency_symbol_is_not_accepted_twice():
+    doc = load("20260808-booking-hotel-45425df4")
+    question = doc["package"]["question_face"]["questions"][2]
+    answer = doc["package"]["answer_key"][2]
+    question["carrier_before"] = "£"
+    question["carrier_after"] = " per night"
+    question["answer_category"] = "price"
+    answer["canonical"] = "145"
+    answer["alternatives"] = ["£145"]
+    cross = doc["cross_check"]["items"][2]
+    cross["writer_answer"] = "145"
+    cross["auditor_answer"] = "145"
+
+    bundle = export_document(doc, material_id="preprinted-currency")
+    row = json.loads(bundle.reject_candidates)["items"][2]
+    assert row["accept"] == ["145"]
+    assert "£145" in row["reject"]
+    assert "£145.00" in row["reject"]
 
 
 def test_manifest_points_at_the_item(bundle, material_id):
