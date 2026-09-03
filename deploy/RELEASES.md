@@ -9,16 +9,16 @@
 
 ## 当前生产版本
 
-**Runtime 层 `fixed-two-groups-hotfix2-20260903` + web 层 `fixed-two-groups-20260903`
-（基于 commit `096b339` 的未提交工作区）**，分支 `feat/major-rework-20260903`，
-承载在 Runtime version **56** +
-ECS taskdef **`ielts-part1-web:70`**。
+**Runtime 层 `fixed-two-groups-hotfix2-20260903` + web 层 `qti-7655c4a`**，
+分支 `feat/major-rework-20260903`。Runtime 沿用 version **56**；web 来自 commit
+`7655c4a`，承载在 ECS taskdef **`ielts-part1-web:71`**。本轮只更新 web，新增
+QTI 2.2 导出、当前题目版本选择以及答案变体来源记录；Runtime 未切换。
 digest：backend `sha256:0b451ffb2cb4d2546baa740def566db5399dc061f06e9d9daea2fd3ba5b130ab`、
-frontend `sha256:2fb3b1d6b39cf100792bbfd6a842393449914fbda45e908e01c47afcec475810`。**未合并 main**。
+frontend `sha256:a127565734b76c29ca2935a54c2cb4c12221d6cd3f36783069fa5b50b6581f09`。**未合并 main**。
 
-⚠️ 两层镜像均来自未提交工作区，不能只靠 `096b339` 复原；准确锚点是 Runtime 56、
-taskdef 70 与上述两个 immutable digest。回退前一版时，Runtime 用
-`--runtime-image fixed-two-groups-hotfix1-20260903`，web 无需变动。
+Runtime 56 仍来自上一轮未提交工作区，不能只靠 `096b339` 复原；准确锚点是 Runtime 56
+与 backend immutable digest。web 层可由 `7655c4a` 复原。回退本轮 web 时切回
+taskdef 70；Runtime 无需变动。
 
 本轮 hotfix 修复 Blueprint v3 在 feasibility 入口被旧版 v2-only guard 拒绝、继而令整批
 落入 `SEMANTICS_MISSING` 的问题。入口现在接受 preflight 明确支持的 v2/v3，并增加测试锁定：
