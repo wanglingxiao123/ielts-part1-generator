@@ -55,7 +55,7 @@ Keep the ten private target details in strict order. Prefer one target per cycle
 - Dialogue words, excluding `speaker1`: 450-750, enforced as a limit; 600-650 is the observed
   typical value across 20 real test sets, not a requirement. A compliant 530-word script is
   acceptable and must not be rewritten merely to reach 600.
-- Dialogue turns, excluding `speaker1`: 20-48, enforced as a limit; 30-40 typical.
+- Dialogue turns, excluding `speaker1`: 20-36 hard range; 28-35 preferred.
 - Halves should be roughly even. Fewer than 8 turns in either half is an error; a lopsided
   split within that floor is reported as advice.
 - Each dialogue half: at least 8 turns.
@@ -99,17 +99,10 @@ Assign each point an `item_form` (`form`, `table`, or `note`). `item_form` names
 layout**, not the IELTS question type — Part 1 has exactly one question type (completion) and these
 three are its layouts. **Every point must also carry a non-empty `form_group`**: a point that
 belongs to no group is a scattered gap-fill, which is the shape this whole section exists to
-prevent. The contract can represent a one- or two-point group, but new material should normally
-use at least three questions per group. A smaller group needs a genuinely independent information
-structure that cannot naturally join an adjacent group; a narrator window, the Q5/Q6 midpoint, or
-a desire for layout variety is not such a reason.
-
-Choose groups with this decision procedure:
-
-1. First test whether Q1-Q10 together form one natural candidate-visible Form, Note, or Table.
-2. If they do, use one shared `item_form` and `form_group` across all ten points, even though their
-   evidence lies in two narrator windows.
-3. If they do not, split only where the candidate-visible record structure genuinely changes.
+prevent. Blueprint v3 uses exactly two groups. The required `question_layout_plan` supplies a
+split after Q4, Q5, or Q6 and independently selects Form, Note, or Table for each group. The two
+layouts may be identical. The same split controls narrator windows, item `group`,
+`narrator_window_id`, and the two contiguous `form_group` ranges.
 
 Choose Form, Note, or Table from the relationship among the facts. None is a default or fallback:
 
@@ -144,23 +137,15 @@ Do not run these as a preference order: each condition describes a different inf
 relationship. In particular, do not relabel a thematic Note as Form by inventing field names, and
 do not reserve Note for the rare case where no label at all can be written.
 
-Group count is content-driven and may be one, two, or three. There is no target distribution and no
-preference for two groups. The midpoint narrator cue is never, by itself, evidence of a structure
-change. Additional requirements:
+Additional requirements:
 
-- each group should normally contain at least three points. A one- or two-point exception must
-  represent a genuinely independent information structure that cannot naturally join an adjacent
-  group;
-- at least one `form_group` containing 3 or more points, **all sharing the same `item_form`**.
-  Form, Note and Table are equally valid completion layouts; a homogeneous Note group satisfies
-  this requirement, while a group mixing layouts cannot become one candidate-visible question;
+- exactly two homogeneous groups covering Q1-Q`split_after` and the remaining questions;
+- Form, Note and Table are equally valid, including same-layout pairs;
 - a group's **item numbers must be contiguous** (`5, 6, 7`, never `5, 7, 9`);
 - a group's points must be **contiguous in the ordered evidence sequence** — no other group's point
   may fall between them. Since evidence positions strictly increase, this means one group's points
   are heard together rather than interleaved with another's;
-- narrator windows constrain **when each point's evidence is heard**, not the boundary of the
-  candidate-visible layout. Do not split one continuous form/note/table merely at the midpoint cue,
-  and do not merge genuinely different structures merely to reduce the group count;
+- narrator windows and candidate-visible group boundaries must use the same split;
 - points in one `form_group` should sit reasonably close together; a group spanning most of the
   script forces candidates to hold answers across half the recording. This one is reported as
   advice rather than enforced, since the spec sets no span limit.
@@ -297,7 +282,13 @@ trusting the generator's own labels. A point the auditor cannot recover is a rea
 }
 ```
 
-Include exactly 10 items numbered 1-10. Use a 1-5 / 6-10 or 1-6 / 7-10 split. Every target must occur inside its evidence, every evidence phrase must occur in a distinct dialogue turn, and evidence positions must strictly increase. Use at least four detail types (`name`, `number`, `address`, `price`, `datetime`, `quantity`, `condition`, `option`), exactly 2-3 distractor items, and at least three confirmed items. The correction's earlier value must precede its final value and marker. The indirect answer term must precede its reference phrase and must equal one item's `target`.
+Include exactly 10 items numbered 1-10. Use a 1-4 / 5-10, 1-5 / 6-10, or
+1-6 / 7-10 split. Every target must occur inside its evidence, every evidence phrase must occur in
+a distinct dialogue turn, and evidence positions must strictly increase. Use at least four detail
+types (`name`, `number`, `address`, `price`, `datetime`, `quantity`, `condition`, `option`),
+exactly 2-3 distractor items, and at least three confirmed items. The correction's earlier value
+must precede its final value and marker. The indirect answer term must precede its reference phrase
+and must equal one item's `target`.
 
 `turn_index` is the index into the material's `turns` array for the turn carrying that
 evidence. It anchors the reviewer's annotation. If the script is later revised, the anchors
@@ -309,12 +300,11 @@ equal 1-10 exactly once, and each listed number's `item_form` must match. The re
 deliberate: the per-item field drives annotation rendering, the grouped view makes the overall
 layout balance reviewable at a glance.
 
-### Blueprint version 2
+### Blueprint version 3
 
-**Always write `blueprint_schema_version: 2`.** Records with no version field are v1 — roughly 400
-archived blueprints predate this contract, and they are read as v1 rather than rewritten. The version
-is decided by that field alone, never by whether the fields below happen to be present: a v2 record
-missing one of them is an error, not a v1.
+**Always write `blueprint_schema_version: 3`.** New generation must also write
+`question_layout_plan`. Records with no version field are v1 and existing version-2 records remain
+readable rather than being rewritten. The version is decided by that field alone.
 
 Two names changed with v2. Write `completion_layout_coverage`; `question_type_coverage` is the v1
 name and must not be written. Never write both — a record carrying both leaves a reader no way to
@@ -416,7 +406,7 @@ The `distractor` booleans must be a complete census, not merely selected example
 - [ ] One clear self-correction and one true dialogue-internal indirect confirmation whose
       answer term is also an item target.
 - [ ] Only 2-3 deliberate distractor cycles.
-- [ ] Dialogue is 450-750 words and 20-48 turns; each half has at least 8 turns.
+- [ ] Dialogue is 450-750 words and 20-36 turns; 28-35 turns is preferred; each half has at least 8 turns.
 - [ ] Every `turn_index` points at the turn that actually carries its evidence.
 - [ ] Every point carries a non-empty `form_group`; one group holds 3+ points, all sharing the same
       `item_form` (`form`, `note`, or `table`).

@@ -47,7 +47,8 @@ describe('lengthFacts', () => {
     const at = (w: number, t: number) => lengthFacts(withLength(view, w, t))
     // 450 和 750 是**含**在合格区间里的，边界不能算越线。
     expect(at(450, 20).ok).toBe(true)
-    expect(at(750, 48).ok).toBe(true)
+    expect(at(750, 36).ok).toBe(true)
+    expect(at(750, 37).ok).toBe(false)
     expect(at(600, 35).ok).toBe(true)
   })
 
@@ -138,7 +139,8 @@ describe('compareSummary', () => {
     const a = sideOf('材料 A', 'balanced')
     const b = sideOf('材料 B', 'clustered')
     const over = { ...a, view: withLength(a.view, 900, 35) }
-    const summary = compareSummary(over, b)
+    const compliant = { ...b, view: withLength(b.view, 600, 35) }
+    const summary = compareSummary(over, compliant)
     expect(summary.differences.some((d) => d.includes('超出规范区间'))).toBe(true)
     expect(summary.differences.some((d) => d.includes('材料 A'))).toBe(true)
     // 越线是不合格，不是风格差别，所以建议必须给方向。
@@ -148,7 +150,10 @@ describe('compareSummary', () => {
   it('两套都合格时不说篇幅有问题', () => {
     const a = sideOf('材料 A', 'balanced')
     const b = sideOf('材料 B', 'clustered')
-    const summary = compareSummary(a, b)
+    const summary = compareSummary(
+      { ...a, view: withLength(a.view, 600, 35) },
+      { ...b, view: withLength(b.view, 610, 35) },
+    )
     expect(summary.differences.some((d) => d.includes('超出规范区间'))).toBe(false)
     expect(summary.shared.some((s) => s.includes('篇幅都在合格区间内'))).toBe(true)
   })
@@ -165,7 +170,10 @@ describe('compareSummary', () => {
   it('同一套跟自己比时如实说「几乎一样」', () => {
     const a = sideOf('材料 A', 'balanced')
     const b = sideOf('材料 B', 'balanced')
-    const summary = compareSummary(a, b)
+    const summary = compareSummary(
+      { ...a, view: withLength(a.view, 600, 35) },
+      { ...b, view: withLength(b.view, 600, 35) },
+    )
     expect(summary.differences).toEqual([])
     // 没差异时不硬造一个选择理由。
     expect(summary.advice).toContain('几乎一样')

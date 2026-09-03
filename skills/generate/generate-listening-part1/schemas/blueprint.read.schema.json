@@ -13,7 +13,10 @@
   ],
   "properties": {
     "blueprint_schema_version": {
-      "const": 2,
+      "enum": [
+        2,
+        3
+      ],
       "description": "Present and equal to 2 for v2 records; absent for v1. Deliberately NOT in this file's required list -- its absence is what marks a v1 record, and the branches below key off exactly that. blueprint.schema.json DOES require it, which is the single line that turns this read contract into a v2 write contract. Any other value is rejected rather than treated as v1."
     },
     "narration_mode": {
@@ -24,6 +27,7 @@
     },
     "split_after": {
       "enum": [
+        4,
         5,
         6
       ],
@@ -43,6 +47,38 @@
         },
         "note": {
           "$ref": "#/definitions/itemNumberList"
+        }
+      }
+    },
+    "question_layout_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "split_after",
+        "first_layout",
+        "second_layout"
+      ],
+      "properties": {
+        "split_after": {
+          "enum": [
+            4,
+            5,
+            6
+          ]
+        },
+        "first_layout": {
+          "enum": [
+            "form",
+            "note",
+            "table"
+          ]
+        },
+        "second_layout": {
+          "enum": [
+            "form",
+            "note",
+            "table"
+          ]
         }
       }
     },
@@ -117,6 +153,34 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "blueprint_schema_version": {
+            "const": 3
+          }
+        },
+        "required": [
+          "blueprint_schema_version"
+        ]
+      },
+      "then": {
+        "required": [
+          "question_layout_plan"
+        ],
+        "properties": {
+          "split_after": {
+            "enum": [
+              4,
+              5,
+              6
+            ]
+          }
+        }
+      }
+    }
+  ],
   "if": {
     "required": [
       "blueprint_schema_version"

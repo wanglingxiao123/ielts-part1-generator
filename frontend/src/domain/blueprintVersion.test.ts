@@ -1,5 +1,5 @@
 /**
- * The v1/v2 narrowing layer (design.md D2).
+ * The v1/v2/v3 narrowing layer.
  *
  * Tested separately from `formGroups` because the compatibility decision has to have one place it
  * can be asserted. Before this file existed, "does a v1 blueprint still display correctly" could
@@ -62,7 +62,7 @@ describe('blueprintVersion', () => {
     // Cast through `unknown`: the generated type says `2`, which is exactly why a wrong value has
     // to be forced in here — it can only arrive from data, never from typed code.
     const bp = v2() as unknown as Record<string, unknown>
-    bp.blueprint_schema_version = 3
+    bp.blueprint_schema_version = 4
     expect(blueprintVersion(bp as unknown as Blueprint)).toBe('unknown')
   })
 })
@@ -160,7 +160,7 @@ describe('layoutCoverage', () => {
   /**
    * An unknown version must display NOTHING, not "whatever field name it happens to have".
    *
-   * The earlier implementation was a `??` chain over the two names, so a version-3 record whose
+   * The earlier implementation was a `??` chain over the two names, so an unknown-version record whose
    * coverage field kept either spelling was read as if this build understood its contract. The
    * failure is silent by construction: the numbers look plausible, and nothing states that they came
    * from a schema nobody here has seen.
@@ -168,7 +168,7 @@ describe('layoutCoverage', () => {
   it('reads nothing from an unrecognised version, under either field name', () => {
     for (const field of ['completion_layout_coverage', 'question_type_coverage']) {
       const bp = v2() as unknown as Record<string, unknown>
-      bp.blueprint_schema_version = 3
+      bp.blueprint_schema_version = 4
       delete bp.completion_layout_coverage
       bp[field] = { form: [1, 2, 3], table: [4, 5, 6] }
       expect(layoutCoverage(bp as unknown as Blueprint), field).toEqual({})

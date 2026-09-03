@@ -532,6 +532,19 @@ describe('layout', () => {
     expect(card.querySelector('.mat-preview')!.textContent).toContain('租房咨询')
   })
 
+  it('previews each material question layout on the card', () => {
+    startBatch(TWO_SCENARIOS)
+    deliverAll(TWO_SCENARIOS)
+    renderPage()
+
+    const card = document.querySelector('[data-material="m1"]')!
+    const groups = [...card.querySelectorAll('.mat-question-type')].map((node) =>
+      node.textContent?.trim(),
+    )
+    expect(groups.length).toBeGreaterThanOrEqual(2)
+    expect(groups.every((text) => /^Q\d+–Q\d+ /.test(text ?? ''))).toBe(true)
+  })
+
   it('offers 阅读全文 and NO 试听: audio does not exist before selection', () => {
     startBatch(TWO_SCENARIOS)
     deliverAll(TWO_SCENARIOS)

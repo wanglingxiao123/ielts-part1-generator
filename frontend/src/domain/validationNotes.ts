@@ -83,7 +83,7 @@ const RULES: Array<{ match: RegExp; text: (m: RegExpMatchArray) => string }> = [
       '偏长的可以压缩闲聊——读一遍看是否够写满十题。',
   },
   {
-    match: /dialogue turns outside 20-48: (\d+)/,
+    match: /dialogue turns outside 20-36: (\d+)/,
     text: (m) => `对话 ${m[1]} 轮。轮次偏少时一轮里容易挤进两个考点，` +
       '出题时注意别让考生在一句话里记两样东西。',
   },

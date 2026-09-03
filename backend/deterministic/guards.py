@@ -31,6 +31,7 @@ __all__ = [
     "BLUEPRINT_JSON_FIELDS",
     "FEASIBILITY_ITEM_COUNT",
     "FEASIBILITY_PLAN_VERSION",
+    "FEASIBILITY_PLAN_VERSIONS",
     "BlindnessViolation",
     "MissingPlanViolation",
     "answer_files_on_disk",
@@ -398,18 +399,20 @@ def assert_no_answers_on_disk() -> None:
 # The plan shape a non-blind judge must be given. Both values are duplicated from the validator and
 # named here rather than inlined, so a drift shows up as a failing test instead of as a guard that
 # quietly accepts the wrong thing:
-#   FEASIBILITY_PLAN_VERSION -- `validate_part1.BLUEPRINT_SCHEMA_VERSION` (also `V_KEY`'s only
-#     accepted value; anything else reads as "version unknown", not as another version)
+#   FEASIBILITY_PLAN_VERSION -- `validate_part1.BLUEPRINT_SCHEMA_VERSION`, the current write version
+#   FEASIBILITY_PLAN_VERSIONS -- versions the feasibility preflight can interpret. This is wider
+#     because manual revision paths still judge persisted v2 blueprints.
 #   FEASIBILITY_ITEM_COUNT   -- `validate_part1.py`'s `len(items) != 10` check, and
 #     `question_feasibility_preflight.ITEM_COUNT`
-FEASIBILITY_PLAN_VERSION = 2
+FEASIBILITY_PLAN_VERSION = 3
+FEASIBILITY_PLAN_VERSIONS = frozenset({2, FEASIBILITY_PLAN_VERSION})
 FEASIBILITY_ITEM_COUNT = 10
 
 _PLAN_VERSION_KEY = "blueprint_schema_version"
 
 
 def assert_carries_plan(blueprint: object, label: str = "feasibility payload") -> None:
-    """Fail the call unless a usable v2 ten-item plan is actually being handed over.
+    """Fail the call unless a supported ten-item plan is actually being handed over.
 
     The mirror image of :func:`assert_blind`, and it exists because that mirror failure is invisible.
     A blindness leak at least changes the payload; a *missing* plan changes nothing observable. If the
@@ -430,9 +433,9 @@ def assert_carries_plan(blueprint: object, label: str = "feasibility payload") -
     cannot fail is worse than no assertion, because it is read as coverage.
 
     The four criteria are ordered, each subscripting what the previous one established. The version
-    criterion demands ``== 2`` rather than restating the validator's three-branch reading of the
-    field: the question here is "is this a v2 plan", not "how should a version value be interpreted",
-    and that second question already has exactly one implementation.
+    criterion accepts the current v3 write contract and persisted v2 plans because both are supported
+    by ``question_feasibility_preflight``. Keeping this set explicit prevents a future write-version
+    bump from silently reaching the model before the feasibility contract is upgraded.
     """
     if not isinstance(blueprint, dict) or not blueprint:
         raise MissingPlanViolation(
@@ -444,11 +447,10 @@ def assert_carries_plan(blueprint: object, label: str = "feasibility payload") -
     # `bool` first: `True == 1` and, more to the point, `isinstance(True, int)` holds, so a bare
     # int check would accept `True` as a version number.
     if isinstance(version, bool) or not isinstance(version, int) \
-            or version != FEASIBILITY_PLAN_VERSION:
+            or version not in FEASIBILITY_PLAN_VERSIONS:
         raise MissingPlanViolation(
-            "%s carries a plan whose %s is %r, not %d; only v%d plans are judged"
-            % (label, _PLAN_VERSION_KEY, version, FEASIBILITY_PLAN_VERSION,
-               FEASIBILITY_PLAN_VERSION)
+            "%s carries a plan whose %s is %r; supported plan versions are %s"
+            % (label, _PLAN_VERSION_KEY, version, sorted(FEASIBILITY_PLAN_VERSIONS))
         )
 
     items = blueprint.get("items")

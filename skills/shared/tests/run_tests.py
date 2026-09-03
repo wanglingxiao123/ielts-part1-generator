@@ -162,10 +162,11 @@ def test_schemas_are_valid() -> None:
 
     material = json.loads((FIXTURES / "material_valid.json").read_text(encoding="utf-8"))
     blueprint = json.loads((FIXTURES / "blueprint_valid.json").read_text(encoding="utf-8"))
+    blueprint_write = json.loads((FIXTURES / "blueprint_v3_valid.json").read_text(encoding="utf-8"))
     audit = json.loads((FIXTURES / "audit_valid.json").read_text(encoding="utf-8"))
     for label, data, schema in (
         ("material", material, "material.schema.json"),
-        ("blueprint", blueprint, "blueprint.schema.json"),
+        ("blueprint", blueprint_write, "blueprint.schema.json"),
         ("blueprint (read side)", blueprint, "blueprint.read.schema.json"),
         ("audit", audit, "audit.schema.json"),
     ):
@@ -195,6 +196,7 @@ def test_write_and_read_schemas_disagree_where_they_should() -> None:
     WRITE, READ = "blueprint.schema.json", "blueprint.read.schema.json"
     v1 = json.loads((FIXTURES / "blueprint_v1_legacy.json").read_text(encoding="utf-8"))
     v2 = json.loads((FIXTURES / "blueprint_valid.json").read_text(encoding="utf-8"))
+    v3 = json.loads((FIXTURES / "blueprint_v3_valid.json").read_text(encoding="utf-8"))
 
     def mutate(base: dict, fn) -> dict:
         payload = copy.deepcopy(base)
@@ -228,14 +230,15 @@ def test_write_and_read_schemas_disagree_where_they_should() -> None:
     def bogus_layout(bp: dict) -> None:
         bp["items"][0]["item_form"] = "essay"
 
-    def version_three(bp: dict) -> None:
-        bp["blueprint_schema_version"] = 3
+    def version_four(bp: dict) -> None:
+        bp["blueprint_schema_version"] = 4
 
     # (label, payload, want_write_ok, want_read_ok)
     cases = (
         # The split itself: one real archived record, two different and both-correct answers.
         ("the real v1 archive", v1, False, True),
-        ("the v2 fixture", v2, True, True),
+        ("the v2 fixture", v2, False, True),
+        ("the v3 fixture", v3, True, True),
         # v1 leniency is bounded. A v1 carrying v2's item fields is a v2 that lost its version field,
         # and reading it as a lenient v1 would skip every v2 recomputation on it.
         ("v1 + a v2 item field", mutate(v1, add_response_form), False, False),
@@ -250,9 +253,9 @@ def test_write_and_read_schemas_disagree_where_they_should() -> None:
         ("v2 using the v1 coverage name", mutate(v2, rename_coverage), False, False),
         # The one line that turns the read contract into a write contract.
         ("a v2-shaped record with no version field", mutate(v2, drop_version), False, False),
-        # 'Readable' means v1 or v2. An unknown version is to be surfaced, not rendered through
+        # Unknown versions are surfaced, not rendered through
         # whichever field name it happens to carry.
-        ("version 3", mutate(v2, version_three), False, False),
+        ("version 4", mutate(v2, version_four), False, False),
     )
     for label, payload, write_ok, read_ok in cases:
         for schema, want in ((WRITE, write_ok), (READ, read_ok)):
@@ -525,7 +528,7 @@ def test_remaining_rules_do_not_reject_real_papers() -> None:
     | question-range regex          |   1 ( 4%)| \\s+ -> \\s* ("questions1~4" occurs)          |
 
     Left hard on purpose, and NOT relaxed: exactly 2 main speakers + 1 narrator, exactly 10 items,
-    contiguous question groups, dialogue 450-750 words / 20-48 turns, and every output-schema rule.
+    contiguous question groups, dialogue 450-750 words / 20-36 turns, and every output-schema rule.
     The one paper still rejected (snap_038) opens with a worked EXAMPLE question, giving it four
     narrator turns; that is a real structural difference from what we generate, not an over-strict
     rule, so the rule stands.
@@ -712,7 +715,7 @@ def test_blueprint_version_is_read_not_guessed() -> None:
         ("v1 archive is rejected by default", "blueprint_v1_legacy.json", (), False,
          "blueprint_schema_version is missing"),
         ("an unknown version is an error, not a fallback to v1", "blueprint_bad_version.json", (),
-         False, "only 2 is supported"),
+         False, "only versions 2 and 3 are supported"),
     ):
         result = validate(fixture, *extra)
         passed = result.returncode == 0
@@ -1072,14 +1075,16 @@ def test_metrics_absent_when_unmeasured() -> None:
 
 
 def test_typical_band_is_not_a_finding() -> None:
-    """audit_metrics.py must report the typical band as a warning, not a finding (D5)."""
+    """Preferred bands warn; the customer-approved 36-turn ceiling is a finding."""
     print("audit metrics band handling")
     payload = json.loads(run(METRICS, str(FIXTURES / "material_valid.json"), "--json").stdout)
     band = [i for i in payload["issues"] if "preferred" in i["message"]]
     check("no finding for typical-band deviation", not band, json.dumps(band))
     check("warning is emitted instead",
           any("preferred" in w for w in payload.get("warnings", [])), json.dumps(payload.get("warnings")))
-    check("compliant fixture yields zero findings", not payload["issues"], json.dumps(payload["issues"][:2]))
+    check("40 turns exceeds the new hard ceiling",
+          any("dialogue turns 40 outside 20-36" in i["message"] for i in payload["issues"]),
+          json.dumps(payload["issues"][:2]))
 
 
 def test_audit_fixtures_are_coherent() -> None:
@@ -1476,7 +1481,7 @@ def test_preflight_version_gate() -> None:
           unreadable["metrics"].get("blueprint_schema_version") is None,
           repr(unreadable["metrics"].get("blueprint_schema_version")))
     got = pf.preflight(unreadable, _feasible())
-    check("version 3 (unreadable -> null) -> VALIDATION_INCOMPLETE",
+    check("version 4 (unreadable -> null) -> VALIDATION_INCOMPLETE",
           got.outcome == pf.VALIDATION_INCOMPLETE, f"{got.outcome}: {got.reasons}")
     check("an unreadable version is NOT UNSUPPORTED_VERSION", got.outcome != pf.UNSUPPORTED_VERSION)
 
@@ -2741,10 +2746,9 @@ def test_form_table_semantics_are_consistent_across_agents() -> None:
               "note is a fallback" not in normalised
               and "this is the fallback" not in normalised,
               normalised[:900])
-        check("%s keeps the three-question group preference" % label,
-              "at least three" in normalised
-              and "genuinely independent" in normalised
-              and "cannot naturally join" in normalised,
+        check("%s requires the fixed two-group plan" % label,
+              "exactly two" in normalised
+              or "two groups" in normalised,
               normalised[:900])
 
     normalised = " ".join(question_skill.lower().split())
@@ -3260,7 +3264,7 @@ def test_answer_category_decision_table() -> None:
           "%r vs %r" % (sorted(vp.ANSWER_CATEGORIES), sorted(categories)))
     check("there is no catch-all value", "other" not in categories)
 
-    blueprint = json.loads((FIXTURES / "blueprint_valid.json").read_text(encoding="utf-8"))
+    blueprint = json.loads((FIXTURES / "blueprint_v3_valid.json").read_text(encoding="utf-8"))
     blueprint["items"][0]["answer_category"] = "job_title"
     for label, schema in (
         ("write-side blueprint schema", "blueprint.schema.json"),

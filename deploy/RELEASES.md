@@ -9,22 +9,21 @@
 
 ## 当前生产版本
 
-**Runtime 层 `feedback-across-gates-20260813`（commit `29355f3`）+ web 层
-`retry-visible-20260813`（commit `0afdfed`）**，分支 `feat/question-revision-versions`，
-承载在 Runtime version **53** + ECS taskdef **`ielts-part1-web:68`**。
-digest：backend `sha256:eb1c7046fde9e7dfe741da5229b18ea95fa511b728f0aef637d241a200f65189`、
-frontend `sha256:7d5ccf628333ba79bb19f982cee12c3b29dc081dd33b7c4144f663e04ffdb563`。**未合并 main**。
+**Runtime 层 `fixed-two-groups-hotfix2-20260903` + web 层 `fixed-two-groups-20260903`
+（基于 commit `096b339` 的未提交工作区）**，分支 `feat/major-rework-20260903`，
+承载在 Runtime version **56** +
+ECS taskdef **`ielts-part1-web:70`**。
+digest：backend `sha256:0b451ffb2cb4d2546baa740def566db5399dc061f06e9d9daea2fd3ba5b130ab`、
+frontend `sha256:2fb3b1d6b39cf100792bbfd6a842393449914fbda45e908e01c47afcec475810`。**未合并 main**。
 
-✅ **两层的代码终于对齐到相邻 commit。** `29355f3` 只改 `backend/`，其父 `0afdfed` 正是
-当前 web 的代码，所以两层各自都是最新——之前 web 曾一路领先到十一个 commit
-（`e2c3e19`…`0afdfed` 全都没碰 `backend/`），本轮 Runtime 一次补齐。
-**两层的领先方向会来回换，回退前先看这张表确认各层当前 commit，
-不要假设某一层总是更新的那个。**
-回退时分开指定：Runtime 用 `--runtime-image feedback-across-gates-20260813`，
-web 用 `--taskdef 68`（或 `--web-image retry-visible-20260813`）。
-上一版 Runtime 是 `quote-anchors-20260813`（commit `4893951`，ver 52，
-backend digest `sha256:67201737…7edddb`）；上一版 web 是 `no-span-warn-20260813`
-（commit `cb1be02`，taskdef 67，frontend digest `sha256:58e9d42a…5c83bb`）。
+⚠️ 两层镜像均来自未提交工作区，不能只靠 `096b339` 复原；准确锚点是 Runtime 56、
+taskdef 70 与上述两个 immutable digest。回退前一版时，Runtime 用
+`--runtime-image fixed-two-groups-hotfix1-20260903`，web 无需变动。
+
+本轮 hotfix 修复 Blueprint v3 在 feasibility 入口被旧版 v2-only guard 拒绝、继而令整批
+落入 `SEMANTICS_MISSING` 的问题。入口现在接受 preflight 明确支持的 v2/v3，并增加测试锁定：
+feasibility guard 支持版本集合必须等于 preflight 的集合，当前写版本必须等于
+`validate_part1.BLUEPRINT_SCHEMA_VERSION`，防止下次只升级其中一层。
 
 ⚠️ **`skills/` 只进 backend 镜像（`COPY skills/ /app/backend/skills/`），web 镜像不含它。**
 所以改动只碰 `backend/` + `skills/` 时，仅部署 Runtime 就够，不会造成两层 Skill 文件不一致。
@@ -193,6 +192,9 @@ bash deploy/rollback.sh --runtime-image two-states-20260801   # 直接按镜像�
 
 | 日期 | 镜像标签 | git commit | git tag | Runtime ver | taskdef | 说明 |
 |---|---|---|---|---|---|---|
+| 2026-09-03（19:0x） | `fixed-two-groups-hotfix1-20260903`（**仅 Runtime**；web 仍为 `fixed-two-groups-20260903`）<br>backend digest `sha256:268d545b…9cd05a` | `096b339` + **未提交工作区**（分支 `feat/major-rework-20260903`，未合并 main） | — | **55** | 70（未动） | **修复题型计划误占 `metrics_runner` 参数导致 9/9 系统失败。** `delivery._do_material()` 原先把计划作为第 5 个位置参数传给 `run_one()`，但第 5 位是既有的 `metrics_runner`、计划在第 6 位，最终触发 `AttributeError: 'dict' object has no attribute 'run'`。现改为 `question_layout_plan=...` 关键字传参，仅对只接收 `*args` 的扩展回调保留位置参数兼容。新增生产参数顺序回归测试，明确断言 `metrics_runner is None` 且计划进入正确字段。针对性 **47** 项、backend 全量 **832** 项通过，py_compile 与 diff check 通过。Runtime v55 READY；公网健康检查正常，Web 仍为 taskdef 70、`fanout_concurrency:20`。 |
+| 2026-09-03（17:4x） | `fixed-two-groups-20260903`（**Runtime + web**）<br>backend digest `sha256:b183de44…b26f03`<br>frontend digest `sha256:2fb3b1d6…475810` | `096b339` + **未提交工作区**（分支 `feat/major-rework-20260903`，未合并 main） | — | **54** | **70** | **上线固定两组题型及本轮完整修改。** 新 Blueprint v3 固定两个题组，切分仅允许 4+6、5+5、6+4；两组题型从 Form/Note/Table 独立选择，允许相同，旁白窗口与题组边界一致；题目校验拒绝单组、三组、非法切分及计划不一致。答案 alternatives 补日期、时间、数字、金额、连字符、大小写和缩写等常见变体。材料轮数硬上限 36、推荐 28–35。结果卡按顺序显示题组题型。Web 显式设置 `WEB_FANOUT_CONCURRENCY=20`。门禁全绿：backend **831**、web **383**、frontend **526/31 files**，Skill 与 audio_storage 均 all checks passed。Runtime v54 READY；taskdef 70 运行 1/1、ALB healthy、CloudFront Deployed；公网 `GET /healthz` 200 并返回 `fanout_concurrency:20`。邮箱域名仍为 `amazon.com,example.com`。**未创建新版线上测试数据**。 |
+| 2026-09-03（17:0x） | `preview-question-types-20260903`（**仅 web**；Runtime 未动）<br>frontend digest `sha256:92b26539…4cc99` | `096b339` + **未提交工作区**（分支 `feat/major-rework-20260903`，未合并 main） | — | 53（未动） | **69** | **生成结果卡新增题型预览。** 按题组顺序显示 `Q1–Q4 表单` / `Q5–Q10 填空` 等胶囊标签；支持 4+6、5+5、6+4，同题型两组不合并，历史 blueprint 按原分组兼容还原。只部署 Web 层，保留 `ALLOWED_EMAIL_DOMAINS=amazon.com,example.com`。前端 `npm run verify` 全绿：31 个文件、526 项测试；镜像生产构建通过。ECS rollout 稳定，1/1 running，ALB healthy，CloudFront Deployed，`GET /healthz` 200。**未创建线上测试数据**。 |
 | 2026-08-13（20:2x） | `feedback-across-gates-20260813`（**仅 Runtime**；web 停在 `retry-visible-20260813`）<br>backend digest `sha256:eb1c7046…f65189` | **`29355f3`**（分支 `feat/question-revision-versions`，未合并 main） | — | **53** | 68（未动） | **修订反馈跨质量门禁传递，并修掉一处会白费重试次数的 no-progress 误判。** 5 个文件 +113/−13，只改 `backend/`，`web/`、`frontend/`、`skills/` 一行未动，所以只重建 Runtime。两处逻辑：①`manual_material_revision.py` 的 no-progress 判定原先只比材料，导致「材料已改过、本次重试只需改蓝图」（例如按可行性反馈纠正 `answer_category` 语义）被判为无进展，**白扔掉三次机会中的一次且根本没跑验证和出题**；现在改成 `(material 未变 and blueprint 未变) or material == 原始材料`，注释写明了理由。②`question_loop.py` 把 `current.validation.errors` 也传给 `question_revision_plan`，后者新增 `validate_errors` 形参并以 `[validator error] %s` 前缀并入 must-fix（docstring 同步补上 "and validator errors"）——此前验证器错误不进反馈，重试看不到它。**门禁六项全绿**：backend+web **1211 项**（+2，本轮新增用例）、`npx tsc -b` exit 0、vitest **524 项/31 文件**、oxlint exit 0、Skill 与 `audio_storage` 均 `all checks passed`。**溯源**：backend 镜像内三个改动文件与工作树逐字节 IDENTICAL；父 commit `0afdfed` 基线里 `[validator error] ` / `validate_errors` / `current.validation.errors` / `and revised.blueprint == current_blueprint` / `or revised.material == material` **全部为 0**，镜像内分别为 **1 / 2 / 1 / 1 / 1**。Runtime READY 且 ver **53**，web 已核仍为 taskdef **68** / 1-1 COMPLETED，`main` 仍 `dca32c4`。**未创建任何线上测试数据** |
 | 2026-08-13（20:0x） | `retry-visible-20260813`（**仅 web**；Runtime 停在 `quote-anchors-20260813`）<br>frontend digest `sha256:7d5ccf62…fdb563` | **`0afdfed`**（分支 `feat/question-revision-versions`，未合并 main） | — | 52（未动） | **68** | **修改失败详情过长时不再把重试按钮顶出视野。** 5 个文件 +84/−21，只改 `frontend/src` 与文档，`web/`、`backend/`、`skills/` 一行未动，所以只重建 web。`QuestionVersionControls.tsx` 把原先直接铺开的 `message` + `blockers` 列表包进一个 `.question-revision-failure-details` 容器（带 `aria-label="修改失败详情"` 与 `tabIndex={0}`，键盘可滚动）；`styles.css` 给它加 `max-height: clamp(120px, 32vh, 280px)` + `overflow-y: auto` + `overscroll-behavior: contain` + `scrollbar-gutter: stable`，并补 `:focus-visible` 描边。`QuestionVersionControls.test.tsx` +38 覆盖。**门禁六项全绿**：backend+web **1209 项**、`npx tsc -b` exit 0、vitest **524 项/31 文件**（比上一轮多 1，正是本轮新增的用例）、oxlint exit 0、Skill 与 `audio_storage` 均 `all checks passed`。**溯源**（纯前端）：`question-revision-failure-details` 在上一代 bundle 的 js 与 css 内均为 **0**，新 bundle 内 js **1** / css **1**；`aria-label` 文案 `修改失败详情` 上一代 **0**、新 js **1**；`overscroll-behavior:contain` 与 `scrollbar-gutter:stable` 上一代 **0**、新 css 各 **1**。三个 bundle 镜像↔CloudFront 全部 IDENTICAL，上一代三个（含 css）均已 302。rollout COMPLETED 1/1，Runtime 已核仍为 ver **52** / READY / `quote-anchors-20260813`，`/healthz` 200，taskdef 68 已核 `ALLOWED_EMAIL_DOMAINS=amazon.com,example.com`，`main` 仍 `dca32c4`。**未创建任何线上测试数据** |
 | 2026-08-13（19:4x） | `no-span-warn-20260813`（**仅 web**；Runtime 停在 `quote-anchors-20260813`）<br>frontend digest `sha256:58e9d42a…5c83bb` | **`cb1be02`**（分支 `feat/question-revision-versions`，未合并 main） | — | 52（未动） | **67** | **题组轮次跨度不再当作缺陷来报警。** 8 个文件 +17/−75，只改 `frontend/src` 与 `USER_GUIDE.md`，`web/`、`backend/`、`skills/` 一行未动，所以只重建 web。`domain/compare.ts` −29 删掉 `widestGroupSpan()` 与整条 priority-4 对比规则（原先会因某组跨度超 `GROUP_SPAN_WARN` 而在 A/B 对比里判一方更差）；`domain/formGroups.ts` 去掉 `spanWarn` 字段（`thresholds` 形参随之变为未使用的 `_thresholds`）；`QuestionTypePanel.tsx` 移除「隔太远，要跨半篇回忆」标记；`distributionAxis.ts`、`styles.css` 的注释改为「展示该题组覆盖的轮次范围」这类描述性措辞。`USER_GUIDE.md` −15 同步删掉内部实现说明。**门禁六项全绿**：backend+web **1209 项**、`npx tsc -b` exit 0、vitest **523 项/31 文件**、oxlint exit 0、Skill 与 `audio_storage` 均 `all checks passed`。**溯源**（纯前端）：`隔太远，要跨半篇回忆` 与 `考生要跨半篇回忆才能填完` 在上一代 bundle `index-C49F3ZR0.js` 内各 **1**、新 bundle `index-BRKb4VPp.js` 内各 **0**；`flag-warn` 前后均为 **2**（该 class 另有 9 处无关用途，见 `AudioPlayer.tsx`、`AnnotationCard.tsx` 等），说明删除范围没有波及其它警示标记。两个 js 镜像↔CloudFront IDENTICAL 且上一代已 302；**css 文件名与内容都没变，但 `styles.css` 确实改了——改的是注释，被 minifier 剥掉了**。rollout COMPLETED 1/1，Runtime 已核仍为 ver **52** / READY / `quote-anchors-20260813`，`/healthz` 200，taskdef 67 已核 `ALLOWED_EMAIL_DOMAINS=amazon.com,example.com`，`main` 仍 `dca32c4`。**未创建任何线上测试数据** |

@@ -50,7 +50,7 @@ describe('QuestionTypePanel', () => {
     const bp = structuredClone(
       buildRecord('balanced', { ...O, materialId: 'x' }).blueprint,
     ) as unknown as Record<string, unknown>
-    bp.blueprint_schema_version = 3
+    bp.blueprint_schema_version = 4
     const view = joinFromRecord({
       ...buildRecord('balanced', { ...O, materialId: 'v3' }),
       blueprint: bp as unknown as Blueprint,

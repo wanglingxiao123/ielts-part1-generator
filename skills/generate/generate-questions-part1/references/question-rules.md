@@ -65,13 +65,11 @@ Cut the ten items, in number order, into consecutive candidate-visible groups:
 | 3 | A group's question numbers are contiguous. |
 | 4 | A group's items are contiguous **in the ordered evidence sequence** — no other group's point falls between two of yours. |
 
-**Group count was decided by the blueprint and must be preserved.** It contains one, two, or three
-natural `form_group` values, with no quota or target distribution. The material stage already tested
-whether Q1-Q10 form one continuous candidate-visible structure and placed boundaries only where the
-record structure changes. The question stage must not create, remove, or move those boundaries.
-Narrator windows remain listening/read-ahead boundaries rather than printed-layout boundaries. Each
-item's decisive evidence must stay inside its announced window, and the ten evidence points must
-still advance with the question numbers.
+**Group count was decided by the blueprint and must be preserved.** Blueprint v3 contains exactly
+two `form_group` values with a 4/6, 5/5, or 6/4 split. The same boundary is used by the narrator
+windows and printed layouts. Each group's layout is independently selected from Form, Note, and
+Table, so the two layouts may be identical. Never merge same-layout groups. Legacy blueprints keep
+their stored one-to-three-group structure when read or revised.
 
 **Preserve each blueprint point's `item_form` and `form_group`.** They record the information
 relationship and natural printed grouping approved with the material. A final group may contain

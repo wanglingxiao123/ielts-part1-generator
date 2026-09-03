@@ -31,6 +31,7 @@ the findings attached makes it a note a question-writer can weigh.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import random
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -43,6 +44,7 @@ from ..deterministic.runner import ScriptError
 from ..deterministic.validate import validate
 from ..steps import agent_steps
 from .revision_plan import build_revise_instruction, compliance_severities
+from .question_layout_plan import choose_question_layout_plan, normalize_question_layout_plan
 from ..steps.call import ModelCallError
 
 __all__ = [
@@ -368,6 +370,27 @@ async def _with_infra_retries(operation: Callable, label: str, emit: Callable) -
     raise last if last else RuntimeError("infra retry loop exited without an error")
 
 
+async def _generate_with_plan(
+    scenario: Any,
+    attempt: int,
+    feedback: Optional[List[str]],
+    question_layout_plan: Dict[str, Any],
+) -> Any:
+    """Pass the plan while preserving older injected callbacks."""
+    signature = inspect.signature(agent_steps.generate)
+    parameters = signature.parameters.values()
+    accepts_plan = (
+        "question_layout_plan" in signature.parameters
+        or any(parameter.kind == inspect.Parameter.VAR_POSITIONAL for parameter in parameters)
+        or len(signature.parameters) >= 4
+    )
+    if accepts_plan:
+        return await agent_steps.generate(
+            scenario, attempt, feedback, question_layout_plan
+        )
+    return await agent_steps.generate(scenario, attempt, feedback)
+
+
 async def _noop_emit(stage: str, detail: Optional[Dict[str, Any]] = None) -> None:
     return None
 
@@ -458,6 +481,7 @@ async def run_one(
     emit: Optional[Callable] = None,
     allow_revision: Callable[[], bool] = lambda: True,
     metrics_runner: Optional[Any] = None,
+    question_layout_plan: Optional[Dict[str, Any]] = None,
 ) -> MaterialResult:
     """Run the Loop for one material, releasing the remote metrics session afterwards.
 
@@ -482,7 +506,12 @@ async def run_one(
     if owns_runner:
         metrics_runner = _build_metrics_runner(scenario.id, slot_id)
     try:
-        result = await _run_one(scenario, slot_id, emit, allow_revision, metrics_runner)
+        plan = normalize_question_layout_plan(
+            question_layout_plan or choose_question_layout_plan()
+        )
+        result = await _run_one(
+            scenario, slot_id, emit, allow_revision, metrics_runner, plan
+        )
     finally:
         if owns_runner:
             await metrics_runner.close()
@@ -499,6 +528,7 @@ async def _run_one(
     emit: Optional[Callable],
     allow_revision: Callable[[], bool],
     metrics_runner: Any,
+    question_layout_plan: Dict[str, Any],
 ) -> MaterialResult:
     """Run the full Loop for one material.
 
@@ -543,7 +573,9 @@ async def _run_one(
         step_started = time.monotonic()
         try:
             candidate_gen = await _with_infra_retries(
-                lambda: agent_steps.generate(scenario, attempt, seen_errors or None),
+                lambda: _generate_with_plan(
+                    scenario, attempt, seen_errors or None, question_layout_plan
+                ),
                 "generate", emit,
             )
         except (ModelCallError, ScriptError) as exc:

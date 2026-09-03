@@ -26,11 +26,12 @@ BLUEPRINT_KEYS = {"narration_mode", "split_after", "items", "correction"}
 # `validate_coverage_name` -- `exact_keys` can only demand a fixed set, so version-conditional
 # requirements have to live outside it.
 BLUEPRINT_OPTIONAL_KEYS = {"indirect_confirmation", "blueprint_schema_version",
-                           "question_type_coverage", "completion_layout_coverage"}
+                           "question_type_coverage", "completion_layout_coverage",
+                           "question_layout_plan"}
 V1_COVERAGE_KEY = "question_type_coverage"
 V2_COVERAGE_KEY = "completion_layout_coverage"
 V_KEY = "blueprint_schema_version"
-BLUEPRINT_SCHEMA_VERSION = 2
+BLUEPRINT_SCHEMA_VERSION = 3
 ITEM_KEYS = {"number", "group", "type", "target", "evidence", "turn_index", "item_form", "form_group", "distractor", "confirmed"}
 # v2 only. Kept separate from ITEM_KEYS so the v1 read path keeps rejecting them as unknown keys:
 # a v1 record carrying `response_form` is not a lenient v1, it is a v2 that lost its version field.
@@ -207,10 +208,10 @@ def blueprint_version(blueprint: dict, errors: list[str]) -> int:
     if V_KEY not in blueprint:
         return 1
     declared = blueprint.get(V_KEY)
-    if declared == BLUEPRINT_SCHEMA_VERSION:
-        return 2
+    if declared in {2, 3}:
+        return int(declared)
     errors.append(
-        f"blueprint.{V_KEY} is {declared!r}; only {BLUEPRINT_SCHEMA_VERSION} is supported "
+        f"blueprint.{V_KEY} is {declared!r}; only versions 2 and 3 are supported "
         "(omit the field entirely for a v1 record -- an unknown version is not read as v1)"
     )
     return 0
@@ -443,7 +444,7 @@ def validate_grouping(items: list[dict], coverage: object, errors: list[str], wa
         if isinstance(group, str) and group.strip():
             groups.setdefault((form, group), []).append(item.get("number"))
             labels.setdefault(group, set()).add(form)
-        elif version == 2:
+        elif version >= 2:
             # Constraint 1. v1 allowed null to mean "standalone gap-fill"; v2 requires every point
             # to belong to a group, so null is no longer a valid answer, only a missing one.
             errors.append(
@@ -461,13 +462,26 @@ def validate_grouping(items: list[dict], coverage: object, errors: list[str], wa
                 "a group must be homogeneous to become one Form, Note, or Table question"
             )
 
-    if version == 2:
+    if version >= 2:
         validate_group_relations(items, groups, first_end, errors)
-        if len(labels) > 3:
+        if version == 2 and len(labels) > 3:
             errors.append(
                 "blueprint declares %d form_groups; Part 1 supports 1-3 natural candidate-visible "
                 "Form, Note, or Table groups" % len(labels)
             )
+        if version == 3:
+            if len(labels) != 2:
+                errors.append(
+                    "blueprint v3 must declare exactly 2 form_groups; found %d" % len(labels)
+                )
+            expected_first = set(range(1, first_end + 1))
+            expected_second = set(range(first_end + 1, 11))
+            actual_sets = {frozenset(numbers) for numbers in groups.values()}
+            if frozenset(expected_first) not in actual_sets or frozenset(expected_second) not in actual_sets:
+                errors.append(
+                    "blueprint v3 form_groups must cover exactly questions 1-%d and %d-10"
+                    % (first_end, first_end + 1)
+                )
 
     largest = max((len(v) for (form, _), v in groups.items() if form in ITEM_FORMS), default=0)
     if largest < MIN_GROUPED_ITEMS:
@@ -514,6 +528,37 @@ def validate_grouping(items: list[dict], coverage: object, errors: list[str], wa
         errors.append(f"{coverage_key} must cover items 1-10 exactly once; flattened to {sorted(declared)}")
 
 
+def validate_question_layout_plan(
+    blueprint: dict, items: list[dict], split_after: object, errors: list[str]
+) -> None:
+    plan = blueprint.get("question_layout_plan")
+    if not isinstance(plan, dict):
+        errors.append("blueprint.question_layout_plan must be an object in v3")
+        return
+    exact_keys(
+        plan, {"split_after", "first_layout", "second_layout"},
+        "blueprint.question_layout_plan", errors,
+    )
+    if plan.get("split_after") != split_after:
+        errors.append(
+            "blueprint.question_layout_plan.split_after must equal blueprint.split_after"
+        )
+    for key in ("first_layout", "second_layout"):
+        if plan.get(key) not in ITEM_FORMS:
+            errors.append(
+                f"blueprint.question_layout_plan.{key} must be one of {sorted(ITEM_FORMS)}"
+            )
+    if not isinstance(split_after, int):
+        return
+    for index, item in enumerate(items):
+        expected = plan.get("first_layout") if index < split_after else plan.get("second_layout")
+        if item.get("item_form") != expected:
+            errors.append(
+                "blueprint.items[%d].item_form must match question_layout_plan (%r)"
+                % (index, expected)
+            )
+
+
 def validate_blueprint(blueprint: object, turns: list[dict], midpoint: int, first_end: int,
                        second_start: int, errors: list[str], warnings: list[str],
                        metrics: dict | None = None, allow_v1: bool = False) -> str:
@@ -535,11 +580,11 @@ def validate_blueprint(blueprint: object, turns: list[dict], midpoint: int, firs
         )
     if metrics is not None:
         metrics["blueprint_schema_version"] = version or None
-    coverage_key = V2_COVERAGE_KEY if version == 2 else V1_COVERAGE_KEY
-    item_keys = ITEM_KEYS | V2_ITEM_KEYS if version == 2 else ITEM_KEYS
+    coverage_key = V2_COVERAGE_KEY if version >= 2 else V1_COVERAGE_KEY
+    item_keys = ITEM_KEYS | V2_ITEM_KEYS if version >= 2 else ITEM_KEYS
     exact_keys(blueprint, BLUEPRINT_KEYS | {coverage_key}, "blueprint", errors,
                BLUEPRINT_OPTIONAL_KEYS - {coverage_key})
-    if version == 2 and V1_COVERAGE_KEY in blueprint:
+    if version >= 2 and V1_COVERAGE_KEY in blueprint:
         errors.append(
             f"blueprint must not carry both coverage names; v2 writes {V2_COVERAGE_KEY} only "
             f"(found {V1_COVERAGE_KEY} as well, which leaves readers no way to know which to trust)"
@@ -556,10 +601,12 @@ def validate_blueprint(blueprint: object, turns: list[dict], midpoint: int, firs
     # the error message named a constraint the sibling rule had already stopped enforcing.
     # What is still enforced is the part that matters: the blueprint's split must be the SAME split
     # the narration announced, so items 1-N are the ones the candidate is told to answer first.
-    if not 3 <= (split_after if isinstance(split_after, int) else 0) <= 7 \
+    allowed_splits = {4, 5, 6} if version == 3 else set(range(3, 8))
+    if split_after not in allowed_splits \
             or split_after != first_end or second_start != first_end + 1:
         errors.append(
-            "blueprint.split_after must equal the narration's own split point (3-7, contiguous); "
+            "blueprint.split_after must equal the narration's own split point "
+            "(v3 allows 4, 5, or 6; contiguous); "
             "narration says 1-{0}/{1}-10 and the blueprint says {2!r}".format(
                 first_end, second_start, split_after)
         )
@@ -575,7 +622,7 @@ def validate_blueprint(blueprint: object, turns: list[dict], midpoint: int, firs
             errors.append(f"{label} must be an object")
             continue
         exact_keys(item, item_keys, label, errors)
-        if version == 2:
+        if version >= 2:
             validate_v2_item_fields(item, label, first_end, errors)
         if item.get("number") != number:
             errors.append(f"{label}.number must be {number}")
@@ -648,10 +695,12 @@ def validate_blueprint(blueprint: object, turns: list[dict], midpoint: int, firs
     if checked:
         validate_grouping(checked, blueprint.get(coverage_key), errors, warnings,
                           version=version, first_end=first_end, coverage_key=coverage_key)
-        if version == 2 and metrics is not None:
+        if version >= 2 and metrics is not None:
             # QR-027 counts are reported, not enforced: the gate and its recorded justification are
             # stage 3's aggregator. Emitting them now means stage 3 inherits measured numbers.
             metrics.update(qr027_metrics(checked))
+    if version == 3:
+        validate_question_layout_plan(blueprint, checked, split_after, errors)
     correction = blueprint.get("correction")
     if not isinstance(correction, dict):
         errors.append("blueprint.correction must be an object")
@@ -691,7 +740,8 @@ def validate_blueprint(blueprint: object, turns: list[dict], midpoint: int, firs
 def report(errors: list[str], warnings: list[str], metrics: dict, as_json: bool) -> int:
     """Emit results. Only errors fail the run.
 
-    The 600-650 word / 30-40 turn bands are the observed typical values across 20 real test
+    The 600-650 word / 28-35 turn bands are authoring targets, not gates. The customer-approved
+    hard turn range is 20-36.
     sets (spec 4A), not authoring gates -- the spec sets only 450/750 as limits. Failing on
     those warnings forced regeneration until the model hit a 51-word window, which is
     expensive and not what the spec asks for. Warnings now flow to the revise step as advice.
@@ -883,10 +933,20 @@ def main() -> int:
             )
         elif not 600 <= words(dialogue) <= 650:
             warnings.append(f"dialogue words outside preferred 600-650: {words(dialogue)}")
-        if not 20 <= len(dialogue_turns) <= 48:
-            errors.append(f"dialogue turns outside 20-48: {len(dialogue_turns)}")
-        elif not 30 <= len(dialogue_turns) <= 40:
-            warnings.append(f"dialogue turns outside preferred 30-40: {len(dialogue_turns)}")
+        declared_version = blueprint.get(V_KEY) if isinstance(blueprint, dict) else None
+        if declared_version == 3:
+            if not 20 <= len(dialogue_turns) <= 36:
+                errors.append(f"dialogue turns outside 20-36: {len(dialogue_turns)}")
+            elif not 28 <= len(dialogue_turns) <= 35:
+                warnings.append(f"dialogue turns outside preferred 28-35: {len(dialogue_turns)}")
+        else:
+            # Historical v1/v2 records retain their original readability contract.
+            if not 20 <= len(dialogue_turns) <= 48:
+                errors.append(f"dialogue turns outside legacy 20-48: {len(dialogue_turns)}")
+            elif not 30 <= len(dialogue_turns) <= 40:
+                warnings.append(
+                    f"dialogue turns outside legacy preferred 30-40: {len(dialogue_turns)}"
+                )
         before = sum(i < narrator[1] for i, turn in enumerate(turns) if turn.get("speaker") != "speaker1")
         after = len(dialogue_turns) - before
         # Floor of 7, not 8. Measured: snap_042 runs 18/7 and was rejected for its 7-turn second

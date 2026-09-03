@@ -26,7 +26,7 @@ A meaningful audit requires a readable, non-empty listening script whose narrato
 
 ### Major
 
-- Dialogue is outside 450-750 words or 20-48 turns.
+- Dialogue is outside 450-750 words or 20-36 turns.
 - Either half has fewer than 8 dialogue turns.
 - Opening/midpoint/closing order is broken or `once only` is absent.
 - Narrator, provider, and enquirer roles cannot be followed consistently.
@@ -52,8 +52,8 @@ A meaningful audit requires a readable, non-empty listening script whose narrato
 
 ### Not a finding
 
-Dialogue outside the typical 600-650 words or 30-40 turns while inside the hard 450-750 /
-20-48 limits belongs in `warnings`, not `findings`. Those figures are observed averages across
+Dialogue outside the preferred 600-650 words or 28-35 turns while inside the hard 450-750 /
+20-36 limits belongs in `warnings`, not `findings`.
 20 real test sets, not authoring requirements — a compliant 530-word script is acceptable and
 must not be scored down for it.
 
@@ -87,7 +87,7 @@ In `full` mode, the opening should cover four recordings, instructions, preparat
 ### Quantitative profile
 
 - Dialogue words, excluding the narrator: 450-750 hard limit; 600-650 typical (advisory only).
-- Dialogue turns, excluding the narrator: 20-48 hard limit; 30-40 typical (advisory only).
+- Dialogue turns, excluding the narrator: 20-36 hard limit; 28-35 preferred (advisory only).
 - Each half: at least 8 dialogue turns.
 - Full narration: target 160-230 words.
 - Frequent short exchanges; avoid long answer-dense turns.

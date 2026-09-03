@@ -260,7 +260,10 @@ def _feedback_block(feedback: Optional[List[str]]) -> str:
 
 
 async def generate(
-    scenario: Any, attempt: int = 0, feedback: Optional[List[str]] = None
+    scenario: Any,
+    attempt: int = 0,
+    feedback: Optional[List[str]] = None,
+    question_layout_plan: Optional[Dict[str, Any]] = None,
 ) -> GenOutput:
     """One generation. The agent chooses its skill and runs its own validator.
 
@@ -270,10 +273,20 @@ async def generate(
     """
     agent = build_generate_agent()
     workspace = GenerationWorkspace()
+    plan_block = ""
+    if question_layout_plan:
+        plan_block = (
+            "\n\n## Required question layout plan\n\n"
+            "Emit blueprint_schema_version 3. Use this exact split for both narrator windows "
+            "and the two form_group ranges. The two layouts may be the same.\n\n"
+            "```json\n%s\n```"
+            % json.dumps(question_layout_plan, ensure_ascii=False, sort_keys=True)
+        )
     message = (
         "Generate one listening material for the scenario below.\n\n"
         "## Scenario\n\nid: %s\ncategory: %s\ntitle: %s\n\n%s"
         % (scenario.id, scenario.category, scenario.title_zh, scenario.prompt_hint)
+        + plan_block
         + workspace.instructions()
         + _feedback_block(feedback)
     )
@@ -284,6 +297,10 @@ async def generate(
         # failure is a retry or an audit either way.
         workspace.remove()
     output = _envelope(reply, "generation")
+    if question_layout_plan and output.blueprint.get("question_layout_plan") != question_layout_plan:
+        raise ModelCallError(
+            "generation blueprint question_layout_plan does not match the required slot plan"
+        )
     return GenOutput(_stamp(output.material, scenario.prompt_hint), output.blueprint)
 
 

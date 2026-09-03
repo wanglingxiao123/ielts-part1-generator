@@ -61,25 +61,17 @@ Read nothing else. Everything you need is in this skill's own directory and in t
 1. Read the rules reference and the schema. Read the material's narration and note where it tells
    candidates which questions to look at: those are the question-number windows.
 
-2. **Render the blueprint's candidate-visible groups**, keeping its number order, `item_form`, and
-   `form_group` partition. The material stage already tested whether all ten points form one natural
-   layout and placed boundaries only where the visible record structure changes. Do not repeat that
-   planning here. The constraints are relational, and all of them are checked:
+2. **Render the blueprint's two candidate-visible groups**, keeping its number order, `item_form`,
+   and `form_group` partition. For blueprint v3 the boundary is exactly the narrator-window split:
    - each group is homogeneous — one `layout`, declared once on the group;
-   - narrator windows constrain each item's decisive evidence, not the printed layout boundary:
-     a natural continuous group may span a window cue, but Q1-5 evidence must remain in the first
-     window and Q6-10 evidence in the second (SC-019 / QR-022 as clarified);
+   - group 1 covers Q1-Q`split_after`, and group 2 covers the remaining questions;
    - group question numbers are contiguous, and a group's points must not be interleaved with
      another group's in the evidence order;
    - all ten items belong to a group; no floating point.
 
-   The blueprint's group count is one, two, or three. Preserve it. It was derived from the
-   candidate-visible task and record structure rather than the narrator split or a desire for
-   variety. A package may use one continuous layout or mix form, note and table as long as every
-   group is itself homogeneous. Groups should normally contain at least three questions; if the
-   approved blueprint has a one- or two-question group, preserve it but verify that it represents
-   a genuinely independent information structure that cannot naturally join an adjacent group.
-   Do not create, enlarge, or disguise such a fragment at the question stage.
+   Blueprint v3 always has exactly two groups with a 4/6, 5/5, or 6/4 split. Their layouts are
+   selected independently, so Form+Form, Note+Note, and Table+Table are valid. Preserve both groups
+   even when they share a layout. Legacy blueprints retain their stored grouping when revised.
 
    **Preserve each blueprint point's `item_form` and `form_group`.** They record the layout and
    natural candidate-visible grouping approved with the material. The validator rejects a final

@@ -137,7 +137,7 @@ class SlotRecord(object):
 
     __slots__ = ("batch_id", "slot_id", "scenario_id", "state", "attempts", "material_id",
                  "group_key", "last_failure", "checkpoint_at", "created_at", "updated_at",
-                 "replaces", "replaced_by", "system_fault")
+                 "replaces", "replaced_by", "system_fault", "question_layout_plan")
 
     def __init__(
         self,
@@ -155,6 +155,7 @@ class SlotRecord(object):
         replaces: Optional[str] = None,
         replaced_by: Optional[str] = None,
         system_fault: bool = False,
+        question_layout_plan: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.batch_id = batch_id
         self.slot_id = slot_id
@@ -180,6 +181,7 @@ class SlotRecord(object):
         # record rather than inferred from `last_failure` prose, because the request's status depends
         # on it and a status must not depend on a string comparison against a message.
         self.system_fault = bool(system_fault)
+        self.question_layout_plan = dict(question_layout_plan) if question_layout_plan else None
 
     def bump(self, counter: str, by: int = 1) -> None:
         self.attempts[counter] = self.attempts.get(counter, 0) + by
@@ -200,6 +202,9 @@ class SlotRecord(object):
             "replaces": self.replaces,
             "replaced_by": self.replaced_by,
             "system_fault": self.system_fault,
+            "question_layout_plan": (
+                dict(self.question_layout_plan) if self.question_layout_plan else None
+            ),
         }
 
     @classmethod
@@ -219,6 +224,7 @@ class SlotRecord(object):
             replaces=record.get("replaces"),
             replaced_by=record.get("replaced_by"),
             system_fault=bool(record.get("system_fault")),
+            question_layout_plan=record.get("question_layout_plan"),
         )
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid

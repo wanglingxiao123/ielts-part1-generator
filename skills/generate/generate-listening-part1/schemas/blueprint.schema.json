@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "blueprint.schema.json",
-  "title": "IELTS Listening Part 1 Information-Point Blueprint — WRITE-side contract (v2 only)",
+  "title": "IELTS Listening Part 1 Information-Point Blueprint — WRITE-side contract (v3 only)",
   "description": "What NEW GENERATION must emit. Ten information points with turn anchors and completion-layout grouping. Delivered alongside material.json for reviewer annotation display. MUST NOT be given to the audit step, which builds its own map blind. This is the schema the generate skill names, and the only one a generated blueprint is checked against.\n\nv2 ONLY, deliberately. blueprint_schema_version: 2 is REQUIRED here, so an unversioned archived record fails this schema -- correctly, because 'may we emit this?' is a different question from 'must we be able to display this?' and they have different answers. The read-side contract is blueprint.read.schema.json, which admits v1 as well; a v1 record passing there and failing here is the designed outcome, not a defect in either document.\n\nWHY THE SPLIT. This file used to be both: its description claimed to be the write-side contract while an `else` branch required v1's question_type_coverage, i.e. it actively validated the archived records it said it did not govern. Anyone reading the description drew the wrong conclusion about what the generator was allowed to write, and anyone reading the behaviour drew the wrong conclusion about what the reader had to accept. JSON Schema cannot resolve that: branches only ever intersect, so one document admitting an archived record also permits the generator to produce one.\n\nSTRUCTURE. `allOf` over the read schema plus this file's own narrowing, rather than a second full copy of the shape. Two copies would drift on the first field added -- and would drift silently, since nothing compares them. Everything shared (items, correction, turn anchors, the enums) is defined once, in blueprint.read.schema.json; what lives here is exactly the four things v2 forbids that v1 allowed. Read that list as the definition of v2 strictness:\n  1. blueprint_schema_version must be present (the read schema leaves it optional -- its absence is what marks a v1 record);\n  2. completion_layout_coverage required, question_type_coverage forbidden;\n  3. response_form / answer_category / narrator_window_id required on every item;\n  4. form_group must be a non-empty string -- never null.\nItems 2-4 duplicate the read schema's own v2 branch, and duplicate it on purpose: that branch fires only when the version field is present, whereas here the version field is required, so the two together make an unversioned record fail on the version rather than pass by falling into a lenient branch.\n\nNOTE ON CODEGEN: this file is NOT the source for frontend/src/contracts/blueprint.ts -- the read schema is, because the frontend receives records rather than emitting them and must type a nullable form_group. Version-conditional rules are unreachable by json-schema-to-typescript in any case (it IGNORES if/then, measured). Python's jsonschema does honour if/then, so both documents are genuinely enforced there; see skills/shared/tests/run_tests.py.",
   "allOf": [
     {
@@ -11,7 +11,8 @@
       "type": "object",
       "required": [
         "blueprint_schema_version",
-        "completion_layout_coverage"
+        "completion_layout_coverage",
+        "question_layout_plan"
       ],
       "not": {
         "required": [
@@ -19,6 +20,9 @@
         ]
       },
       "properties": {
+        "blueprint_schema_version": {
+          "const": 3
+        },
         "items": {
           "items": {
             "required": [

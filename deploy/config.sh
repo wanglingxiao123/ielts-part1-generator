@@ -94,6 +94,11 @@ export ALB_IDLE_TIMEOUT="${ALB_IDLE_TIMEOUT:-120}"
 export TASK_CPU=512
 export TASK_MEMORY=1024
 
+# Independent AgentCore invocations the web fan-out may keep in flight at once. This is a
+# throughput guard, not a per-batch material limit. Override on deployment if account quotas require
+# a lower value; 429 responses are the signal to reduce it.
+export WEB_FANOUT_CONCURRENCY="${WEB_FANOUT_CONCURRENCY:-20}"
+
 require_creds() {
     if ! aws sts get-caller-identity --query Account --output text >/dev/null 2>&1; then
         echo "ERROR: AWS credentials are expired or absent." >&2

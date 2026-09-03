@@ -22,6 +22,7 @@ import { joinFromRecord } from './joinArtifacts'
 import { arrivedByScenario, buildResultGroups } from './resultSlots'
 import {
   buildCardPreview,
+  cardQuestionGroups,
   firstDialogueLine,
   flaggedPointNumbers,
   previewSummary,
@@ -278,10 +279,9 @@ describe('card preview', () => {
    *   > 结果页卡片上只展示：场景名 + 信息点时间轴图 + 预览第一句话 + 操作按钮。
    *   > 不展示任何评价文字。
    *
-   * 所以 CardPreview 这一层不再产出任何一句评价——连字段都没有了（留一个没人读的
-   * `shortcomings` 只是等着有人再把它渲染回卡片上）。评价文案本身没删，它在
-   * domain/usability.ts，由阅读页的 DistributionStrip 渲染；下面 usability 那一组
-   * 测试仍然在钉它。
+   * 后续客户要求增加题型预览，但它仍是 blueprint 中的客观结构，不是评价。因此
+   * CardPreview 这一层依然不产出任何一句评价——连字段都没有（留一个没人读的
+   * `shortcomings` 只是等着有人再把它渲染回卡片上）。
    */
   it('carries no evaluation prose at all, only what the client listed', () => {
     for (const kind of ['balanced', 'clustered', 'failed'] as const) {
@@ -293,6 +293,7 @@ describe('card preview', () => {
         'materialId',
         'pointNumbers',
         'pointTotal',
+        'questionGroups',
         'scenarioKey',
         // 场景描述，不是评价：目录场景用不到它，自定义场景靠它显示用户输入的文本而不是
         // `custom-<sha1>`。列在这里是为了让这份清单继续是「卡片能拿到什么」的完整声明。
@@ -304,6 +305,22 @@ describe('card preview', () => {
         expect(preview.summary, forbidden).not.toContain(forbidden)
       }
     }
+  })
+
+  it('previews ordered question groups without merging equal layouts', () => {
+    const view = joinFromRecord(buildRecord('balanced', { ...O, materialId: 'm-layout' }))
+    view.blueprint.blueprint_schema_version = 3
+    view.blueprint.question_layout_plan = {
+      split_after: 4,
+      first_layout: 'table',
+      second_layout: 'table',
+    }
+    view.blueprint.split_after = 4
+
+    expect(cardQuestionGroups(view)).toEqual([
+      { start: 1, end: 4, layout: 'table', label: '表格' },
+      { start: 5, end: 10, layout: 'table', label: '表格' },
+    ])
   })
 
   /**
@@ -343,22 +360,21 @@ describe('card preview', () => {
 
 describe('batch estimate models concurrency, not serial execution', () => {
   it('scales with the number of WAVES, not the number of sets', () => {
-    // Up to MAX_CONCURRENCY sets run at once, so 1..6 sets is one wave.
+    // Up to MAX_CONCURRENCY sets run at once, so 1..20 sets is one wave.
     expect(waveCount(1)).toBe(1)
     expect(waveCount(BACKEND_CONCURRENCY)).toBe(1)
     expect(waveCount(BACKEND_CONCURRENCY + 1)).toBe(2)
     expect(waveCount(0)).toBe(0)
-    // 2, 4 and 6 sets all take one wave: the estimate must therefore be equal
-    // for all three. The old serial formula made 6 sets three times 2 sets.
-    const [two, four, six] = [2, 4, 6].map((n) => estimateBatchSeconds(n))
-    expect(two).toEqual(four)
-    expect(four).toEqual(six)
-    expect(six).toEqual([WAVE_SECONDS[0], WAVE_SECONDS[1]])
+    // 2, 10 and 20 sets all take one wave: the estimate must therefore be equal.
+    const [two, ten, twenty] = [2, 10, 20].map((n) => estimateBatchSeconds(n))
+    expect(two).toEqual(ten)
+    expect(ten).toEqual(twenty)
+    expect(twenty).toEqual([WAVE_SECONDS[0], WAVE_SECONDS[1]])
   })
 
   it('predicts 18–40 minutes for one complete-generation wave', () => {
     // Complete material + question batches measured about 18–39 minutes on AWS.
-    for (const total of [2, 4, 6]) {
+    for (const total of [2, 10, 20]) {
       const [min, max] = estimateBatchSeconds(total)
       expect(min).toBe(18 * 60)
       expect(max).toBe(40 * 60)

@@ -56,7 +56,7 @@ anyone reading this contract:
 * **The 15-minute synchronous wall now bounds one material** (~146–230s measured, `docs/timing.md`),
   not a batch. `Budget` is therefore a backstop against one material's own refills rather than a
   rationer between siblings.
-* **Concurrency moved to the web tier** (`WEB_FANOUT_CONCURRENCY`, default 6). `concurrency` in the
+* **Concurrency moved to the web tier** (`WEB_FANOUT_CONCURRENCY`, default 20). `concurrency` in the
   request below still works and is still honoured, but in production every request carries one slot,
   so it is clamped to 1.
 

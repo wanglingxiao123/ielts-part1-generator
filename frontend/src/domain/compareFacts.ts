@@ -14,7 +14,8 @@
  *
  * ## 篇幅只标硬线
  *
- * 450-750 词 / 20-48 轮是规范的禁止线，越过即不合格。规范里另有「600-650 词」，那是 20 套真题的
+ * 450-750 词 / 20-36 轮是规范的禁止线，越过即不合格。规范另有 600-650 词 /
+ * 28-35 轮的推荐范围，
  * **观测典型值**，不是命制门槛（这个判断在项目里栽过一次：`validate_part1.py` 曾把它当硬门槛，
  * warning 也返回失败码）。所以这里只判硬线，不提典型值——把 660 词标成异常会让出题人以为一套
  * 完全合格的材料有问题。
@@ -28,7 +29,7 @@ import { ITEM_TYPE_LABEL, type ViewMaterial } from './types'
 
 /** 规范的禁止线。越过即不合格；区间内一律合格，不再细分。 */
 export const WORD_RANGE = [450, 750] as const
-export const TURN_RANGE = [20, 48] as const
+export const TURN_RANGE = [20, 36] as const
 
 export interface LengthFacts {
   words: number

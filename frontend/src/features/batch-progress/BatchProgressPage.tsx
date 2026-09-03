@@ -318,6 +318,20 @@ function MaterialCard({
         flagged={preview.flaggedPoints}
       />
 
+      {preview.questionGroups.length > 0 && (
+        <div className="mat-question-types" aria-label="题型预览">
+          {preview.questionGroups.map((group, index) => (
+            <span
+              className="mat-question-type"
+              data-layout={group.layout}
+              key={`${group.start}-${group.end}-${group.layout}-${index}`}
+            >
+              Q{group.start}–Q{group.end} {group.label}
+            </span>
+          ))}
+        </div>
+      )}
+
       <div className="mat-preview">
         {preview.firstLine && <q>{preview.firstLine}</q>}
         <span>— {preview.summary}</span>

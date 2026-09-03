@@ -51,7 +51,7 @@ guarantee is the same and is now structural -- nothing blocking runs on the loop
 
 The threads come from a dedicated executor sized to the concurrency cap, NOT from anyio's default
 threadpool. That pool has 40 tokens and is shared with every sync route handler in `web/app.py`
-(``/healthz`` included, until it was made async). Six children holding tokens for four minutes
+(``/healthz`` included, until it was made async). Long-lived children holding tokens for minutes
 each, times a handful of concurrent users, is how a health check starts timing out -- and an
 instance whose health check times out gets killed, taking every in-flight batch with it. A separate
 executor makes that arithmetic impossible rather than merely unlikely.
@@ -88,13 +88,12 @@ __all__ = [
 # How many materials the web tier will have in flight at once.
 #
 # Not a product limit -- the user may ask for any number of sets -- but a throughput one: the model
-# channel's TPM/RPM is undocumented, and 6 is the value the backend already ran its own slots at
-# without seeing a 429. Raise it only with evidence; on 429s lower it, because a retry storm costs
-# more wall time than a shorter queue does.
+# channel's TPM/RPM is undocumented. Production starts at 20; on 429s lower it, because a retry
+# storm costs more wall time than a shorter queue does.
 #
 # The cost of holding a slot open is one blocked thread, not CPU: the web tier is 0.5 vCPU / 1 GB
 # and every one of these threads is parked on a socket read.
-FANOUT_CONCURRENCY = max(1, int(os.environ.get("WEB_FANOUT_CONCURRENCY", "6")))
+FANOUT_CONCURRENCY = max(1, int(os.environ.get("WEB_FANOUT_CONCURRENCY", "20")))
 
 # The application's working wall on ONE streaming invocation, which now carries ONE material. Used
 # only to report an honest `deadline_at`; the backend enforces its own budget inside each child.

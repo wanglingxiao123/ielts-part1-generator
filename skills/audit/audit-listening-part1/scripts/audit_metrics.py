@@ -105,10 +105,10 @@ def inspect(data: object) -> dict[str, object]:
             issues.append(issue("major", f"dialogue words {dwords} outside 450-750"))
         elif not 600 <= dwords <= 650:
             warnings.append(f"dialogue words {dwords} outside preferred 600-650")
-        if not 20 <= dturns <= 48:
-            issues.append(issue("major", f"dialogue turns {dturns} outside 20-48"))
-        elif not 30 <= dturns <= 40:
-            warnings.append(f"dialogue turns {dturns} outside preferred 30-40")
+        if not 20 <= dturns <= 36:
+            issues.append(issue("major", f"dialogue turns {dturns} outside 20-36"))
+        elif not 28 <= dturns <= 35:
+            warnings.append(f"dialogue turns {dturns} outside preferred 28-35")
         before = sum(i < narrator_indices[1] for i in dialogue_indices)
         after = dturns - before
         if before < 8 or after < 8:

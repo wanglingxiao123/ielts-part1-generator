@@ -303,9 +303,23 @@ def main() -> None:
     material = build_material(body, split_at)
     turns = material["listening_material_parts"][0]["script"]["turns"]
     blueprint = build_blueprint(turns, split_after=5)
+    blueprint_v3 = json.loads(json.dumps(blueprint))
+    blueprint_v3["blueprint_schema_version"] = 3
+    blueprint_v3["question_layout_plan"] = {
+        "split_after": 5,
+        "first_layout": "form",
+        "second_layout": "note",
+    }
+    blueprint_v3["completion_layout_coverage"] = {"form": [1, 2, 3, 4, 5],
+                                                   "note": [6, 7, 8, 9, 10]}
+    for item in blueprint_v3["items"]:
+        first = item["number"] <= 5
+        item["item_form"] = "form" if first else "note"
+        item["form_group"] = "A" if first else "B"
 
     write("material_valid.json", material)
     write("blueprint_valid.json", blueprint)
+    write("blueprint_v3_valid.json", blueprint_v3)
     write("audit_valid.json", build_audit(material, blueprint, drop_item=5))
     write("audit_aligned.json", build_audit(material, blueprint, drop_item=None))
 
@@ -380,7 +394,7 @@ def main() -> None:
 
     # Version detection: an unrecognised version must be reported, never read as v1.
     variant("blueprint_bad_version.json",
-            lambda bp: bp.update(blueprint_schema_version=3))
+            lambda bp: bp.update(blueprint_schema_version=4))
 
     # Declared-vs-derived, three fields. Item 2's target is "118 Fordyce", a phrase.
     variant("blueprint_bad_response_form.json",

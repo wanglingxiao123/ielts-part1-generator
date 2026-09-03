@@ -1,5 +1,5 @@
 /**
- * 结果卡片要显示的三样东西：第一句台词、一行简述、需要看一眼的点号。
+ * 结果卡片要显示的内容：第一句台词、一行简述、题型分组、需要看一眼的点号。
  *
  * 客户的版式里每张卡只有这么点信息量，但每一项都得当真：
  *
@@ -8,6 +8,7 @@
  * - **一行简述**只由 blueprint 自己声明的字段拼出来（`type` / `distractor` /
  *   `correction` / `indirect_confirmation`），术语沿用《Part1 选材命制规范》。
  *   不调模型、不猜，因此不可能和材料本身矛盾。
+ * - **题型分组**优先读取 v3 的预选计划；历史记录按 blueprint 的原分组还原。
  * - **黄点**是「审阅时该看一眼的点号」，判据全部来自已有的确定性计算：扎堆、
  *   题号回跳、盲评没听出来。不引入新阈值。
  *
@@ -29,7 +30,15 @@ import { scenarioMeta } from '@/config/scenarioMeta'
 import type { DistributionMetrics } from './distribution'
 import { contentFacts, DISTRACTION_LABEL } from './pointFacts'
 import type { ViewMaterial } from './types'
-import { ITEM_TYPE_LABEL } from './types'
+import { ITEM_TYPE_LABEL, layoutLabel } from './types'
+import { blueprintVersion } from './blueprintVersion'
+
+export interface CardQuestionGroup {
+  start: number
+  end: number
+  layout: string
+  label: string
+}
 
 export interface CardPreview {
   materialId: string
@@ -46,11 +55,68 @@ export interface CardPreview {
   pointNumbers: number[]
   /** 需要看一眼的点号（黄点）。 */
   flaggedPoints: number[]
+  /** 按出题顺序显示的题组与题型；新材料固定两组，历史材料按原分组兼容还原。 */
+  questionGroups: CardQuestionGroup[]
   /**
    * 材料自己声明的场景描述。目录里的场景不需要它（有中文名），自定义场景需要——它就是用户
    * 输入的那段文本，而后端给的 key 是 `custom-<sha1>`，直接显示就是一串哈希。
    */
   scenarioText: string
+}
+
+/**
+ * 卡片题型预览。
+ *
+ * v3 直接读取预选并持久化的两组计划：这是后续真正出题时使用的计划，因此相同题型也必须保留
+ * 两个独立题组。历史记录没有这份计划，按连续的 `item_form + form_group` 还原；null group
+ * 不逐题拆成十枚标签，而是把相邻的同题型项目合并成一个可读区间。
+ */
+export function cardQuestionGroups(view: ViewMaterial): CardQuestionGroup[] {
+  const bp = view.blueprint
+  if (blueprintVersion(bp) === 3 && bp.question_layout_plan) {
+    const split = bp.question_layout_plan.split_after
+    return [
+      {
+        start: 1,
+        end: split,
+        layout: bp.question_layout_plan.first_layout,
+        label: layoutLabel(bp.question_layout_plan.first_layout),
+      },
+      {
+        start: split + 1,
+        end: 10,
+        layout: bp.question_layout_plan.second_layout,
+        label: layoutLabel(bp.question_layout_plan.second_layout),
+      },
+    ]
+  }
+
+  const items = [...bp.items].sort((a, b) => a.number - b.number)
+  const groups: CardQuestionGroup[] = []
+  for (const [index, item] of items.entries()) {
+    const previous = groups.at(-1)
+    const previousItem = items[index - 1]
+    const sameDeclaredGroup =
+      item.form_group !== null &&
+      previousItem?.form_group === item.form_group &&
+      previousItem.item_form === item.item_form
+    const sameLegacyRun =
+      item.form_group === null &&
+      previousItem?.form_group === null &&
+      previousItem.item_form === item.item_form
+
+    if (previous && previous.end === item.number - 1 && (sameDeclaredGroup || sameLegacyRun)) {
+      previous.end = item.number
+      continue
+    }
+    groups.push({
+      start: item.number,
+      end: item.number,
+      layout: item.item_form,
+      label: layoutLabel(item.item_form),
+    })
+  }
+  return groups
 }
 
 /** 旁白是 speaker1。跳过它，返回第一句真实台词。 */
@@ -136,5 +202,6 @@ export function buildCardPreview(
     pointTotal: pointNumbers.length,
     pointNumbers,
     flaggedPoints: flaggedPointNumbers(view, metrics),
+    questionGroups: cardQuestionGroups(view),
   }
 }

@@ -15,6 +15,7 @@ from backend.deterministic.guards import (
     BLUEPRINT_ONLY_KEYS,
     FEASIBILITY_ITEM_COUNT,
     FEASIBILITY_PLAN_VERSION,
+    FEASIBILITY_PLAN_VERSIONS,
     BlindnessViolation,
     MissingPlanViolation,
     assert_blind,
@@ -22,6 +23,7 @@ from backend.deterministic.guards import (
     assert_reference_text_blind,
     blueprint_key_hits,
 )
+from backend.deterministic.feasibility import _load_preflight
 from backend.steps.agent_steps import (
     BlindAuditInput,
     build_audit_payload,
@@ -193,15 +195,24 @@ class TestCarriesPlanGuard:
     that it can actually fail.
     """
 
-    def test_a_real_v2_plan_passes(self, blueprint):
+    def test_supported_versions_match_the_preflight_and_current_writer(self):
+        """Prevent another partial version upgrade across the feasibility boundary."""
+        namespace = _load_preflight().__globals__
+        assert FEASIBILITY_PLAN_VERSIONS == namespace["SUPPORTED_VERSIONS"]
+        assert FEASIBILITY_PLAN_VERSION == namespace["validator"].BLUEPRINT_SCHEMA_VERSION
+
+    @pytest.mark.parametrize("version", sorted(FEASIBILITY_PLAN_VERSIONS))
+    def test_a_supported_plan_passes(self, version, blueprint, clone):
         """The anti-tightening assertion, and it is not a formality.
 
         Without it the guard could degrade to `raise` on everything and every negative case below
         would still be green -- the same shape as stage 3A's "feasible:true + empty reasons must PASS".
         """
-        assert_carries_plan(blueprint)
-        assert len(blueprint["items"]) == FEASIBILITY_ITEM_COUNT
-        assert blueprint["blueprint_schema_version"] == FEASIBILITY_PLAN_VERSION
+        plan = clone(blueprint)
+        plan["blueprint_schema_version"] = version
+        assert_carries_plan(plan)
+        assert len(plan["items"]) == FEASIBILITY_ITEM_COUNT
+        assert FEASIBILITY_PLAN_VERSION == 3
 
     @pytest.mark.parametrize("bad", [None, "x", [], 0, 2, True, ("a",), object()])
     def test_a_non_dict_is_refused(self, bad):
@@ -228,8 +239,8 @@ class TestCarriesPlanGuard:
             assert_carries_plan({})
         assert "no plan to judge" in str(exc.value), str(exc.value)
 
-    @pytest.mark.parametrize("version", [1, 3, "2", 2.0, None, True, False, [2], {"v": 2}])
-    def test_only_integer_version_two_is_accepted(self, version, blueprint, clone):
+    @pytest.mark.parametrize("version", [1, 4, "2", "3", 2.0, 3.0, None, True, False, [3], {"v": 3}])
+    def test_only_supported_integer_versions_are_accepted(self, version, blueprint, clone):
         """`True` and `2.0` are in the list for specific reasons.
 
         `isinstance(True, int)` holds and `True == 1`, so a bare int check accepts `True` as a version

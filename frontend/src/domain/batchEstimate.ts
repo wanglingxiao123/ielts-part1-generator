@@ -17,25 +17,27 @@
  * 所以墙钟时间跟的是**波数** `ceil(total / concurrency)`，不是套数。
  *
  * 变化的是并发度住在哪里：过去是后端 `batch.py` 的 `MAX_CONCURRENCY` 在一次 invoke 内部
- * 并发跑多套；现在是 web 层的 `FANOUT_CONCURRENCY`（`WEB_FANOUT_CONCURRENCY`，默认 6）
- * 同时开多少次 invoke。默认值一样是 6，波数公式因此不变——但对得上的是另一个模块了，
+ * 并发跑多套；现在是 web 层的 `FANOUT_CONCURRENCY`（`WEB_FANOUT_CONCURRENCY`，默认 20）
+ * 同时开多少次 invoke。波数公式不变——但对得上的是另一个模块了，
  * 见下面 `BACKEND_CONCURRENCY` 的注释。
  *
  * ## 一波多长：实测，不是估的
  *
  * `WAVE_SECONDS` 来自完整材料+题目链路上线后的真实 6 套批次：约 18:41、20:49、
- * 21 分钟和 39:15。并发 6 时它们都是一波。旧的 182–230 秒只测了早期材料链路，
+ * 21 分钟和 39:15。当时并发是 6，所以它们都是一波。现在生产并发提高到 20，在没有
+ * 新实测前沿用同一波区间，不假装并发提高会缩短单套材料自身的完整生成链路。旧的
+ * 182–230 秒只测了早期材料链路，
  * 没包含当前题目生成、盲审、修改、候选替换和替补 slot，已经不代表用户等待时间。
  *
  * 区间保留为 18–40 分钟：方差主要来自质量重试和候选替换，报一个精确分钟数是假精度。
  *
- * 一个刻意**没有**建模的二阶效应：一波的耗时是这一波里最慢那套的耗时，所以 6 套
+ * 一个刻意**没有**建模的二阶效应：一波的耗时是这一波里最慢那套的耗时，所以 20 套
  * 一波理论上比 2 套一波略慢。没有实测数据支撑这个差值，宁可不编——区间的上界
  * 已经覆盖了实测的最慢情况。
  */
 
 /**
- * 一波的墙钟区间（秒）。**实测范围**：完整生成链路约 18–39 分钟（并发 6），
+ * 一波的墙钟区间（秒）。**历史实测范围**：完整生成链路约 18–39 分钟（当时并发 6），
  * 对用户显示时取整为 18–40 分钟。
  * 改这两个数之前请先测一次，不要按单套耗时推。
  */
@@ -43,17 +45,16 @@ export const WAVE_SECONDS: readonly [number, number] = [18 * 60, 40 * 60]
 
 /**
  * 服务端默认并发度，现在对应 **web 层** `web/fanout.py` 的
- * `FANOUT_CONCURRENCY = max(1, int(os.environ.get("WEB_FANOUT_CONCURRENCY", "6")))`。
+ * `FANOUT_CONCURRENCY = max(1, int(os.environ.get("WEB_FANOUT_CONCURRENCY", "20")))`。
  *
  * 名字里的 BACKEND 是历史遗留：这个常量原本镜像的是 `backend/orchestration/batch.py` 的
  * `IELTS_CONCURRENCY`（一次 invoke 内部同时跑几套）。并发已经上移到 web 层——每套一次独立
- * invoke，同时开几个由 web 层控制——所以要跟着调的是 `WEB_FANOUT_CONCURRENCY`。两个默认值
- * 都是 6，所以数字没变；改动的是「跟谁对齐」，而这正是没写清楚就会悄悄漂移的那种事。
+ * invoke，同时开几个由 web 层控制——所以要跟着调的是 `WEB_FANOUT_CONCURRENCY`。
  *
  * 前端拿不到服务端的环境变量，所以这里是一份镜像；web 层调低并发时这里也要跟着调，
  * 否则预估会偏乐观。
  */
-export const BACKEND_CONCURRENCY = 6
+export const BACKEND_CONCURRENCY = 20
 
 /** 波数：一波最多同时跑 `concurrency` 套。 */
 export function waveCount(total: number, concurrency: number = BACKEND_CONCURRENCY): number {

@@ -5,8 +5,6 @@
  * Source: skills/generate/generate-listening-part1/schemas/blueprint.read.schema.json
  * Regenerate: npm run contracts:gen
  */
-export type ItemNumberList = number[]
-
 /**
  * READ-side contract: every blueprint a reader may be handed, v1 or v2. The title is deliberately the bare artefact name and carries no 'read-side' qualifier, because json-schema-to-typescript derives the exported interface name from it: this is the shape the frontend's `Blueprint` type means. Ten information points with turn anchors and completion-layout grouping. Delivered alongside material.json for reviewer annotation display. MUST NOT be given to the audit step, which builds its own map blind.
  *
@@ -19,16 +17,18 @@ export type ItemNumberList = number[]
  *
  * Version is decided by the presence and value of blueprint_schema_version ALONE, never inferred from whether the v2 fields happen to be present: a v2 record that forgot response_form must fail, not silently downgrade to v1. An unrecognised version (3, say) fails this schema too -- 'readable' means v1 or v2, and a record this build cannot interpret is a thing to surface, not to render through whichever field name it happens to carry.
  */
-export interface IELTSListeningPart1InformationPointBlueprint {
+export type IELTSListeningPart1InformationPointBlueprint = {
+  [k: string]: unknown
+} & {
   /**
    * Present and equal to 2 for v2 records; absent for v1. Deliberately NOT in this file's required list -- its absence is what marks a v1 record, and the branches below key off exactly that. blueprint.schema.json DOES require it, which is the single line that turns this read contract into a v2 write contract. Any other value is rejected rather than treated as v1.
    */
-  blueprint_schema_version?: 2
+  blueprint_schema_version?: 2 | 3
   narration_mode: 'full' | 'short'
   /**
    * Last item number of the first question group; must match the narrator's stated ranges.
    */
-  split_after: 5 | 6
+  split_after: 4 | 5 | 6
   /**
    * v2 name. Item numbers grouped by completion layout. Flattened, must equal exactly 1..10 with no repeats. Redundant with items[].item_form by design: this view supports auditing overall layout distribution, the per-item field supports rendering each annotation. Renamed from question_type_coverage because it never held IELTS question types -- Part 1 has exactly one question type (completion) and these three values are its layouts.
    */
@@ -36,6 +36,11 @@ export interface IELTSListeningPart1InformationPointBlueprint {
     form?: ItemNumberList
     table?: ItemNumberList
     note?: ItemNumberList
+  }
+  question_layout_plan?: {
+    split_after: 4 | 5 | 6
+    first_layout: 'form' | 'note' | 'table'
+    second_layout: 'form' | 'note' | 'table'
   }
   /**
    * v1 ONLY. Readable, never writable: blueprint.schema.json forbids this name outright, and the v2 branch below does too, so a record cannot hedge by writing both. Declared here because the top level is additionalProperties: false, so omitting it would make every archived v1 record fail the read contract. additionalProperties is deliberately NOT false: v1 records legitimately carry a multiple_choice key. An empty layout array is real data -- the captured batch in frontend/src/api/__fixtures__/real-batch.sse.txt has note: [] -- and readers must preserve it, since a declared-but-empty layout is different information from an absent one.
@@ -67,6 +72,8 @@ export interface IELTSListeningPart1InformationPointBlueprint {
     reference_phrase: string
   }
 }
+export type ItemNumberList = number[]
+
 export interface Item {
   number: number
   /**

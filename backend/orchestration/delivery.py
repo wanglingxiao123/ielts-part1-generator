@@ -58,6 +58,7 @@ children. Collapsing them would either break resumption or break selection, in o
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -71,6 +72,7 @@ from ..deterministic.feasibility import (
 from . import events
 from .batch import REFILLABLE_FAILURES
 from .loop import is_assessable, run_one
+from .question_layout_plan import choose_question_layout_plan
 from .question_loop import run_questions
 from .slot_store import (
     COMPLETE,
@@ -378,7 +380,9 @@ def _plan(store, batch_id: str, scenarios: List[Any], ctx: _Context) -> List[Slo
     """
     existing = store.list_slots(batch_id)
     if not existing:
-        made = [SlotRecord(batch_id, "slot-%d" % (index + 1), getattr(scenario, "id", ""))
+        made = [SlotRecord(
+                    batch_id, "slot-%d" % (index + 1), getattr(scenario, "id", ""),
+                    question_layout_plan=choose_question_layout_plan())
                 for index, scenario in enumerate(scenarios)]
         for record, scenario in zip(made, scenarios):
             ctx.scenarios[record.slot_id] = scenario
@@ -449,7 +453,8 @@ def _replacement_for(record: SlotRecord, ctx: _Context) -> List[SlotRecord]:
     # generation would make `_generation_of` a parse of unbounded depth.
     replacement = SlotRecord(
         record.batch_id, "%sr%d" % (_root_of(record.slot_id), generation + 1),
-        record.scenario_id, replaces=record.slot_id)
+        record.scenario_id, replaces=record.slot_id,
+        question_layout_plan=choose_question_layout_plan())
     ctx.scenarios[replacement.slot_id] = ctx.scenarios.get(record.slot_id)
     record.replaced_by = replacement.slot_id
     ctx.store.save_slot(record)
@@ -518,10 +523,30 @@ async def _do_material(record: SlotRecord, ctx: _Context) -> None:
 
     await ctx.emit(record.slot_id, "material_started",
                    {"swaps_used": record.attempts["candidate_swaps"]})
-    result = await ctx.run_material(
+    material_args = (
         scenario, record.slot_id,
         lambda name, detail=None: ctx.emit(record.slot_id, name, detail),
-        ctx.budget.may_revise)
+        ctx.budget.may_revise,
+    )
+    signature = inspect.signature(ctx.run_material)
+    parameters = signature.parameters.values()
+    if (
+        "question_layout_plan" in signature.parameters
+        or any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters)
+    ):
+        # `run_one` has an existing fifth parameter (`metrics_runner`). Passing the plan as the
+        # fifth positional argument silently replaces that runner with a dict and later crashes at
+        # `metrics_runner.run(...)`. The production path must therefore use the parameter name.
+        result = await ctx.run_material(
+            *material_args, question_layout_plan=record.question_layout_plan
+        )
+    elif any(parameter.kind == inspect.Parameter.VAR_POSITIONAL for parameter in parameters):
+        # Compatibility for injected extension callbacks that accept only positional extras.
+        result = await ctx.run_material(*material_args, record.question_layout_plan)
+    else:
+        # Test and extension callbacks written before layout plans remain valid. Production
+        # ``run_one`` accepts the named argument and therefore always receives the persisted plan.
+        result = await ctx.run_material(*material_args)
 
     verdict = _material_verdict(result)
     if verdict is not None:

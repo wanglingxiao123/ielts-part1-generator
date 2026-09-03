@@ -1,5 +1,5 @@
 {
-  "blueprint_schema_version": 4,
+  "blueprint_schema_version": 3,
   "narration_mode": "full",
   "split_after": 5,
   "completion_layout_coverage": {
@@ -7,14 +7,12 @@
       1,
       2,
       3,
-      4
+      4,
+      5
     ],
     "note": [
-      5,
       6,
-      7
-    ],
-    "table": [
+      7,
       8,
       9,
       10
@@ -88,8 +86,8 @@
       "target": "primary school",
       "evidence": "still in primary school",
       "turn_index": 20,
-      "item_form": "note",
-      "form_group": "D",
+      "item_form": "form",
+      "form_group": "A",
       "distractor": true,
       "confirmed": false,
       "response_form": "phrase",
@@ -104,7 +102,7 @@
       "evidence": "he'd love a park nearby",
       "turn_index": 29,
       "item_form": "note",
-      "form_group": "D",
+      "form_group": "B",
       "distractor": false,
       "confirmed": false,
       "response_form": "word",
@@ -119,7 +117,7 @@
       "evidence": "always lived in a house",
       "turn_index": 32,
       "item_form": "note",
-      "form_group": "D",
+      "form_group": "B",
       "distractor": true,
       "confirmed": false,
       "response_form": "word",
@@ -133,7 +131,7 @@
       "target": "two-bedroom",
       "evidence": "you definitely need a two-bedroom property",
       "turn_index": 35,
-      "item_form": "table",
+      "item_form": "note",
       "form_group": "B",
       "distractor": false,
       "confirmed": true,
@@ -148,7 +146,7 @@
       "target": "guest room",
       "evidence": "how about having a guest room",
       "turn_index": 37,
-      "item_form": "table",
+      "item_form": "note",
       "form_group": "B",
       "distractor": true,
       "confirmed": false,
@@ -163,7 +161,7 @@
       "target": "office",
       "evidence": "it'd be handy to have an office",
       "turn_index": 40,
-      "item_form": "table",
+      "item_form": "note",
       "form_group": "B",
       "distractor": false,
       "confirmed": false,
@@ -180,5 +178,10 @@
   "indirect_confirmation": {
     "answer_term": "house",
     "reference_phrase": "the latter"
+  },
+  "question_layout_plan": {
+    "split_after": 5,
+    "first_layout": "form",
+    "second_layout": "note"
   }
 }

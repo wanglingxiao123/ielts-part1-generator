@@ -62,14 +62,14 @@ and the budget only refuses a third refill attempt of the same material. See `Bu
 
 What replaced the ceiling as the thing to calibrate is **throughput, not duration**: N concurrent
 invocations mean N concurrent model conversations, so the number to watch is 429s, and the knob is
-the web tier's `WEB_FANOUT_CONCURRENCY` (default 6). Unmeasured, and honestly so — the runs below
+the web tier's `WEB_FANOUT_CONCURRENCY` (default 20). Unmeasured, and honestly so — the runs below
 were all made with a single invocation running several materials internally.
 
 ## Configuration derived from these measurements
 
 | Variable | Value | Basis |
 |---|---|---|
-| `WEB_FANOUT_CONCURRENCY` | 6 | web tier; how many independent invocations run at once. **Unmeasured** — inherited from the value `IELTS_CONCURRENCY` ran at without 429s, which is suggestive rather than evidence, since those slots shared one conversation. Lower it on throttling. |
+| `WEB_FANOUT_CONCURRENCY` | 20 | web tier; how many independent invocations run at once. **Unmeasured at 20** — this is a product-selected throughput setting, not an AgentCore hard limit. Lower it on throttling. |
 | `IELTS_CONCURRENCY` | 6 (code default) | no throttling observed at the 3 concurrent slots that were actually measured; the default was raised to 6 when one invocation stopped meaning one batch. Effectively dead in production: one slot per invocation means `BatchRequest` clamps it to 1. Still governs the CLI, where 3 remains the measured-safe value. |
 | `IELTS_P95_PER_MATERIAL` | 240 | measured 146s typical; 240 covers the two-regeneration case |
 | `IELTS_REVISION_COST` | 120 | measured revise + re-audit ≈ 44s; 120 is deliberately cautious. NOT lowered now that one material owns the whole budget — `may_revise` compares against what a revision costs, so a smaller value would only make it answer yes with no time left to finish. |

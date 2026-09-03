@@ -84,6 +84,7 @@ cat > /tmp/${PROJECT}-taskdef.json <<JSON
       {"name": "AGENT_RUNTIME_ARN", "value": "${RUNTIME_ARN}"},
       {"name": "IELTS_AUDIO_BUCKET", "value": "${S3_BUCKET}"},
       {"name": "ALLOWED_EMAIL_DOMAINS", "value": "${ALLOWED_EMAIL_DOMAINS:-*}"},
+      {"name": "WEB_FANOUT_CONCURRENCY", "value": "${WEB_FANOUT_CONCURRENCY}"},
       {"name": "USER_STORE_S3_BUCKET", "value": "${S3_BUCKET}"},
       {"name": "USER_STORE_S3_KEY", "value": "web/users.json"},
       {"name": "PORT", "value": "${WEB_PORT}"}

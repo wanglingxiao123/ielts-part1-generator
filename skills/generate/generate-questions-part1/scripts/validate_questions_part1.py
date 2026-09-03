@@ -372,6 +372,40 @@ def validate_layout_fidelity(numbers: list, questions: dict, groups: dict, items
             )
 
 
+def validate_v3_group_plan(
+    blueprint: dict, members: dict, groups: dict, first_end: int, errors: list
+) -> None:
+    if blueprint.get("blueprint_schema_version") != 3:
+        return
+    if len(members) != 2:
+        errors.append(
+            "question package for blueprint v3 must contain exactly 2 groups; found %d"
+            % len(members)
+        )
+        return
+    ordered = sorted(members.items(), key=lambda pair: min(pair[1]))
+    expected_ranges = [
+        list(range(1, first_end + 1)),
+        list(range(first_end + 1, 11)),
+    ]
+    plan = blueprint.get("question_layout_plan") or {}
+    expected_layouts = [plan.get("first_layout"), plan.get("second_layout")]
+    for index, ((group_id, numbers), expected_numbers, expected_layout) in enumerate(
+        zip(ordered, expected_ranges, expected_layouts), 1
+    ):
+        if sorted(numbers) != expected_numbers:
+            errors.append(
+                "question package group %d must cover questions %d-%d"
+                % (index, expected_numbers[0], expected_numbers[-1])
+            )
+        actual_layout = (groups.get(group_id) or {}).get("layout")
+        if actual_layout != expected_layout:
+            errors.append(
+                "question package group %d layout %r does not match blueprint plan %r"
+                % (index, actual_layout, expected_layout)
+            )
+
+
 def validate_groups(numbers: list, questions: dict, groups: dict, instructions: dict,
                     evidence: dict, first_end: int, errors: list) -> dict:
     """Validate printed group structure, minus homogeneity -- which the schema makes structural.
@@ -1008,6 +1042,7 @@ def main() -> int:
     members = validate_groups(numbers, questions, groups, instructions, evidence, first_end, errors)
     if items:
         validate_layout_fidelity(numbers, questions, groups, items, errors)
+    validate_v3_group_plan(blueprint, members, groups, first_end, errors)
     metrics["groups"] = len(members)
     metrics["layouts"] = sorted({str(groups[key].get("layout")) for key in members
                                  if isinstance(groups.get(key), dict)})

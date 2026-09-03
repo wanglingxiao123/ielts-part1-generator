@@ -1,5 +1,5 @@
 /**
- * v1/v2 blueprint compatibility — the single place that knows two versions exist (design.md D2).
+ * v1/v2/v3 blueprint compatibility — the single place that knows the supported versions.
  *
  * Why this file is hand-written while `contracts/blueprint.ts` is generated: the schema expresses
  * "required in v2, absent in v1" with `if/then`, and `json-schema-to-typescript` IGNORES `if/then`.
@@ -39,7 +39,7 @@ export type CurrentLayout = (typeof CURRENT_LAYOUTS)[number]
  */
 export const V1_LEGACY_LAYOUT: ItemForm = 'multiple_choice'
 
-export type BlueprintVersion = 1 | 2 | 'unknown'
+export type BlueprintVersion = 1 | 2 | 3 | 'unknown'
 
 /**
  * Decided by the version field ALONE — never by whether the v2 fields happen to be present.
@@ -51,7 +51,9 @@ export type BlueprintVersion = 1 | 2 | 'unknown'
  */
 export function blueprintVersion(bp: Blueprint): BlueprintVersion {
   if (!('blueprint_schema_version' in bp) || bp.blueprint_schema_version === undefined) return 1
-  return bp.blueprint_schema_version === 2 ? 2 : 'unknown'
+  return bp.blueprint_schema_version === 2 || bp.blueprint_schema_version === 3
+    ? bp.blueprint_schema_version
+    : 'unknown'
 }
 
 /**
@@ -78,7 +80,9 @@ export function blueprintVersion(bp: Blueprint): BlueprintVersion {
 export function layoutCoverage(bp: Blueprint): Record<LayoutKey, number[]> {
   const version = blueprintVersion(bp)
   if (version === 'unknown') return {}
-  const raw = (version === 2 ? bp.completion_layout_coverage : bp.question_type_coverage) as
+  const raw = (version === 2 || version === 3
+    ? bp.completion_layout_coverage
+    : bp.question_type_coverage) as
     | Record<string, unknown>
     | undefined
   const out: Record<LayoutKey, number[]> = {}

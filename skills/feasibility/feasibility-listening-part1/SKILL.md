@@ -64,6 +64,8 @@ Read nothing else. Everything you need is in this skill's own directory and in t
    the script actually supports: fields of one real record → Form; thematic explanatory points →
    Note; repeated entities with shared dimensions → Table. Reject a pseudo-Form, pseudo-Table, or
    unnatural group boundary here, because the question stage must preserve this approved plan.
+   For blueprint v3 require exactly two groups, require their boundary to equal the narrator split,
+   and compare both layouts with `question_layout_plan`. The two layouts may be the same.
 
 3. Review each item's `answer_category` **semantically**. The validator already checked that each
    value is one of the 14 permitted strings; it cannot check whether the value is *true of the

@@ -72,12 +72,9 @@ Read nothing else.
    or ten unrelated sentences that happen to validate (SC-015 / QR-026). You will need this reading
    again in step 6, and it is much harder to do honestly once you know the answers.
 
-   First test whether Q1-Q10 form one natural candidate-visible structure. Flag a boundary created
-   only at the narrator midpoint when the same record and layout continue on both sides. Do not
-   prefer one group mechanically: a real change in record structure still justifies a split.
-   Groups should normally contain at least three questions. Treat a one- or two-question group as
-   a forced-split finding unless it represents a genuinely independent information structure that
-   cannot naturally join either adjacent group.
+   Confirm that the page has exactly two groups and that their boundary matches the narrator
+   windows. Do not flag the required boundary merely because both groups use the same layout.
+   Instead judge whether each group is a truthful Form, Note, or Table rendering of its own stage.
 
    Four things are decidable here, from the page alone, before you know a single answer — take them
    now while the reading is still innocent (rules §2, dimensions 12–15):

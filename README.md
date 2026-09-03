@@ -570,7 +570,7 @@ Form / Note / Table，同时检查蓝图的题型和分组符合材料的信息�
 ### 3.10 并发与时间预算
 
 生产环境由 `web/fanout.py` 为每套材料发起一个独立 Runtime invocation，每个请求使用新的
-`runtimeSessionId`。`WEB_FANOUT_CONCURRENCY=6` 表示同时最多运行 6 套，不是每批最多 6 套：
+`runtimeSessionId`。`WEB_FANOUT_CONCURRENCY=20` 表示同时最多运行 20 套，不是每批最多 20 套：
 第一个任务完成后，队列中的下一套立即开始。这个数是可调的流量保护值，不是 AgentCore 硬限制；
 出现 429 时应下调。
 
@@ -1132,7 +1132,7 @@ origin-facing 托管前缀列表和自定义 header 校验；现有脚本未实�
 | `IELTS_AUDIO_BUCKET` | 项目 S3 桶 | 材料与按需音频存储 |
 | `USER_STORE_S3_BUCKET` | 项目 S3 桶 | 用户存储；本地未设时回退为本地 JSON |
 | `USER_STORE_S3_KEY` | `web/users.json` | 用户文件 key |
-| `WEB_FANOUT_CONCURRENCY` | `6` | 同时运行的 Runtime 调用数；429 时下调 |
+| `WEB_FANOUT_CONCURRENCY` | `20` | 同时运行的 Runtime 调用数；429 时下调 |
 | `WEB_SSE_HEARTBEAT` | `15` | SSE 心跳秒数 |
 | `WEB_RUNTIME_READ_TIMEOUT` | `3450` | 单套流式 Runtime 读取超时；高于工作窗口、低于平台上限 |
 | `WEB_PER_MATERIAL_WALL` | `3300` | 单个 slot 的 Web 墙上时钟预算 |
@@ -1272,7 +1272,7 @@ bash backend/scripts/check_ping.sh
 ### 已知限制
 
 - 前端均匀度阈值尚未用足量真实样本校准；
-- `WEB_FANOUT_CONCURRENCY=6` 是起始配置，不是所有账号配额下的保证值；
+- `WEB_FANOUT_CONCURRENCY=20` 是起始配置，不是所有账号配额下的保证值；
 - 版权原因，真题样本不随仓库分发，相关测试会 skip；
 - ECS 服务默认单任务、单任务子网，无自动伸缩、蓝绿部署或应用级多可用区冗余；
 - 用户池是单个 S3 JSON 对象，更新采用整文件读写；进程锁只能保护单实例。扩展到多个 Web task

@@ -34,14 +34,16 @@ Read all three of these before writing anything:
    - For original material, set every `source_htmls` field to `[]`.
 
 2. Build the ten-item blueprint.
-   - Plan ten factual targets in strict order. Before assigning groups, test whether all ten points
-     form one natural candidate-visible Form, Note, or Table. If they do, use one `form_group` across
-     Q1-Q10 even though the narrator pauses at the midpoint. Split only where the record structure
-     genuinely changes; the narrator cue alone is never a grouping reason.
+   - Read the required `question_layout_plan` from the request. It fixes `split_after` at 4, 5, or
+     6 and independently selects Form, Note, or Table for each of two groups; the layouts may be
+     the same. Plan ten factual targets in strict order so Q1-Q`split_after` genuinely support the
+     first layout and the remaining questions genuinely support the second.
    - Include at least one spelled name/proper noun, one numeric target, and one genuine self-correction.
    - A dialogue-internal indirect confirmation is optional. Add one only when it fits the scene naturally; if you do, its answer term must also be an item target and must be spoken in full before the phrase that refers back to it. The spec asks for 2-3 distraction cycles drawn from five mechanisms (self-correction, paraphrase, option trap, negation, qualifier) -- forcing a paraphrase into every material is not one of them, and only 4 of the 27 real papers contain one.
    - Mark at least three points as confirmed, including a spelled name and a numeric detail.
-   - Plan layout support: give each point an `item_form` (`form`, `table`, or `note` -- Part 1 delivers completion layouts only) and a **non-empty** `form_group`, so one group holds points sharing one natural candidate-visible layout. Each group's item numbers must be contiguous and its points must not be interleaved with another group's in the evidence order. Group count is content-driven and may be one, two, or three; there is no quota or preferred count. Record the same layouts in `completion_layout_coverage`. A group should normally contain at least three questions. Do not create a one- or two-question fragment for a narrator window, the Q5/Q6 midpoint, or layout variety. Use fewer than three only when that information structure is genuinely independent and cannot naturally join an adjacent group.
+   - Use exactly two non-empty `form_group` values. The first covers Q1-Q`split_after`; the second
+     covers the rest. Keep each group's evidence contiguous and record the same layouts in
+     `completion_layout_coverage`. Even when both layouts are the same, preserve two groups.
    - Choose Form, Note, or Table from the information relationship, with no default or fallback.
      Form records fields in one real record whose labels would naturally appear on an application,
      booking, order, or registration form. Note organises explanatory information under one or more
@@ -60,7 +62,9 @@ Read all three of these before writing anything:
      row-specific columns that apply to only one entity and would force the question writer to pad
      the other cells with `—`, `-`, `N/A`, empty strings, or invented filler. Use Form or Note when
      the facts do not share dimensions across rows.
-   - Write `blueprint_schema_version: 2` and give every item `response_form`, `answer_category` and `narrator_window_id`. Derive each from the item itself, not from a guess: `response_form` counts tokens of the actual `target` (a hyphenated compound is one word), `answer_category` picks from the 14 values with no catch-all (use `job_title` for a named occupation, vacancy, or role), and `narrator_window_id` follows the split you declared. All three are recomputed and compared, so a wrong value is reported rather than accepted. See the reference's "Blueprint version 2" section for the values and the category boundaries.
+   - Write `blueprint_schema_version: 3`, copy the required plan into
+     `question_layout_plan`, and give every item `response_form`, `answer_category` and
+     `narrator_window_id`. The narrator's two question ranges must use the same split.
    - Keep every target writable under a standard rubric: at most three words, of which at most one may be a bare number. A range or a pair of numbers such as `9 and 1` fits no rubric at all -- put one endpoint in the target and leave the rest in the surrounding sentence. This is checked here because the question stage cannot repair it: it may not replace a target and may not edit the script, so an unwritable point costs the whole material.
    - Keep answers varied: at most 4 purely numeric, at least 4 requiring spelling, and no micro-category used by 3 or more of the ten.
    - Use only 2-3 deliberate distractor-bearing cycles.
@@ -73,7 +77,10 @@ Read all three of these before writing anything:
    - Follow this order: full test/scene introduction and first reading prompt; first dialogue half; midpoint reading prompt; second dialogue half; closing check prompt.
    - Make answer-bearing information follow the private target order without returning to earlier targets.
    - Keep narration free of answer content.
-   - Aim for 600-650 dialogue words and 30-40 dialogue turns. These are the targets; 450 words and 20 turns are failure thresholds, not goals. Measured over the real past papers: the shortest dialogue is 477 words and the median is 605, so a draft near 450 is shorter than every real paper and will be rejected. Write past the target rather than up to it. At least 8 dialogue turns in each half.
+   - Aim for 600-650 dialogue words and 28-35 dialogue turns. The hard turn range is 20-36;
+     36 is acceptable but advisory because it sits just above the preferred range. Keep turns
+     concise without fragmenting one natural exchange into extra acknowledgements. At least 8
+     dialogue turns in each half.
    - Narration: 160-230 words when `narration_mode` is `full`, 70-110 when `short`. Every real full narration runs 160-231 words, so the whole-test preamble has to be quoted in full rather than paraphrased.
    - Use short, natural, polite turns and everyday English.
 
@@ -115,7 +122,7 @@ Read all three of these before writing anything:
      until further attempts stop making progress — a script the validator still complains about is
      delivered with those complaints attached, so a stuck loop is worse than an honest report.
    - Warnings are different from errors: they report a word or turn count outside the typical
-     600-650 / 30-40 band while still inside the hard limits. Treat them as advice, not blockers,
+     600-650 / 28-35 band while still inside the hard limits. Treat them as advice, not blockers,
      and do not rewrite a compliant script merely to hit the typical band.
    - The most common error is an off-by-one `turn_index`. When you see it, copy the index out of the
      `turns` array rather than recounting by eye.

@@ -132,7 +132,7 @@ def render(audit: dict, cross_check: dict | None = None) -> str:
             "",
             "## Advisory",
             "",
-            "Non-blocking; the 600-650 word and 30-40 turn bands are observed typical values,",
+            "Non-blocking; the 600-650 word and 28-35 turn bands are preferred values,",
             "not authoring limits.",
             "",
         ]

@@ -68,6 +68,41 @@ def test_default_delivery_budget_uses_the_streaming_window():
     assert budget.deadline == 1000.0 + 3300
 
 
+def test_layout_plan_is_keyworded_past_the_existing_metrics_runner_parameter():
+    """Regression for the production-only ``dict.run`` crash.
+
+    ``run_one`` already had ``metrics_runner`` in position five when the layout-plan parameter was
+    added in position six. A positional plan therefore looked valid to signature inspection but
+    replaced the metrics runner. This callback mirrors that real parameter order.
+    """
+    seen = {}
+
+    async def production_shape(
+        scenario,
+        slot_id,
+        emit,
+        may_revise,
+        metrics_runner=None,
+        question_layout_plan=None,
+    ):
+        seen["metrics_runner"] = metrics_runner
+        seen["question_layout_plan"] = question_layout_plan
+        return material_ok(slot_id, scenario.id)
+
+    recorder = Recorder([], [questions_ok()])
+    summary = asyncio.run(run_request(
+        [FakeScenario()],
+        "batch-layout-plan-keyword",
+        store=memory_store(),
+        run_material=production_shape,
+        run_question_stage=recorder.run_questions,
+    ))
+
+    assert summary["status"] == SUCCEEDED
+    assert seen["metrics_runner"] is None
+    assert seen["question_layout_plan"]["split_after"] in (4, 5, 6)
+
+
 def memory_store() -> SlotStore:
     from audio_storage.object_store import InMemoryObjectStore
 

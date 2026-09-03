@@ -83,12 +83,13 @@ plan is worth nothing, and the failure is silent: the score simply comes out too
    - For each, quote concise evidence, classify its type, record the `turn_index` it sits at, and note whether it is clear, confirmed, corrected, indirect, or potentially ambiguous.
    - Do not invent questions or an answer key. The map measures whether the script can support later item writing.
    - Require 8-10 usable details, normally 10. Verify strict first-occurrence order, separate micro-cycles, at least four detail types, and alignment with the narrator's two question ranges.
-   - Also judge whether the details can form at least one natural candidate-visible completion
-     structure: fields of one real record support Form; thematic explanatory points such as
+   - Also judge whether the details form two natural candidate-visible information stages aligned
+     with the narrator's question ranges: fields of one real record support Form; thematic explanatory points such as
      requirements, preferences, procedures, facilities, advice, reasons, or arrangements support
      Note; repeated entities with shared comparison dimensions support Table. A list is not Form
      merely because labels can be invented for its lines. Form, Note and Table are equally legal;
-     do not require a Form/Table group when the material naturally supports Note. Every detail must
+     do not require a Form/Table group when the material naturally supports Note. The two stages may
+     support the same layout. Every detail must
      be answerable by writing a word, number or short phrase into a gap. Ten scattered gap-fills
      with no coherent structure are a finding, not a pass — the material exists to support item
      writing.
@@ -143,8 +144,8 @@ Two products, in one JSON object:
   authoritative result; the human-readable Markdown report is produced from it by
   `shared/render_audit_report.py`, so do not write the report yourself.
 - Use the underscore verdict spellings above so the value can be handled programmatically.
-- Put word or turn counts that fall outside the typical 600-650 / 30-40 bands but inside the
-  hard 450-750 / 20-48 limits in `warnings`, not `findings`. The typical values are observed
+- Put word or turn counts that fall outside the preferred 600-650 / 28-35 bands but inside the
+  hard 450-750 / 20-36 limits in `warnings`, not `findings`.
   averages across 20 real test sets, not authoring requirements.
 - Distinguish deterministic results from editorial judgment.
 - Never count narrator words or turns as dialogue.

@@ -74,7 +74,7 @@ Remaining steps, and what to watch:
      it does not finish, the fix is the model call count, not the batch size, and never the
      revise or re-audit stages, which would make the quality loop decorative.
   4. Then check throughput rather than batch size: submit ~12 sets and watch for 429s. On
-     throttling, lower WEB_FANOUT_CONCURRENCY on the web tier (default 6). There is no
+     throttling, lower WEB_FANOUT_CONCURRENCY on the web tier (default 20). There is no
      max_batch to lower any more, deliberately.
   5. While a batch runs, poll /ping; it must answer Healthy within 1s throughout. This matters
      more than it used to: N concurrent invocations mean N warm microVMs, each with its own

@@ -643,7 +643,7 @@ describe('formGroups', () => {
    */
   it('reports nothing at all for an unrecognised blueprint version', () => {
     const bp = structuredClone(balanced.blueprint) as unknown as Record<string, unknown>
-    bp.blueprint_schema_version = 3
+    bp.blueprint_schema_version = 4
     const g = analyseFormGroups(viewWith(bp as unknown as Blueprint), T)
     expect(g.consistency.known).toBe(false)
     // 关键断言：不是 [1..10]。

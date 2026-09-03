@@ -36,7 +36,7 @@ SPELLED_KEY = "qr027_spelled_answers"
 LARGEST_KEY = "qr027_largest_category"
 COUNT_KEYS = (NUMERIC_KEY, SPELLED_KEY, LARGEST_KEY)
 
-SUPPORTED_VERSION = 2
+SUPPORTED_VERSIONS = frozenset({2, 3})
 # A Part 1 blueprint carries exactly ten items (validate_part1.py:504 errors otherwise), and the
 # QR-027 classes partition them, so every count lives in 0..10 and numeric + spelled == 10.
 ITEM_COUNT = 10
@@ -221,10 +221,10 @@ def preflight(validation: object, feasibility: object) -> Verdict:
                        [f"validation invalid: metrics.{VERSION_KEY} is null -- the validator could "
                         f"not determine the version, so it was not read as an unsupported one"],
                        qr027=qr027)
-    if version != SUPPORTED_VERSION:
+    if version not in SUPPORTED_VERSIONS:
         return Verdict(UNSUPPORTED_VERSION,
-                       [f"blueprint_schema_version is {version!r}; new generation accepts only "
-                        f"{SUPPORTED_VERSION}. A v1 record is display-only and is not regenerated."],
+                       [f"blueprint_schema_version is {version!r}; supported versions are "
+                        f"{sorted(SUPPORTED_VERSIONS)}. A v1 record is display-only and is not regenerated."],
                        qr027=qr027)
 
     # Gate 2 -- deterministic errors. After the version gate, not before: an archived record
