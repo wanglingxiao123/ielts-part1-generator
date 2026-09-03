@@ -42,6 +42,7 @@ import { useAudioPool } from '../audio/useAudioPool'
 import { ExamPointPanel } from './ExamPointPanel'
 import { CommentComposer, CommentList } from './MaterialComments'
 import { MaterialReader } from './MaterialReader'
+import { QtiExportButton } from './QtiExportButton'
 import { QuestionPreviewPanel } from './QuestionPreviewPanel'
 import { QuestionRevisionAction, QuestionVersionBar } from './QuestionVersionControls'
 import { QuestionTypePanel } from './QuestionTypePanel'
@@ -411,6 +412,7 @@ export function MaterialPage() {
 
       {tab === 'questions' ? (
         <QuestionsTab
+          materialId={record.material_id}
           state={questions}
           missing={missing}
           blueprint={displayedRecord.blueprint}
@@ -504,6 +506,7 @@ export function MaterialPage() {
  * 与前五种分开：那是这个页面读不到，不是这套材料没有题。
  */
 function QuestionsTab({
+  materialId,
   state,
   missing,
   blueprint,
@@ -517,6 +520,7 @@ function QuestionsTab({
   onNavigateComment,
   versionsState,
 }: {
+  materialId: string
   state: ReturnType<typeof useMaterialQuestions>
   missing: ReturnType<typeof explainMissingQuestions>
   blueprint: MaterialRecord['blueprint']
@@ -554,6 +558,19 @@ function QuestionsTab({
     const displayedBlueprint = versionsState.selectedVersion?.blueprint ?? blueprint
     return (
       <div className="question-version-view">
+        {/* 交付出口。导出的是下面这张纸正在显示的版本（versionsState.selectedVersionId），
+            所以放在题面正上方，跟版本选择器在同一视线里，而不是塞进页面顶栏。 */}
+        <div className="qti-export-bar">
+          <QtiExportButton
+            materialId={materialId}
+            versionId={versionsState.selectedVersionId || 'original'}
+            ordinal={versionsState.selectedVersion?.ordinal ?? 1}
+          />
+          <span className="muted qti-export-hint">
+            按 QTI 2.2.4 打包为 zip（imsmanifest.xml + assessmentItem），供下游题库导入；
+            音频不在包内，另行交付。
+          </span>
+        </div>
         <div className="question-comments-layout">
           <QuestionPreviewPanel
             pkg={displayedPackage}

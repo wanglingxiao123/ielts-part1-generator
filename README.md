@@ -93,6 +93,14 @@ digest、健康检查和遗留问题。
 │   ├── scripts/                      # 部署、冒烟和 CI 门禁
 │   ├── tests/                        # 后端测试
 │   └── docs/                         # 时延、模型接入和交接记录
+├── qti_export/                       # 题目包 → QTI 2.2.4 内容包（导出给下游题库）
+│   ├── README.md                     # 字段映射、容错规则、准入门禁
+│   ├── questions_input.py            # 输入读取与门禁 G1–G6
+│   ├── accept_sets.py                # 答案容错集 / 拒绝集
+│   ├── emitter.py                    # QTI item + manifest + zip 序列化
+│   ├── service.py                    # 两种存储形状收敛 + export_document 入口
+│   ├── validate.py / fetch_schemas.py # 官方 XSD 校验与镜像（测试/CLI 用）
+│   └── tests/                        # 三份真实交付集夹具（form / table / note）
 ├── audio_storage/                    # 按需音频与材料状态存储
 │   ├── synthesize.py                 # Polly 逐轮合成
 │   ├── state_store.py                # pending/approved 等状态迁移
@@ -108,7 +116,7 @@ digest、健康检查和遗留问题。
 │   ├── batch_store.py                # 批次持久化
 │   ├── comment_store.py              # `_comments/` 单人批注存储与校验
 │   ├── question_versions.py           # 修订请求与不可变版本的持久化/采用
-│   └── tests/
+│   └── tests/                        # 含 test_qti_export_route.py（/api/material-qti）
 ├── frontend/                         # React + TypeScript + Vite 审阅界面
 │   ├── src/
 │   │   ├── api/                      # Web API 与 SSE 客户端
@@ -223,6 +231,34 @@ Runtime 立即返回 job id，浏览器通过 `audio_status` 轮询。合成完�
 注册请使用 `@example.com` 邮箱。部署时应显式设置 `ALLOWED_EMAIL_DOMAINS`；未设置时
 默认值 `*` 会允许任意邮箱域名注册，不适合直接用于公网环境。
 这套方案面向小规模、受控用户使用，不提供邮箱验证、找回密码、MFA 或企业 SSO。
+
+### 2.6 题目如何交付给下游（QTI 2.2.4 导出）
+
+题目预览页上方有「导出 QTI 2.2（Vn）」按钮，对应 `GET /api/material-qti/{material_id}`。Web 层从
+`_questions/`（原始交付）或 `_question_versions/`（批注修订版本）读出题目文档，在进程内用
+`qti_export/` 转成 **IMS QTI 2.2.4** 内容包并直接下载，不经过 Runtime、不写回 S3：
+
+```text
+ielts-<material_id>-v<n>.zip
+├── imsmanifest.xml                        Content Package manifest
+├── items/part1-<material_id>-v<n>.xml     assessmentItem：十题一个 item，十个 textEntryInteraction
+├── reject_candidates.json                 每题接受集 / 拒绝集，供下游判分回归
+└── review.txt                             需人工确认的判分口径（存在时才有）
+```
+
+三条设计决定：
+
+- **导出的是页面正在显示的版本**，版本号进 `assessmentItem/@identifier`（`ielts-<material_id>-v<n>`），
+  同一材料的两个版本在下游题库里不会互相覆盖。`?version_id=` 缺省为当前采用版本。
+- **先过门禁，再转换；不过就整份拒绝（422）并列出全部原因。** 门禁重放上游的一致性结论：审核通过、
+  命题与盲审两侧答案一致、题号闭合、字数上限自洽。绝不把出问题的题丢掉后导出九道题的包。
+- **不声明产不出来的资源。** 这条流水线没有听力音频可交付，item 里只留 `[audio pending]` 占位，
+  manifest 不声明音频；音频由下游另行挂载。声明了而不存在的资源能过 XSD，却会让导入直接失败。
+
+答案的容错集（`mapping/mapEntry`）按 `qti_export/README.md` §3 的规则从标准答案、卷面文字和上游
+标注的竞争答案推导；无法自动决定的判分口径写进 `review.txt`，下游导入前应有人看过。
+`?format=item` 只取 item XML，`?format=summary` 取 JSON 概览。离线转换：
+`python3 -m qti_export <material_id>.json -o build/ --validate`。
 
 ## 3. 生成流程（Agent Loop）
 
@@ -1209,8 +1245,18 @@ python3 skills/shared/tests/run_tests.py
 python3 audio_storage/tests/run_tests.py
 .venv-backend/bin/python -m pytest backend/tests -q
 .venv-backend/bin/python web/tests/run_tests.py
+python3 qti_export/tests/run_tests.py
 bash backend/scripts/ci_gates.sh
 ```
+
+无 AWS 的本地联调：`python3 web/scripts/run_local.py --port 8765`（需先 `cd frontend && npm run build`）。
+它用内存存储起 Web 层，并预置 `qti_export/tests/fixtures/` 里的三套题目；加
+`--candidates <目录>` 指向候选材料记录（`_candidates/{material_id}.json`）后阅读页也能打开。
+只能登录、阅读、批注、导出 QTI，不能生成或合成音频。
+
+`qti_export` 的 XSD 校验测试需要本地镜像与 lxml：`pip install lxml && python3 -m qti_export.fetch_schemas`
+（需外网，镜像 49 个 XSD 到 `qti_export/schemas/mirror/`，不入库）。没有镜像时这一条 SKIP 并说明原因，
+其余测试照常运行。
 
 ### 8.2 前端
 
@@ -1283,7 +1329,9 @@ bash backend/scripts/check_ping.sh
   Loop 和前端尚未实现；
 - `stop.sh` 不删除 ALB，因此不能把常驻成本降为零；
 - `teardown.sh` 默认保留 S3，且始终保留 SSM secret 和历史 task definition revision；
-- GPT-5.6 当前部署限制在 `us-east-1` / `us-east-2`。
+- GPT-5.6 当前部署限制在 `us-east-1` / `us-east-2`；
+- QTI 导出不含听力音频，且 `mapEntry` 是精确比对（不裁剪首尾空白、不做 Unicode 归一化），
+  下游投递层应自行归一化考生输入，并用包内 `reject_candidates.json` 做一次判分回归。
 
 ## 声明
 

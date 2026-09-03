@@ -2772,6 +2772,39 @@ h3 {
   font-weight: 600;
 }
 
+/* 题目预览上方的交付出口：按钮 + 一句说明，成功/失败信息接在按钮右侧同一行里。 */
+.qti-export-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.qti-export {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.qti-export-note,
+.qti-export-hint {
+  font-size: 12px;
+}
+
+.qti-export-hint {
+  flex: 1 1 240px;
+}
+
+.qti-export-error {
+  max-width: 60ch;
+}
+
 .material-version-state {
   padding: 3px 7px;
   border: 1px solid var(--line);

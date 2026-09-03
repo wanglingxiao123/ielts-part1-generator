@@ -43,6 +43,10 @@ material/*.zip
 # audio_storage/assumptions.py, which is what actually matters.
 audio_storage/probe_samples/*.mp3
 
+# QTI 2.2.4 XSD mirror for qti_export's schema validation: 49 files pulled from imsglobal.org by
+# `python3 -m qti_export.fetch_schemas`. Third-party schemas, reproducible, and 3.5MB.
+qti_export/schemas/
+
 # Local scratch
 .DS_Store
 *.log

@@ -35,6 +35,10 @@ COPY web/ /app/web/
 # history feature dead in production while every test was green. Same omission as
 # backend/Dockerfile had for the same module; fixed there earlier this session.
 COPY audio_storage/ /app/audio_storage/
+# The QTI 2.2 exporter behind `GET /api/material-qti/{id}`. Stdlib-only, so nothing to pip
+# install; but like audio_storage it is imported at module load in web/app.py, and leaving it out
+# makes the image fail at startup rather than at the first export -- which is the better failure.
+COPY qti_export/ /app/qti_export/
 COPY --from=frontend /build/dist/ /app/web/static/
 
 # Non-root, binding port 80. That combination is normally impossible, and it works here for one
