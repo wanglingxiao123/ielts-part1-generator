@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from backend.orchestration.manual_material_local_revision import (
+    _apply_confirmed_updates,
     _blueprint_immutable_surface,
     material_turns,
     project_local_candidate,
@@ -104,3 +105,42 @@ def test_blueprint_immutable_surface_allows_only_derived_evidence_fields():
 
     assert _blueprint_immutable_surface(base) == _blueprint_immutable_surface(derived_only)
     assert _blueprint_immutable_surface(base) != _blueprint_immutable_surface(changed_target)
+
+
+def test_confirmed_update_allows_removing_one_redundant_confirmation():
+    blueprint = {
+        "items": [
+            {"number": 8, "target": "breakfast", "confirmed": False},
+            {"number": 9, "target": "456982", "confirmed": True},
+            {"number": 10, "target": "HV62K", "confirmed": True},
+        ],
+    }
+
+    revised, changed = _apply_confirmed_updates(
+        blueprint, [{"number": 9, "confirmed": False}])
+
+    assert changed == [9]
+    assert blueprint["items"][1]["confirmed"] is True
+    assert revised["items"][1]["confirmed"] is False
+    assert revised["items"][2]["confirmed"] is True
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        [{"number": 9, "confirmed": True}],
+        [{"number": 8, "confirmed": False}],
+        [{"number": 99, "confirmed": False}],
+        [{"number": 9, "confirmed": False}, {"number": 9, "confirmed": False}],
+    ],
+)
+def test_confirmed_update_rejects_expansion_or_invalid_targets(updates):
+    blueprint = {
+        "items": [
+            {"number": 8, "target": "breakfast", "confirmed": False},
+            {"number": 9, "target": "456982", "confirmed": True},
+        ],
+    }
+
+    with pytest.raises(ValueError, match="true to false"):
+        _apply_confirmed_updates(blueprint, updates)

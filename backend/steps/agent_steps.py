@@ -825,12 +825,20 @@ async def revise_material_turn(
             "Assess one reviewer comment anchored to one listening-script turn. "
             "This is a strictly local edit: do not add, delete, reorder, merge, or split turns; "
             "do not change speakers, narrator turns, answers, answer spelling, correction/spelling/"
-            "confirmation chains, answer-bearing turns, question wording, groups, or targets.",
+            "correction chains, answer-bearing turns, question wording, groups, or targets. "
+            "A redundant confirmation may be removed when the original answer-bearing evidence "
+            "remains clear and the complete material still satisfies its confirmation requirements.",
             "Return exactly one JSON object: "
             '{"outcome":"no_change|local_material_edit|affects_questions|out_of_scope",'
-            '"reason":"specific explanation","material":<complete candidate only for local edit>}. '
+            '"reason":"specific explanation","material":<complete candidate only for local edit>,'
+            '"confirmed_updates":[{"number":<question number>,"confirmed":false}]}. '
+            "confirmed_updates is optional and may only mark a previously confirmed item false "
+            "when this turn removes its nonessential confirmation; never use it to change evidence, "
+            "targets, answers, or to mark an item true. "
             "Use affects_questions when the requested edit would alter evidence, an answer, or a "
-            "required confirmation chain. Use out_of_scope for broad rewriting or structural edits.",
+            "confirmation chain that is still required after considering the full material. Do not "
+            "treat every blueprint confirmed=true flag as automatically required. Use out_of_scope "
+            "for broad rewriting or structural edits.",
             "Files: material=%s blueprint=%s questions=%s comment=%s"
             % (paths["material"], paths["blueprint"], paths["questions"], paths["comment"]),
         ]) + workspace.instructions()

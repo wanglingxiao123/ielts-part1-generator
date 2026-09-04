@@ -108,6 +108,44 @@ def _blueprint_immutable_surface(blueprint: Dict[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
+def _apply_confirmed_updates(
+    blueprint: Dict[str, Any], raw_updates: Any
+) -> tuple[Dict[str, Any], List[int]]:
+    """Apply the sole permitted semantic metadata change: confirmed true -> false."""
+    revised = copy.deepcopy(blueprint)
+    if raw_updates is None:
+        return revised, []
+    if not isinstance(raw_updates, list):
+        raise ValueError("confirmed_updates must be a list")
+    items = revised.get("items")
+    if not isinstance(items, list):
+        raise ValueError("blueprint items are missing")
+    by_number = {
+        row.get("number"): row for row in items
+        if isinstance(row, dict) and isinstance(row.get("number"), int)
+    }
+    changed: List[int] = []
+    seen = set()
+    for update in raw_updates:
+        if not isinstance(update, dict):
+            raise ValueError("confirmed_updates entries must be objects")
+        number = update.get("number")
+        if (
+            isinstance(number, bool)
+            or not isinstance(number, int)
+            or number in seen
+            or update.get("confirmed") is not False
+        ):
+            raise ValueError("confirmed_updates may only set one existing item from true to false")
+        item = by_number.get(number)
+        if not isinstance(item, dict) or item.get("confirmed") is not True:
+            raise ValueError("confirmed_updates may only set one existing item from true to false")
+        item["confirmed"] = False
+        seen.add(number)
+        changed.append(number)
+    return revised, changed
+
+
 async def revise_material_local(
     *,
     store: SlotStore,
@@ -199,6 +237,8 @@ async def revise_material_local(
             return
 
         revised_blueprint = _replace_evidence(copy.deepcopy(blueprint), before, after)
+        revised_blueprint, confirmed_updates = _apply_confirmed_updates(
+            revised_blueprint, candidate.get("confirmed_updates"))
         revised_package = _replace_evidence(copy.deepcopy(package), before, after)
         if _blueprint_immutable_surface(revised_blueprint) != _blueprint_immutable_surface(blueprint):
             raise ValueError("local revision changed blueprint targets or structure")
@@ -256,8 +296,11 @@ async def revise_material_local(
             "local_revision": {
                 "turn_index": turn_index, "before": before, "after": after,
                 "reason": reason, "affected_metadata": (
-                    ["blueprint/package evidence text"] if revised_blueprint != blueprint
-                    or revised_package != package else []
+                    (["blueprint/package evidence text"]
+                     if _replace_evidence(copy.deepcopy(blueprint), before, after) != blueprint
+                     or revised_package != package else [])
+                    + ["Q%s confirmed: true → false" % number
+                       for number in confirmed_updates]
                 ),
                 "questions_unchanged": True, "audio_impact": "needs_synthesis",
             },
