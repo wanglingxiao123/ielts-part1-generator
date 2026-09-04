@@ -9,13 +9,13 @@
 
 ## 当前生产版本
 
-**Runtime 层 `question-visible-revision-bbb18d3` + web 层 `qti-material-version-02ec4cf`**，
+**Runtime 层 `question-visible-revision-bbb18d3` + web 层 `confirmed-label-bb9ffac`**，
 分支 `feat/major-rework-20260903`。Runtime 来自 commit `bbb18d3`，承载在 version
-**57**；web 来自 commit `02ec4cf`，承载在 ECS taskdef **`ielts-part1-web:72`**。
-本轮只更新 web，令 QTI 导出同时识别普通题目版本的 `quality.*` 与材料修改版本的
-`quality.questions.*`，现有材料修改版本无需重新生成即可导出。
+**57**；web 来自 commit `bb9ffac`，承载在 ECS taskdef **`ielts-part1-web:73`**。
+本轮只更新 web，把 blueprint `confirmed=true` 的展示从“有复述确认”改为
+“有复述或确认”，与该字段同时覆盖逐字复述和明确确认回应的实际语义保持一致。
 digest：backend `sha256:97d171f224e518808b5a4c6138f8bea56e18e976dd5cf224e987ad9f99e54ea2`、
-frontend `sha256:863843c604093b03ccef12d4e87019858f491150967f85960da1d47239237509`。**未合并 main**。
+frontend `sha256:7c9c8eefe7c10d6f6a3bf0c050a50cf4a3206a8a097456319578fbece01605ac`。**未合并 main**。
 
 Runtime v57 和 web 层均可由上述 commit 与 immutable digest 复原。回退本轮 Runtime
 时重放 `fixed-two-groups-hotfix2-20260903` 镜像；web 无需变动。
