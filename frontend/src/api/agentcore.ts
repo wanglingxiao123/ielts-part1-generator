@@ -1304,6 +1304,7 @@ const agentCoreTransport: Transport = async (spec: RequestSpec): Promise<unknown
     resource === 'material-comments' ||
     resource === 'material-question-versions' ||
     resource === 'material-question-revisions' ||
+    resource === 'material-local-revisions' ||
     // Same reason, same tier: the delivered question set lives in S3 under `_questions/`
     // (`web/slot_state.py`), which the Runtime writes and only the web tier reads back. Asking
     // `/invocations` for it would be asking the process that generated it to remember it.

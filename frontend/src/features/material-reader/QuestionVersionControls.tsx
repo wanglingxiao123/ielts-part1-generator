@@ -359,6 +359,26 @@ export function QuestionRevisionAction({
           <ReasonList reasons={state.revisionResult.reasons} showReferences />
         </RevisionResultShell>
       )}
+      {state.revisionResult?.kind === 'affects_questions' && (
+        <RevisionResultShell
+          state={state}
+          className="needs-material"
+          title="会影响题目或答案"
+        >
+          <p>这项意见不能作为局部材料修改执行，本次未生成新版本。</p>
+          <ReasonList reasons={state.revisionResult.reasons} showReferences />
+        </RevisionResultShell>
+      )}
+      {state.revisionResult?.kind === 'out_of_scope' && (
+        <RevisionResultShell
+          state={state}
+          className="needs-replan"
+          title="超出局部修改范围"
+        >
+          <p>这项意见涉及结构或大范围重写，本次未生成新版本。</p>
+          <ReasonList reasons={state.revisionResult.reasons} showReferences />
+        </RevisionResultShell>
+      )}
       {state.revisionResult?.kind === 'failed' && (
         <RevisionResultShell
           state={state}

@@ -3,6 +3,7 @@ import type {
   CreateQuestionRevisionRequest,
   CreateQuestionReplanRequest,
   CreateMaterialRevisionRequest,
+  CreateLocalMaterialRevisionRequest,
   MaterialRevisionReason,
   QuestionRevisionEvent,
   QuestionRevisionTerminalEvent,
@@ -102,6 +103,27 @@ export function decodeRevisionFrame(frame: string): QuestionRevisionEvent | null
           : [],
       }
     }
+    if (
+      wireType === 'material_local_revision_no_change' ||
+      wireType === 'material_local_revision_affects_questions' ||
+      wireType === 'material_local_revision_out_of_scope'
+    ) {
+      const reason = typeof payload.reason === 'string' ? payload.reason : ''
+      return {
+        event:
+          wireType === 'material_local_revision_affects_questions'
+            ? 'affects_questions'
+            : wireType === 'material_local_revision_out_of_scope'
+              ? 'out_of_scope'
+              : 'no_change',
+        request_id: requestId,
+        reasons: [{
+          comment_id: '',
+          question_number: 0,
+          reason,
+        }],
+      }
+    }
     return null
   } catch {
     return null
@@ -154,12 +176,27 @@ export async function streamMaterialRevision(
   )
 }
 
+export async function streamLocalMaterialRevision(
+  materialId: string,
+  body: CreateLocalMaterialRevisionRequest,
+  onEvent: (event: QuestionRevisionEvent) => void,
+  signal?: AbortSignal,
+): Promise<QuestionRevisionTerminalEvent> {
+  return streamRevisionRequest(
+    `/material-local-revisions/${encodeURIComponent(materialId)}`,
+    body,
+    onEvent,
+    signal,
+  )
+}
+
 async function streamRevisionRequest(
   path: string,
   body:
     | CreateQuestionRevisionRequest
     | CreateQuestionReplanRequest
-    | CreateMaterialRevisionRequest,
+    | CreateMaterialRevisionRequest
+    | CreateLocalMaterialRevisionRequest,
   onEvent: (event: QuestionRevisionEvent) => void,
   signal?: AbortSignal,
 ): Promise<QuestionRevisionTerminalEvent> {

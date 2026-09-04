@@ -75,6 +75,7 @@ __all__ = [
     "replan_blueprint",
     "revise",
     "revise_material_from_comments",
+    "revise_material_turn",
     "revise_questions",
     "revise_questions_from_comments",
 ]
@@ -800,6 +801,43 @@ async def revise_material_from_comments(
     if expected_id and returned_id != expected_id:
         raise ModelCallError("material revision changed the logical material_id")
     return output
+
+
+async def revise_material_turn(
+    material: Dict[str, Any],
+    current_blueprint: Dict[str, Any],
+    package: Dict[str, Any],
+    comment: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Classify one turn comment and, only when safe, return a complete material candidate."""
+    agent = build_generate_agent()
+    workspace = GenerationWorkspace()
+    try:
+        paths = {}
+        for name, value in (
+            ("material", material), ("blueprint", current_blueprint),
+            ("questions", package), ("comment", comment),
+        ):
+            path = workspace.path / ("%s.json" % name)
+            path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+            paths[name] = path
+        message = "\n\n".join([
+            "Assess one reviewer comment anchored to one listening-script turn. "
+            "This is a strictly local edit: do not add, delete, reorder, merge, or split turns; "
+            "do not change speakers, narrator turns, answers, answer spelling, correction/spelling/"
+            "confirmation chains, answer-bearing turns, question wording, groups, or targets.",
+            "Return exactly one JSON object: "
+            '{"outcome":"no_change|local_material_edit|affects_questions|out_of_scope",'
+            '"reason":"specific explanation","material":<complete candidate only for local edit>}. '
+            "Use affects_questions when the requested edit would alter evidence, an answer, or a "
+            "required confirmation chain. Use out_of_scope for broad rewriting or structural edits.",
+            "Files: material=%s blueprint=%s questions=%s comment=%s"
+            % (paths["material"], paths["blueprint"], paths["questions"], paths["comment"]),
+        ]) + workspace.instructions()
+        reply = await _invoke(agent, message, "local material revision")
+    finally:
+        workspace.remove()
+    return extract_json(reply)
 
 
 async def revise_questions(

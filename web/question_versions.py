@@ -71,7 +71,7 @@ class QuestionVersionService:
         projected = []
         for ordinal, row in enumerate(versions, 1):
             item = dict(row)
-            if item.get("operation") == "revise_material":
+            if item.get("operation") in {"revise_material", "revise_material_local"}:
                 stored_audio = self._read(
                     "%s%s/%s/status.json"
                     % (ASSESSMENT_AUDIO_PREFIX, material_id, str(item.get("id") or ""))
@@ -120,7 +120,7 @@ class QuestionVersionService:
 
         version_material = version.get("material")
         version_blueprint = version.get("blueprint")
-        if version.get("operation") == "revise_material":
+        if version.get("operation") in {"revise_material", "revise_material_local"}:
             material = version_material
             blueprint = version_blueprint
         else:
@@ -154,7 +154,7 @@ class QuestionVersionService:
     def adopt(self, material_id: str, version_id: str, actor: str) -> Dict[str, Any]:
         material_id = _material_id(material_id)
         version = self.load(material_id, version_id)
-        if version.get("operation") == "revise_material" and not all(
+        if version.get("operation") in {"revise_material", "revise_material_local"} and not all(
             isinstance(version.get(key), dict)
             for key in ("material", "blueprint", "package", "audio")
         ):
@@ -285,6 +285,18 @@ class QuestionVersionService:
                 operation="revise_material",
                 source_request_id=source_request_id,
             )
+
+    def reserve_local_material_revision(
+        self,
+        material_id: str,
+        base_version_id: str,
+        comments: List[Dict[str, Any]],
+        actor: str,
+    ) -> Dict[str, Any]:
+        return self.reserve(
+            material_id, base_version_id, comments, actor,
+            operation="revise_material_local",
+        )
 
     def material_revision_source(
         self, material_id: str, source_request_id: str

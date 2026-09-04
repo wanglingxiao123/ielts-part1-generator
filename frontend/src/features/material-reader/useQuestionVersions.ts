@@ -3,6 +3,7 @@ import { api } from '@/api/endpoints'
 import { userMessage } from '@/api/http'
 import {
   streamMaterialRevision,
+  streamLocalMaterialRevision,
   streamQuestionReplan,
   streamQuestionRevision,
 } from '@/api/questionRevisions'
@@ -26,6 +27,8 @@ export type RevisionResult =
     }
   | { kind: 'needs_material'; reasons: MaterialRevisionReason[] }
   | { kind: 'no_change'; reasons: MaterialRevisionReason[] }
+  | { kind: 'affects_questions'; reasons: MaterialRevisionReason[] }
+  | { kind: 'out_of_scope'; reasons: MaterialRevisionReason[] }
   | { kind: 'needs_replan'; reasons: MaterialRevisionReason[] }
   | { kind: 'failed'; message: string; blockers: string[] }
   | null
@@ -104,6 +107,24 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
             }
           } else if (request.status === 'no_change') {
             nextResult = { kind: 'no_change', reasons: request.reasons ?? [] }
+          } else if (request.status === 'affects_questions') {
+            nextResult = {
+              kind: 'affects_questions',
+              reasons: request.reasons ?? [{
+                comment_id: '',
+                question_number: 0,
+                reason: request.decision_reason ?? request.message ?? '这项修改会影响题目或答案。',
+              }],
+            }
+          } else if (request.status === 'out_of_scope') {
+            nextResult = {
+              kind: 'out_of_scope',
+              reasons: request.reasons ?? [{
+                comment_id: '',
+                question_number: 0,
+                reason: request.decision_reason ?? request.message ?? '这项意见超出局部修改范围。',
+              }],
+            }
           } else if (request.status === 'replan_questions') {
             nextResult = { kind: 'needs_replan', reasons: request.reasons ?? [] }
           } else if (request.status === 'failed') {
@@ -234,10 +255,16 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
       } else if (terminal.event === 'no_change') {
         setRevisionResult({ kind: 'no_change', reasons: terminal.reasons })
         await load()
+      } else if (terminal.event === 'affects_questions') {
+        setRevisionResult({ kind: 'affects_questions', reasons: terminal.reasons })
+        await load()
+      } else if (terminal.event === 'out_of_scope') {
+        setRevisionResult({ kind: 'out_of_scope', reasons: terminal.reasons })
+        await load()
       } else if (terminal.event === 'needs_replan') {
         setRevisionResult({ kind: 'needs_replan', reasons: terminal.reasons })
         await load()
-      } else {
+      } else if (terminal.event === 'failed') {
         const recovery = await recoverDurableResult()
         keepQueued = recovery === 'running'
         if (recovery === 'missing') {
@@ -357,6 +384,24 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
     selectedVersion,
   ])
 
+  const reviseMaterialLocal = useCallback(async (comments: MaterialComment[]) => {
+    if (!selectedVersion || selectedVersion.id !== activeVersionId || revisionStage) return
+    const turnComments = comments.filter(
+      (comment) => comment.anchor.type === 'turn' && (comment.status ?? 'open') === 'open',
+    )
+    if (turnComments.length !== 1) return
+    await runRevision(
+      (onEvent, signal) => streamLocalMaterialRevision(
+        materialId,
+        { base_version_id: activeVersionId, comment_ids: [turnComments[0]!.id] },
+        onEvent,
+        signal,
+      ),
+      '局部材料修改没有完成，现有版本未受影响',
+      'revise_material_local',
+    )
+  }, [activeVersionId, materialId, revisionStage, runRevision, selectedVersion])
+
   const dismissRevisionResult = useCallback(() => {
     if (revisionRequest?.request_id) {
       window.localStorage.setItem(
@@ -388,6 +433,7 @@ export function useQuestionVersions(materialId: string, enabled: boolean) {
     revise,
     replan,
     reviseMaterial,
+    reviseMaterialLocal,
     reload: () => void load(),
   }
 }

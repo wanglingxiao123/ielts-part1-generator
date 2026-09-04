@@ -61,6 +61,7 @@ export function MaterialPage() {
   const [jump, setJump] = useState<{ turnIndex: number; nonce: number } | null>(null)
   const [tab, setTab] = useState<Tab>('script')
   const [questionAnchor, setQuestionAnchor] = useState<CommentAnchor | null>(null)
+  const [turnAnchor, setTurnAnchor] = useState<CommentAnchor | null>(null)
   /** 生成音频：已按下、还没等到第一次「合成中」状态的那一小段。 */
   const [generating, setGenerating] = useState(false)
   const [generateError, setGenerateError] = useState<string | null>(null)
@@ -202,6 +203,8 @@ export function MaterialPage() {
         'no_change',
         'replan_questions',
         'needs_material_revision',
+        'affects_questions',
+        'out_of_scope',
       ].includes(request.status) ||
       reconciledRevisionRef.current === request.request_id
     ) {
@@ -226,6 +229,23 @@ export function MaterialPage() {
         return counts
       }, new Map<number, number>()),
     [questionComments],
+  )
+  const turnComments = useMemo(
+    () =>
+      comments.comments.filter(
+        (comment) =>
+          comment.anchor.type === 'turn' &&
+          (comment.version_id ?? 'original') === selectedVersionId,
+      ),
+    [comments.comments, selectedVersionId],
+  )
+  const turnCommentCounts = useMemo(
+    () =>
+      turnComments.reduce((counts, comment) => {
+        counts.set(comment.anchor.index, (counts.get(comment.anchor.index) ?? 0) + 1)
+        return counts
+      }, new Map<number, number>()),
+    [turnComments],
   )
   const navigateComment = useCallback((anchor: CommentAnchor) => {
     if (anchor.type !== 'question') return
@@ -437,7 +457,64 @@ export function MaterialPage() {
             onPlayTurn={playlist ? onPlayTurn : undefined}
             unplayableTurns={playlist?.unplayableTurnIndexes}
             jumpToTurn={jump}
+            commentCounts={turnCommentCounts}
+            onSelectCommentTurn={(index) => setTurnAnchor({ type: 'turn', index })}
           />
+
+          <div className="question-comments-layout material-turn-comments" style={{ marginTop: 12 }}>
+            <div className="panel panel-pad">
+              <h3>材料原文局部修改</h3>
+              <div className="muted">
+                选择一个非旁白 turn 后提交建议。第一阶段一次只处理一个 turn；题目和答案保持不变。
+              </div>
+              {questionVersions.selectedVersion?.local_revision && (
+                <div className="comment-decision" role="status">
+                  <strong>修改前：</strong>
+                  {questionVersions.selectedVersion.local_revision.before}
+                  <br />
+                  <strong>修改后：</strong>
+                  {questionVersions.selectedVersion.local_revision.after}
+                  <br />
+                  <strong>处理理由：</strong>
+                  {questionVersions.selectedVersion.local_revision.reason}
+                  <br />
+                  <strong>影响：</strong>题目保持不变；录音需要重新合成
+                </div>
+              )}
+            </div>
+            <aside className="question-comments-panel">
+              <div className="comment-panel-head">Turn 批注 ({turnComments.length})</div>
+              <CommentList
+                comments={turnComments}
+                saving={comments.saving}
+                readOnly={questionVersions.selectedVersion?.id !== questionVersions.activeVersionId}
+                onNavigate={(anchor) => {
+                  if (anchor.type === 'turn') jumpTo(anchor.index)
+                }}
+                onDelete={comments.remove}
+              />
+              <CommentComposer
+                anchor={turnAnchor?.type === 'turn' ? turnAnchor : null}
+                saving={comments.saving}
+                disabled={questionVersions.selectedVersion?.id !== questionVersions.activeVersionId}
+                onSubmit={(comment) =>
+                  comments.create({ ...comment, version_id: selectedVersionId })
+                }
+              />
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={
+                  questionVersions.revisionStage !== null ||
+                  turnComments.filter((comment) => (comment.status ?? 'open') === 'open').length !== 1 ||
+                  questionVersions.selectedVersion?.id !== questionVersions.activeVersionId
+                }
+                onClick={() => void questionVersions.reviseMaterialLocal(turnComments)}
+              >
+                分析并局部修改
+              </button>
+            </aside>
+          </div>
 
           <div className="split-2" style={{ marginTop: 12 }}>
             <ExamPointPanel summary={examPoints} onJump={jumpTo} />

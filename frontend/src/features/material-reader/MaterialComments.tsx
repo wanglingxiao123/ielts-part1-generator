@@ -96,7 +96,7 @@ export function CommentCard({
   onNavigate: (anchor: CommentAnchor) => void
   onDelete: (id: string) => void
 }) {
-  const status = comment.anchor.type === 'question' ? (comment.status ?? 'open') : 'open'
+  const status = comment.status ?? 'open'
   const readOnly = status !== 'open'
   const statusLabel =
     status === 'needs_material'
@@ -109,6 +109,12 @@ export function CommentCard({
         ? comment.resolved_by_version_id
           ? `已在 ${resolvedVersionLabel?.(comment.resolved_by_version_id) ?? '新版本'} 处理`
           : '已处理'
+        : status === 'affects_questions'
+          ? '会影响题目或答案'
+          : status === 'out_of_scope'
+            ? '超出局部范围'
+            : status === 'failed'
+              ? '处理失败'
         : null
   return (
     <article className={`comment-card severity-${comment.severity} ${status}`}>

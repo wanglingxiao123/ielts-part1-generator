@@ -5,6 +5,9 @@ export type QuestionCommentStatus =
   | 'no_change'
   | 'needs_replan'
   | 'needs_material'
+  | 'affects_questions'
+  | 'out_of_scope'
+  | 'failed'
 
 export type CommentAnchor =
   | { type: 'question'; index: number }

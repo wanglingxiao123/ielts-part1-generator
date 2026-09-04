@@ -21,8 +21,9 @@ __all__ = [
 COMMENT_PREFIX = "_comments/"
 MAX_COMMENT_LENGTH = 4000
 SEVERITIES = frozenset({"critical", "major", "minor"})
-QUESTION_COMMENT_STATUSES = frozenset({
+COMMENT_STATUSES = frozenset({
     "open", "resolved", "no_change", "needs_replan", "needs_material",
+    "affects_questions", "out_of_scope", "failed",
 })
 MATERIAL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$")
 
@@ -105,10 +106,7 @@ class CommentService:
             "text": _text(payload.get("text")),
         }
         comment["version_id"] = _version_id(payload.get("version_id"))
-        if comment["anchor"]["type"] == "question":
-            comment.update({
-                "status": "open",
-            })
+        comment["status"] = "open"
         with self._lock:
             document = self._document(material_id)
             document["comments"].append(comment)
@@ -123,8 +121,7 @@ class CommentService:
             found = next((row for row in comments if row.get("id") == comment_id), None)
             if found is None:
                 raise CommentError("COMMENT_NOT_FOUND", "没有找到这条评论。", 404)
-            if (found.get("anchor") or {}).get("type") == "question" \
-                    and found.get("status") != "open":
+            if found.get("status") != "open":
                 raise CommentError(
                     "COMMENT_READ_ONLY", "已处理的题目批注只能查看，不能删除。", 409)
             document["comments"] = [
@@ -147,7 +144,10 @@ class CommentService:
     ) -> Dict[str, Any]:
         """Idempotently settle snapshotted comments from the allowed prior states."""
         material_id = _material_id(material_id)
-        if outcome not in {"resolved", "no_change", "needs_replan", "needs_material"}:
+        if outcome not in {
+            "resolved", "no_change", "needs_replan", "needs_material",
+            "affects_questions", "out_of_scope", "failed",
+        }:
             raise CommentError("INVALID_COMMENT_STATUS", "批注处理状态无效。")
         wanted = {str(value) for value in comment_ids if str(value)}
         allowed_statuses = set(from_statuses or ["open"])
@@ -162,7 +162,6 @@ class CommentService:
             now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
             for comment in document["comments"]:
                 if (comment.get("id") not in wanted
-                        or (comment.get("anchor") or {}).get("type") != "question"
                         or comment.get("version_id") != base_version_id
                         or comment.get("status") not in allowed_statuses):
                     continue
@@ -195,9 +194,8 @@ class CommentService:
             comment = dict(row)
             if not isinstance(comment.get("version_id"), str):
                 comment["version_id"] = "original"
-            if (comment.get("anchor") or {}).get("type") == "question":
-                if comment.get("status") not in QUESTION_COMMENT_STATUSES:
-                    comment["status"] = "open"
+            if comment.get("status") not in COMMENT_STATUSES:
+                comment["status"] = "open"
             projected.append(comment)
         return {
             "material_id": material_id,

@@ -394,7 +394,7 @@ describe('MaterialPage 页签', () => {
 
     renderPage()
     expect(await screen.findByText('V1 · 当前采用')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /批注/ })).not.toBeInTheDocument()
+    expect(screen.getByText('original comment')).toBeInTheDocument()
     audioVersionCalls.length = 0
 
     await userEvent.selectOptions(
@@ -408,8 +408,9 @@ describe('MaterialPage 页签', () => {
       ),
     )
     expect(screen.getByText('VERSION TWO MATERIAL')).toBeInTheDocument()
-    expect(screen.queryByText('version two comment')).not.toBeInTheDocument()
+    expect(screen.getByText('version two comment')).toBeInTheDocument()
     expect(screen.queryByText('original comment')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '添加批注' })).toBeDisabled()
     expect(screen.getByText('需要生成新版录音')).toBeInTheDocument()
     expect(audioVersionCalls).toEqual(['version-2'])
   })
@@ -467,14 +468,13 @@ describe('MaterialPage 页签', () => {
     expect(screen.queryByText('需要生成新版录音')).not.toBeInTheDocument()
   })
 
-  it('对话原文不显示批注入口，点击 Turn 也不会打开评价 UI', async () => {
+  it('对话原文重新开放 turn 级批注入口', async () => {
     renderPage()
     await screen.findByRole('tab', { name: '对话原文' })
-    expect(screen.queryByRole('button', { name: /批注/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '添加批注' })).toBeDisabled()
 
-    await userEvent.click(document.querySelector('[data-turn="4"]') as HTMLElement)
-
-    expect(screen.queryByText('位置：Turn 4')).not.toBeInTheDocument()
+    expect(document.querySelector('[data-turn="4"]')).toHaveAttribute('role', 'button')
+    expect(screen.getByRole('button', { name: '添加批注' })).toBeDisabled()
     expect(document.querySelector('.comment-count-badge')).toBeNull()
   })
 

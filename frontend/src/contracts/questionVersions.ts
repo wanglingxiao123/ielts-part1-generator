@@ -27,7 +27,7 @@ export interface QuestionPackageVersion {
   blueprint?: Blueprint
   /** Present only when this assessment version changed the listening material. */
   material?: Material
-  operation?: 'revise_questions' | 'replan_questions' | 'revise_material'
+  operation?: 'revise_questions' | 'replan_questions' | 'revise_material' | 'revise_material_local'
   material_sha256?: string
   /** Absence means a legacy version uses the original material audio. */
   audio?: AssessmentVersionAudio
@@ -35,6 +35,15 @@ export interface QuestionPackageVersion {
   /** Display-only V-number assigned by the server after sorting immutable versions. */
   ordinal: number
   field_changes?: QuestionVersionFieldChange[]
+  local_revision?: {
+    turn_index: number
+    before: string
+    after: string
+    reason: string
+    affected_metadata: string[]
+    questions_unchanged: boolean
+    audio_impact: 'needs_synthesis'
+  }
 }
 
 export type QuestionRevisionAvailableAction =
@@ -76,8 +85,10 @@ export interface QuestionRevisionRecord {
     | 'replan_questions'
     | 'needs_material_revision'
     | 'failed'
+    | 'affects_questions'
+    | 'out_of_scope'
   stage?: QuestionRevisionStage
-  operation?: 'revise_questions' | 'replan_questions' | 'revise_material'
+  operation?: 'revise_questions' | 'replan_questions' | 'revise_material' | 'revise_material_local'
   source_request_id?: string
   base_version_id: string
   comment_count?: number
@@ -85,6 +96,7 @@ export interface QuestionRevisionRecord {
   completed_at?: string
   version_id?: string
   message?: string
+  decision_reason?: string
   reasons?: MaterialRevisionReason[]
   blockers?: string[]
   baseline_advisories?: string[]
@@ -101,6 +113,11 @@ export interface CreateQuestionReplanRequest {
 
 export interface CreateMaterialRevisionRequest {
   source_request_id: string
+}
+
+export interface CreateLocalMaterialRevisionRequest {
+  base_version_id: string
+  comment_ids: [string]
 }
 
 export interface AdoptQuestionVersionResponse {
@@ -147,7 +164,7 @@ export interface MaterialRevisionReason {
 }
 
 export interface QuestionRevisionNoChangeEvent {
-  event: 'no_change'
+  event: 'no_change' | 'affects_questions' | 'out_of_scope'
   request_id: string
   reasons: MaterialRevisionReason[]
 }

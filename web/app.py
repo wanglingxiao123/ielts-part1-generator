@@ -964,6 +964,76 @@ class WebTier:
             }
             return self._start_revision_execution(payload, material_id, revision)
 
+        @app.post("/api/material-local-revisions/{material_id}")
+        async def revise_material_locally(material_id: str, request: Request) -> Any:
+            """Execute exactly one current-version turn comment as a constrained patch."""
+            from starlette.concurrency import run_in_threadpool
+
+            if self.question_versions is None:
+                return JSONResponse(
+                    _error_body("QUESTION_VERSIONS_UNAVAILABLE", "题目版本存储未配置。"),
+                    status_code=503)
+            body = _as_dict(await _json_body(request))
+            base_version_id = str(body.get("base_version_id") or "")
+            requested = body.get("comment_ids")
+            if not base_version_id or not isinstance(requested, list) or len(requested) != 1:
+                return JSONResponse(
+                    _error_body("bad_request", "必须提交一个 comment_id 和 base_version_id。"),
+                    status_code=400)
+            actor = str((request.scope.get(USER_SCOPE_KEY) or {}).get("email") or "reviewer")
+            try:
+                versions = await run_in_threadpool(self.question_versions.list, material_id)
+                if versions.get("active_version_id") != base_version_id:
+                    raise QuestionVersionError(
+                        "BASE_VERSION_NOT_ACTIVE", "只能基于当前采用版本修改材料。", 409)
+                document = await run_in_threadpool(self.comments.list, material_id)
+                wanted = str(requested[0])
+                comments = [
+                    row for row in document.get("comments", [])
+                    if isinstance(row, dict) and str(row.get("id")) == wanted
+                    and (row.get("anchor") or {}).get("type") == "turn"
+                    and row.get("version_id") == base_version_id
+                    and row.get("status") == "open"
+                ]
+                if len(comments) != 1:
+                    raise QuestionVersionError(
+                        "MATERIAL_COMMENT_NOT_FOUND",
+                        "这条材料批注已不存在或不属于当前版本。", 409)
+                material_record = await run_in_threadpool(
+                    self.history.get_material, material_id)
+                if not isinstance(material_record, dict):
+                    raise QuestionVersionError("MATERIAL_NOT_FOUND", "没有找到材料。", 404)
+                artifacts = await run_in_threadpool(
+                    self.question_versions.assessment_artifacts,
+                    material_id, base_version_id, material_record)
+                turn_index = comments[0]["anchor"].get("index")
+                if isinstance(turn_index, bool) or not isinstance(turn_index, int):
+                    raise QuestionVersionError(
+                        "INVALID_TURN_ANCHOR", "批注对应的 turn 无效。", 409)
+                turns = artifacts["material"].get("turns")
+                if not isinstance(turns, list) or not 0 <= turn_index < len(turns):
+                    raise QuestionVersionError("INVALID_TURN_ANCHOR", "批注对应的 turn 无效。", 409)
+                turn = turns[turn_index]
+                if isinstance(turn, dict) and str(turn.get("speaker") or "") == "speaker1":
+                    raise QuestionVersionError(
+                        "NARRATOR_TURN_READ_ONLY", "第一阶段不能修改旁白 turn。", 409)
+                revision = await run_in_threadpool(
+                    self.question_versions.reserve_local_material_revision,
+                    material_id, base_version_id, comments, actor)
+            except QuestionVersionError as exc:
+                return JSONResponse(_error_body(exc.code, exc.message), status_code=exc.status)
+            except Exception as exc:
+                return JSONResponse(_infra_error_body(
+                    "MATERIAL_LOCAL_REVISION_PREPARE_FAILED",
+                    "局部材料修改任务没有创建成功。", exc), status_code=502)
+            payload = {
+                "action": "revise_material_local", "material_id": material_id,
+                "request_id": revision["request_id"], "base_version_id": base_version_id,
+                "material": artifacts["material"], "blueprint": artifacts["blueprint"],
+                "package": artifacts["package"], "comments": comments, "actor": actor,
+            }
+            return self._start_revision_execution(payload, material_id, revision)
+
         @app.post("/api/batch-history/{batch_id}/submit")
         async def submit_batch(batch_id: str, request: Request) -> JSONResponse:
             """Record the 已提交 status. The transition the backend did not have.
@@ -1484,6 +1554,9 @@ def _relay_question_revision(
                 "question_revision_needs_replan",
                 "question_revision_needs_material",
                 "question_revision_failed",
+                "material_local_revision_no_change",
+                "material_local_revision_affects_questions",
+                "material_local_revision_out_of_scope",
             }:
                 terminal = True
             yield ("data: %s\n\n" % payload).encode("utf-8")
@@ -1566,6 +1639,8 @@ def _reconcile_question_comments(
         "no_change": "no_change",
         "replan_questions": "needs_replan",
         "needs_material_revision": "needs_material",
+        "affects_questions": "affects_questions",
+        "out_of_scope": "out_of_scope",
     }
     if status not in terminal_outcomes or not isinstance(source, list):
         return
@@ -1601,10 +1676,14 @@ def _reconcile_question_comments(
         "no_change": "no_change",
         "replan_questions": "needs_replan",
         "revise_material": "needs_material",
+        "local_material_edit": "resolved",
+        "affects_questions": "affects_questions",
+        "out_of_scope": "out_of_scope",
     }
     operation = revision.get("operation")
     is_replan_execution = operation == "replan_questions"
     is_material_execution = operation == "revise_material"
+    is_local_material_execution = operation == "revise_material_local"
     grouped: Dict[str, list[Dict[str, Any]]] = {}
     for row in dispositions:
         if not isinstance(row, dict):
@@ -1633,6 +1712,12 @@ def _reconcile_question_comments(
             and outcome in {"question_only", "replan_questions", "revise_material"}
         ):
             target = "resolved"
+        if (
+            is_local_material_execution
+            and status == "completed"
+            and outcome == "local_material_edit"
+        ):
+            target = "resolved"
         if target:
             grouped.setdefault(target, []).append(row)
     for target, rows in grouped.items():
@@ -1651,6 +1736,7 @@ def _reconcile_question_comments(
             from_statuses=(
                 ["open", "needs_replan", "needs_material"]
                 if is_replan_execution or is_material_execution
+                or is_local_material_execution
                 else ["open"]
             ),
         )

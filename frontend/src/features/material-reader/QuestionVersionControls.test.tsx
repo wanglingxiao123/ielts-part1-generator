@@ -53,6 +53,7 @@ function state(overrides: Partial<QuestionVersionsState> = {}): QuestionVersions
     revise: vi.fn(),
     replan: vi.fn(),
     reviseMaterial: vi.fn(),
+    reviseMaterialLocal: vi.fn(),
     reload: vi.fn(),
     ...overrides,
   }

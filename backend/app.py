@@ -112,6 +112,8 @@ async def invoke(payload: Dict[str, Any]):
 
     if action == "revise_material_from_comments":
         return _revise_material_from_comments(payload or {})
+    if action == "revise_material_local":
+        return _revise_material_local(payload or {})
 
     if action != "generate":
         return {
@@ -208,7 +210,7 @@ def _load_assessment_version(material_id: str, version_id: str) -> Dict[str, Any
     version = build_slot_store().load_question_version(material_id, version_id)
     if not isinstance(version, dict):
         raise ValueError("assessment version was not found")
-    if version.get("operation") == "revise_material" and (
+    if version.get("operation") in {"revise_material", "revise_material_local"} and (
         not isinstance(version.get("material"), dict)
         or not isinstance(version.get("blueprint"), dict)
     ):
@@ -222,7 +224,7 @@ async def _version_audio_status(material_id: str, version_id: str) -> Dict[str, 
     try:
         version = await asyncio.to_thread(
             _load_assessment_version, material_id, version_id)
-        if version.get("operation") != "revise_material":
+        if version.get("operation") not in {"revise_material", "revise_material_local"}:
             return audio_status(material_id)
         version_store, _ = audio.build_version_audio_store()
         status = await asyncio.to_thread(version_store.status, material_id, version_id)
@@ -257,7 +259,7 @@ async def _preview_version_audio(material_id: str, version_id: str) -> Dict[str,
             }
         version = await asyncio.to_thread(
             _load_assessment_version, material_id, version_id)
-        if version.get("operation") != "revise_material":
+        if version.get("operation") not in {"revise_material", "revise_material_local"}:
             return await preview_audio(material_id, actor="reviewer")
         version_store, _ = audio.build_version_audio_store()
         current = await asyncio.to_thread(version_store.status, material_id, version_id)
@@ -314,7 +316,7 @@ async def _presign_version_audio(
     try:
         version = await asyncio.to_thread(
             _load_assessment_version, material_id, version_id)
-        if version.get("operation") != "revise_material":
+        if version.get("operation") not in {"revise_material", "revise_material_local"}:
             state_store, _ = audio.build_state_store()
             urls = await asyncio.to_thread(
                 state_store.presign_audio, material_id, ttl_seconds=ttl_seconds)
@@ -586,6 +588,30 @@ async def _revise_material_from_comments(payload: Dict[str, Any]):
         package=payload["package"],
         comments=comments,
         actor=str(payload.get("actor") or "reviewer"),
+    ):
+        yield event
+
+
+async def _revise_material_local(payload: Dict[str, Any]):
+    from .orchestration.manual_material_local_revision import revise_material_local
+    from .orchestration.slot_store import build_slot_store
+
+    required = ("material_id", "request_id", "base_version_id", "material",
+                "blueprint", "package", "comments")
+    if any(not payload.get(key) for key in required):
+        yield {"type": "question_revision_failed", "message": "missing local revision fields"}
+        return
+    comments = payload["comments"]
+    if not isinstance(comments, list) or len(comments) != 1:
+        yield {"type": "question_revision_failed",
+               "message": "exactly one turn comment is required"}
+        return
+    async for event in revise_material_local(
+        store=build_slot_store(), material_id=str(payload["material_id"]),
+        request_id=str(payload["request_id"]),
+        base_version_id=str(payload["base_version_id"]), material=payload["material"],
+        blueprint=payload["blueprint"], package=payload["package"],
+        comments=comments, actor=str(payload.get("actor") or "reviewer"),
     ):
         yield event
 

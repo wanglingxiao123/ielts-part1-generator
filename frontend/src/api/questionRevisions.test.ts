@@ -100,6 +100,26 @@ describe('question revision SSE wire adapter', () => {
     })
   })
 
+  it.each([
+    ['material_local_revision_no_change', 'no_change'],
+    ['material_local_revision_affects_questions', 'affects_questions'],
+    ['material_local_revision_out_of_scope', 'out_of_scope'],
+  ] as const)('preserves local material classification %s', (wireType, event) => {
+    expect(
+      decodeRevisionFrame(
+        `data: {"type":"${wireType}","request_id":"request-local","reason":"specific reason"}`,
+      ),
+    ).toEqual({
+      event,
+      request_id: 'request-local',
+      reasons: [{
+        comment_id: '',
+        question_number: 0,
+        reason: 'specific reason',
+      }],
+    })
+  })
+
   it('preserves valid blockers from a failed Runtime frame', () => {
     expect(
       decodeRevisionFrame(
