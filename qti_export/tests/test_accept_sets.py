@@ -18,6 +18,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from qti_export import accept_sets  # noqa: E402
+from qti_export import emitter  # noqa: E402
 from qti_export import questions_input as qin  # noqa: E402
 
 TWO_WORDS = qin.parse_word_limit("NO MORE THAN TWO WORDS AND/OR A NUMBER")
@@ -153,6 +154,32 @@ def test_head_noun_check_ignores_signposts_and_uses_only_paper_text():
     """The upstream validator counts signposts as visible text; the paper does not print them."""
     spec = build("double room", "preference", prefix="A ", suffix=" was selected.",
                  distractors=["twin room"], visible="A was selected.")
+    assert "double" not in lower(spec.accept)
+
+
+def test_question_visible_text_does_not_include_another_form_row():
+    group = emitter.GroupIR(
+        group_id="A",
+        title="ROOM RESERVATION",
+        layout="form",
+        instruction_text="Complete the form.",
+        question_range="1-2",
+        limit=TWO_WORDS,
+        numbers=[1, 2],
+        labels=["Accommodation", "Room number"],
+    )
+    visible = emitter._visible_text_for_question(
+        group, 1, "Accommodation", "A ", " was selected."
+    )
+    assert "Room number" not in visible
+    spec = build(
+        "double room",
+        "preference",
+        prefix="A ",
+        suffix=" was selected.",
+        distractors=["twin room"],
+        visible=visible,
+    )
     assert "double" not in lower(spec.accept)
 
 

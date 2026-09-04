@@ -110,7 +110,7 @@ ielts-<material_id>-v<n>.zip
 | R5 字数上限过滤 | 超出该题 `word_limit` 的写法从接受集移入拒绝集。上限逐题来自输入，有 5 种文案，其中两种（`ONE WORD ONLY` / `NO MORE THAN TWO WORDS`）**不允许任何数字** |
 | R6 卷面已供单位 → 剔除重复单位的写法 | `£ ___ per night` 里 `128 pounds`、`£128`、`£128.00` 都拒：上游题目规则只把裸数值作为答案，QTI 不通过自己的容错规则放宽 |
 | R7 卷面没写出单位 → 剔除裸数字 | `covers ___ in total` 里裸 `3` 拒，`3 nights` 收；`for ___ nights` 里裸 `3` 收。判据是 target 的单位词是否出现在 carrier 里 |
-| R8 从干扰项推导区别性成分 | 目标与上游标注的竞争答案共享中心词（`double room` / `twin room`）时，中心词 `room` 无条件进拒绝集；修饰成分 `double` 只在中心词**已印在卷面**上时才单独接受（`Room type: ___` 是，`A ___ was selected.` 不是）。卷面文字不含 `signposts` |
+| R8 从干扰项推导区别性成分 | 目标与上游标注的竞争答案共享中心词（`double room` / `twin room`）时，中心词 `room` 无条件进拒绝集；修饰成分 `double` 只在中心词**已印在当前题的标签、carrier 或 table 行列语境**时才单独接受（`Room type: ___` 是，其他行出现 `room` 不算）。不使用同组其他题文字或 `signposts` |
 | R9 英美拼写 | 每个接受写法按 `SPELLING_PAIRS` 补另一种拼法（`licence`/`license`、`centre`/`center`…），含复数。只收同一个词的两种拼法，不收 cheque/check 这类另一拼法是别的词的对 |
 
 按 `answer_category` 展开：

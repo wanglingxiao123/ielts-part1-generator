@@ -197,21 +197,40 @@ def _label_for(number: int, group: GroupIR, index: int) -> str:
     return ""
 
 
-def _visible_text(group: GroupIR, questions: List[dict]) -> str:
-    """这个分组印在卷面上的全部文字：标题、题头、行列标签、note 小标题、表格印死的单元格、
-    各题的 carrier。**不含 signposts**——那是出题意图，不印给考生；上游 validator 把它算进
-    「可见文字」是它自己的口径，这里以真实卷面为准。供 accept_sets 的 R8 判断中心词是否在卷面上。
+def _visible_text_for_question(
+    group: GroupIR,
+    number: int,
+    label: str,
+    prefix: str,
+    suffix: str,
+) -> str:
+    """R8 可使用的当前题上下文，不把同组其他题的文字混进来。
+
+    form / note 使用当前题标签与 carrier；table 还加入当前空格所在列的表头和同一行的
+    固定单元格。分组标题、其他行标签和其他题 carrier 都过于宽泛，纳入后会让无关位置出现
+    的中心词错误触发缩写答案。
     """
-    parts: List[str] = [group.title, group.instruction_text, group.row_header_label]
-    parts += group.labels + group.column_labels
-    for section in group.note_sections:
-        parts.append(str(section.get("heading") or ""))
+    parts: List[str] = [label, prefix, suffix]
     for row in group.table_rows:
-        for cell in row.get("cells") or []:
-            parts.append(str(cell.get("text") or ""))
-    for q in questions:
-        if str(q.get("group_id")) == group.group_id:
-            parts += [str(q.get("carrier_before") or ""), str(q.get("carrier_after") or "")]
+        cells = row.get("cells") or []
+        question_index = next(
+            (
+                index
+                for index, cell in enumerate(cells)
+                if cell.get("question_number") == number
+            ),
+            None,
+        )
+        if question_index is None:
+            continue
+        if question_index < len(group.column_labels):
+            parts.append(group.column_labels[question_index])
+        parts += [
+            str(cell.get("text") or "")
+            for cell in cells
+            if cell.get("question_number") is None
+        ]
+        break
     return " ".join(p for p in parts if p)
 
 
@@ -288,7 +307,6 @@ def build_material(
     gaps: List[Gap] = []
     review: List[str] = list(gate.advisories)
     seen_in_group: Dict[str, int] = {}
-    visible_by_group = {g.group_id: _visible_text(g, gate.questions) for g in groups}
 
     for question in gate.questions:
         number = int(question["number"])
@@ -308,6 +326,7 @@ def build_material(
 
         prefix = str(question.get("carrier_before") or "")
         suffix = str(question.get("carrier_after") or "")
+        label = _label_for(number, group, index)
 
         spec = accept_sets.build(
             question,
@@ -317,7 +336,9 @@ def build_material(
             prefix=prefix,
             suffix=suffix,
             distractors=distractors_by_number.get(number, []),
-            visible_text=visible_by_group.get(gid, ""),
+            visible_text=_visible_text_for_question(
+                group, number, label, prefix, suffix
+            ),
         )
         review += [f"Q{number}: {msg}" for msg in spec.review]
 
@@ -326,7 +347,7 @@ def build_material(
         gaps.append(
             Gap(
                 number=number,
-                label=_label_for(number, group, index),
+                label=label,
                 group_id=gid,
                 target=spec.target,
                 accept=spec.accept,

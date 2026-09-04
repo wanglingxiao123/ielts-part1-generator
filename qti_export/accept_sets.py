@@ -468,9 +468,9 @@ def build(
     prefix / suffix 来自 carrier_before / carrier_after——卷面上空格前后的附加
     文字。它们不是排版细节，直接决定哪些写法算对（README §3 的 R6 / R7）。
 
-    `visible_text` 是这一题所在分组印在卷面上的全部文字（标题、行列标签、题头、各题
-    carrier），**不含 signposts**。它只用于一件事：目标与干扰项共享中心词时，判断中心词是否
-    已印在卷面上，从而决定修饰成分能否单独作答（R8）。
+    `visible_text` 是当前题自己的标签、carrier，以及 table 中当前单元格的行列语境，
+    **不含同组其他题或 signposts**。它只用于一件事：目标与干扰项共享中心词时，判断中心词
+    是否已印在当前空格的语境中，从而决定修饰成分能否单独作答（R8）。
     """
     number = int(question["number"])
     target = str(answer["target"] if "target" in answer else answer["canonical"]).strip()
