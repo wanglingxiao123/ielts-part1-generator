@@ -105,6 +105,8 @@ ielts-<material_id>-v<n>.zip
 | R5 字数上限过滤 | 超出该题 `word_limit` 的写法从接受集移入拒绝集。上限逐题来自输入，有 5 种文案，其中两种（`ONE WORD ONLY` / `NO MORE THAN TWO WORDS`）**不允许任何数字** |
 | R6 卷面已供单位 → 剔除重复单位的写法 | `£ ___ per night` 里 `128 pounds` 拒；但 `£128` 保留（符号重复是考生近乎普遍的无害习惯，剔除会误扣分） |
 | R7 卷面没写出单位 → 剔除裸数字 | `covers ___ in total` 里裸 `3` 拒，`3 nights` 收；`for ___ nights` 里裸 `3` 收。判据是 target 的单位词是否出现在 carrier 里 |
+| R8 从干扰项推导区别性成分 | 目标与上游标注的竞争答案共享中心词（`double room` / `twin room`）时，中心词 `room` 无条件进拒绝集；修饰成分 `double` 只在中心词**已印在卷面**上时才单独接受（`Room type: ___` 是，`A ___ was selected.` 不是）。卷面文字不含 `signposts` |
+| R9 英美拼写 | 每个接受写法按 `SPELLING_PAIRS` 补另一种拼法（`licence`/`license`、`centre`/`center`…），含复数。只收同一个词的两种拼法，不收 cheque/check 这类另一拼法是别的词的对 |
 
 按 `answer_category` 展开：
 
@@ -114,13 +116,13 @@ ielts-<material_id>-v<n>.zip
 | `document` | 字母数字交界处允许插一个空格：`HM62` → `HM62`, `HM 62` |
 | `date` | `14 September` → 6 种：`14th September`, `September 14`, `September 14th`, `14 Sept`, `14/9`（不生成美式 `09/14`、不生成年份） |
 | `time` | `:` 与 `.` 互通，`a.m.` 四种写法互通；**不**生成 24 小时制换算与英文读法 |
-| `duration` / `quantity` | `3 nights` → `3 nights`, `three nights`, `3`, `three`（再经 R7 裁剪） |
-| `price` | `128` → `128`, `£128`, `128 pounds`, `£128.00`；币种从卷面 / 引文语境判定 |
-| `preference` / `option` / `service` / `requirement` | 原样 + 冠词变体 + **人工登记**的区别性成分（`DISTINCTIVE`） |
+| `duration` / `quantity` | `3 nights` 或 `three nights` → `3 nights`, `three nights`, `3`, `three`（再经 R7 裁剪）。首词可以是数字或英文数词（1–99，`forty-five`），单位可以是多词（`five working days`、`six weeks' rent`）；裸数字与裸数词互通（`3` ↔ `three`） |
+| `price` | `128` / `£128` / `£12.50` / `10 pounds` → 裸数字、`£128`、`128 pounds`、`£128.00`（有小数时不再补一份）。币种先取目标自带的符号 / 货币词，再看卷面与引文语境 |
+| `preference` / `option` / `service` / `requirement` | 原样 + 冠词变体 + 区别性成分（R8 从干扰项推导，或 `DISTINCTIVE` 人工登记） |
 | 其他（`location` / `facility` / `job_title` …） | 只生成原样写法并写进 `review.txt` |
 
-**仍然需要人工的部分**都写进 `review.txt`：短语的区别性成分（`DISTINCTIVE`）、词类答案的分类名
-扩展（`EXTRA`）、无展开规则的类目。宁缺勿滥——少一个变体是漏判（考生可申诉），多一个变体可能把
+**仍然需要人工的部分**都写进 `review.txt`：R8 推不出来的短语区别性成分（`DISTINCTIVE`）、词类答案的
+分类名扩展（`EXTRA`）、无展开规则的类目。宁缺勿滥——少一个变体是漏判（考生可申诉），多一个变体可能把
 干扰项判成对（静默错误，永远发现不了）。
 
 **已知限制（投递层职责，不在 QTI 里解决）**：`mapEntry` 是精确比对，首尾空白、多空格折叠、
