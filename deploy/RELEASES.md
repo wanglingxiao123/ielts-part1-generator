@@ -9,21 +9,22 @@
 
 ## 当前生产版本
 
-**Runtime 与 web 层均为 `local-revision-progress-3bd257b`**，分支
-`feat/major-rework-20260903`，来自 commit `3bd257b`。Runtime 承载在 version **60**；
-web 承载在 ECS taskdef **`ielts-part1-web:76`**。本轮为材料 turn 局部修改增加五步进度展示，
-并让 Runtime 持久化“独立复核”和“生成新版本”阶段；处理中与完成后均明确显示目标 Turn。
+**Runtime 为 `redundant-confirmation-37fea4c`，web 为
+`local-revision-progress-3bd257b`**，分支 `feat/major-rework-20260903`。Runtime 来自 commit
+`37fea4c`、承载在 version **61**；web 来自 commit `3bd257b`、承载在 ECS taskdef
+**`ielts-part1-web:76`**。本轮 Runtime 允许在答案证据仍清晰且整体确认要求仍满足时删除冗余确认，
+并以受限的 `confirmed: true → false` 派生元数据更新记录影响；web 本轮无需重建。
 **未合并 main**。
 
 digest：backend
-`sha256:9df50287302b225bb29928ab026458be096178d5034ab0e04731a32cf39f3875`，
+`sha256:0aa8a113d09dfb28e9cf81ce435c3d622fc9740f22ba873c1756f0191531e5bc`，
 frontend
 `sha256:6bcfd678f81668504be43660543678b1cc928f0892e152452957008da1e53a0e`。
 部署后 ECS rollout `COMPLETED`、ALB target healthy、CloudFront `/healthz` 200；线上镜像
 已切换到本轮修复版本。邮箱域名仍为 `amazon.com,example.com`，并发仍为 20。
 
-回退基线：Runtime 重放 `material-local-shape-52847c0`（v59），web 回到
-taskdef **75**（同名镜像）。
+回退基线：Runtime 重放 `local-revision-progress-3bd257b`（v60）；web 未变，仍为
+taskdef **76**。
 
 本轮 hotfix 修复 Blueprint v3 在 feasibility 入口被旧版 v2-only guard 拒绝、继而令整批
 落入 `SEMANTICS_MISSING` 的问题。入口现在接受 preflight 明确支持的 v2/v3，并增加测试锁定：
