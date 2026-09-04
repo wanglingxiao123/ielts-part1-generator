@@ -4,6 +4,7 @@ import pytest
 
 from backend.orchestration.manual_material_local_revision import (
     _blueprint_immutable_surface,
+    material_turns,
     project_local_candidate,
 )
 
@@ -45,6 +46,34 @@ def test_projection_rejects_turn_structure_changes(turns):
 
     with pytest.raises(ValueError, match="turn structure"):
         project_local_candidate(base, {"turns": turns}, 1)
+
+
+def test_projection_supports_the_stored_listening_material_shape():
+    base = {
+        "content_kind": "listening_material",
+        "listening_material_parts": [{
+            "script": {"turns": [
+                {"speaker": "speaker2", "text": "One"},
+                {"speaker": "speaker3", "text": "Original wording."},
+            ]},
+        }],
+    }
+    candidate = {
+        "content_kind": "listening_material",
+        "listening_material_parts": [{
+            "script": {"turns": [
+                {"speaker": "speaker3", "text": "Outside scope."},
+                {"speaker": "speaker2", "text": "Shorter wording."},
+            ]},
+        }],
+    }
+
+    projected = project_local_candidate(base, candidate, 1)
+
+    assert material_turns(projected) == [
+        {"speaker": "speaker2", "text": "One"},
+        {"speaker": "speaker3", "text": "Shorter wording."},
+    ]
 
 
 def test_blueprint_immutable_surface_allows_only_derived_evidence_fields():

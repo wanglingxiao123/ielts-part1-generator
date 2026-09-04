@@ -481,6 +481,15 @@ export function MaterialPage() {
                   <strong>影响：</strong>题目保持不变；录音需要重新合成
                 </div>
               )}
+              {questionVersions.revisionResult?.kind === 'failed' && (
+                <div className="comment-decision error" role="alert">
+                  <strong>处理失败：</strong>
+                  {questionVersions.revisionResult.message}
+                  {questionVersions.revisionResult.blockers.length > 0 && (
+                    <div>{questionVersions.revisionResult.blockers.join('；')}</div>
+                  )}
+                </div>
+              )}
             </div>
             <aside className="question-comments-panel">
               <div className="comment-panel-head">Turn 批注 ({turnComments.length})</div>

@@ -1010,8 +1010,8 @@ class WebTier:
                 if isinstance(turn_index, bool) or not isinstance(turn_index, int):
                     raise QuestionVersionError(
                         "INVALID_TURN_ANCHOR", "批注对应的 turn 无效。", 409)
-                turns = artifacts["material"].get("turns")
-                if not isinstance(turns, list) or not 0 <= turn_index < len(turns):
+                turns = _material_turns(artifacts["material"])
+                if not turns or not 0 <= turn_index < len(turns):
                     raise QuestionVersionError("INVALID_TURN_ANCHOR", "批注对应的 turn 无效。", 409)
                 turn = turns[turn_index]
                 if isinstance(turn, dict) and str(turn.get("speaker") or "") == "speaker1":
@@ -1753,6 +1753,21 @@ async def _json_body(request: Request) -> Any:
         return await request.json()
     except Exception:  # noqa: BLE001 - an unparseable body is an empty one, handled by callers
         return {}
+
+
+def _material_turns(material: Any) -> list[Dict[str, Any]]:
+    """Read turns from the persisted material wrapper without importing Runtime code."""
+    if not isinstance(material, dict):
+        return []
+    direct = material.get("turns")
+    if isinstance(direct, list):
+        return direct
+    parts = material.get("listening_material_parts")
+    if not isinstance(parts, list) or not parts or not isinstance(parts[0], dict):
+        return []
+    script = parts[0].get("script")
+    turns = script.get("turns") if isinstance(script, dict) else None
+    return turns if isinstance(turns, list) else []
 
 
 def _as_dict(body: Any) -> Dict[str, Any]:

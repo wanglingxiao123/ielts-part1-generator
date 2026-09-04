@@ -38,12 +38,30 @@ def _replace_evidence(value: Any, before: str, after: str) -> Any:
     return value
 
 
+def _turn_container(material: Dict[str, Any]) -> Any:
+    direct = material.get("turns") if isinstance(material, dict) else None
+    if isinstance(direct, list):
+        return direct
+    parts = material.get("listening_material_parts") if isinstance(material, dict) else None
+    if not isinstance(parts, list) or not parts or not isinstance(parts[0], dict):
+        return []
+    script = parts[0].get("script")
+    turns = script.get("turns") if isinstance(script, dict) else None
+    return turns if isinstance(turns, list) else None
+
+
+def material_turns(material: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return the real script turn list for stored materials and legacy test fixtures."""
+    turns = _turn_container(material)
+    return turns if isinstance(turns, list) else []
+
+
 def project_local_candidate(
     base: Dict[str, Any], candidate: Dict[str, Any], turn_index: int
 ) -> Dict[str, Any]:
     """Accept only the anchored turn's text; restore every other model-produced field."""
-    base_turns = base.get("turns")
-    candidate_turns = candidate.get("turns")
+    base_turns = _turn_container(base)
+    candidate_turns = _turn_container(candidate)
     if not isinstance(base_turns, list) or not isinstance(candidate_turns, list):
         raise ValueError("material turns are missing")
     if not 0 <= turn_index < len(base_turns) or len(candidate_turns) != len(base_turns):
@@ -56,7 +74,7 @@ def project_local_candidate(
     if not isinstance(text, str) or not text.strip():
         raise ValueError("candidate turn text is empty")
     projected = copy.deepcopy(base)
-    projected["turns"][turn_index]["text"] = text.strip()
+    material_turns(projected)[turn_index]["text"] = text.strip()
     return projected
 
 
@@ -144,8 +162,8 @@ async def revise_material_local(
         if len(comments) != 1 or len(anchors) != 1:
             raise ValueError("first-phase local revision requires exactly one turn comment")
         turn_index = next(iter(anchors))
-        turns = material.get("turns")
-        if not isinstance(turns, list) or not 0 <= turn_index < len(turns):
+        turns = material_turns(material)
+        if not turns or not 0 <= turn_index < len(turns):
             raise ValueError("comment turn is outside the material")
         turn = turns[turn_index]
         if not isinstance(turn, dict) or str(turn.get("speaker") or "") == "speaker1":
@@ -171,7 +189,7 @@ async def revise_material_local(
 
         projected = project_local_candidate(material, candidate["material"], turn_index)
         before = str(turn.get("text") or "")
-        after = str(projected["turns"][turn_index]["text"])
+        after = str(material_turns(projected)[turn_index]["text"])
         if before == after:
             terminal = dict(request, status="no_change", completed_at=_now(),
                             decision_reason=reason or "投影后没有可见文字变化。")
