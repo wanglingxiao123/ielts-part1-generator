@@ -241,7 +241,7 @@ describe('MaterialReader', () => {
     expect(text).toContain('姓名/专名') // 考什么, not `name`
     expect(text).toContain('Anna Woods') // 答案
     expect(text).toContain('须拼读')
-    expect(text).toContain('有复述确认')
+    expect(text).toContain('有复述或确认')
     expect(text).toContain('turn 4') // navigation coordinate earns its place
     for (const dropped of ['非干扰', '未确认', '第 1 组', 'item_form']) {
       expect(text).not.toContain(dropped)

@@ -183,7 +183,7 @@ describe('MaterialPage 考点小结', () => {
     })
     const text = panel.textContent!
     expect(text).toContain('考点小结')
-    for (const label of ['拼读', '先说后改', '同义替换', '有复述确认']) {
+    for (const label of ['拼读', '先说后改', '同义替换', '有复述或确认']) {
       expect(text).toContain(label)
     }
     // 只有能力项。盲评结论（听不出来 / 听着有歧义）不在这里——那是「能不能出题」，

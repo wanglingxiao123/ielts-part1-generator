@@ -49,7 +49,7 @@ function ItemBody({ item, blueprint }: { item: BlueprintItem; blueprint: Bluepri
         )}
         {item.confirmed && (
           <span className="flag flag-good" title="对话中复述或确认过，一遍就能听清">
-            有复述确认
+            有复述或确认
           </span>
         )}
         {spelling && !item.confirmed && (

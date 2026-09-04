@@ -144,12 +144,12 @@ export function summariseExamPoints(view: ViewMaterial): ExamPointSummary {
     )
   }
 
-  // 复述确认（§3）。它是「一遍能不能听清」的保障，所以放在能力一侧。
+  // 复述或确认（§3）。它是「一遍能不能听清」的保障，所以放在能力一侧。
   if (facts.confirmedNumbers.length > 0) {
     blocks.push(
       block(
         'confirmed',
-        '有复述确认',
+        '有复述或确认',
         '对话中复述或确认过，一遍就能听清并定位（规范 §3）',
         'good',
         facts.confirmedNumbers,
@@ -163,7 +163,7 @@ export function summariseExamPoints(view: ViewMaterial): ExamPointSummary {
   //
   //  * 交付的是听力材料，不是试卷。这两块判断的是「据此出题可不可行」，规范 §3 / §6 讲的是
   //    材料本身该具备什么，不含这一层。
-  //  * 层级不对。旁边的拼读 / 先说后改 / 干扰 / 有复述确认都是「这套材料有什么」，是正面描述；
+  //  * 层级不对。旁边的拼读 / 先说后改 / 干扰 / 有复述或确认都是「这套材料有什么」，是正面描述；
   //    这两块是「某个点可能有毛病」，是负面警告。混在一排标签里，读者无法判断自己在看什么。
   //  * 红色「听不出来」会被读成「这套材料不能用」，而它也可能只是盲评方的提取没覆盖某种信息
   //    类型——HGR482 就是：证据文本完全一致，只因对照只比轮次和 type 而误判（见

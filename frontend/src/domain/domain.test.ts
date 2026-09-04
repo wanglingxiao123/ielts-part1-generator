@@ -427,7 +427,7 @@ describe('examPoints', () => {
     expect(labels).toContain('拼读')
     expect(labels).toContain('先说后改')
     expect(labels).toContain('同义替换')
-    expect(labels).toContain('有复述确认')
+    expect(labels).toContain('有复述或确认')
 
     // 点号直接取自 pointFacts / blueprint，不是这一层重算的。
     const facts = contentFacts(balanced.blueprint)

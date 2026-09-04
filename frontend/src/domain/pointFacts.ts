@@ -56,7 +56,7 @@ export function distractionMap(blueprint: Blueprint): Map<number, DistractionKin
  *
  * 这里出现的每个数字都是规范 / blueprint schema 自己写明的要求，不是新造的阈值：
  *   §3 + §6      ≥1 处姓名/专名拼读
- *   §3 + schema  ≥3 个点有复述确认（拼读与数字点尤其必须）
+ *   §3 + schema  ≥3 个点有复述或确认（拼读与数字点尤其必须）
  *   §4B-4        每套 2–3 个循环设置干扰即可，多了会超出 Part 1 的易度定位
  *   §4B-3        八类信息点中至少覆盖 4 类
  */
