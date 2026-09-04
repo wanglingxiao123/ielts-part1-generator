@@ -9,22 +9,22 @@
 
 ## 当前生产版本
 
-**Runtime 与 web 层均为 `material-local-revision-6cc5029`**，分支
-`feat/major-rework-20260903`，来自 commit `6cc5029`。Runtime 承载在 version **58**；
-web 承载在 ECS taskdef **`ielts-part1-web:74`**。本轮开放当前采用材料版本的 turn 级局部
-修改评论，增加确定性单 turn 投影、题目/答案/蓝图不可变门禁、结果分类、刷新恢复、不可变
-assessment version 和音频重新合成状态。**未合并 main**。
+**Runtime 与 web 层均为 `material-local-shape-52847c0`**，分支
+`feat/major-rework-20260903`，来自 commit `52847c0`。Runtime 承载在 version **59**；
+web 承载在 ECS taskdef **`ielts-part1-web:75`**。本轮修复生产材料使用
+`listening_material_parts[0].script.turns` 嵌套结构时，turn 局部修改被错误判为
+`INVALID_TURN_ANCHOR` 的问题；同时前端会明确显示局部修改接口失败，不再表现为点击无响应。
+**未合并 main**。
 
 digest：backend
-`sha256:78b88980d2acbe61d326b35b86c28451dabbf83f97b10cbe2ed8ae8f4c81f9b4`，
+`sha256:73f2a54a1871621ab52a3b105051abc04fd73b47f362a49dcf74691d4fe486bd`，
 frontend
-`sha256:7188a115cc3107bf989fe4f4c2f0fab6e4b96f2908259dec085ed393da1c482e`。
+`sha256:be36bab365a181a48a87e2b97d5526d99fc3883c27a64ac6ddb4eb1fc4004720`。
 部署后 ECS rollout `COMPLETED`、ALB target healthy、CloudFront `/healthz` 200；线上镜像
-bundle `index-Dolbbsg3.js` 已核对包含“材料原文局部修改”“分析并局部修改”和
-“会影响题目或答案”。邮箱域名仍为 `amazon.com,example.com`，并发仍为 20。
+已切换到本轮修复版本。邮箱域名仍为 `amazon.com,example.com`，并发仍为 20。
 
-回退基线：Runtime 重放 `question-visible-revision-bbb18d3`（原 v57 镜像），web 回到
-taskdef **73**（镜像 `confirmed-label-bb9ffac`）。
+回退基线：Runtime 重放 `material-local-revision-6cc5029`（v58），web 回到
+taskdef **74**（同名镜像）。
 
 本轮 hotfix 修复 Blueprint v3 在 feasibility 入口被旧版 v2-only guard 拒绝、继而令整批
 落入 `SEMANTICS_MISSING` 的问题。入口现在接受 preflight 明确支持的 v2/v3，并增加测试锁定：
