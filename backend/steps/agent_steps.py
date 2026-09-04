@@ -837,8 +837,11 @@ async def revise_material_turn(
             "targets, answers, or to mark an item true. "
             "Use affects_questions when the requested edit would alter evidence, an answer, or a "
             "confirmation chain that is still required after considering the full material. Do not "
-            "treat every blueprint confirmed=true flag as automatically required. Use out_of_scope "
-            "for broad rewriting or structural edits.",
+            "treat every blueprint confirmed=true flag as automatically required. For this manual "
+            "local-edit workflow, dropping below three confirmed items is an advisory, not a reason "
+            "to reject an otherwise safe edit; initial material generation owns that density target. "
+            "Still protect confirmation needed for spelling, correction, disambiguation, or reliable "
+            "answer recovery. Use out_of_scope for broad rewriting or structural edits.",
             "Files: material=%s blueprint=%s questions=%s comment=%s"
             % (paths["material"], paths["blueprint"], paths["questions"], paths["comment"]),
         ]) + workspace.instructions()

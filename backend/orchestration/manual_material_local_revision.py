@@ -6,6 +6,7 @@ import asyncio
 import copy
 import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Dict, List
 
@@ -17,6 +18,11 @@ from ..deterministic.validate_questions import validate_questions
 from ..steps import agent_steps
 from .question_loop import QuestionCandidate, hard_blockers
 from .slot_store import SlotStore
+
+
+_CONFIRMATION_DENSITY_ERROR = re.compile(
+    r"^blueprint must mark at least \d+ confirmed items; found \d+$"
+)
 
 
 def _now() -> str:
@@ -146,6 +152,24 @@ def _apply_confirmed_updates(
     return revised, changed
 
 
+def _relax_local_confirmation_density(validation: Any) -> None:
+    """Turn generation-only confirmation density into a local-edit advisory."""
+    relaxed = [
+        message for message in validation.errors
+        if _CONFIRMATION_DENSITY_ERROR.fullmatch(message)
+    ]
+    if not relaxed:
+        return
+    validation.errors[:] = [
+        message for message in validation.errors
+        if not _CONFIRMATION_DENSITY_ERROR.fullmatch(message)
+    ]
+    validation.warnings.extend(
+        "manual local edit accepted with advisory: %s" % message
+        for message in relaxed
+    )
+
+
 async def revise_material_local(
     *,
     store: SlotStore,
@@ -248,6 +272,7 @@ async def revise_material_local(
         store.save_question_revision(material_id, request_id, request)
         yield {"type": "question_revision_validating", "request_id": request_id}
         validation = await validate(projected, revised_blueprint)
+        _relax_local_confirmation_density(validation)
         if not validation.ok:
             raise ValueError("; ".join(validation.errors[:8]))
         request.update(stage="auditing", updated_at=_now())

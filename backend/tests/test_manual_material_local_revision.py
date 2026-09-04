@@ -5,9 +5,11 @@ import pytest
 from backend.orchestration.manual_material_local_revision import (
     _apply_confirmed_updates,
     _blueprint_immutable_surface,
+    _relax_local_confirmation_density,
     material_turns,
     project_local_candidate,
 )
+from backend.deterministic.validate import ValidationResult
 
 
 def test_projection_keeps_only_anchored_turn_text():
@@ -144,3 +146,40 @@ def test_confirmed_update_rejects_expansion_or_invalid_targets(updates):
 
     with pytest.raises(ValueError, match="true to false"):
         _apply_confirmed_updates(blueprint, updates)
+
+
+def test_local_revision_downgrades_only_confirmation_density_to_warning():
+    validation = ValidationResult(
+        errors=[
+            "blueprint must mark at least 3 confirmed items; found 2",
+            "at least one spelled-name item must be confirmed; "
+            "these are the easiest to mishear under once-only listening",
+        ],
+        warnings=[],
+        metrics={},
+    )
+
+    _relax_local_confirmation_density(validation)
+
+    assert validation.errors == [
+        "at least one spelled-name item must be confirmed; "
+        "these are the easiest to mishear under once-only listening",
+    ]
+    assert validation.warnings == [
+        "manual local edit accepted with advisory: "
+        "blueprint must mark at least 3 confirmed items; found 2",
+    ]
+
+
+def test_local_revision_can_pass_with_two_confirmed_items():
+    validation = ValidationResult(
+        errors=["blueprint must mark at least 3 confirmed items; found 2"],
+        warnings=["dialogue words outside preferred 600-650: 469"],
+        metrics={},
+    )
+
+    _relax_local_confirmation_density(validation)
+
+    assert validation.ok is True
+    assert validation.errors == []
+    assert len(validation.warnings) == 2
