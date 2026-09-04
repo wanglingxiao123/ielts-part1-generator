@@ -41,8 +41,45 @@ NUMBER_WORDS = {
     13: "thirteen", 14: "fourteen", 15: "fifteen", 16: "sixteen",
     17: "seventeen", 18: "eighteen", 19: "nineteen", 20: "twenty",
 }
+# 21..99：十位词 + 连字符 + 个位词（`twenty-five`）。语料里 `30 minutes` / `45 minutes` 这类
+# 目标不少，只到 20 会让它们拿不到数词变体。连字符复合词按 count_tokens 算一个词。
+_TENS = {30: "thirty", 40: "forty", 50: "fifty", 60: "sixty", 70: "seventy", 80: "eighty", 90: "ninety"}
+for _tens, _tens_word in {20: "twenty", **_TENS}.items():
+    NUMBER_WORDS.setdefault(_tens, _tens_word)
+    for _unit in range(1, 10):
+        NUMBER_WORDS[_tens + _unit] = f"{_tens_word}-{NUMBER_WORDS[_unit]}"
 
 CURRENCY_WORDS = {"pound": "\u00a3", "dollar": "$", "euro": "\u20ac", "yen": "\u00a5"}
+
+#: "three" -> 3。duration / quantity 的目标有 118/142 条是英文数词开头（`three nights`、
+#: `five working days`），只认数字开头的规则会把它们全部漏成单条接受集。
+WORD_TO_NUMBER = {word: n for n, word in NUMBER_WORDS.items()}
+
+#: 价格目标的四种形态：`128` / `£128` / `£12.50` / `10 pounds` / `£1,200`。
+#: 旧规则只认纯数字，带符号或货币词的 68 题一条变体都没有。
+_PRICE_RE = re.compile(
+    r"^([£$€¥])?\s*(\d[\d,]*(?:\.\d+)?)\s*(pounds?|dollars?|euros?|yen)?$", re.IGNORECASE
+)
+
+#: 英式 / 美式拼写。IELTS 两种拼写都给分，所以每个接受写法都按这张表再生成一份
+#: 另一种拼写。只收「同一个词的两种拼法」，不收 cheque/check 这类另一拼法是别的词的对。
+#: 复数按 `s` 尾处理（licences → licenses）。
+SPELLING_PAIRS: list[tuple[str, str]] = [
+    ("licence", "license"), ("centre", "center"), ("colour", "color"),
+    ("favourite", "favorite"), ("programme", "program"), ("theatre", "theater"),
+    ("catalogue", "catalog"), ("metre", "meter"), ("litre", "liter"),
+    ("kilometre", "kilometer"), ("travelling", "traveling"), ("cancelled", "canceled"),
+    ("jewellery", "jewelry"), ("grey", "gray"), ("tyre", "tire"),
+    ("organisation", "organization"), ("neighbourhood", "neighborhood"),
+    ("harbour", "harbor"), ("labour", "labor"), ("behaviour", "behavior"),
+    ("honour", "honor"), ("enrol", "enroll"), ("enrolment", "enrollment"),
+    ("storey", "story"), ("aluminium", "aluminum"), ("pyjamas", "pajamas"),
+    ("mould", "mold"), ("practise", "practice"), ("cosy", "cozy"),
+]
+_SPELLING: dict[str, str] = {}
+for _a, _b in SPELLING_PAIRS:
+    _SPELLING[_a] = _b
+    _SPELLING[_b] = _a
 
 # 元音字母起首 → 用 "an"。这是近似规则：真实判据是首**音**，
 # "an hour"（h 不发音）和 "a university"（读作 /juː/）都是反例。
@@ -156,40 +193,71 @@ def _date(target: str) -> tuple[list[str], list[str]]:
     ], []
 
 
-def _duration(target: str) -> tuple[list[str], list[str]]:
-    """<数字> <单位> → 数字+单位 / 词+单位 / 纯数字 / 纯词。"""
-    m = re.fullmatch(r"(\d+)\s+(\w+)", target.strip())
+def _leading_number(target: str) -> tuple[int | None, str | None, str]:
+    """`3 nights` / `three nights` / `five working days` → (3, "three", "nights")。
+
+    首 token 可以是数字或英文数词；单位可以是多词（`working days`、`weeks' rent`）。
+    不是数量形态时返回 (None, None, "")。
+    """
+    m = re.fullmatch(r"([A-Za-z]+(?:-[A-Za-z]+)?|\d+)(?:\s+(.+))?", target.strip())
     if not m:
-        return [target], [f"duration 目标 {target!r} 不匹配 '<数字> <单位>'，只生成原样写法"]
-    n, unit = int(m.group(1)), m.group(2)
-    word = NUMBER_WORDS.get(n)
+        return None, None, ""
+    head, unit = m.group(1), (m.group(2) or "").strip()
+    if head.isdigit():
+        n = int(head)
+        return n, NUMBER_WORDS.get(n), unit
+    n = WORD_TO_NUMBER.get(head.lower())
+    if n is None:
+        return None, None, ""
+    return n, head.lower(), unit
+
+
+def _duration(target: str) -> tuple[list[str], list[str]]:
+    """<数字|数词> <单位> → 数字+单位 / 词+单位 / 纯数字 / 纯词。
+
+    `three nights` 与 `3 nights` 是同一个答案的两种记法，考官都给分；语料里数词开头的
+    形态（118 条）比数字开头的多，所以两个方向都要展开。纯数字 / 纯词是否可接受取决于
+    卷面是否已写出单位（R7，在 build() 里裁剪）。
+    """
+    n, word, unit = _leading_number(target)
+    if n is None:
+        return [target], [f"duration 目标 {target!r} 不匹配 '<数字|数词> [<单位>]'，只生成原样写法"]
+    if not unit:
+        # 裸数字 / 裸数词（卷面已印单位：`for ___ nights` 下答案就是 `3`）：两种记法互通
+        return ([target, str(n)] + ([word] if word else [])), []
     if word is None:
-        return [target, str(n)], [f"数字 {n} 超出 NUMBER_WORDS 覆盖范围，未生成英文数词变体"]
-    # 纯数字是否可接受取决于题面，见 03 §4；当前政策取宽松侧。
-    return [target, f"{word} {unit}", str(n), word], []
+        return [target, f"{n} {unit}", str(n)], [f"数字 {n} 超出 NUMBER_WORDS 覆盖范围，未生成英文数词变体"]
+    return [target, f"{n} {unit}", f"{word} {unit}", str(n), word], []
 
 
 def _price(target: str, *contexts: str) -> tuple[list[str], list[str]]:
-    """纯数字 → 裸数字 / 符号+数字 / 数字+货币词 / 两位小数。
+    """价格 → 裸数字 / 符号+数字 / 数字+货币词 / 两位小数。
 
-    `contexts` 是**多路**语境：引文、卷面 prefix、卷面 suffix。卷面上的 `£` 往往
-    比引文更可靠，所以三路一起看。千位分隔符先去掉再判形态（`1,450`）。
+    目标本身可以带符号或货币词（`£128`、`£12.50`、`10 pounds`）：卷面没印 `£` 时标准答案
+    保留符号，旧规则把它当「不是纯数字」原样放过，考生写 `128` 或 `128 pounds` 就一分不得。
+    币种判定顺序：目标自带的符号 / 货币词 > 语境（引文、卷面 prefix / suffix）。
     """
-    amount = target.strip().replace(",", "")
-    if not re.fullmatch(r"\d+(\.\d+)?", amount):
-        return [target], [f"price 目标 {target!r} 不是纯数字，只生成原样写法"]
-    symbol = _detect_currency(*contexts)
-    variants = [target.strip()]
-    if amount != target.strip():
+    m = _PRICE_RE.match(target.strip())
+    if not m:
+        return [target], [f"price 目标 {target!r} 不是价格形态，只生成原样写法"]
+    symbol_in_target, number_text, word_in_target = m.group(1), m.group(2), m.group(3)
+    amount = number_text.replace(",", "")
+    symbol = symbol_in_target
+    if symbol is None and word_in_target:
+        symbol = CURRENCY_WORDS.get(word_in_target.lower().rstrip("s"))
+    if symbol is None:
+        symbol = _detect_currency(*contexts)
+
+    variants = [target.strip(), number_text]
+    if amount != number_text:
         variants.append(amount)
     if symbol is None:
         return variants, [f"无法从语境判定币种（{contexts!r}），未生成货币符号变体"]
-    word = next(w for w, s in CURRENCY_WORDS.items() if s == symbol)
-    variants += [
-        f"{symbol}{target.strip()}",
-        f"{target.strip()} {word}s",
-        f"{symbol}{float(amount):.2f}",
-    ]
+    word = next(w for w, s_ in CURRENCY_WORDS.items() if s_ == symbol)
+    plural = word if word == "yen" else f"{word}s"
+    variants += [f"{symbol}{number_text}", f"{number_text} {plural}"]
+    if "." not in amount:
+        variants.append(f"{symbol}{number_text}.00")
     return variants, []
 
 
@@ -285,13 +353,11 @@ def _affix_redundant(value: str, affix: str) -> bool:
 
 
 def _bare_number_forms(target: str) -> set[str]:
-    """target 的「只剩数字」写法：`3 nights` → {`3`, `three`}。"""
-    m = re.match(r"^(\d+)\b", target.strip())
-    if not m:
+    """target 的「只剩数字」写法：`3 nights` / `three nights` → {`3`, `three`}。"""
+    n, word, unit = _leading_number(target)
+    if n is None or not unit:
         return set()
-    n = int(m.group(1))
     forms = {str(n)}
-    word = NUMBER_WORDS.get(n)
     if word:
         forms.add(word)
     return forms
@@ -300,26 +366,84 @@ def _bare_number_forms(target: str) -> set[str]:
 def carrier_supplies_unit(target: str, prefix: str, suffix: str) -> bool:
     """卷面自己是否已经写出了单位。决定裸数字能不能算对（R7）。
 
-    这条判断旧方案是人工登记的（`labels.Stem.allow_bare_number`），现在从
-    carrier 直接推：
-
         `for ___ nights`            单位在卷面 → 填 `3` 就够   → True
         `covers ___ in total`       单位不在卷面 → 必须填 `3 nights` → False
         `£ ___ per night`           货币符号在卷面 → 填 `128`  → True
 
-    判据是 target 的单位词是否出现在 prefix / suffix 里，而不是「carrier 是否像
-    句子」—— 后者会把 `for ___ nights` 也判成句框，从而把正确的裸数字判错。
+    判据是 target 的单位词是否出现在 prefix / suffix 里，而不是「carrier 是否像句子」——
+    后者会把 `for ___ nights` 也判成句框，从而把正确的裸数字判错。首 token 是英文数词
+    （`three nights`）时同样适用。
     """
-    m = re.fullmatch(r"\d+[\d,.]*\s+(.+)", target.strip())
-    if not m:
+    n, _word, unit = _leading_number(target)
+    if n is None or not unit:
         # 目标本身没有单位（纯数字如 price / time），裸数字就是答案形态
         return True
-    unit = re.sub(r"[^A-Za-z]", "", m.group(1)).lower()
-    if not unit:
+    unit_word = re.sub(r"[^A-Za-z]", "", unit.split()[-1]).lower()
+    if not unit_word or unit_word.rstrip("s") in CURRENCY_WORDS:
+        # 货币词不是「必须写出的单位」：`Deposit: ___` 下 `10 pounds` 与 `10` 都是完整答案，
+        # 官方答案键写法是 `(£)10`。真正多余的是词形重复（R6），不是缺失。
         return True
     carrier = f"{prefix} {suffix}".lower()
-    singular = unit[:-1] if unit.endswith("s") else unit
+    singular = unit_word[:-1] if unit_word.endswith("s") else unit_word
     return bool(re.search(rf"\b{re.escape(singular)}s?\b", carrier))
+
+
+def _spelling_variants(value: str) -> list[str]:
+    """每个能换拼法的词换一种拼法；多个词都能换时再给一个全换的版本。保留首字母大小写。"""
+    tokens = value.split()
+    swaps: list[tuple[int, str]] = []
+    for i, tok in enumerate(tokens):
+        core = re.sub(r"^[^A-Za-z]+|[^A-Za-z]+$", "", tok)
+        if not core:
+            continue
+        low = core.lower()
+        alt = _SPELLING.get(low)
+        if alt is None and low.endswith("s") and low[:-1] in _SPELLING:
+            alt = _SPELLING[low[:-1]] + "s"
+        if alt is None:
+            continue
+        if core[0].isupper():
+            alt = alt[0].upper() + alt[1:]
+        swaps.append((i, tok.replace(core, alt, 1)))
+    if not swaps:
+        return []
+    out = []
+    for i, replacement in swaps:
+        row = list(tokens)
+        row[i] = replacement
+        out.append(" ".join(row))
+    if len(swaps) > 1:
+        row = list(tokens)
+        for i, replacement in swaps:
+            row[i] = replacement
+        out.append(" ".join(row))
+    return out
+
+
+def _shared_head(target: str, distractors: list[str]) -> tuple[str, str] | None:
+    """目标与某个干扰项共享中心词（末词）时返回 (修饰成分, 中心词)，否则 None。
+
+    `double room` vs 干扰项 `twin room` → ("double", "room")。中心词单独作答无法区分两个
+    候选，必须进拒绝集；这一步不依赖人工登记，完全由上游标注的竞争答案推出。
+    """
+    words = target.split()
+    if len(words) < 2:
+        return None
+    head = words[-1].lower().strip(".,;:")
+    for d in distractors:
+        parts = str(d).split()
+        if len(parts) >= 2 and parts[-1].lower().strip(".,;:") == head and d.casefold() != target.casefold():
+            return " ".join(words[:-1]), words[-1]
+    return None
+
+
+def _on_paper(word: str, visible_text: str) -> bool:
+    """这个词（含复数）是否印在卷面可见文字里。signposts 不算：它们不印给考生。"""
+    core = re.sub(r"[^A-Za-z]", "", word).lower()
+    if not core:
+        return False
+    singular = core[:-1] if core.endswith("s") else core
+    return bool(re.search(rf"\b{re.escape(singular)}s?\b", visible_text.lower()))
 
 
 def build(
@@ -331,6 +455,7 @@ def build(
     prefix: str = "",
     suffix: str = "",
     distractors: list[str] | None = None,
+    visible_text: str = "",
 ) -> AnswerSpec:
     """按一道题的输入生成接受集与拒绝集。
 
@@ -342,6 +467,10 @@ def build(
 
     prefix / suffix 来自 carrier_before / carrier_after——卷面上空格前后的附加
     文字。它们不是排版细节，直接决定哪些写法算对（README §3 的 R6 / R7）。
+
+    `visible_text` 是这一题所在分组印在卷面上的全部文字（标题、行列标签、题头、各题
+    carrier），**不含 signposts**。它只用于一件事：目标与干扰项共享中心词时，判断中心词是否
+    已印在卷面上，从而决定修饰成分能否单独作答（R8）。
     """
     number = int(question["number"])
     target = str(answer["target"] if "target" in answer else answer["canonical"]).strip()
@@ -372,6 +501,26 @@ def build(
     elif category in PHRASE_CATEGORIES:
         accept, ph_reject, notes = _phrase(target, response_form)
         reject += ph_reject
+        shared = None if target in DISTINCTIVE else _shared_head(target, distractors or [])
+        if shared is not None:
+            # R8：干扰项与目标共享中心词（double room / twin room）。中心词单独作答分不清两个
+            # 候选，无条件拒绝；修饰成分能否单独算对取决于中心词是否已经印在卷面上——
+            # `Room type: ___` 下填 `double` 是完整答案，`A ___ was selected.` 下不是。
+            modifier, head = shared
+            reject.append(head)
+            if _on_paper(head, visible_text):
+                accept.append(modifier)
+                review.append(
+                    f"R8 自动推导：干扰项与 {target!r} 共享中心词 {head!r}，且卷面已印该词，"
+                    f"接受 {modifier!r} 单独作答、拒绝 {head!r}"
+                )
+            else:
+                review.append(
+                    f"R8 自动推导：干扰项与 {target!r} 共享中心词 {head!r}，已拒绝 {head!r}；"
+                    f"卷面未印该词，{modifier!r} 单独作答不成句，未接受"
+                )
+            # 已由 R8 处置，不再重复「未登记」提示
+            notes = [n for n in notes if "未在 DISTINCTIVE 登记" not in n]
         review += notes
     else:
         accept = [target]
@@ -414,9 +563,8 @@ def build(
         text = str(raw).strip()
         if not text:
             continue
-        bare = text.lstrip(qin.CURRENCY_SYMBOLS).strip()
         if category == "price":
-            expanded, _ = _price(bare, context, prefix, suffix)
+            expanded, _ = _price(text, context, prefix, suffix)
         else:
             expanded = [text]
         for variant in expanded:
@@ -430,6 +578,10 @@ def build(
             f"干扰项 {sorted(set(conflicts))} 与接受集重合，未收进拒绝集 —— "
             f"需人工判断该写法到底算对还是算错"
         )
+
+    # 英美拼写（R9）：每个接受写法都补另一种拼法。词数不变，所以不影响 R5。
+    for value in list(accept):
+        accept += _spelling_variants(value)
 
     accept = _dedup(accept)
     reject = _dedup(reject)
@@ -472,6 +624,17 @@ def build(
     ])
     confirmed_keys = {target.casefold(), *(value.casefold() for value in upstream)}
     added = [value for value in accept if value.casefold() not in confirmed_keys]
+    # 上游确认过、却被本模块的过滤（R5 字数 / R6 R7 卷面 / R4 干扰项）剔除的写法：两边口径
+    # 打架了，不能只在拒绝集里静静躺着——它是最该被人看一眼的一条。
+    dropped_upstream = _dedup([
+        value for value in seeded
+        if value.casefold() not in accepted_keys and value.casefold() != target.casefold()
+    ])
+    if dropped_upstream:
+        review.append(
+            "上游 alternatives 中以下写法被 QTI 规则剔除并移入拒绝集，需人工裁决：%s"
+            % dropped_upstream
+        )
     if added:
         if upstream:
             review.append(

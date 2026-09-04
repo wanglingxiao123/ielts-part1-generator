@@ -197,6 +197,24 @@ def _label_for(number: int, group: GroupIR, index: int) -> str:
     return ""
 
 
+def _visible_text(group: GroupIR, questions: List[dict]) -> str:
+    """这个分组印在卷面上的全部文字：标题、题头、行列标签、note 小标题、表格印死的单元格、
+    各题的 carrier。**不含 signposts**——那是出题意图，不印给考生；上游 validator 把它算进
+    「可见文字」是它自己的口径，这里以真实卷面为准。供 accept_sets 的 R8 判断中心词是否在卷面上。
+    """
+    parts: List[str] = [group.title, group.instruction_text, group.row_header_label]
+    parts += group.labels + group.column_labels
+    for section in group.note_sections:
+        parts.append(str(section.get("heading") or ""))
+    for row in group.table_rows:
+        for cell in row.get("cells") or []:
+            parts.append(str(cell.get("text") or ""))
+    for q in questions:
+        if str(q.get("group_id")) == group.group_id:
+            parts += [str(q.get("carrier_before") or ""), str(q.get("carrier_after") or "")]
+    return " ".join(p for p in parts if p)
+
+
 def build_groups(gate: qin.GateResult) -> List[GroupIR]:
     groups: List[GroupIR] = []
     for raw in gate.groups:
@@ -270,6 +288,7 @@ def build_material(
     gaps: List[Gap] = []
     review: List[str] = list(gate.advisories)
     seen_in_group: Dict[str, int] = {}
+    visible_by_group = {g.group_id: _visible_text(g, gate.questions) for g in groups}
 
     for question in gate.questions:
         number = int(question["number"])
@@ -298,6 +317,7 @@ def build_material(
             prefix=prefix,
             suffix=suffix,
             distractors=distractors_by_number.get(number, []),
+            visible_text=visible_by_group.get(gid, ""),
         )
         review += [f"Q{number}: {msg}" for msg in spec.review]
 
