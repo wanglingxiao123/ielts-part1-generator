@@ -468,6 +468,39 @@ describe('MaterialPage 页签', () => {
     expect(screen.queryByText('需要生成新版录音')).not.toBeInTheDocument()
   })
 
+  it('局部材料修改结果明确显示目标 Turn', async () => {
+    versionOverride = [{
+      id: 'local-version',
+      created_at: '2026-09-04T06:51:40Z',
+      based_on_version_id: 'original',
+      source_comment_ids: ['turn-comment'],
+      status: 'ready',
+      operation: 'revise_material_local',
+      material: baseRecord.material,
+      blueprint: baseRecord.blueprint,
+      package: QUESTION_PACKAGE,
+      audio: { status: 'needs_synthesis', version_key: 'local-version' },
+      local_revision: {
+        turn_index: 22,
+        before: 'A longer sentence.',
+        after: 'A shorter sentence.',
+        reason: 'The local edit is safe.',
+        affected_metadata: [],
+        questions_unchanged: true,
+        audio_impact: 'needs_synthesis',
+      },
+      is_active: true,
+      ordinal: 2,
+    }]
+
+    renderPage()
+
+    const result = (await screen.findByText('修改位置：')).closest('.comment-decision')
+    expect(result).toHaveTextContent('Turn 22')
+    expect(result).toHaveTextContent('A longer sentence.')
+    expect(result).toHaveTextContent('A shorter sentence.')
+  })
+
   it('对话原文重新开放 turn 级批注入口', async () => {
     renderPage()
     await screen.findByRole('tab', { name: '对话原文' })

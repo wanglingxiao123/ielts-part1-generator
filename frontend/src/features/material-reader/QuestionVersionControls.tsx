@@ -47,6 +47,31 @@ const MATERIAL_REVISION_STEPS = [
   '生成新版本',
 ] as const
 
+const LOCAL_MATERIAL_REVISION_STEPS = [
+  '已接收请求',
+  '分析局部修改',
+  '校验材料、信息点和题目',
+  '独立复核',
+  '生成新版本',
+] as const
+
+const LOCAL_MATERIAL_STAGE_INDEX: Record<QuestionRevisionStage, number> = {
+  queued: 0,
+  analysing: 1,
+  planning: 1,
+  material_revising: 1,
+  material_auditing: 3,
+  revising_material: 1,
+  validating_material: 2,
+  auditing_material: 3,
+  feasibility: 2,
+  generating: 2,
+  revising: 1,
+  validating: 2,
+  auditing: 3,
+  storing: 4,
+}
+
 const STAGE_INDEX: Record<QuestionRevisionStage, number> = {
   queued: 0,
   analysing: 1,
@@ -96,6 +121,45 @@ const MATERIAL_STAGE_INDEX: Record<QuestionRevisionStage, number> = {
   validating: 4,
   auditing: 5,
   storing: 6,
+}
+
+export function LocalMaterialRevisionProgress({
+  state,
+}: {
+  state: QuestionVersionsState
+}) {
+  const currentStage = state.revisionStage
+  const request = state.revisionRequest
+  if (!currentStage || state.inFlightOperation !== 'revise_material_local') return null
+  const current = LOCAL_MATERIAL_STAGE_INDEX[currentStage]
+
+  return (
+    <div className="question-revision-progress" role="status">
+      <div className="question-revision-result-head">
+        <strong>正在局部修改材料原文</strong>
+      </div>
+      <p>
+        已提交 {request?.comment_count ?? 1} 条 Turn 批注
+        {request?.source_comments?.[0]?.anchor.type === 'turn'
+          ? ` · Turn ${request.source_comments[0].anchor.index}`
+          : ''}
+      </p>
+      <ol className="question-revision-steps">
+        {LOCAL_MATERIAL_REVISION_STEPS.map((label, index) => {
+          const status = index < current ? 'done' : index === current ? 'current' : 'pending'
+          return (
+            <li key={label} className={status}>
+              <span aria-hidden="true">
+                {status === 'done' ? '✓' : status === 'current' ? '●' : '○'}
+              </span>
+              {label}
+            </li>
+          )
+        })}
+      </ol>
+      <p className="muted">{STAGE_LABEL[currentStage]}，请勿重复提交。</p>
+    </div>
+  )
 }
 
 export function QuestionVersionBar({

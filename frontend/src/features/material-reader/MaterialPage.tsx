@@ -44,7 +44,11 @@ import { CommentComposer, CommentList } from './MaterialComments'
 import { MaterialReader } from './MaterialReader'
 import { QtiExportButton } from './QtiExportButton'
 import { QuestionPreviewPanel } from './QuestionPreviewPanel'
-import { QuestionRevisionAction, QuestionVersionBar } from './QuestionVersionControls'
+import {
+  LocalMaterialRevisionProgress,
+  QuestionRevisionAction,
+  QuestionVersionBar,
+} from './QuestionVersionControls'
 import { QuestionTypePanel } from './QuestionTypePanel'
 import { useMaterialQuestions } from './useMaterialQuestions'
 import { useMaterialComments } from './useMaterialComments'
@@ -467,8 +471,12 @@ export function MaterialPage() {
               <div className="muted">
                 选择一个非旁白 turn 后提交建议。第一阶段一次只处理一个 turn；题目和答案保持不变。
               </div>
+              <LocalMaterialRevisionProgress state={questionVersions} />
               {questionVersions.selectedVersion?.local_revision && (
                 <div className="comment-decision" role="status">
+                  <strong>修改位置：</strong>
+                  Turn {questionVersions.selectedVersion.local_revision.turn_index}
+                  <br />
                   <strong>修改前：</strong>
                   {questionVersions.selectedVersion.local_revision.before}
                   <br />

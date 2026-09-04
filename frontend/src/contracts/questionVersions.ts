@@ -1,4 +1,5 @@
 import type { AudioManifest } from './manifest'
+import type { MaterialComment } from './comments'
 import type { Blueprint, Material, QuestionPackage } from './index'
 
 export type QuestionVersionStatus = 'original' | 'ready'
@@ -92,6 +93,7 @@ export interface QuestionRevisionRecord {
   source_request_id?: string
   base_version_id: string
   comment_count?: number
+  source_comments?: MaterialComment[]
   created_at?: string
   completed_at?: string
   version_id?: string

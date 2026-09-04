@@ -210,6 +210,9 @@ async def revise_material_local(
         validation = await validate(projected, revised_blueprint)
         if not validation.ok:
             raise ValueError("; ".join(validation.errors[:8]))
+        request.update(stage="auditing", updated_at=_now())
+        store.save_question_revision(material_id, request_id, request)
+        yield {"type": "question_revision_auditing", "request_id": request_id}
         audit = await agent_steps.audit_blind(projected, {})
         check = crosscheck(revised_blueprint, audit)
         if check.hard_defects:
@@ -233,6 +236,9 @@ async def revise_material_local(
                 "question quality rejected the local patch: %s"
                 % "; ".join(question_blockers[:8]))
 
+        request.update(stage="storing", updated_at=_now())
+        store.save_question_revision(material_id, request_id, request)
+        yield {"type": "question_revision_storing", "request_id": request_id}
         version = {
             "id": request_id, "material_id": material_id, "created_at": _now(),
             "based_on_version_id": base_version_id,

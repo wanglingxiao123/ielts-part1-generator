@@ -4,7 +4,11 @@ import userEvent from '@testing-library/user-event'
 import type { MaterialComment } from '@/contracts/comments'
 import type { QuestionPackageVersion } from '@/contracts/questionVersions'
 import { QUESTION_PACKAGE } from '@/mocks/fixtures'
-import { QuestionRevisionAction, QuestionVersionBar } from './QuestionVersionControls'
+import {
+  LocalMaterialRevisionProgress,
+  QuestionRevisionAction,
+  QuestionVersionBar,
+} from './QuestionVersionControls'
 import type { QuestionVersionsState } from './useQuestionVersions'
 
 const COMMENTS: MaterialComment[] = [
@@ -60,6 +64,39 @@ function state(overrides: Partial<QuestionVersionsState> = {}): QuestionVersions
 }
 
 describe('题目版本控件', () => {
+  it('局部材料修改显示真实阶段和目标 Turn', () => {
+    render(
+      <LocalMaterialRevisionProgress
+        state={state({
+          revisionStage: 'validating',
+          inFlightOperation: 'revise_material_local',
+          revisionRequest: {
+            request_id: 'local-1',
+            status: 'running',
+            operation: 'revise_material_local',
+            stage: 'validating',
+            base_version_id: 'version-3',
+            comment_count: 1,
+            source_comments: [{
+              id: 'turn-comment',
+              created_at: '2026-09-04T06:37:34Z',
+              anchor: { type: 'turn', index: 22 },
+              severity: 'minor',
+              text: '请简化这一句',
+              version_id: 'version-3',
+            }],
+          },
+        })}
+      />,
+    )
+
+    const progress = screen.getByRole('status')
+    expect(progress).toHaveTextContent('正在局部修改材料原文')
+    expect(progress).toHaveTextContent('Turn 22')
+    expect(progress).toHaveTextContent('校验材料、信息点和题目')
+    expect(progress).toHaveTextContent('正在检查完整十题')
+  })
+
   it('版本首次读取失败时仍显示错误和重试操作', async () => {
     const reload = vi.fn()
     render(
