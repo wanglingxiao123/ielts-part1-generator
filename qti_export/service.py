@@ -8,6 +8,8 @@
 * ``_question_versions/{material_id}/versions/{id}.json`` —— 批注修订产出的不可变版本：
   ``package`` 在顶层，而审核结论收在 ``quality`` 下（``label`` / ``review`` / ``cross_check`` /
   ``validation`` / ``status``），没有 ``ok`` 也没有 ``advisories``。
+* ``operation=revise_material`` 的完整评估版本仍把 ``package`` 放在顶层，但 ``quality`` 同时
+  保存材料和题目两套检查，题目门禁位于 ``quality.questions``。
 
 ``normalize_document`` 把第二种翻成第一种，之后两者走同一条门禁。翻译而不是给门禁开旁路：
 修订版本同样要满足「两侧答案一致、题号闭合、字数上限自洽」，否则导出去的包会把一个未经
@@ -48,7 +50,11 @@ def normalize_document(document: Dict[str, Any]) -> Dict[str, Any]:
     quality = document.get("quality")
     if not isinstance(quality, dict) or isinstance(document.get("review"), dict):
         return document
-    # 版本只在通过完整质量检查后才会被写下（manual_question_revision.py 的 storing 阶段），
+    question_quality = quality.get("questions")
+    if isinstance(question_quality, dict):
+        quality = question_quality
+    # 版本只在通过完整质量检查后才会被写下（manual_question_revision.py /
+    # manual_material_revision.py 的 storing 阶段），
     # 所以 status=ready 就是「上游说可交付」。这里不替它把 ok 定成 True 以外的任何值来绕门禁：
     # G1 仍会逐项读 review / validation / cross_check。
     ready = str(document.get("status") or "") == "ready"

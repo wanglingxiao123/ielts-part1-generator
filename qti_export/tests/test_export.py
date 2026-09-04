@@ -313,6 +313,35 @@ def _as_version(doc: dict, version_id: str = "8d5a0f2e-1111-4222-8333-4444555566
     }
 
 
+def _as_material_version(doc: dict) -> dict:
+    """What manual_material_revision.py stores: material and question quality are nested peers."""
+    return {
+        "id": "material-revision",
+        "material_id": "mat",
+        "created_at": "2026-09-04T03:22:45Z",
+        "status": "ready",
+        "operation": "revise_material",
+        "material": {"scenario": "revised"},
+        "blueprint": {"version": 3},
+        "package": copy.deepcopy(doc["package"]),
+        "quality": {
+            "material": {
+                "audit": {"verdict": "PASS"},
+                "validation": {"ok": True, "errors": []},
+            },
+            "questions": {
+                "label": "initial",
+                "package": copy.deepcopy(doc["package"]),
+                "review": copy.deepcopy(doc["review"]),
+                "cross_check": copy.deepcopy(doc["cross_check"]),
+                "validation": copy.deepcopy(doc["validation"]),
+                "status": doc["status"],
+            },
+        },
+        "baseline_advisories": ["material revision"],
+    }
+
+
 def test_a_revision_version_is_normalized_to_the_delivery_shape():
     doc = load(FIXTURE_IDS[0])
     normalized = normalize_document(_as_version(doc))
@@ -323,6 +352,36 @@ def test_a_revision_version_is_normalized_to_the_delivery_shape():
     assert normalized["advisories"] == ["carried over"]
     # The delivery shape passes through untouched.
     assert normalize_document(doc) is doc
+
+
+def test_a_material_revision_uses_its_nested_question_quality():
+    doc = load(FIXTURE_IDS[0])
+    normalized = normalize_document(_as_material_version(doc))
+    assert normalized["ok"] is True
+    assert normalized["status"] == doc["status"]
+    assert normalized["review"] == doc["review"]
+    assert normalized["cross_check"] == doc["cross_check"]
+    assert normalized["validation"] == doc["validation"]
+    assert normalized["advisories"] == ["material revision"]
+
+
+def test_a_material_revision_exports_without_regeneration():
+    doc = load(FIXTURE_IDS[0])
+    bundle = export_document(
+        _as_material_version(doc),
+        material_id=FIXTURE_IDS[0],
+        version_ordinal=5,
+    )
+    assert bundle.item_identifier == f"ielts-{FIXTURE_IDS[0]}-v5"
+    assert len(bundle.material.gaps) == 10
+
+
+def test_a_material_revision_with_missing_nested_quality_still_fails():
+    version = _as_material_version(load(FIXTURE_IDS[0]))
+    version["quality"]["questions"] = {}
+    with pytest.raises(ExportRejected) as info:
+        export_document(version, material_id=FIXTURE_IDS[0], version_ordinal=5)
+    assert any("G1: status='None'" in reason for reason in info.value.reasons)
 
 
 def test_a_revision_version_exports_under_its_ordinal():
