@@ -213,6 +213,41 @@ async def test_byte_identical_revision_fails_without_creating_noop_version(monke
 
 
 @pytest.mark.asyncio
+async def test_projected_away_visible_edit_cannot_hide_behind_evidence_metadata(monkeypatch):
+    package = _package()
+    model = copy.deepcopy(package)
+    model["question_face"]["groups"][1]["title"] = "MOBILE DETAILS"
+    model["evidence"][8]["carrier_entity"] = "mobile number"
+
+    async def revise(*_args):
+        return {"outcome": "revised", "package": model}
+
+    monkeypatch.setattr(subject.agent_steps, "revise_questions_from_comments", revise)
+    store = SlotStore(InMemoryObjectStore())
+    events = await collect(subject.revise_from_comments(
+        store=store,
+        material_id="mat-1",
+        request_id="req-hidden-drift",
+        base_version_id="original",
+        material={},
+        blueprint={},
+        package=package,
+        base_version={"package": package},
+        comments=[{
+            "id": "c1",
+            "anchor": {"type": "question", "index": 9},
+            "text": "Change the visible label to Mobile number.",
+        }],
+        actor="reviewer",
+    ))
+
+    assert events[-1]["type"] == "question_revision_failed"
+    assert store.load_question_version("mat-1", "req-hidden-drift") is None
+    record = store._read("_question_revisions/mat-1/req-hidden-drift.json")
+    assert "no visible or answer change" in record["message"]
+
+
+@pytest.mark.asyncio
 async def test_only_a_fully_checked_package_becomes_an_immutable_version(monkeypatch):
     package = _package()
     package["material_id"] = "mat-1"
@@ -582,6 +617,153 @@ def test_question_only_normalization_keeps_only_the_anchored_question_patch():
     assert revised["evidence"][8] == base["evidence"][8]
     assert revised["question_face"]["groups"] == base["question_face"]["groups"]
     assert revised["question_face"]["instructions"] == base["question_face"]["instructions"]
+
+
+def test_question_only_normalization_keeps_the_anchored_form_row_label():
+    base = _package()
+    base["question_face"]["groups"][1] = {
+        "group_id": "B",
+        "layout": "form",
+        "title": "RESERVATION DETAILS",
+        "structure": {
+            "row_labels": [
+                "Arrival date",
+                "Length of stay",
+                "Included service",
+                "Telephone number",
+                "Booking reference",
+            ],
+        },
+    }
+    model = copy.deepcopy(base)
+    model["question_face"]["groups"][1]["structure"]["row_labels"] = [
+        "Wrong arrival",
+        "Wrong stay",
+        "Wrong service",
+        "Mobile number",
+        "Wrong reference",
+    ]
+
+    revised = subject._normalize_question_only_package(base, model, {9})
+
+    assert revised["question_face"]["groups"][1]["structure"]["row_labels"] == [
+        "Arrival date",
+        "Length of stay",
+        "Included service",
+        "Mobile number",
+        "Booking reference",
+    ]
+    changed, changed_groups = subject._changed_scope(base, revised)
+    assert changed == {9}
+    assert changed_groups == {"B"}
+    assert any(
+        row["question_number"] == 9
+        and row["section"] == "group_structure"
+        for row in subject._field_changes(base, revised)
+    )
+
+
+def test_question_only_normalization_rejects_partial_shared_note_heading_edit():
+    base = _package()
+    base["question_face"]["groups"][1] = {
+        "group_id": "B",
+        "layout": "note",
+        "structure": {
+            "note_sections": [
+                {"heading": "Contact details", "question_numbers": [9, 10]},
+            ],
+        },
+    }
+    model = copy.deepcopy(base)
+    model["question_face"]["groups"][1]["structure"]["note_sections"][0][
+        "heading"
+    ] = "Mobile details"
+
+    q9_only = subject._normalize_question_only_package(base, model, {9})
+    both = subject._normalize_question_only_package(base, model, {9, 10})
+
+    assert (
+        q9_only["question_face"]["groups"][1]["structure"]["note_sections"][0]["heading"]
+        == "Contact details"
+    )
+    assert (
+        both["question_face"]["groups"][1]["structure"]["note_sections"][0]["heading"]
+        == "Mobile details"
+    )
+
+
+def test_question_only_normalization_scopes_shared_table_wording():
+    base = _package()
+    base["question_face"]["groups"][0] = {
+        "group_id": "A",
+        "layout": "table",
+        "structure": {
+            "column_labels": ["Room", "Availability", "Rate"],
+            "table_rows": [
+                {
+                    "cells": [
+                        {"text": "Standard"},
+                        {"question_number": 1},
+                        {"question_number": 2},
+                    ],
+                },
+                {
+                    "cells": [
+                        {"text": "Deluxe"},
+                        {"question_number": 3},
+                        {"question_number": 4},
+                    ],
+                },
+            ],
+        },
+    }
+    model = copy.deepcopy(base)
+    structure = model["question_face"]["groups"][0]["structure"]
+    structure["column_labels"][1] = "Available from"
+    structure["table_rows"][0]["cells"][0]["text"] = "Standard room"
+
+    q1_only = subject._normalize_question_only_package(base, model, {1})
+    q1_q3 = subject._normalize_question_only_package(base, model, {1, 3})
+    q1_q2 = subject._normalize_question_only_package(base, model, {1, 2})
+
+    assert q1_only["question_face"]["groups"][0]["structure"] == (
+        base["question_face"]["groups"][0]["structure"]
+    )
+    assert (
+        q1_q3["question_face"]["groups"][0]["structure"]["column_labels"][1]
+        == "Available from"
+    )
+    assert (
+        q1_q2["question_face"]["groups"][0]["structure"]["table_rows"][0]["cells"][0]["text"]
+        == "Standard room"
+    )
+
+
+def test_group_instruction_changes_require_the_whole_group_scope():
+    base = _package()
+    base["question_face"]["instructions"][1].update({
+        "instruction_text": "Write ONE WORD AND/OR A NUMBER.",
+        "word_limit": "ONE WORD AND/OR A NUMBER",
+    })
+    model = copy.deepcopy(base)
+    model["question_face"]["instructions"][1].update({
+        "instruction_text": "Write NO MORE THAN TWO WORDS AND/OR A NUMBER.",
+        "word_limit": "NO MORE THAN TWO WORDS AND/OR A NUMBER",
+    })
+
+    q9_only = subject._normalize_question_only_package(base, model, {9})
+    whole_group = subject._normalize_question_only_package(
+        base, model, {6, 7, 8, 9, 10}
+    )
+
+    assert q9_only["question_face"]["instructions"] == (
+        base["question_face"]["instructions"]
+    )
+    assert whole_group["question_face"]["instructions"][1]["word_limit"] == (
+        "NO MORE THAN TWO WORDS AND/OR A NUMBER"
+    )
+    changed, _ = subject._changed_scope(base, whole_group)
+    assert changed == {6, 7, 8, 9, 10}
 
 
 def test_question_only_normalization_keeps_baseline_order_and_drops_extra_rows():

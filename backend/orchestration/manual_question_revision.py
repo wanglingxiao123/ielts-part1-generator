@@ -165,8 +165,19 @@ async def revise_from_comments(
         result = await agent_steps.revise_questions_from_comments(
             material, blueprint, package, actionable_comments)
         allowed_questions = _anchored_question_numbers(actionable_comments)
+        attempted_shared_edit = _shared_visible_content_changed(
+            package, result["package"])
         revised = _normalize_question_only_package(
             package, result["package"], allowed_questions)
+        if (
+            attempted_shared_edit
+            and not _shared_visible_content_changed(package, revised)
+            and not _visible_or_answer_content_changed(package, revised)
+        ):
+            raise ValueError(
+                "question revision changed shared visible content outside the anchored "
+                "scope; the projected result contains no visible or answer change"
+            )
         if revised == package:
             raise ValueError(
                 "question revision produced a byte-equivalent package despite actionable comments"
@@ -430,6 +441,16 @@ def _changed_scope(
         if (base_groups.get(group_id) != new_groups.get(group_id)
             or base_instructions.get(group_id) != new_instructions.get(group_id))
     }
+    group_numbers = _group_question_numbers(new_face or base_face)
+    for group_id in set(base_groups) | set(new_groups):
+        changed.update(_group_visible_change_numbers(
+            base_groups.get(group_id) or {},
+            new_groups.get(group_id) or {},
+            group_numbers.get(group_id, []),
+        ))
+    for group_id in set(base_instructions) | set(new_instructions):
+        if base_instructions.get(group_id) != new_instructions.get(group_id):
+            changed.update(group_numbers.get(group_id, []))
     for number in changed:
         for row in (base_questions.get(number), new_questions.get(number)):
             if isinstance(row, dict) and str(row.get("group_id") or ""):
@@ -470,11 +491,25 @@ def _normalize_question_only_package(
     if not isinstance(new_face, dict):
         raise ValueError("question revision returned no question_face")
     projected_face = copy.deepcopy(new_face)
-    for key in ("groups", "instructions"):
-        if key in base_face:
-            projected_face[key] = copy.deepcopy(base_face[key])
-        else:
-            projected_face.pop(key, None)
+    group_numbers = _group_question_numbers(base_face)
+    if "groups" in base_face:
+        projected_face["groups"] = _project_groups(
+            base_face.get("groups"),
+            new_face.get("groups"),
+            group_numbers,
+            allowed_questions,
+        )
+    else:
+        projected_face.pop("groups", None)
+    if "instructions" in base_face:
+        projected_face["instructions"] = _project_instructions(
+            base_face.get("instructions"),
+            new_face.get("instructions"),
+            group_numbers,
+            allowed_questions,
+        )
+    else:
+        projected_face.pop("instructions", None)
     projected_face["questions"] = _project_numbered_rows(
         base_face.get("questions"), new_face.get("questions"), allowed_questions)
     revised["question_face"] = projected_face
@@ -483,6 +518,292 @@ def _normalize_question_only_package(
     revised["evidence"] = _project_numbered_rows(
         base.get("evidence"), revised.get("evidence"), allowed_questions)
     return revised
+
+
+def _group_question_numbers(face: Dict[str, Any]) -> Dict[str, List[int]]:
+    grouped: Dict[str, List[int]] = {}
+    for row in face.get("questions") or []:
+        if not isinstance(row, dict):
+            continue
+        number = row.get("number")
+        group_id = str(row.get("group_id") or "")
+        if (
+            group_id
+            and isinstance(number, int)
+            and not isinstance(number, bool)
+        ):
+            grouped.setdefault(group_id, []).append(number)
+    return grouped
+
+
+def _project_groups(
+    base_rows: Any,
+    candidate_rows: Any,
+    group_numbers: Dict[str, List[int]],
+    allowed_questions: set[int],
+) -> List[Dict[str, Any]]:
+    """Keep group shape immutable while admitting question-owned visible wording."""
+    candidate = _grouped(candidate_rows)
+    projected: List[Dict[str, Any]] = []
+    for raw in base_rows or []:
+        if not isinstance(raw, dict):
+            projected.append(copy.deepcopy(raw))
+            continue
+        group_id = str(raw.get("group_id") or "")
+        base = copy.deepcopy(raw)
+        new = candidate.get(group_id)
+        numbers = group_numbers.get(group_id, [])
+        if not isinstance(new, dict):
+            projected.append(base)
+            continue
+        all_group_allowed = bool(numbers) and set(numbers) <= allowed_questions
+        if all_group_allowed and new.get("title") != raw.get("title"):
+            base["title"] = copy.deepcopy(new.get("title"))
+        if "structure" in raw:
+            base["structure"] = _project_group_structure(
+                raw,
+                new,
+                numbers,
+                allowed_questions,
+            )
+        else:
+            base.pop("structure", None)
+        projected.append(base)
+    return projected
+
+
+def _project_group_structure(
+    base_group: Dict[str, Any],
+    candidate_group: Dict[str, Any],
+    numbers: List[int],
+    allowed_questions: set[int],
+) -> Dict[str, Any]:
+    base = copy.deepcopy(base_group.get("structure") or {})
+    candidate = candidate_group.get("structure")
+    if not isinstance(candidate, dict):
+        return base
+    layout = str(base_group.get("layout") or "")
+
+    if layout in {"form", "note"}:
+        for key in ("row_labels", "hierarchy"):
+            old = base.get(key)
+            new = candidate.get(key)
+            if (
+                isinstance(old, list)
+                and isinstance(new, list)
+                and len(old) == len(numbers) == len(new)
+            ):
+                base[key] = [
+                    copy.deepcopy(new[index] if number in allowed_questions else old[index])
+                    for index, number in enumerate(numbers)
+                ]
+
+    if layout == "note":
+        old_sections = base.get("note_sections")
+        new_sections = candidate.get("note_sections")
+        if isinstance(old_sections, list) and isinstance(new_sections, list):
+            new_by_numbers = {
+                tuple(row.get("question_numbers") or []): row
+                for row in new_sections
+                if isinstance(row, dict)
+            }
+            sections = copy.deepcopy(old_sections)
+            for section in sections:
+                if not isinstance(section, dict):
+                    continue
+                owners = {
+                    number for number in section.get("question_numbers") or []
+                    if isinstance(number, int) and not isinstance(number, bool)
+                }
+                replacement = new_by_numbers.get(tuple(section.get("question_numbers") or []))
+                if owners and owners <= allowed_questions and isinstance(replacement, dict):
+                    section["heading"] = copy.deepcopy(replacement.get("heading"))
+            base["note_sections"] = sections
+
+    if layout == "table":
+        old_columns = base.get("column_labels")
+        new_columns = candidate.get("column_labels")
+        rows = base.get("table_rows") or []
+        if isinstance(old_columns, list) and isinstance(new_columns, list):
+            columns = copy.deepcopy(old_columns)
+            for index in range(min(len(columns), len(new_columns))):
+                owners = _table_column_questions(rows, index)
+                if owners and owners <= allowed_questions:
+                    columns[index] = copy.deepcopy(new_columns[index])
+            base["column_labels"] = columns
+
+        old_rows = base.get("table_rows")
+        new_rows = candidate.get("table_rows")
+        if isinstance(old_rows, list) and isinstance(new_rows, list):
+            table_rows = copy.deepcopy(old_rows)
+            for row_index in range(min(len(table_rows), len(new_rows))):
+                old_cells = (table_rows[row_index] or {}).get("cells")
+                new_cells = (new_rows[row_index] or {}).get("cells")
+                if not isinstance(old_cells, list) or not isinstance(new_cells, list):
+                    continue
+                owners = {
+                    cell.get("question_number")
+                    for cell in old_cells
+                    if isinstance(cell, dict)
+                    and isinstance(cell.get("question_number"), int)
+                    and not isinstance(cell.get("question_number"), bool)
+                }
+                if not owners or not owners <= allowed_questions:
+                    continue
+                for cell_index in range(min(len(old_cells), len(new_cells))):
+                    old_cell = old_cells[cell_index]
+                    new_cell = new_cells[cell_index]
+                    if (
+                        isinstance(old_cell, dict)
+                        and isinstance(new_cell, dict)
+                        and old_cell.get("question_number") is None
+                        and new_cell.get("question_number") is None
+                        and "text" in old_cell
+                    ):
+                        old_cell["text"] = copy.deepcopy(new_cell.get("text"))
+            base["table_rows"] = table_rows
+    return base
+
+
+def _table_column_questions(rows: Any, index: int) -> set[int]:
+    owners: set[int] = set()
+    for row in rows or []:
+        cells = row.get("cells") if isinstance(row, dict) else None
+        if not isinstance(cells, list) or index >= len(cells):
+            continue
+        number = cells[index].get("question_number") if isinstance(cells[index], dict) else None
+        if isinstance(number, int) and not isinstance(number, bool):
+            owners.add(number)
+    return owners
+
+
+def _project_instructions(
+    base_rows: Any,
+    candidate_rows: Any,
+    group_numbers: Dict[str, List[int]],
+    allowed_questions: set[int],
+) -> List[Dict[str, Any]]:
+    candidate = _grouped(candidate_rows)
+    projected: List[Dict[str, Any]] = []
+    immutable = {"group_id", "question_range"}
+    for raw in base_rows or []:
+        if not isinstance(raw, dict):
+            projected.append(copy.deepcopy(raw))
+            continue
+        group_id = str(raw.get("group_id") or "")
+        numbers = group_numbers.get(group_id, [])
+        new = candidate.get(group_id)
+        row = copy.deepcopy(raw)
+        if numbers and set(numbers) <= allowed_questions and isinstance(new, dict):
+            for key in set(raw) | set(new):
+                if key not in immutable:
+                    if key in new:
+                        row[key] = copy.deepcopy(new[key])
+                    else:
+                        row.pop(key, None)
+        projected.append(row)
+    return projected
+
+
+def _shared_visible_content_changed(base: Dict[str, Any], revised: Dict[str, Any]) -> bool:
+    old = base.get("question_face") if isinstance(base.get("question_face"), dict) else {}
+    new = revised.get("question_face") if isinstance(revised.get("question_face"), dict) else {}
+    return (
+        old.get("groups") != new.get("groups")
+        or old.get("instructions") != new.get("instructions")
+    )
+
+
+def _visible_or_answer_content_changed(base: Dict[str, Any], revised: Dict[str, Any]) -> bool:
+    old = base.get("question_face") if isinstance(base.get("question_face"), dict) else {}
+    new = revised.get("question_face") if isinstance(revised.get("question_face"), dict) else {}
+    return (
+        old.get("questions") != new.get("questions")
+        or old.get("groups") != new.get("groups")
+        or old.get("instructions") != new.get("instructions")
+        or base.get("answer_key") != revised.get("answer_key")
+    )
+
+
+def _group_visible_change_numbers(
+    base_group: Dict[str, Any],
+    revised_group: Dict[str, Any],
+    numbers: List[int],
+) -> set[int]:
+    changed: set[int] = set()
+    if base_group.get("title") != revised_group.get("title"):
+        changed.update(numbers)
+    old = base_group.get("structure") or {}
+    new = revised_group.get("structure") or {}
+    layout = str(base_group.get("layout") or revised_group.get("layout") or "")
+    for key in ("row_labels", "hierarchy"):
+        before = old.get(key)
+        after = new.get(key)
+        if (
+            layout in {"form", "note"}
+            and isinstance(before, list)
+            and isinstance(after, list)
+            and len(before) == len(numbers) == len(after)
+        ):
+            changed.update(
+                number for index, number in enumerate(numbers)
+                if before[index] != after[index]
+            )
+    if layout == "note":
+        old_sections = {
+            tuple(row.get("question_numbers") or []): row
+            for row in old.get("note_sections") or []
+            if isinstance(row, dict)
+        }
+        new_sections = {
+            tuple(row.get("question_numbers") or []): row
+            for row in new.get("note_sections") or []
+            if isinstance(row, dict)
+        }
+        for owner_key in set(old_sections) | set(new_sections):
+            if (
+                (old_sections.get(owner_key) or {}).get("heading")
+                != (new_sections.get(owner_key) or {}).get("heading")
+            ):
+                changed.update(
+                    number for number in owner_key
+                    if isinstance(number, int) and not isinstance(number, bool)
+                )
+    if layout == "table":
+        rows = old.get("table_rows") or []
+        before_columns = old.get("column_labels") or []
+        after_columns = new.get("column_labels") or []
+        for index in range(max(len(before_columns), len(after_columns))):
+            before = before_columns[index] if index < len(before_columns) else None
+            after = after_columns[index] if index < len(after_columns) else None
+            if before != after:
+                changed.update(_table_column_questions(rows, index))
+        old_rows = old.get("table_rows") or []
+        new_rows = new.get("table_rows") or []
+        for index in range(max(len(old_rows), len(new_rows))):
+            before_row = old_rows[index] if index < len(old_rows) else {}
+            after_row = new_rows[index] if index < len(new_rows) else {}
+            before_cells = before_row.get("cells") if isinstance(before_row, dict) else []
+            after_cells = after_row.get("cells") if isinstance(after_row, dict) else []
+            before_text = [
+                cell.get("text")
+                for cell in before_cells or []
+                if isinstance(cell, dict) and cell.get("question_number") is None
+            ]
+            after_text = [
+                cell.get("text")
+                for cell in after_cells or []
+                if isinstance(cell, dict) and cell.get("question_number") is None
+            ]
+            if before_text != after_text:
+                changed.update(
+                    cell.get("question_number")
+                    for cell in before_cells or []
+                    if isinstance(cell, dict)
+                    and isinstance(cell.get("question_number"), int)
+                    and not isinstance(cell.get("question_number"), bool)
+                )
+    return changed
 
 
 def _project_numbered_rows(
@@ -617,16 +938,43 @@ def _field_changes(base: Dict[str, Any], revised: Dict[str, Any]) -> List[Dict[s
                 number for number, row in questions.items()
                 if str(row.get("group_id") or "") == group_id
             )
-            number = members[0] if members else 0
             for field in sorted(set(before) | set(after)):
-                if field != "group_id" and before.get(field) != after.get(field):
-                    changes.append({
-                        "question_number": number,
-                        "section": section,
-                        "field": field,
-                        "before": before.get(field),
-                        "after": after.get(field),
-                    })
+                if (
+                    field != "group_id"
+                    and not (section == "group" and field in {"title", "structure"})
+                    and before.get(field) != after.get(field)
+                ):
+                    owners = members if section == "instruction" and members else [members[0] if members else 0]
+                    for number in owners:
+                        changes.append({
+                            "question_number": number,
+                            "section": section,
+                            "field": field,
+                            "before": before.get(field),
+                            "after": after.get(field),
+                        })
+    old_groups = _grouped(base_face.get("groups"))
+    new_groups = _grouped(new_face.get("groups"))
+    group_numbers = _group_question_numbers(new_face or base_face)
+    for group_id in sorted(set(old_groups) | set(new_groups)):
+        before = old_groups.get(group_id) or {}
+        after = new_groups.get(group_id) or {}
+        for number in sorted(_group_visible_change_numbers(
+            before, after, group_numbers.get(group_id, []),
+        )):
+            changes.append({
+                "question_number": number,
+                "section": "group_structure",
+                "field": "visible_wording",
+                "before": {
+                    "title": before.get("title"),
+                    "structure": before.get("structure"),
+                },
+                "after": {
+                    "title": after.get("title"),
+                    "structure": after.get("structure"),
+                },
+            })
     return changes
 
 

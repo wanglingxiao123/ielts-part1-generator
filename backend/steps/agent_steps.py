@@ -1008,7 +1008,10 @@ async def revise_questions_from_comments(
             "The material, all ten blueprint information points, item_form, form_group, and group "
             "boundaries are immutable. Do not retarget any answer. Make the smallest sufficient "
             "change and synchronise every dependent question-face, answer-key, accepted-answer, "
-            "word-limit, evidence, and metadata field.",
+            "word-limit, evidence, and metadata field. Visible wording may live in group structure "
+            "(for example form row_labels, note section headings, or table labels/cells); when a "
+            "comment requests such wording, edit that exact visible structure field while keeping "
+            "the layout and all unrelated rows unchanged.",
             "Run the validator until it reports no errors. Return exactly "
             '{"outcome":"revised","package":{COMPLETE QUESTION PACKAGE}}.',
         ]) + workspace.instructions()
