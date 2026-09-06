@@ -302,18 +302,18 @@ flowchart TB
     end
 
     D -. "交付后可选" .-> CM
-    D -. "交付后可选" .-> TM
 
     subgraph REVISION["模块三* · 人工评价与版本修订（可选）"]
         direction LR
-        CM["提交题目批注*"] --> CL{"先分类<br/>不直接改稿"}
-        TM["提交 Turn 批注*"] --> TL{"是否属于<br/>局部修改"}
+        CM["提交人工批注*"] --> CT{"批注类型"}
+        CT -- "题目" --> CL{"先分类<br/>不直接改稿"}
+        CT -- "Turn" --> TL{"是否属于<br/>局部修改"}
         CL -- "无需修改" --> NC["记录理由与引证<br/>版本不变"]
         CL -- "局部修题" --> QR["只修改锚定题目"]
         CL -- "重新命题" --> RP["确认后重规划蓝图<br/>重建完整十题"]
         CL -- "修改材料" --> MR["确认后修改材料<br/>重建蓝图与十题"]
         TL -- "是" --> LR["只修改锚定 Turn"]
-        TL -- "否" --> NC
+        TL -- "否" --> LN["记录原因<br/>版本不变"]
         QR --> QA["完整校验 +<br/>独立盲审"]
         RP --> QA
         MR --> QA
@@ -329,16 +329,16 @@ flowchart TB
     classDef optional fill:#f3e8ff,stroke:#9333ea,color:#581c87;
     class G,R,T,J,QR,RP,MR,LR ai;
     class A,E,H,QA audit;
-    class Q,F,V,X,C,B,P,K,W,CL,TL code;
-    class CM,TM,NV optional;
-    class O,D,NC,AD done;
+    class Q,F,V,X,C,B,P,K,W,CT,CL,TL code;
+    class CM,NV optional;
+    class O,D,NC,LN,AD done;
     style MATERIAL fill:#fff8e8,stroke:#d97706,stroke-width:2px;
     style QUESTIONS fill:#eff6ff,stroke:#2563eb,stroke-width:2px;
     style REVISION fill:#faf5ff,stroke:#9333ea,stroke-width:2px,stroke-dasharray:5 5;
 ```
 
 这张图按三个模块表达系统结构：模块一生成并审核听力材料，模块二生成并审核对应题目；二者是每次
-生成都要经过的主流程。带星号、虚线边框的模块三是**交付后的可选优化步骤**，只有用户提交题目批注
+生成都要经过的主流程。带星号、虚线边框的模块三是**交付后的可选优化步骤**，只有用户提交题目或 Turn 批注
 时才进入，不属于一次生成请求的必经路径。区域内部，黄色节点是负责写作或改稿的生成 Agent，蓝色
 节点是独立审核，灰色节点是 Python 控制的校验、预检和重试，绿色节点是采用或交付结果。图只表达
 整体方向；各层的重试边界和交付门槛在下文说明。
