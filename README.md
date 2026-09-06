@@ -265,11 +265,12 @@ ielts-<material_id>-v<n>.zip
 
 ```mermaid
 %%{init: {"flowchart": {"curve": "stepAfter", "nodeSpacing": 28, "rankSpacing": 42}}}%%
-flowchart LR
+flowchart TB
+    Q["生成请求"] --> F["Web 按套数拆分<br/>多套同时生成"]
+
     subgraph MATERIAL["模块一 · 听力材料生成"]
         direction LR
-        Q["生成请求"] --> F["Web 按套数拆分<br/>多套同时生成"]
-        F --> G["生成 Agent<br/>选 Skill 并生成"]
+        G["生成 Agent<br/>选 Skill 并生成"]
         G --> V{"Python 校验"}
         V -- "错误，最多 3 次" --> G
         V -- "通过或次数用完" --> A["独立审核 Agent<br/>盲审原稿"]
@@ -280,26 +281,12 @@ flowchart LR
         C -- "不通过" --> O
         C -- "通过" --> E["全新审核 Agent<br/>复评修改稿"]
         E --> B["原稿 / 修改稿择优"]
-        O --> M["材料定稿"]
-        B --> M
     end
 
-    classDef ai fill:#fef3c7,stroke:#d97706,color:#78350f;
-    classDef audit fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
-    classDef code fill:#f3f4f6,stroke:#6b7280,color:#111827;
-    classDef done fill:#dcfce7,stroke:#16a34a,color:#14532d;
-    class G,R ai;
-    class A,E audit;
-    class Q,F,V,X,C,B code;
-    class O,M done;
-    style MATERIAL fill:#fff8e8,stroke:#d97706,stroke-width:2px;
-```
+    F --> G
+    O --> P
+    B --> P
 
-材料定稿后进入题目生成：
-
-```mermaid
-%%{init: {"flowchart": {"curve": "stepAfter", "nodeSpacing": 28, "rankSpacing": 42}}}%%
-flowchart LR
     subgraph QUESTIONS["模块二 · 题目生成"]
         direction LR
         P{"预选答案点<br/>是否可出题"}
@@ -310,41 +297,22 @@ flowchart LR
         H -- "可交付" --> D["交付完整套件<br/>材料 + 题目"]
         H -- "仍有硬问题" --> K{"同一材料<br/>重启题目阶段一次"}
         K -- "首次失败" --> T
-        K -- "再次失败" --> W["更换候选材料<br/>返回材料生成"]
+        K -- "再次失败" --> W["更换候选材料<br/>返回上方材料模块"]
         P -- "材料不适合出题" --> W
     end
 
-    classDef ai fill:#fef3c7,stroke:#d97706,color:#78350f;
-    classDef audit fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
-    classDef code fill:#f3f4f6,stroke:#6b7280,color:#111827;
-    classDef done fill:#dcfce7,stroke:#16a34a,color:#14532d;
-    class T,J ai;
-    class H audit;
-    class P,K,W code;
-    class D done;
-    style QUESTIONS fill:#eff6ff,stroke:#2563eb,stroke-width:2px;
-```
+    D -. "交付后可选" .-> CM
 
-完整套件交付后，可按需进入人工修订：
-
-```mermaid
-%%{init: {"flowchart": {"curve": "stepAfter", "nodeSpacing": 28, "rankSpacing": 42}}}%%
-flowchart LR
     subgraph REVISION["模块三* · 人工评价与版本修订（可选）"]
         direction LR
-        CM["提交人工批注*"] --> CT{"批注类型"}
-        CT -- "题目" --> CL{"先分类<br/>不直接改稿"}
-        CT -- "Turn" --> TL{"是否属于<br/>局部修改"}
+        CM["提交题目批注*"] --> CL{"先分类<br/>不直接改稿"}
         CL -- "无需修改" --> NC["记录理由与引证<br/>版本不变"]
         CL -- "局部修题" --> QR["只修改锚定题目"]
         CL -- "重新命题" --> RP["确认后重规划蓝图<br/>重建完整十题"]
         CL -- "修改材料" --> MR["确认后修改材料<br/>重建蓝图与十题"]
-        TL -- "是" --> LR["只修改锚定 Turn"]
-        TL -- "否" --> LN["记录原因<br/>版本不变"]
         QR --> QA["完整校验 +<br/>独立盲审"]
         RP --> QA
         MR --> QA
-        LR --> QA
         QA --> NV["生成不可变新版本<br/>不自动采用"]
         NV --> AD["人工检查并采用"]
     end
@@ -354,11 +322,13 @@ flowchart LR
     classDef code fill:#f3f4f6,stroke:#6b7280,color:#111827;
     classDef done fill:#dcfce7,stroke:#16a34a,color:#14532d;
     classDef optional fill:#f3e8ff,stroke:#9333ea,color:#581c87;
-    class QR,RP,MR,LR ai;
-    class QA audit;
-    class CT,CL,TL code;
+    class G,R,T,J,QR,RP,MR ai;
+    class A,E,H,QA audit;
+    class Q,F,V,X,C,B,P,K,W,CL code;
     class CM,NV optional;
-    class NC,LN,AD done;
+    class O,D,NC,AD done;
+    style MATERIAL fill:#fff8e8,stroke:#d97706,stroke-width:2px;
+    style QUESTIONS fill:#eff6ff,stroke:#2563eb,stroke-width:2px;
     style REVISION fill:#faf5ff,stroke:#9333ea,stroke-width:2px,stroke-dasharray:5 5;
 ```
 
