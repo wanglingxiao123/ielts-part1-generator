@@ -26,11 +26,11 @@ Place the User Guide screenshots in this directory as PNG files.
 | `15-material-comparison.png` | 同场景材料 A/B 对比页面 |
 | `16-material-selection.png` | 材料勾选状态和底部提交按钮 |
 | `17-batch-history.png` | 历史批次面板 |
-| `18-qti-export-导出按钮.png` | 当前题目版本对应的 QTI 导出按钮 |
-| `18-qti-export-导出按结果.png` | 浏览器下载的 QTI zip 文件及版本化文件名 |
-| `20-删掉无用复述局部材料修改意见.png` | 选中 Turn 29 并提交删除冗余复述的批注意见 |
-| `20-删掉无用复述局部材料修改成功.png` | 局部修改完成后的 before/after、版本和录音影响 |
-| `21-要求大面积材料修改拒绝.png` | 大范围场景重写被判定为超出局部范围 |
+| `18-qti-export-button.png` | 当前题目版本对应的 QTI 导出按钮 |
+| `18-qti-export-download.png` | 浏览器下载的 QTI zip 文件及版本化文件名 |
+| `19-local-material-revision-comment.png` | 选中 Turn 29 并提交删除冗余复述的批注意见 |
+| `20-local-material-revision-completed.png` | 局部修改完成后的 before/after、版本和录音影响 |
+| `21-local-material-revision-rejected.png` | 大范围场景重写被判定为超出局部范围 |
 | `24-review-queue.png` | 审核队列中的已提交批次和撤回操作 |
 
 ## Capture Guidelines

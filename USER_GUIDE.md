@@ -127,13 +127,13 @@ IMS QTI 2.2.4 标准打包，可直接导入支持该标准的题库或考试系
 确认的判分口径（例如某个短语的简写算不算对），导入前请打开看一遍。包里不含音频，音频需要另行
 交付给下游。
 
-![当前版本的 QTI 导出按钮](<docs/images/user-guide/18-qti-export-导出按钮.png>)
+![当前版本的 QTI 导出按钮](docs/images/user-guide/18-qti-export-button.png)
 
 点击后，浏览器会下载一个以材料 ID 和版本号命名的 zip，例如下图中的
 `ielts-20260903-booking-hotel-108c471b-v7.zip`。文件名中的 `v7` 表示这次下载的是 V7。上图展示的
 按钮是另一次查看 V8 时的状态；实际使用时，按钮和新下载文件的版本号应与当前选择的版本一致。
 
-![浏览器下载 QTI 压缩包](<docs/images/user-guide/18-qti-export-导出按结果.png>)
+![浏览器下载 QTI 压缩包](docs/images/user-guide/18-qti-export-download.png)
 
 如果提示「未通过导出门禁」，说明这一版题目的审核数据本身有不一致之处（提示里会逐条列出原因），
 重试不会有变化；请先按第 5 节修改题目，生成新版本后再导出。
@@ -186,7 +186,7 @@ IMS QTI 2.2.4 标准打包，可直接导入支持该标准的题库或考试系
 下图中，Turn 29 被选中，右侧已经保存了一条“一般”批注。确认意见无误后，点击右下角
 “分析并局部修改”：
 
-![为 Turn 29 提交删除冗余复述的意见](<docs/images/user-guide/20-删掉无用复述局部材料修改意见.png>)
+![为 Turn 29 提交删除冗余复述的意见](docs/images/user-guide/19-local-material-revision-comment.png)
 
 ### 查看处理进度
 
@@ -222,7 +222,7 @@ IMS QTI 2.2.4 标准打包，可直接导入支持该标准的题库或考试系
 - 黄色提示说明该版本修改了听力原文，需要生成新版录音；
 - Q9、Q10 的答案承载句仍保留，题目和答案没有变化。
 
-![删除冗余复述后生成新的材料版本](<docs/images/user-guide/20-删掉无用复述局部材料修改成功.png>)
+![删除冗余复述后生成新的材料版本](docs/images/user-guide/20-local-material-revision-completed.png)
 
 ### 哪些修改会被拒绝
 
@@ -241,7 +241,7 @@ IMS QTI 2.2.4 标准打包，可直接导入支持该标准的题库或考试系
 修改。系统会把批注标记为“超出局部范围”，说明它会影响多个 Turn、证据、信息点和题目支持关系，
 且不会生成新版本。
 
-![大范围重写材料被判定为超出局部范围](<docs/images/user-guide/21-要求大面积材料修改拒绝.png>)
+![大范围重写材料被判定为超出局部范围](docs/images/user-guide/21-local-material-revision-rejected.png)
 
 ### 局部修改失败后怎么办
 
