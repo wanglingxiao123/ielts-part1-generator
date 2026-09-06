@@ -26,6 +26,13 @@ Place the User Guide screenshots in this directory as PNG files.
 | `15-material-comparison.png` | 同场景材料 A/B 对比页面 |
 | `16-material-selection.png` | 材料勾选状态和底部提交按钮 |
 | `17-batch-history.png` | 历史批次面板 |
+| `18-qti-export.png` | 题目预览中的版本选择、QTI 导出按钮和导出成功信息 |
+| `19-submit-turn-comment.png` | 选中 Turn、填写并保存一条材料原文批注 |
+| `20-local-material-revision-running.png` | 局部材料修改的目标 Turn 和五步进度 |
+| `21-local-material-revision-completed.png` | 局部材料修改完成后的 before/after 和音频影响 |
+| `22-local-material-revision-rejected.png` | 会影响题目或答案的局部修改拒绝结果 |
+| `23-local-material-revision-failed.png` | 局部修改失败原因和可重新提交状态 |
+| `24-review-queue.png` | 审核队列中的已提交批次和撤回操作 |
 
 ## Capture Guidelines
 
