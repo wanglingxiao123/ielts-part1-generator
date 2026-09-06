@@ -21,7 +21,14 @@
 
 set -euo pipefail
 
-export AWS_REGION="${AWS_REGION:-us-east-1}"
+# Accept the region from either AWS_REGION or AWS_DEFAULT_REGION (or default), then force BOTH to
+# agree. The AWS CLI resolves its region from AWS_DEFAULT_REGION / the active profile -- NOT from
+# AWS_REGION -- so without exporting AWS_DEFAULT_REGION here every `aws` call could silently target
+# the profile's default region while require_region() below only validates AWS_REGION. That mismatch
+# is how a us-east-1 create-bucket gets sent to a us-west-2 endpoint and fails with
+# IllegalLocationConstraint.
+export AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
+export AWS_DEFAULT_REGION="$AWS_REGION"
 
 # Discovered from the caller's own credentials rather than hardcoded, so this repo carries no
 # account identity. Override by exporting ACCOUNT_ID if you need a different target.
