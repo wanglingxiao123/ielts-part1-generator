@@ -9,8 +9,8 @@
   审核结果。
 - **材料和题目分别审核**：材料审核看不到生成者的 `blueprint`；题目审核看不到答案键，再由 Python
   将独立重建结果交叉检查。
-- **交付后可从题目批注发起修订**：系统先把意见分类为无需修改、局部修题、重新规划题组或修改材料，
-  再生成不可变的新版本；当前采用版本不会被自动覆盖。
+- **交付后可从题目或 Turn 批注发起修订**：题目支持局部修改、重新命题或修改材料；原文支持单个
+  Turn 的局部修改。成功结果保存为新版本，不自动覆盖当前采用版本。
 - **不在生成流程中合成音频**：用户主动生成音频时，系统才按需调用 Polly；提交审核不会自动
   触发音频合成。
 
@@ -86,6 +86,7 @@ digest、健康检查和遗留问题。
 │   │   ├── manual_question_revision.py # 题面级批注修订
 │   │   ├── manual_question_replan.py # 保持材料不变的完整重命题
 │   │   ├── manual_material_revision.py # 修改材料并重建蓝图与十题
+│   │   ├── manual_material_local_revision.py # 单个 Turn 的材料原文局部修改
 │   │   ├── delivery.py               # 完整套件、换材料、断点与精确数量交付
 │   │   ├── batch.py                  # 旧的仅材料 action 与测试入口
 │   │   ├── candidate_store.py        # 候选材料注册
@@ -172,7 +173,7 @@ flowchart LR
 
 | 组件 | 职责 |
 |---|---|
-| 浏览器 | 选择场景、显示逐套生成进度、审阅原文和题目、提交题目批注、管理版本、生成音频或提交审核 |
+| 浏览器 | 选择场景、显示逐套生成进度、审阅原文和题目、提交题目或 Turn 批注、管理版本、生成音频或提交审核 |
 | CloudFront + ALB | 提供稳定 HTTPS 地址，将动态请求转发到 Web 服务 |
 | Web / ECS | 登录、批次历史、后台执行、修订版本、调用 Runtime，并把运行进度投影为 SSE |
 | AgentCore Runtime | 创建 Strands Agent，执行材料与题目的生成、校验、盲审、修改和按需音频 action；`PUBLIC` 网络模式用于访问 AWS 公网服务 |
@@ -188,7 +189,7 @@ flowchart LR
 2. `web/fanout.py` 为每套材料向同一个已部署的 AgentCore Runtime 发起一次独立 invocation，
    每次使用不同的 `runtimeSessionId`，并按 `WEB_FANOUT_CONCURRENCY` 控制并发。
 3. 每次 invocation 为一套结果执行第 3 节的 Agent Loop，依次完成材料、可行性预检和十道题。
-4. Web 将多条 Runtime 流合并为一条 SSE；浏览器不必等待整个批次完成，可以逐套看到结果。
+4. Web 将多条 Runtime 流合并为一条 SSE；浏览器可逐套看到结果，材料卡同时预览两组题型。
 5. Web 同时把批次索引和结果保存到 S3，供刷新页面和历史查询使用。
 
 `generate_sets` 使用 SSE，因此适用 AgentCore 的 60 分钟流式上限，而不是 15 分钟同步上限。
@@ -301,17 +302,22 @@ flowchart TB
     end
 
     D -. "交付后可选" .-> CM
+    D -. "交付后可选" .-> TM
 
     subgraph REVISION["模块三* · 人工评价与版本修订（可选）"]
         direction LR
         CM["提交题目批注*"] --> CL{"先分类<br/>不直接改稿"}
+        TM["提交 Turn 批注*"] --> TL{"是否属于<br/>局部修改"}
         CL -- "无需修改" --> NC["记录理由与引证<br/>版本不变"]
         CL -- "局部修题" --> QR["只修改锚定题目"]
         CL -- "重新命题" --> RP["确认后重规划蓝图<br/>重建完整十题"]
         CL -- "修改材料" --> MR["确认后修改材料<br/>重建蓝图与十题"]
+        TL -- "是" --> LR["只修改锚定 Turn"]
+        TL -- "否" --> NC
         QR --> QA["完整校验 +<br/>独立盲审"]
         RP --> QA
         MR --> QA
+        LR --> QA
         QA --> NV["生成不可变新版本<br/>不自动采用"]
         NV --> AD["人工检查并采用"]
     end
@@ -321,10 +327,10 @@ flowchart TB
     classDef code fill:#f3f4f6,stroke:#6b7280,color:#111827;
     classDef done fill:#dcfce7,stroke:#16a34a,color:#14532d;
     classDef optional fill:#f3e8ff,stroke:#9333ea,color:#581c87;
-    class G,R,T,J,QR,RP,MR ai;
+    class G,R,T,J,QR,RP,MR,LR ai;
     class A,E,H,QA audit;
-    class Q,F,V,X,C,B,P,K,W,CL code;
-    class CM,NV optional;
+    class Q,F,V,X,C,B,P,K,W,CL,TL code;
+    class CM,TM,NV optional;
     class O,D,NC,AD done;
     style MATERIAL fill:#fff8e8,stroke:#d97706,stroke-width:2px;
     style QUESTIONS fill:#eff6ff,stroke:#2563eb,stroke-width:2px;
@@ -460,7 +466,7 @@ Agent 先看到池内 Skill 的 name + description
 | 目录 | `skills/generate/generate-listening-part1/` | `skills/audit/audit-listening-part1/` |
 | 入口 | `SKILL.md` | `SKILL.md` |
 | 规范 | `references/specification.md` | `references/audit-rubric.md` |
-| Schema | `material.schema.json`、`blueprint.schema.json`（写侧，只允许 v2）、`blueprint.read.schema.json`（读侧，v1/v2 都收） | `audit.schema.json` |
+| Schema | `material.schema.json`、`blueprint.schema.json`（写侧，只允许 v3）、`blueprint.read.schema.json`（读侧兼容历史版本） | `audit.schema.json` |
 | 脚本 | `validate_part1.py` | `audit_metrics.py` |
 
 生成结果的统一外壳是：
@@ -503,7 +509,7 @@ repair_anchors()
 validator 不调用模型，只检查可明确计算的规则：
 
 - **数据格式**：必填字段、Schema、禁止出现的题目/答案/分析字段；
-- **结构数量**：说话人、旁白、十个信息点、字数和轮数；
+- **结构数量**：说话人、旁白、十个信息点、字数和轮数；对话推荐 28–35 轮，硬上限 36 轮；
 - **标注一致性**：答案是否在证据句中、`turn_index` 是否指向该句、信息点顺序是否正确。
 
 `warnings` 不触发重生成，只作为修改建议。三次仍有错误时保留最后一稿、继续审核并附上
@@ -562,7 +568,8 @@ material + metrics
 Form / Note / Table，同时检查蓝图的题型和分组符合材料的信息关系。通过后，题目生成 Agent 才将
 这些已确认的答案点写成正式题面，`question_loop.py` 执行：
 
-1. 题目生成 Agent 输出十道题、答案键和证据；题组数量和边界由材料蓝图中的自然信息结构决定；
+1. 题目生成 Agent 输出十道题、答案键和证据；固定分为两组，切分只能是 `4+6`、`5+5` 或 `6+4`，
+   两组分别使用 Form、Note 或 Table，允许同题型；
 2. Python validator 检查 Schema、题型结构、rubric、答案预算、证据和题面泄露；
 3. 题目审核 Agent 只看考生可见题面与材料，独立重建答案；
 4. Python 将重建答案与答案键交叉检查，识别分歧、竞争答案、泄露和证据锚点问题；
@@ -571,6 +578,9 @@ Form / Note / Table，同时检查蓝图的题型和分组符合材料的信息�
 `CRITICAL`、`MAJOR`、答案泄露、同等成立的竞争答案、答案分歧和 validator error 都是硬阻断。
 只有 `MINOR` 或允许保留的提示时可以作为 `WARNING` 交付。题目修改不得改录音原文；如果 Agent
 返回了改写后的 script，整轮修改会被拒绝。
+
+答案键可记录常见等价写法，包括日期顺序与缩写、时间格式、数字词形、金额、连字符和专有名词大小写；
+数字词形仅在题目字数限制允许时加入。
 
 ### 3.8 精确数量、重启与换材料
 
@@ -582,7 +592,7 @@ Form / Note / Table，同时检查蓝图的题型和分组符合材料的信息�
 - 所有阶段状态写入 S3；Runtime 中断时可以从最后完成的阶段继续，而不是重做已通过内容；
 - 请求 N 套时，只有 N 个 slot 都达到 `complete` 才返回 `succeeded`。
 
-### 3.9 题目批注、路由与不可变版本
+### 3.9 人工批注、路由与不可变版本
 
 交付后的人工修订从题目锚点批注开始。当前用户界面支持针对 Q1-Q10 提交评价。
 
@@ -594,6 +604,10 @@ Form / Note / Table，同时检查蓝图的题型和分组符合材料的信息�
 | `question_only` | 只允许修改批注锚定题目的题面、答案键或证据；材料和蓝图不变 |
 | `replan_questions` | 用户确认后重建蓝图和完整十题；可用 `layout_only` 保留原信息点，仅调整 Form/Note/Table 和题组边界 |
 | `revise_material` | 用户确认后修改听力稿，并从新材料重建蓝图、完整十题和对应音频归属 |
+
+原文页支持对单个非旁白 Turn 提交局部修改。`revise_material_local` 只采用锚定 Turn 的文字变化；
+题目、答案、题组和其他 Turn 保持不变。越界意见只返回原因，不创建版本。原文发生变化后，新版本音频
+标记为待重新合成。
 
 所有成功修订都写成新的不可变版本，记录 `based_on_version_id`、来源批注和质量结果。新版本生成后不会
 自动采用；用户可以先比较、试听，再显式采用。采用版本时材料、蓝图、题包、答案、证据和音频归属作为
@@ -632,6 +646,7 @@ Runtime read timeout 为 3450 秒。
 | `backend/orchestration/manual_question_revision.py` | 批注范围内的局部题目修改 |
 | `backend/orchestration/manual_question_replan.py` | 材料不变的蓝图重规划和完整重命题 |
 | `backend/orchestration/manual_material_revision.py` | 材料、蓝图和十题的一致修订 |
+| `backend/orchestration/manual_material_local_revision.py` | 单个 Turn 的材料原文局部修改与质量门禁 |
 | `backend/orchestration/delivery.py` | slot 状态、可行性预检、题目重启、换材料、断点和精确数量交付 |
 | `backend/orchestration/slot_store.py` | `_slots/` 与 `_questions/` 的 S3 持久化 |
 | `backend/orchestration/batch.py` | 旧的仅材料 `generate` action 与测试入口 |
@@ -1218,6 +1233,12 @@ s3://ielts-part1-materials-{account}/
 │   └── slot-*.json
 ├── _questions/{material_id}.json
 ├── _comments/{material_id}.json
+├── _question_versions/{material_id}/
+│   ├── active.json
+│   └── versions/{version_id}.json
+├── _question_revisions/{material_id}/
+│   ├── running.json
+│   └── {request_id}.json
 ├── _candidates/{material_id}.json
 ├── _candidates/{material_id}.job.json
 ├── _claims/{group_key}.json
@@ -1226,6 +1247,7 @@ s3://ielts-part1-materials-{account}/
 
 - `_slots/` 保存每个交付名额的阶段、重启和换材料状态，`_questions/` 只保存通过交付门槛的题目包。
 - `_comments/` 保存材料阅读页上的个人批注，与材料和题目产物分开。
+- `_question_versions/` 保存不可变评估版本和当前采用指针；`_question_revisions/` 保存修订进度与终态。
 - 自动生成结束后，候选信息写入 `_candidates/` 和批次空间；不会自动出现音频。
 - 未提交审核的候选保留 30 天，期间可以跨日审阅和提交；过期后不能再提交审核。
 - 用户主动生成音频后才创建 `audio/`。`manifest.json` 最后写入，是“音频完整”的哨兵；没有
