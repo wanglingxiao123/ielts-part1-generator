@@ -264,14 +264,14 @@ ielts-<material_id>-v<n>.zip
 ## 3. 生成流程（Agent Loop）
 
 ```mermaid
-%%{init: {"flowchart": {"curve": "stepAfter", "nodeSpacing": 28, "rankSpacing": 42}}}%%
+%%{init: {"flowchart": {"curve": "stepAfter", "nodeSpacing": 28, "rankSpacing": 50}}}%%
 flowchart TB
     Q["生成请求"] --> F["Web 按套数拆分<br/>多套同时生成"]
+    F --> MATERIAL
 
     subgraph MATERIAL["模块一 · 听力材料生成"]
         direction LR
-        G["生成 Agent<br/>选 Skill 并生成"]
-        G --> V{"Python 校验"}
+        G["生成 Agent<br/>选 Skill 并生成"] --> V{"Python 校验"}
         V -- "错误，最多 3 次" --> G
         V -- "通过或次数用完" --> A["独立审核 Agent<br/>盲审原稿"]
         A --> X{"是否修改"}
@@ -283,9 +283,7 @@ flowchart TB
         E --> B["原稿 / 修改稿择优"]
     end
 
-    F --> G
-    O --> P
-    B --> P
+    MATERIAL --> QUESTIONS
 
     subgraph QUESTIONS["模块二 · 题目生成"]
         direction LR
@@ -297,11 +295,11 @@ flowchart TB
         H -- "可交付" --> D["交付完整套件<br/>材料 + 题目"]
         H -- "仍有硬问题" --> K{"同一材料<br/>重启题目阶段一次"}
         K -- "首次失败" --> T
-        K -- "再次失败" --> W["更换候选材料<br/>返回上方材料模块"]
+        K -- "再次失败" --> W["更换候选材料<br/>⚠️ 返回模块一"]
         P -- "材料不适合出题" --> W
     end
 
-    D -. "交付后可选" .-> CM
+    QUESTIONS -. "交付后可选" .-> REVISION
 
     subgraph REVISION["模块三* · 人工评价与版本修订（可选）"]
         direction LR
