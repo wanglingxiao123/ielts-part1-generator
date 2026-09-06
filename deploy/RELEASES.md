@@ -9,22 +9,21 @@
 
 ## 当前生产版本
 
-**Runtime 为 `local-confirmation-advisory-725fce3`，web 为
-`local-revision-progress-3bd257b`**，分支 `feat/major-rework-20260903`。Runtime 来自 commit
-`725fce3`、承载在 version **62**；web 来自 commit `3bd257b`、承载在 ECS taskdef
-**`ielts-part1-web:76`**。本轮 Runtime 将人工局部修改后的 confirmed 总数不足 3 降为提醒，
-不再阻断答案证据仍清晰的冗余复述删除；初始材料生成规则与必要确认门禁保持不变。web 本轮无需重建。
+**Runtime 与 web 层均为 `local-audit-variance-f752bd5`**，分支
+`feat/major-rework-20260903`，来自 commit `f752bd5`。Runtime 承载在 version **63**；
+web 承载在 ECS taskdef **`ielts-part1-web:77`**。本轮将未受局部 Turn 修改影响的题目盲审波动
+降为基线提醒，只让受影响题目的新缺陷阻断；前端直接读取 durable failure 作为兜底，避免失败后空白。
 **未合并 main**。
 
 digest：backend
-`sha256:66430b07d44affeb54bb2749470e39e4e851e97c798d5607dcf4330edaefeb8d`，
+`sha256:9bde5a7af5a35b6e65898fb31b2b5ac8cef8eaf3f6f1c5bca3c4e6b9287d7695`，
 frontend
-`sha256:6bcfd678f81668504be43660543678b1cc928f0892e152452957008da1e53a0e`。
+`sha256:3438365554320829acbb1f33325f0fb9bf004c8169b7bd3871424649c5aaee16`。
 部署后 ECS rollout `COMPLETED`、ALB target healthy、CloudFront `/healthz` 200；线上镜像
 已切换到本轮修复版本。邮箱域名仍为 `amazon.com,example.com`，并发仍为 20。
 
-回退基线：Runtime 重放 `redundant-confirmation-37fea4c`（v61）；web 未变，仍为 taskdef
-**76**。
+回退基线：Runtime 重放 `local-confirmation-advisory-725fce3`（v62），web 回到 taskdef
+**76**（`local-revision-progress-3bd257b`）。
 
 本轮 hotfix 修复 Blueprint v3 在 feasibility 入口被旧版 v2-only guard 拒绝、继而令整批
 落入 `SEMANTICS_MISSING` 的问题。入口现在接受 preflight 明确支持的 v2/v3，并增加测试锁定：
