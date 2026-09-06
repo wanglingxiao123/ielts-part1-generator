@@ -1030,7 +1030,8 @@ class WebTier:
                 "action": "revise_material_local", "material_id": material_id,
                 "request_id": revision["request_id"], "base_version_id": base_version_id,
                 "material": artifacts["material"], "blueprint": artifacts["blueprint"],
-                "package": artifacts["package"], "comments": comments, "actor": actor,
+                "package": artifacts["package"], "base_version": artifacts["base_version"],
+                "comments": comments, "actor": actor,
             }
             return self._start_revision_execution(payload, material_id, revision)
 

@@ -190,6 +190,32 @@ def _local_question_gate(
     return blockers, advisories
 
 
+def _base_question_quality(base_version: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the already accepted question-quality snapshot for one assessment version."""
+    quality = base_version.get("quality")
+    if not isinstance(quality, dict):
+        return {}
+    questions = quality.get("questions")
+    return questions if isinstance(questions, dict) else quality
+
+
+def _question_quality_for_storage(
+    *,
+    candidate_quality: Dict[str, Any],
+    base_version: Dict[str, Any],
+    package_changed: bool,
+    baseline_advisories: List[str],
+) -> Dict[str, Any]:
+    """Keep trusted base quality only when the question package is byte-for-byte unchanged."""
+    if not baseline_advisories or package_changed:
+        return candidate_quality
+    baseline_quality = _base_question_quality(base_version)
+    if not baseline_quality:
+        raise ValueError(
+            "base question quality is missing; cannot reconcile unrelated audit variance")
+    return copy.deepcopy(baseline_quality)
+
+
 async def revise_material_local(
     *,
     store: SlotStore,
@@ -199,6 +225,7 @@ async def revise_material_local(
     material: Dict[str, Any],
     blueprint: Dict[str, Any],
     package: Dict[str, Any],
+    base_version: Dict[str, Any],
     comments: List[Dict[str, Any]],
     actor: str,
 ) -> AsyncIterator[Dict[str, Any]]:
@@ -330,6 +357,12 @@ async def revise_material_local(
             raise ValueError(
                 "question quality rejected the local patch: %s"
                 % "; ".join(question_blockers[:8]))
+        question_quality = _question_quality_for_storage(
+            candidate_quality=question_candidate.as_dict(),
+            base_version=base_version,
+            package_changed=revised_package != package,
+            baseline_advisories=baseline_advisories,
+        )
 
         request.update(stage="storing", updated_at=_now())
         store.save_question_revision(material_id, request_id, request)
@@ -343,7 +376,7 @@ async def revise_material_local(
             "quality": {
                 "material": {"audit": audit, "cross_check": check.as_dict(),
                              "validation": validation.as_dict()},
-                "questions": question_candidate.as_dict(),
+                "questions": question_quality,
             },
             "baseline_advisories": baseline_advisories,
             "created_by": actor, "material_sha256": _hash(projected),

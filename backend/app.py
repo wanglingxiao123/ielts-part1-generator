@@ -597,7 +597,7 @@ async def _revise_material_local(payload: Dict[str, Any]):
     from .orchestration.slot_store import build_slot_store
 
     required = ("material_id", "request_id", "base_version_id", "material",
-                "blueprint", "package", "comments")
+                "blueprint", "package", "base_version", "comments")
     if any(not payload.get(key) for key in required):
         yield {"type": "question_revision_failed", "message": "missing local revision fields"}
         return
@@ -611,6 +611,7 @@ async def _revise_material_local(payload: Dict[str, Any]):
         request_id=str(payload["request_id"]),
         base_version_id=str(payload["base_version_id"]), material=payload["material"],
         blueprint=payload["blueprint"], package=payload["package"],
+        base_version=payload["base_version"],
         comments=comments, actor=str(payload.get("actor") or "reviewer"),
     ):
         yield event

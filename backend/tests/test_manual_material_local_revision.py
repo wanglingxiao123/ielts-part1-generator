@@ -4,8 +4,10 @@ import pytest
 
 from backend.orchestration.manual_material_local_revision import (
     _apply_confirmed_updates,
+    _base_question_quality,
     _blueprint_immutable_surface,
     _local_question_gate,
+    _question_quality_for_storage,
     _relax_local_confirmation_density,
     material_turns,
     project_local_candidate,
@@ -233,3 +235,43 @@ def test_local_question_gate_keeps_edited_question_defect_blocking():
 
     assert blockers == ["cross-check answer_divergence on Q10"]
     assert advisories == []
+
+
+def test_base_question_quality_reads_nested_assessment_quality():
+    questions = {"status": "PASS", "cross_check": {"ok": True}}
+
+    assert _base_question_quality({
+        "quality": {"material": {"validation": {"ok": True}}, "questions": questions}
+    }) == questions
+
+
+def test_base_question_quality_supports_legacy_flat_quality():
+    quality = {"status": "PASS", "cross_check": {"ok": True}}
+
+    assert _base_question_quality({"quality": quality}) == quality
+
+
+def test_unchanged_package_uses_clean_base_quality_after_unrelated_audit_variance():
+    candidate = {"status": "FAIL", "cross_check": {"ok": False}}
+    baseline = {"status": "PASS", "cross_check": {"ok": True}}
+
+    stored = _question_quality_for_storage(
+        candidate_quality=candidate,
+        base_version={"quality": {"questions": baseline}},
+        package_changed=False,
+        baseline_advisories=["Q4 audit variance"],
+    )
+
+    assert stored == baseline
+    assert stored is not baseline
+
+
+def test_changed_package_never_falls_back_to_base_quality():
+    candidate = {"status": "PASS", "cross_check": {"ok": True, "agreed": 10}}
+
+    assert _question_quality_for_storage(
+        candidate_quality=candidate,
+        base_version={"quality": {"questions": {"status": "PASS"}}},
+        package_changed=True,
+        baseline_advisories=["Q4 audit variance"],
+    ) is candidate
