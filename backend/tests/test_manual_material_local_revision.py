@@ -5,6 +5,7 @@ import pytest
 from backend.orchestration.manual_material_local_revision import (
     _apply_confirmed_updates,
     _blueprint_immutable_surface,
+    _local_question_gate,
     _relax_local_confirmation_density,
     material_turns,
     project_local_candidate,
@@ -183,3 +184,52 @@ def test_local_revision_can_pass_with_two_confirmed_items():
     assert validation.ok is True
     assert validation.errors == []
     assert len(validation.warnings) == 2
+
+
+def test_local_question_gate_downgrades_unrelated_audit_variance():
+    class Candidate:
+        pass
+
+    candidate = Candidate()
+    candidate.counts = {}
+    candidate.validation = ValidationResult([], [], {})
+    candidate.cross_check = type("Cross", (), {
+        "hard_defects": [{"outcome": "anchor_divergence", "number": 4}],
+        "leakage": [],
+        "equally_supported_rivals": [],
+        "needs_review": [],
+        "consistency": {"computed": {"reviewed_question_ids": list(range(1, 11))}},
+        "compared": 10,
+        "agreed": 9,
+    })()
+
+    blockers, advisories = _local_question_gate(candidate, {10})
+
+    assert blockers == []
+    assert advisories == [
+        "基础版本未受本次 Turn 修改影响的 Q4 在复审中出现波动："
+        "cross-check anchor_divergence on Q4"
+    ]
+
+
+def test_local_question_gate_keeps_edited_question_defect_blocking():
+    class Candidate:
+        pass
+
+    candidate = Candidate()
+    candidate.counts = {}
+    candidate.validation = ValidationResult([], [], {})
+    candidate.cross_check = type("Cross", (), {
+        "hard_defects": [{"outcome": "answer_divergence", "number": 10}],
+        "leakage": [],
+        "equally_supported_rivals": [],
+        "needs_review": [],
+        "consistency": {"computed": {"reviewed_question_ids": list(range(1, 11))}},
+        "compared": 10,
+        "agreed": 9,
+    })()
+
+    blockers, advisories = _local_question_gate(candidate, {10})
+
+    assert blockers == ["cross-check answer_divergence on Q10"]
+    assert advisories == []

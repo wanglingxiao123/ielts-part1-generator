@@ -77,6 +77,19 @@ export function MaterialPage() {
   )
   const selectedVersionId = questionVersions.selectedVersionId || 'original'
   const selectedVersionAudio = questionVersions.selectedVersion?.audio
+  const localRevisionFailure =
+    questionVersions.revisionResult?.kind === 'failed'
+      ? questionVersions.revisionResult
+      : questionVersions.revisionRequest?.operation === 'revise_material_local' &&
+          questionVersions.revisionRequest.status === 'failed'
+        ? {
+            kind: 'failed' as const,
+            message:
+              questionVersions.revisionRequest.message ??
+              '局部材料修改没有完成，现有版本未改变。',
+            blockers: questionVersions.revisionRequest.blockers ?? [],
+          }
+        : null
 
   const cursor = useAudioStore((s) => s.cursor)
   const playing = useAudioStore((s) => s.playing)
@@ -489,12 +502,12 @@ export function MaterialPage() {
                   <strong>影响：</strong>题目保持不变；录音需要重新合成
                 </div>
               )}
-              {questionVersions.revisionResult?.kind === 'failed' && (
+              {localRevisionFailure && (
                 <div className="comment-decision error" role="alert">
                   <strong>处理失败：</strong>
-                  {questionVersions.revisionResult.message}
-                  {questionVersions.revisionResult.blockers.length > 0 && (
-                    <div>{questionVersions.revisionResult.blockers.join('；')}</div>
+                  {localRevisionFailure.message}
+                  {localRevisionFailure.blockers.length > 0 && (
+                    <div>{localRevisionFailure.blockers.join('；')}</div>
                   )}
                 </div>
               )}

@@ -23,6 +23,7 @@ from .slot_store import SlotStore
 _CONFIRMATION_DENSITY_ERROR = re.compile(
     r"^blueprint must mark at least \d+ confirmed items; found \d+$"
 )
+_QUESTION_NUMBER = re.compile(r"\bQ(\d+)\b")
 
 
 def _now() -> str:
@@ -170,6 +171,25 @@ def _relax_local_confirmation_density(validation: Any) -> None:
     )
 
 
+def _local_question_gate(
+    candidate: QuestionCandidate, affected_questions: set[int]
+) -> tuple[List[str], List[str]]:
+    """Keep defects in the edited scope blocking; record unrelated audit variance."""
+    blockers: List[str] = []
+    advisories: List[str] = []
+    for message in hard_blockers(candidate):
+        match = _QUESTION_NUMBER.search(message)
+        number = int(match.group(1)) if match else None
+        if number is not None and number not in affected_questions:
+            advisories.append(
+                "基础版本未受本次 Turn 修改影响的 Q%d 在复审中出现波动：%s"
+                % (number, message)
+            )
+        else:
+            blockers.append(message)
+    return blockers, advisories
+
+
 async def revise_material_local(
     *,
     store: SlotStore,
@@ -295,7 +315,17 @@ async def revise_material_local(
         question_candidate = QuestionCandidate(
             revised_package, question_review, question_cross_check,
             question_validation, "manual_material_local")
-        question_blockers = hard_blockers(question_candidate)
+        affected_questions = set(confirmed_updates)
+        for item in revised_blueprint.get("items") or []:
+            if (
+                isinstance(item, dict)
+                and item.get("turn_index") == turn_index
+                and isinstance(item.get("number"), int)
+                and not isinstance(item.get("number"), bool)
+            ):
+                affected_questions.add(item["number"])
+        question_blockers, baseline_advisories = _local_question_gate(
+            question_candidate, affected_questions)
         if question_blockers:
             raise ValueError(
                 "question quality rejected the local patch: %s"
@@ -315,6 +345,7 @@ async def revise_material_local(
                              "validation": validation.as_dict()},
                 "questions": question_candidate.as_dict(),
             },
+            "baseline_advisories": baseline_advisories,
             "created_by": actor, "material_sha256": _hash(projected),
             "audio": {"status": "needs_synthesis",
                       "version_key": "%s/%s" % (material_id, request_id)},
@@ -333,13 +364,15 @@ async def revise_material_local(
         store.save_question_version(material_id, request_id, version)
         terminal = dict(request, status="completed", version_id=request_id,
                         completed_at=_now(), decision_reason=reason,
+                        baseline_advisories=baseline_advisories,
                         comment_outcomes=[{
                             "comment_id": comments[0]["id"], "outcome": "local_material_edit",
                             "reason": reason, "turn_index": turn_index,
                         }])
         store.save_question_revision(material_id, request_id, terminal)
         yield {"type": "question_revision_completed", "request_id": request_id,
-               "version_id": request_id}
+               "version_id": request_id,
+               "baseline_advisories": baseline_advisories}
     except asyncio.CancelledError:
         raise
     except Exception as exc:
