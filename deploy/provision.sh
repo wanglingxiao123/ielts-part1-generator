@@ -208,7 +208,7 @@ aws iam put-role-policy --role-name "$RT_ROLE" --policy-name "${PROJECT}-runtime
       {\"Effect\":\"Allow\",\"Action\":[\"ecr:BatchGetImage\",\"ecr:GetDownloadUrlForLayer\"],
        \"Resource\":\"arn:aws:ecr:${AWS_REGION}:${ACCOUNT_ID}:repository/${ECR_BACKEND}\"},
       {\"Effect\":\"Allow\",\"Action\":\"ecr:GetAuthorizationToken\",\"Resource\":\"*\"},
-      {\"Effect\":\"Allow\",\"Action\":[\"bedrock:InvokeModel\",\"bedrock:InvokeModelWithResponseStream\"],\"Resource\":\"*\"},
+      {\"Effect\":\"Allow\",\"Action\":[\"bedrock:InvokeModel\",\"bedrock:InvokeModelWithResponseStream\",\"bedrock:ListFoundationModels\"],\"Resource\":\"*\"},
       {\"Effect\":\"Allow\",\"Action\":[\"bedrock-mantle:CreateInference\",\"bedrock-mantle:CreateResponse\",\"bedrock-mantle:CreateChatCompletion\",\"bedrock-mantle:CallWithBearerToken\",\"bedrock:CallWithBearerToken\"],\"Resource\":\"*\"},
       {\"Effect\":\"Allow\",\"Action\":\"polly:SynthesizeSpeech\",\"Resource\":\"*\"},
       {\"Effect\":\"Allow\",\"Action\":[\"s3:GetObject\",\"s3:PutObject\",\"s3:DeleteObject\"],

@@ -9,6 +9,7 @@ import type {
   QuestionRevisionTerminalEvent,
 } from '@/contracts/questionVersions'
 import { ApiError, CREDENTIALS, notifyUnauthorized } from './http'
+import { selectedModelId } from '@/stores/modelPreference'
 
 export function decodeRevisionFrame(frame: string): QuestionRevisionEvent | null {
   let eventName = ''
@@ -206,7 +207,7 @@ async function streamRevisionRequest(
       method: 'POST',
       credentials: CREDENTIALS,
       headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ ...body, model_id: selectedModelId() }),
       signal,
     },
   )

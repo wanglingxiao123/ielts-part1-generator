@@ -1,4 +1,4 @@
-import { lazy, Suspense } from 'react'
+import { lazy, Suspense, useEffect } from 'react'
 import { NavLink, Route, Routes } from 'react-router-dom'
 import { LoginPage } from '@/auth/LoginPage'
 import { RequireAuth } from '@/auth/RequireAuth'
@@ -10,6 +10,7 @@ import { MaterialPage } from '@/features/material-reader/MaterialPage'
 import { ComparePage } from '@/features/compare/ComparePage'
 import { ReviewQueuePage } from '@/features/review-queue/ReviewQueuePage'
 import { useBatchStore } from '@/stores/batchStore'
+import { loadModels, selectModel, useModelPreference } from '@/stores/modelPreference'
 
 /**
  * Fixture gallery: a DEVELOPMENT harness, not a product page.
@@ -39,6 +40,10 @@ const FixtureGalleryPage = DEV_FIXTURES
 function TopBar() {
   const session = useSession()
   const batchId = useBatchStore((s) => s.batchId)
+  const models = useModelPreference()
+  useEffect(() => {
+    if (session.isAuthenticated) loadModels()
+  }, [session.isAuthenticated])
   return (
     <div className="topbar">
       <h1>IELTS Part 1 材料生成</h1>
@@ -70,6 +75,22 @@ function TopBar() {
         </nav>
       )}
       <div className="spacer" />
+      {session.isAuthenticated && (
+        <label className="topbar-model" title={models.warning ?? '下一次 AI 操作使用的模型'}>
+          <span>模型</span>
+          <select
+            value={models.selectedModelId}
+            disabled={models.loading || models.models.length === 0}
+            onChange={(event) => selectModel(event.target.value)}
+          >
+            {models.models.length === 0 ? (
+              <option value="">部署默认模型</option>
+            ) : models.models.map((model) => (
+              <option key={model.id} value={model.id}>{model.label}</option>
+            ))}
+          </select>
+        </label>
+      )}
       <span className="who">
         {session.email || '未登录'}
         {session.isAdmin && ' · 管理员'}

@@ -401,6 +401,10 @@ async def _generate_sets(payload: Dict[str, Any]):
             yield event
 
 
+async def _operation_model(payload: Dict[str, Any]) -> str:
+    return await asyncio.to_thread(provider.resolve_model_id, payload.get("model_id"))
+
+
 async def _revise_questions_from_comments(payload: Dict[str, Any]):
     """Stream one reviewer-initiated revision; never mutate material or blueprint."""
     from .orchestration.manual_question_revision import revise_from_comments
@@ -437,19 +441,25 @@ async def _revise_questions_from_comments(payload: Dict[str, Any]):
             yield {"type": "question_revision_failed",
                    "message": "every comment must identify one question from Q1 to Q10"}
             return
-    async for event in revise_from_comments(
-        store=build_slot_store(),
-        material_id=str(payload["material_id"]),
-        request_id=str(payload["request_id"]),
-        base_version_id=str(payload["base_version_id"]),
-        material=payload["material"],
-        blueprint=payload["blueprint"],
-        package=payload["package"],
-        base_version=payload["base_version"],
-        comments=comments,
-        actor=str(payload.get("actor") or "reviewer"),
-    ):
-        yield event
+    try:
+        model_id = await _operation_model(payload)
+    except ValueError as exc:
+        yield {"type": "question_revision_failed", "message": str(exc)}
+        return
+    with provider.use_model(model_id):
+        async for event in revise_from_comments(
+            store=build_slot_store(),
+            material_id=str(payload["material_id"]),
+            request_id=str(payload["request_id"]),
+            base_version_id=str(payload["base_version_id"]),
+            material=payload["material"],
+            blueprint=payload["blueprint"],
+            package=payload["package"],
+            base_version=payload["base_version"],
+            comments=comments,
+            actor=str(payload.get("actor") or "reviewer"),
+        ):
+            yield event
 
 
 async def _replan_questions_from_comments(payload: Dict[str, Any]):
@@ -513,7 +523,12 @@ async def _replan_questions_from_comments(payload: Dict[str, Any]):
                 "message": "every source comment must identify one question from Q1 to Q10",
             }
             return
-    async for event in replan_from_comments(
+    try:
+        model_id = await _operation_model(payload)
+    except ValueError as exc:
+        yield {"type": "question_revision_failed", "message": str(exc)}
+        return
+    events = replan_from_comments(
         store=build_slot_store(),
         material_id=str(payload["material_id"]),
         request_id=str(payload["request_id"]),
@@ -524,8 +539,10 @@ async def _replan_questions_from_comments(payload: Dict[str, Any]):
         package=payload["package"],
         comments=comments,
         actor=str(payload.get("actor") or "reviewer"),
-    ):
-        yield event
+    )
+    with provider.use_model(model_id):
+        async for event in events:
+            yield event
 
 
 async def _revise_material_from_comments(payload: Dict[str, Any]):
@@ -586,7 +603,12 @@ async def _revise_material_from_comments(payload: Dict[str, Any]):
                 "message": "every source comment must identify a question or turn",
             }
             return
-    async for event in revise_material_from_comments(
+    try:
+        model_id = await _operation_model(payload)
+    except ValueError as exc:
+        yield {"type": "question_revision_failed", "message": str(exc)}
+        return
+    events = revise_material_from_comments(
         store=build_slot_store(),
         material_id=str(payload["material_id"]),
         request_id=str(payload["request_id"]),
@@ -597,8 +619,10 @@ async def _revise_material_from_comments(payload: Dict[str, Any]):
         package=payload["package"],
         comments=comments,
         actor=str(payload.get("actor") or "reviewer"),
-    ):
-        yield event
+    )
+    with provider.use_model(model_id):
+        async for event in events:
+            yield event
 
 
 async def _revise_material_local(payload: Dict[str, Any]):
@@ -615,15 +639,22 @@ async def _revise_material_local(payload: Dict[str, Any]):
         yield {"type": "question_revision_failed",
                "message": "exactly one turn comment is required"}
         return
-    async for event in revise_material_local(
+    try:
+        model_id = await _operation_model(payload)
+    except ValueError as exc:
+        yield {"type": "question_revision_failed", "message": str(exc)}
+        return
+    events = revise_material_local(
         store=build_slot_store(), material_id=str(payload["material_id"]),
         request_id=str(payload["request_id"]),
         base_version_id=str(payload["base_version_id"]), material=payload["material"],
         blueprint=payload["blueprint"], package=payload["package"],
         base_version=payload["base_version"],
         comments=comments, actor=str(payload.get("actor") or "reviewer"),
-    ):
-        yield event
+    )
+    with provider.use_model(model_id):
+        async for event in events:
+            yield event
 
 
 if __name__ == "__main__":  # pragma: no cover - container entrypoint

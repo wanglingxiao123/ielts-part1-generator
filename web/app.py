@@ -847,6 +847,7 @@ class WebTier:
                 "base_version": base,
                 "comments": comments,
                 "actor": actor,
+                "model_id": body.get("model_id"),
             }
             return self._start_revision_execution(payload, material_id, revision)
 
@@ -904,6 +905,7 @@ class WebTier:
                 "package": base["package"],
                 "comments": revision["source_comments"],
                 "actor": actor,
+                "model_id": body.get("model_id"),
             }
             return self._start_revision_execution(payload, material_id, revision)
 
@@ -962,6 +964,7 @@ class WebTier:
                 "package": base["package"],
                 "comments": revision["source_comments"],
                 "actor": actor,
+                "model_id": body.get("model_id"),
             }
             return self._start_revision_execution(payload, material_id, revision)
 
@@ -1033,6 +1036,7 @@ class WebTier:
                 "material": artifacts["material"], "blueprint": artifacts["blueprint"],
                 "package": artifacts["package"], "base_version": artifacts["base_version"],
                 "comments": comments, "actor": actor,
+                "model_id": body.get("model_id"),
             }
             return self._start_revision_execution(payload, material_id, revision)
 

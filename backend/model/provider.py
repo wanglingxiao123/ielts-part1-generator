@@ -118,23 +118,15 @@ def _compatible(identifier: str) -> bool:
 
 
 def _remote_models() -> List[str]:
-    if AUTH_MODE == "bearer":
-        token = os.environ.get("AWS_BEARER_TOKEN_BEDROCK")
-        if not token:
-            raise RuntimeError(
-                "IELTS_MODEL_AUTH=bearer requires AWS_BEARER_TOKEN_BEDROCK in the environment"
-            )
-        client_args = {"api_key": token, "base_url": _mantle_base_url(REGION)}
-    else:
-        client_args = resolve_bedrock_client_args(
-            {"region": REGION}, model_id=MODEL_ID)
-    from openai import OpenAI
+    import boto3
 
-    with OpenAI(**client_args, timeout=10.0) as client:
-        rows = list(client.models.list().data)
+    rows = boto3.client("bedrock", region_name=REGION).list_foundation_models().get(
+        "modelSummaries", []
+    )
     return sorted({
-        str(getattr(row, "id", "") or "").strip()
-        for row in rows if _compatible(str(getattr(row, "id", "") or ""))
+        str(row.get("modelId") or "").strip()
+        for row in rows if isinstance(row, dict)
+        and str(row.get("modelId") or "").startswith("openai.gpt-5.6-")
     })
 
 
