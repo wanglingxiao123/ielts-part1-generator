@@ -746,6 +746,8 @@ class FanOut(object):
             # 的完整英文句（输入「餐厅点餐」会变成一整句 "A customer phones a restaurant to..."），
             # 拿它当标题就是把模型的改写当成用户的话。历史记录里也没有别处存过这段原文。
             "custom_label": self.custom_label(),
+            "model_id": str(
+                self.children[0].payload.get("model_id") or "") if self.children else "",
             # An upper bound the web tier can actually stand behind: each child gets its own 900s
             # wall, and at most `waves` of them run in series. The old value was one shared wall
             # for the whole batch, which is the constraint this change removed.

@@ -213,6 +213,7 @@ def derive(record: Dict[str, Any], *, now: Optional[float] = None) -> Dict[str, 
         # 自定义场景的用户原文，没有则空串。前端拿它当分组标题——`material.scenario` 是模型扩写的
         # 整句，不是用户输入的东西。
         "custom_label": str(record.get("custom_label") or ""),
+        "model_id": str(record.get("model_id") or ""),
         "counts": record.get("counts") or {},
         "submitted_at": submitted_at,
         "submitted_by": record.get("submitted_by"),
@@ -406,9 +407,9 @@ class BatchHistory:
 
     def recorder(self, batch_id: str, *, owner: str, requested_total: int,
                  custom_label: str = "",
-                 scenarios: List[Dict[str, Any]]) -> "BatchRecorder":
+                 scenarios: List[Dict[str, Any]], model_id: str = "") -> "BatchRecorder":
         return BatchRecorder(self, batch_id, owner=owner, requested_total=requested_total,
-                             scenarios=scenarios, custom_label=custom_label)
+                             scenarios=scenarios, custom_label=custom_label, model_id=model_id)
 
     def reserve_refill(
         self, batch_id: str, seats: List[Dict[str, Any]], *, owner: str
@@ -483,6 +484,7 @@ class BatchHistory:
             return dict(
                 refill, reused=False,
                 custom_label=str(record.get("custom_label") or ""),
+                model_id=str(record.get("model_id") or ""),
             )
 
     def refill_recorder(
@@ -513,7 +515,8 @@ class BatchRecorder:
                  requested_total: int, scenarios: List[Dict[str, Any]],
                  custom_label: str = "", initial_record: Optional[Dict[str, Any]] = None,
                  refill_execution_id: str = "",
-                 refill_targets: Optional[Dict[str, Dict[str, Any]]] = None) -> None:
+                 refill_targets: Optional[Dict[str, Dict[str, Any]]] = None,
+                 model_id: str = "") -> None:
         self._history = history
         self._batch_id = batch_id
         self._lock = threading.Lock()
@@ -526,6 +529,7 @@ class BatchRecorder:
             # 用户为自定义场景输入的原文。存在这里是因为别处都没有：材料自带的 `scenario` 是模型
             # 扩写的完整英文句，而场景目录里当然没有自定义场景的条目。
             "custom_label": custom_label,
+            "model_id": model_id,
             "scenarios": scenarios,
             "materials": [],
             "counts": {},

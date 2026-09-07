@@ -110,7 +110,7 @@ class DeliveryRequest(object):
     ``delivery``'s module docstring.
     """
 
-    __slots__ = ("slots", "batch_id", "group_id", "concurrency", "budget")
+    __slots__ = ("slots", "batch_id", "group_id", "concurrency", "budget", "model_id")
 
     def __init__(
         self,
@@ -119,12 +119,14 @@ class DeliveryRequest(object):
         group_id: Optional[str] = None,
         concurrency: Optional[int] = None,
         budget: Any = None,
+        model_id: Optional[str] = None,
     ) -> None:
         self.slots = slots
         self.batch_id = batch_id
         self.group_id = group_id or batch_id
         self.concurrency = concurrency
         self.budget = budget
+        self.model_id = model_id
 
 
 def parse_delivery_request(
@@ -176,5 +178,7 @@ def parse_delivery_request(
         except (TypeError, ValueError):
             raise BadRequest("hard_limit_seconds must be a number")
 
+    model_id = payload.get("model_id")
     return DeliveryRequest(slots=slots, batch_id=batch_id, group_id=group_id,
-                           concurrency=concurrency, budget=budget)
+                           concurrency=concurrency, budget=budget,
+                           model_id=str(model_id).strip() if model_id else None)

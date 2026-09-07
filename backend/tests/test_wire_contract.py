@@ -230,13 +230,13 @@ class TestActionNames:
     def test_every_action_the_frontend_sends_is_still_handled(self):
         handler = (REPO / "backend" / "app.py").read_text(encoding="utf-8")
         for action in ("generate", "list_scenarios", "select", "preview_audio",
-                       "audio_status", "list_candidates", "presign_audio"):
+                       "audio_status", "list_candidates", "presign_audio", "list_models"):
             assert '"%s"' % action in handler, action
 
     def test_the_frontend_sends_exactly_these(self):
         text = _frontend_text()
         for action in ("list_scenarios", "select", "preview_audio", "audio_status",
-                       "presign_audio"):
+                       "presign_audio", "list_models"):
             assert action in text, action
 
 
@@ -305,10 +305,12 @@ class TestGenerateSetsDispatch:
             yield {"type": "request_completed", "status": "succeeded"}
 
         monkeypatch.setattr(delivery_module, "stream_request", fake_stream)
+        monkeypatch.setattr(app_module.provider, "resolve_model_id", lambda value: value or "default")
         stream = await app_module.invoke({
             "action": "generate_sets", "scenarios": ["booking-hotel"], "count": 2,
             "batch_id": "web-9-slot-2", "group_id": "web-9", "concurrency": 3,
             "hard_limit_seconds": 120,
+            "model_id": "openai.gpt-5.6-sol",
         })
         events = [event async for event in stream]
 
@@ -318,6 +320,7 @@ class TestGenerateSetsDispatch:
         assert seen["scenarios"] == 2
         assert seen["concurrency"] == 3
         assert seen["budget"] is not None
+        assert seen["model_id"] == "openai.gpt-5.6-sol"
 
     def test_generate_is_still_its_own_action(self):
         """The deployed frontend is on `generate`, and this branch must not need a coordinated

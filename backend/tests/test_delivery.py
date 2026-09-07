@@ -89,7 +89,7 @@ def test_layout_plan_is_keyworded_past_the_existing_metrics_runner_parameter():
         seen["question_layout_plan"] = question_layout_plan
         return material_ok(slot_id, scenario.id)
 
-    recorder = Recorder([], [questions_ok()])
+    recorder = Recorder([material_ok], [questions_ok()])
     summary = asyncio.run(run_request(
         [FakeScenario()],
         "batch-layout-plan-keyword",
@@ -101,6 +101,22 @@ def test_layout_plan_is_keyworded_past_the_existing_metrics_runner_parameter():
     assert summary["status"] == SUCCEEDED
     assert seen["metrics_runner"] is None
     assert seen["question_layout_plan"]["split_after"] in (4, 5, 6)
+
+
+def test_model_id_is_persisted_and_reused():
+    store = memory_store()
+    recorder = Recorder([material_ok], [questions_ok()])
+    summary = asyncio.run(run_request(
+        [FakeScenario()],
+        "batch-model-choice",
+        store=store,
+        run_material=recorder.run_material,
+        run_question_stage=recorder.run_questions,
+        model_id="openai.gpt-5.6-sol",
+    ))
+    assert summary["status"] == SUCCEEDED
+    assert store.load_request("batch-model-choice")["model_id"] == "openai.gpt-5.6-sol"
+    assert store.list_slots("batch-model-choice")[0].model_id == "openai.gpt-5.6-sol"
 
 
 def memory_store() -> SlotStore:

@@ -1004,6 +1004,7 @@ async function createBatch(body: CreateBatchRequest): Promise<CreateBatchRespons
   // therefore mints `{batch}-{slot}` per child plus a shared `group_id` (web/fanout.py's
   // `plan_children`). A single id chosen here would have N children overwriting one record.
   const payload: Record<string, unknown> = { action: 'generate_sets', scenarios, counts }
+  if (body.options.model_id) payload.model_id = body.options.model_id
   if (custom) payload.custom_scenario = custom
 
   // The batch id comes from the BACKEND response headers (or the legacy `batch_started` fallback),
@@ -1315,6 +1316,10 @@ const agentCoreTransport: Transport = async (spec: RequestSpec): Promise<unknown
 
   if (spec.method === 'POST' && resource === 'batches' && !id) {
     return createBatch(spec.body as CreateBatchRequest)
+  }
+
+  if (spec.method === 'GET' && resource === 'models' && !id) {
+    return invoke({ action: 'list_models' })
   }
 
   if (spec.method === 'GET' && resource === 'batches' && id && !sub) {

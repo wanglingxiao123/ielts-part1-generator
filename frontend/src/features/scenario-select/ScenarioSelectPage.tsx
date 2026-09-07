@@ -28,7 +28,7 @@
  * （`describeBatchEstimate`，按 web 层并发算波数），套数大时那个数字自己就会变得刺眼。
  * 提交是用户的决定，不是需要前端代替他做的判断——而且大批量恰好是这个改动想支持的用法。
  */
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '@/api/endpoints'
 import { categoryIcon } from '@/config/scenarioMeta'
@@ -77,6 +77,35 @@ export function ScenarioSelectPage() {
   const [customText, setCustomText] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [models, setModels] = useState<Array<{ id: string; label: string }>>([])
+  const [modelId, setModelId] = useState('')
+  const [modelWarning, setModelWarning] = useState<string | null>(null)
+  const [modelsLoading, setModelsLoading] = useState(true)
+
+  useEffect(() => {
+    let active = true
+    void api.listModels()
+      .then((catalogue) => {
+        if (!active) return
+        setModels(catalogue.models)
+        setModelId(catalogue.default_model_id)
+        setModelWarning(catalogue.warning ?? null)
+      })
+      .catch(() => {
+        if (!active) return
+        // An empty model id deliberately means “use IELTS_MODEL_ID”. Generation remains available
+        // even when the catalogue request itself could not reach the Runtime.
+        setModels([])
+        setModelId('')
+        setModelWarning('模型列表暂时不可用，将使用部署默认模型。')
+      })
+      .finally(() => {
+        if (active) setModelsLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [])
 
   // 自定义场景「与上方勾选共存」：判据就是有没有写字，不再要一个额外的复选框。
   // 少一个控件、少一种「勾了但没写」的错误状态。
@@ -123,7 +152,10 @@ export function ScenarioSelectPage() {
     setBusy(true)
     store.startCreating()
     try {
-      const created = await api.createBatch({ requests, options: { narration_mode: 'full' } })
+      const created = await api.createBatch({
+        requests,
+        options: { narration_mode: 'full', model_id: modelId || undefined },
+      })
       store.initBatch({
         batchId: created.batch_id,
         total: created.total,
@@ -215,6 +247,25 @@ export function ScenarioSelectPage() {
             />
             <span className="muted">套</span>
           </label>
+          <label className="scn-setting">
+            <span>生成模型</span>
+            <select
+              value={modelId}
+              disabled={modelsLoading || models.length === 0}
+              onChange={(event) => setModelId(event.target.value)}
+            >
+              {models.length === 0 ? (
+                <option value="">部署默认模型</option>
+              ) : (
+                models.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.label}
+                  </option>
+                ))
+              )}
+            </select>
+          </label>
+          {modelWarning && <div className="muted">{modelWarning}</div>}
         </div>
 
         {CATALOG.customScenario.enabled && (

@@ -37,6 +37,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
+from .model import provider
 from .orchestration.batch import run_batch
 from .orchestration.publish import (
     AlreadySelected,
@@ -80,6 +81,9 @@ async def invoke(payload: Dict[str, Any]):
         found = await catalogue()
         return {"scenarios": found.as_dict()}
 
+    if action == "list_models":
+        return await asyncio.to_thread(provider.list_models)
+
     if action == "select":
         return await _select(payload or {})
 
@@ -118,7 +122,7 @@ async def invoke(payload: Dict[str, Any]):
     if action != "generate":
         return {
             "error": "unknown action %r; expected generate, generate_sets, list_scenarios, select, "
-                     "preview_audio, audio_status, list_candidates, presign_audio or "
+                     "list_models, preview_audio, audio_status, list_candidates, presign_audio or "
                      "revise_questions_from_comments or replan_questions_from_comments" % action
         }
 
@@ -378,6 +382,7 @@ async def _generate_sets(payload: Dict[str, Any]):
     found = await catalogue()
     try:
         request = parse_delivery_request(found, payload)
+        model_id = await asyncio.to_thread(provider.resolve_model_id, request.model_id)
     except BadRequest as exc:
         # `batch_failed` and not `request_completed`: nothing was planned, so there is no request whose
         # status could be reported. The frontend already treats this shape as a terminal failure, and
@@ -385,11 +390,15 @@ async def _generate_sets(payload: Dict[str, Any]):
         # batch_id nobody issued into the one field resumption keys on.
         yield {"type": "batch_failed", "reason": "bad_request", "detail": str(exc)}
         return
-    async for event in stream_request(
-        request.slots, request.batch_id, budget=request.budget,
-        concurrency=request.concurrency, group_id=request.group_id,
-    ):
-        yield event
+    except ValueError as exc:
+        yield {"type": "batch_failed", "reason": "invalid_model", "detail": str(exc)}
+        return
+    with provider.use_model(model_id):
+        async for event in stream_request(
+            request.slots, request.batch_id, budget=request.budget,
+            concurrency=request.concurrency, group_id=request.group_id, model_id=model_id,
+        ):
+            yield event
 
 
 async def _revise_questions_from_comments(payload: Dict[str, Any]):

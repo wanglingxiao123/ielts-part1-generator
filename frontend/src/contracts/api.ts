@@ -87,7 +87,13 @@ export interface CreateBatchRequest {
     scenario_text?: string
     count: number
   }>
-  options: { narration_mode: Blueprint['narration_mode'] }
+  options: { narration_mode: Blueprint['narration_mode']; model_id?: string }
+}
+
+export interface ModelCatalogueResponse {
+  models: Array<{ id: string; label: string }>
+  default_model_id: string
+  warning?: string
 }
 
 export interface CreateBatchResponse {
@@ -172,6 +178,7 @@ export interface BatchHistoryEntry {
   state: 'running' | 'complete' | string
   requested_total: number
   arrived: number
+  model_id?: string
   scenarios: Array<{ scenario_key: string; count: number }>
   counts?: Record<string, number>
   submitted_at?: number | null

@@ -482,6 +482,16 @@ h3 {
   text-align: center;
 }
 
+.scn-setting select {
+  min-width: 220px;
+  max-width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+}
+
 .scn-custom textarea {
   width: 100%;
   font: inherit;

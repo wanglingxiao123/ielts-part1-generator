@@ -212,10 +212,10 @@ class _Context(object):
     """Everything one slot's state machine needs that is not its own record."""
 
     __slots__ = ("store", "budget", "queue", "batch_id", "group_id", "scenarios", "run_material",
-                 "run_question_stage", "faults", "paused")
+                 "run_question_stage", "faults", "paused", "model_id")
 
     def __init__(self, store, budget, queue, batch_id, scenarios,
-                 run_material, run_question_stage, group_id=None) -> None:
+                 run_material, run_question_stage, group_id=None, model_id=None) -> None:
         self.store = store
         self.budget = budget
         self.queue = queue
@@ -236,6 +236,7 @@ class _Context(object):
         # abandon the sets its siblings have already completed.
         self.faults: Dict[str, str] = {}
         self.paused = False
+        self.model_id = model_id
 
     async def emit(self, slot_id: str, name: str, detail: Optional[Dict[str, Any]] = None) -> None:
         await self.queue.put(
@@ -255,6 +256,7 @@ async def run_request(
     run_material: Optional[Callable] = None,
     run_question_stage: Optional[Callable] = None,
     group_id: Optional[str] = None,
+    model_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Deliver one complete set per entry in ``scenarios``, or return an honest non-success.
 
@@ -287,7 +289,8 @@ async def run_request(
     summary: Dict[str, Any] = {}
     async for event in stream_request(
             scenarios, batch_id, store=store, budget=budget, concurrency=concurrency,
-            run_material=run_material, run_question_stage=run_question_stage, group_id=group_id):
+            run_material=run_material, run_question_stage=run_question_stage, group_id=group_id,
+            model_id=model_id):
         await emit(event)
         if event.get("type") == "request_completed":
             summary = {k: v for k, v in event.items() if k not in ("type", "at")}
@@ -303,6 +306,7 @@ async def stream_request(
     run_material: Optional[Callable] = None,
     run_question_stage: Optional[Callable] = None,
     group_id: Optional[str] = None,
+    model_id: Optional[str] = None,
 ):
     """:func:`run_request` as an async generator: every event yielded as it occurs.
 
@@ -323,7 +327,7 @@ async def stream_request(
     queue: asyncio.Queue = asyncio.Queue()
     ctx = _Context(store, budget, queue, batch_id, {},
                    run_material or run_one, run_question_stage or run_questions,
-                   group_id=group_id)
+                   group_id=group_id, model_id=model_id)
 
     records = _plan(store, batch_id, scenarios, ctx)
     try:
@@ -382,7 +386,7 @@ def _plan(store, batch_id: str, scenarios: List[Any], ctx: _Context) -> List[Slo
     if not existing:
         made = [SlotRecord(
                     batch_id, "slot-%d" % (index + 1), getattr(scenario, "id", ""),
-                    question_layout_plan=choose_question_layout_plan())
+                    question_layout_plan=choose_question_layout_plan(), model_id=ctx.model_id)
                 for index, scenario in enumerate(scenarios)]
         for record, scenario in zip(made, scenarios):
             ctx.scenarios[record.slot_id] = scenario
@@ -392,6 +396,14 @@ def _plan(store, batch_id: str, scenarios: List[Any], ctx: _Context) -> List[Slo
     by_id = {getattr(scenario, "id", ""): scenario for scenario in scenarios}
     pending: List[SlotRecord] = []
     for record in existing:
+        if record.model_id and ctx.model_id and record.model_id != ctx.model_id:
+            raise ValueError(
+                "request %s was started with model %s, not %s"
+                % (batch_id, record.model_id, ctx.model_id)
+            )
+        if not record.model_id:
+            record.model_id = ctx.model_id
+            store.save_slot(record)
         # Matched by scenario id rather than by slot index: replacement slots have no index in the
         # original request, and a positional match would hand `slot-2r1` whatever scenario happened to
         # sit second in the list.
@@ -454,7 +466,7 @@ def _replacement_for(record: SlotRecord, ctx: _Context) -> List[SlotRecord]:
     replacement = SlotRecord(
         record.batch_id, "%sr%d" % (_root_of(record.slot_id), generation + 1),
         record.scenario_id, replaces=record.slot_id,
-        question_layout_plan=choose_question_layout_plan())
+        question_layout_plan=choose_question_layout_plan(), model_id=record.model_id)
     ctx.scenarios[replacement.slot_id] = ctx.scenarios.get(record.slot_id)
     record.replaced_by = replacement.slot_id
     ctx.store.save_slot(record)
@@ -1038,6 +1050,7 @@ def _request_document(batch_id: str, wanted: int, status: str, records: List[Slo
         "store_backend": store_backend,
         "updated_at": time.time(),
         "slots": [record.as_record() for record in records],
+        "model_id": ctx.model_id,
     }
 
 

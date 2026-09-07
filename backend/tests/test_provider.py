@@ -109,6 +109,41 @@ class TestParameters:
                     pytest.fail("%s passes temperature= to a model" % name.name)
 
 
+class TestModelSelection:
+    def test_context_selection_reaches_every_builder_call(self, monkeypatch):
+        captured = {}
+
+        class Spy(OpenAIResponsesModel):
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr(provider, "OpenAIResponsesModel", Spy)
+        monkeypatch.setattr(provider, "AUTH_MODE", "mantle")
+        with provider.use_model("openai.gpt-test"):
+            provider.build_model(max_output_tokens=1000)
+        assert captured["model_id"] == "openai.gpt-test"
+
+    def test_catalogue_filters_models_and_keeps_default(self, monkeypatch):
+        monkeypatch.setattr(
+            provider, "_remote_models",
+            lambda: ["openai.gpt-5.6-sol", "anthropic.claude-test"],
+        )
+        monkeypatch.setattr(provider, "_model_cache", {"at": 0.0, "models": None})
+        result = provider.list_models(force=True)
+        ids = [row["id"] for row in result["models"]]
+        assert provider.MODEL_ID in ids
+        assert "openai.gpt-5.6-sol" in ids
+        assert "anthropic.claude-test" not in ids
+
+    def test_unknown_explicit_model_is_rejected(self, monkeypatch):
+        monkeypatch.setattr(
+            provider, "list_models",
+            lambda: {"models": [{"id": provider.MODEL_ID}], "default_model_id": provider.MODEL_ID},
+        )
+        with pytest.raises(ValueError, match="not available"):
+            provider.resolve_model_id("openai.gpt-not-visible")
+
+
 class TestRegionGuard:
     def test_supported_regions_pass(self):
         provider.assert_region_supported("us-east-1")

@@ -428,7 +428,8 @@ class WebTier:
             if not reservation.get("reused"):
                 self._start_batch_refill(
                     batch_id, execution_id, list(reservation["targets"]),
-                    custom_label=str(reservation.get("custom_label") or ""))
+                    custom_label=str(reservation.get("custom_label") or ""),
+                    model_id=str(reservation.get("model_id") or ""))
             return JSONResponse({
                 "batch_id": batch_id,
                 "execution_id": execution_id,
@@ -1312,6 +1313,7 @@ class WebTier:
             # 自定义场景的用户原文。历史面板要显示它，而它在别处都不存在：材料自带的 `scenario`
             # 是模型扩写的完整英文句，场景目录里也没有自定义场景的条目。
             custom_label=fan.custom_label(),
+            model_id=str(payload.get("model_id") or ""),
         )
         def producer(publish) -> None:
             async def consume() -> None:
@@ -1325,7 +1327,7 @@ class WebTier:
 
     def _start_batch_refill(
         self, batch_id: str, execution_id: str, targets: List[Dict[str, Any]],
-        *, custom_label: str = "",
+        *, custom_label: str = "", model_id: str = "",
     ) -> None:
         children = []
         slot_ids: List[str] = []
@@ -1334,6 +1336,8 @@ class WebTier:
             scenario = str(target["scenario_key"])
             payload: Dict[str, Any] = {
                 "action": "generate_sets", "scenarios": [scenario], "count": 1}
+            if model_id:
+                payload["model_id"] = model_id
             if scenario == "custom":
                 payload["scenarios"] = []
                 payload["custom_scenario"] = {"text": custom_label, "count": 1}

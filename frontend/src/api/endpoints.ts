@@ -10,6 +10,7 @@ import type {
   MaterialListResponse,
   MaterialQuestionsResponse,
   MaterialRecord,
+  ModelCatalogueResponse,
   PreviewAudioResponse,
   SelectMaterialResponse,
 } from '@/contracts/api'
@@ -24,6 +25,9 @@ import type {
 } from '@/contracts/comments'
 
 export const api = {
+  listModels: () =>
+    request<ModelCatalogueResponse>({ method: 'GET', path: '/models' }),
+
   createBatch: (body: CreateBatchRequest) =>
     request<CreateBatchResponse>({ method: 'POST', path: '/batches', body }),
 
