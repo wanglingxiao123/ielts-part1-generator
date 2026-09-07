@@ -9,6 +9,20 @@
 
 ## 当前生产版本
 
+**Runtime 与 web 层均为 `model-select-20260907-6780a91`**，分支
+`feat/major-rework-20260903`，来自 commit `6780a91`。Runtime version **65**；
+web 为 ECS taskdef **`ielts-part1-web:79`**。本轮增加前端生成模型选择器，模型目录由
+Mantle Runtime 返回；所选模型固定到批次、续跑和补生成，无需修改环境变量或重启服务。
+
+digest：backend
+`sha256:cf7ec8e599b0c9f1d387f88b036e17761580b9a45c0ace9de9e6aecfe1eae4f1`，
+frontend
+`sha256:74c135b7924c633883e723a7013efe6597761ed93eae85e1f723bb9f07e1a0b2`。
+部署后 Runtime `READY`、ECS rollout `COMPLETED`、ALB target healthy、CloudFront
+`/healthz` 200。邮箱域名仍为 `amazon.com,example.com`，并发仍为 20。
+
+回退基线：Runtime 与 web 回到本轮部署前的生产版本和 taskdef **77**。
+
 **Runtime 与 web 层均为 `local-audit-variance-f752bd5`**，分支
 `feat/major-rework-20260903`，来自 commit `f752bd5`。Runtime 承载在 version **63**；
 web 承载在 ECS taskdef **`ielts-part1-web:77`**。本轮将未受局部 Turn 修改影响的题目盲审波动
