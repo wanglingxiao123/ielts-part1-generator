@@ -35,8 +35,8 @@ the design's example code.
 
 ### Mantle token minting needs live SigV4 credentials
 
-Worth recording because the failure is easy to misread. With `IELTS_MODEL_AUTH=mantle` (the
-default, and what production uses) Strands mints a bearer token from the ambient AWS credential
+Worth recording because the failure is easy to misread. With `IELTS_MODEL_AUTH=mantle` Strands
+mints a bearer token from the ambient AWS credential
 chain on every call. On a machine whose SigV4 credentials have expired, that produces:
 
 ```
@@ -46,18 +46,19 @@ openai.AuthenticationError: 401 invalid_api_key -
 
 The natural reading is "model access was revoked". It is not: the same request succeeds with a
 pre-minted `AWS_BEARER_TOKEN_BEDROCK`, which is how this implementation was developed and
-verified end to end. `aws sts get-caller-identity` distinguishes the two cases in one command.
+verified end to end and is now the default production path too. `aws sts get-caller-identity`
+distinguishes the two cases in one command.
 
-`IELTS_MODEL_AUTH=bearer` exists for exactly this situation and is development-only. Production
-must use `mantle`, because a pre-minted token expires and nothing refreshes it.
+`IELTS_MODEL_AUTH=mantle` remains available as a SigV4-based fallback. A pre-minted bearer token
+still expires and must be rotated before that happens.
 
 ## Environment variables
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `IELTS_MODEL_ID` | `openai.gpt-5.6-terra` | switch within the family (`-sol` / `-luna`) without a rebuild |
-| `IELTS_MODEL_REGION` | `AWS_REGION` or `us-east-1` | must be `us-east-1` or `us-east-2`; no cross-region inference |
-| `IELTS_MODEL_AUTH` | `mantle` | `bearer` only for local work with an expired SigV4 chain |
+| `IELTS_MODEL_ID` | `openai.gpt-5.6-luna` | switch within the family (`-sol` / `-terra`) without a rebuild |
+| `IELTS_MODEL_REGION` | `AWS_REGION` or `us-east-1` | must be `us-east-1`, `us-east-2`, or `us-west-2`; no cross-region inference |
+| `IELTS_MODEL_AUTH` | `bearer` | API-key auth via `AWS_BEARER_TOKEN_BEDROCK`; `mantle` is the SigV4 fallback |
 | `IELTS_CONCURRENCY` | `6` | in-invocation slots. Effectively dead in production (one material per invocation clamps it to 1); still governs the CLI. Measured safe at 3; lower it on 429s rather than adding retries |
 | `IELTS_P95_PER_MATERIAL` | `240` | per-material budget check before starting a slot |
 | `IELTS_SAFETY_MARGIN` | `90` | reserve for emitting the summary and closing cleanly |

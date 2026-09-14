@@ -233,8 +233,8 @@ Runtime 立即返回 job id，浏览器通过 `audio_status` 轮询。合成完�
 系统**没有使用 Cognito**。`web/auth.py` 将用户保存在
 `s3://ielts-part1-materials-{account}/web/users.json`，使用 PBKDF2 密码摘要和由 SSM 密钥签名的
 7 天 HttpOnly cookie；`ALLOWED_EMAIL_DOMAINS` 控制新用户注册。本地开发可回退到本地 JSON。
-注册请使用 `@example.com` 邮箱。部署时应显式设置 `ALLOWED_EMAIL_DOMAINS`；未设置时
-默认值 `*` 会允许任意邮箱域名注册，不适合直接用于公网环境。
+注册请使用 `@britishcouncil.org` 邮箱（`deploy/config.sh` 默认值）。部署最早一步就应确认或覆盖
+`ALLOWED_EMAIL_DOMAINS`；显式设为 `*` 会允许任意邮箱域名注册，`deploy/service.sh` 会拒绝这种配置。
 这套方案面向小规模、受控用户使用，不提供邮箱验证、找回密码、MFA 或企业 SSO。
 
 ### 2.6 题目如何交付给下游（QTI 2.2.4 导出）
@@ -681,7 +681,7 @@ Skill 自动发现不等于新学科已经端到端可用。扩展 Reading/Writi
 - Docker，能构建 `linux/arm64` 镜像；
 - Python 3.12（项目声明最低 `>=3.11`，部署和测试建议统一使用 3.12）；
 - Node.js 20+ 与 npm；
-- AWS 区域必须是 `us-east-1` 或 `us-east-2`；脚本会拒绝其他区域，因为当前 GPT-5.6
+- AWS 区域必须是 `us-east-1`、`us-east-2` 或 `us-west-2`；脚本会拒绝其他区域，因为当前 GPT-5.6
   接入不提供跨区推理；
 - 默认 VPC 中至少有两个位于不同可用区、可分配公网 IP 的子网；也可显式传入 VPC 与子网。
 
@@ -991,6 +991,12 @@ Mantle 权限，不能只授予 `bedrock:InvokeModel`。盲审指标还需要
 export AWS_REGION=us-east-1
 aws sts get-caller-identity
 
+# 0.1 谁可以注册登录（默认 britishcouncil.org；如需覆盖，在最早一步设置）
+export ALLOWED_EMAIL_DOMAINS=britishcouncil.org
+
+# 0.2 bearer 默认需要 Bedrock API key
+export AWS_BEARER_TOKEN_BEDROCK=...
+
 # 1. 创建 S3、ECR、ECS cluster、日志组和三个运行期角色
 bash deploy/provision.sh
 
@@ -1017,8 +1023,7 @@ bash deploy/runtime.sh "$RELEASE_TAG"
 bash deploy/edge.sh
 
 # 5. 构建 Web 镜像并创建 ECS 服务
-# 公网使用前必须限制可注册邮箱域名
-ALLOWED_EMAIL_DOMAINS=example.com bash deploy/service.sh "$RELEASE_TAG"
+bash deploy/service.sh "$RELEASE_TAG"
 
 # 6. 将 ECS 服务扩到 1，并打印访问地址
 bash deploy/start.sh
@@ -1054,7 +1059,7 @@ bash backend/scripts/deploy.sh \
   "$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${AWS_REGION}.amazonaws.com/ielts-part1-backend" \
   "$RELEASE_TAG"
 bash deploy/runtime.sh "$RELEASE_TAG"
-ALLOWED_EMAIL_DOMAINS=example.com bash deploy/service.sh "$RELEASE_TAG"
+bash deploy/service.sh "$RELEASE_TAG"
 
 bash deploy/stop.sh    # ECS desiredCount=0；保留 ALB、CloudFront 和稳定 URL
 bash deploy/start.sh   # ECS desiredCount=1；等待服务稳定
@@ -1156,7 +1161,7 @@ bash deploy/teardown.sh --yes --purge-s3
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `AWS_REGION` | `us-east-1` | 仅支持 `us-east-1` / `us-east-2` |
+| `AWS_REGION` | `us-east-1` | 仅支持 `us-east-1` / `us-east-2` / `us-west-2` |
 | `ACCOUNT_ID` | 从当前凭证发现 | 目标账号 |
 | `AWS_PROFILE` | 未设置 | 可选命名 profile |
 | `S3_BUCKET` | `ielts-part1-materials-{account}` | 项目单桶 |
@@ -1174,7 +1179,7 @@ origin-facing 托管前缀列表和自定义 header 校验；现有脚本未实�
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `ALLOWED_EMAIL_DOMAINS` | `*` | 允许注册的邮箱域名；公网部署必须显式限制 |
+| `ALLOWED_EMAIL_DOMAINS` | `britishcouncil.org` | 允许注册的邮箱域名；`deploy/config.sh` 默认值 |
 | `SESSION_SECRET` | 无 | `service.sh` 生成并从 SSM 注入 |
 | `AGENT_RUNTIME_ARN` | 部署时注入 | Runtime ARN |
 | `IELTS_AUDIO_BUCKET` | 项目 S3 桶 | 材料与按需音频存储 |
@@ -1189,9 +1194,10 @@ origin-facing 托管前缀列表和自定义 header 校验；现有脚本未实�
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `IELTS_MODEL_ID` | `openai.gpt-5.6-terra` | 模型 id |
+| `IELTS_MODEL_ID` | `openai.gpt-5.6-luna` | 模型 id |
 | `IELTS_MODEL_REGION` | `AWS_REGION` | 模型区域 |
-| `IELTS_MODEL_AUTH` | `mantle` | `bearer` 仅适合本地临时调试 |
+| `IELTS_MODEL_AUTH` | `bearer` | 使用 `AWS_BEARER_TOKEN_BEDROCK` 做 API key 鉴权；`mantle` 为 SigV4 兜底 |
+| `AWS_BEARER_TOKEN_BEDROCK` | 无 | bearer 模式所需的 Bedrock API key |
 | `IELTS_CODE_INTERPRETER_REGION` | `AWS_REGION` | 审核指标 Code Interpreter 区域 |
 | `IELTS_CODE_INTERPRETER_ID` | `aws.codeinterpreter.v1` | 内置 Code Interpreter identifier |
 | `IELTS_CONCURRENCY` | `6` | Runtime 内并发槽；Web 单套调用时实际夹到 1 |

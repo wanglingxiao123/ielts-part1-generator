@@ -41,6 +41,10 @@ export ACCOUNT_ID
 # default profile). Set it only if your credentials live in a named profile.
 if [ -n "${AWS_PROFILE:-}" ]; then export AWS_PROFILE; fi
 
+# Who may register through the web login. Default to the client domain rather than to open
+# registration; override before running any deploy script if a different allow-list is needed.
+export ALLOWED_EMAIL_DOMAINS="${ALLOWED_EMAIL_DOMAINS:-britishcouncil.org}"
+
 export PROJECT="ielts-part1"
 export S3_BUCKET="${S3_BUCKET:-ielts-part1-materials-${ACCOUNT_ID}}"
 
@@ -124,8 +128,8 @@ require_creds() {
 require_region() {
     # GPT-5.6 has no cross-region inference; a Runtime elsewhere cannot reach the model at all.
     case "$AWS_REGION" in
-        us-east-1|us-east-2) ;;
-        *) echo "ERROR: $AWS_REGION cannot serve openai.gpt-5.6-*; use us-east-1 or us-east-2" >&2
+        us-east-1|us-east-2|us-west-2) ;;
+        *) echo "ERROR: $AWS_REGION cannot serve openai.gpt-5.6-*; use us-east-1, us-east-2 or us-west-2" >&2
            exit 1 ;;
     esac
 }
