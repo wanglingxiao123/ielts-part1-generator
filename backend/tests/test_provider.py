@@ -148,6 +148,7 @@ class TestRegionGuard:
     def test_supported_regions_pass(self):
         provider.assert_region_supported("us-east-1")
         provider.assert_region_supported("us-east-2")
+        provider.assert_region_supported("us-west-2")
 
     def test_other_regions_are_rejected(self):
         """GPT-5.6 has no cross-region inference: Runtime and model must share a region."""

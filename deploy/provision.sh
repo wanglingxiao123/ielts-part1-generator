@@ -15,6 +15,11 @@ source "$(dirname "$0")/config.sh"
 require_creds
 require_region
 
+echo "== login allow-list =="
+echo "  ALLOWED_EMAIL_DOMAINS=${ALLOWED_EMAIL_DOMAINS}"
+echo "  (default: britishcouncil.org; export ALLOWED_EMAIL_DOMAINS before any deploy script to"
+echo "   override, and keep the same value for later scripts that publish the web task)"
+
 # The bucket every other piece writes into: materials, audio clips, batch history, the candidate
 # registry, and the user store. It used to be assumed to exist — the account this was built in
 # already had it — so a fresh account got through provisioning and then failed at the first

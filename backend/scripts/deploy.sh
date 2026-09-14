@@ -17,8 +17,8 @@ REGION="${IELTS_MODEL_REGION:-${AWS_REGION:-us-east-1}}"
 # GPT-5.6 has no cross-region inference, so a Runtime in the wrong region cannot reach the model
 # at all. Checked here rather than discovered as a confusing 4xx after deployment.
 case "$REGION" in
-    us-east-1|us-east-2) ;;
-    *) echo "ERROR: region $REGION cannot serve openai.gpt-5.6-*; use us-east-1 or us-east-2"
+    us-east-1|us-east-2|us-west-2) ;;
+    *) echo "ERROR: region $REGION cannot serve openai.gpt-5.6-*; use us-east-1, us-east-2 or us-west-2"
        exit 1 ;;
 esac
 
@@ -66,8 +66,8 @@ Remaining steps, and what to watch:
        bash deploy/runtime.sh known-good-20260730     # the pre-refactor image
      That image predates the agent-autonomy rewrite, so rolling back gives up agent self-execution
      and the blind-audit isolation with it. It is an escape hatch, not an A/B switch.
-  2. Runtime needs bedrock:InvokeModel plus permission to mint bearer tokens, since
-     IELTS_MODEL_AUTH defaults to mantle and Strands signs with the task role.
+  2. Runtime authenticates with a Bedrock API key (IELTS_MODEL_AUTH defaults to bearer,
+     AWS_BEARER_TOKEN_BEDROCK must be present when the Runtime is created or updated).
   3. Calibrate against real timings (backend/docs/timing.md). ONE invocation now carries ONE
      material -- the web tier fans a batch out into N of them (web/fanout.py) -- so what has to
      fit inside 15 minutes is a single material, not a batch. Time one material end to end; if

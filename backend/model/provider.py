@@ -5,20 +5,18 @@ Chat Completions and would fail against every model in this family.
 
 Two credential paths, both verified against the live endpoint on 2026-07-28:
 
-``mantle`` (default, and what production must use)
+``bearer`` (default, and what production now uses)
+    Uses a pre-minted ``AWS_BEARER_TOKEN_BEDROCK`` with an explicit ``base_url``. This is the
+    API-key auth path: no ambient AWS credential chain is consulted, so it works uniformly across
+    the Runtime and an operator's machine as long as the key has not expired.
+
+``mantle`` (fallback, SigV4-based)
     Pass ``bedrock_mantle_config={"region": ...}``. Strands resolves the ``/openai/v1`` base
     path for ``openai.gpt-5.*`` and mints a fresh bearer token per call from the ambient AWS
     credential chain. There is deliberately no token cache, expiry check or refresh logic in
     this file -- writing one would duplicate what the SDK already does per request and would
-    then have its own staleness bug.
-
-``bearer`` (development only)
-    Uses a pre-minted ``AWS_BEARER_TOKEN_BEDROCK`` with an explicit ``base_url``. This exists
-    because minting requires *valid SigV4 credentials*: on a machine whose SigV4 has expired,
-    ``bedrock_mantle_config`` raises 401 ``invalid_api_key`` even though a previously minted
-    bearer token still works. That is exactly the state of the development machine this was
-    built on, and it is worth naming: a plain "401" from the mantle path means the AWS
-    credentials expired, not that model access was revoked.
+    then have its own staleness bug. A plain "401" from this path means the AWS credentials
+    expired, not that model access was revoked.
 
 The two are mutually exclusive by construction -- ``client_args`` carrying ``api_key`` or
 ``base_url`` alongside ``bedrock_mantle_config`` raises ``ValueError`` inside Strands. This
@@ -41,12 +39,12 @@ __all__ = [
 ]
 
 # Same-family switch (-terra / -sol / -luna) without a rebuild.
-MODEL_ID = os.environ.get("IELTS_MODEL_ID", "openai.gpt-5.6-terra")
+MODEL_ID = os.environ.get("IELTS_MODEL_ID", "openai.gpt-5.6-luna")
 # GPT-5.6 has no cross-region inference, so the Runtime must be deployed in this region.
 REGION = os.environ.get("IELTS_MODEL_REGION", os.environ.get("AWS_REGION", "us-east-1"))
-AUTH_MODE = os.environ.get("IELTS_MODEL_AUTH", "mantle")
+AUTH_MODE = os.environ.get("IELTS_MODEL_AUTH", "bearer")
 
-SUPPORTED_REGIONS = ("us-east-1", "us-east-2")
+SUPPORTED_REGIONS = ("us-east-1", "us-east-2", "us-west-2")
 _MANTLE_URL = "https://bedrock-mantle.%s.api.aws/openai/v1"
 _MODEL_CACHE_TTL = float(os.environ.get("IELTS_MODEL_LIST_TTL", "300"))
 _MODEL_CONTEXT: ContextVar[Optional[str]] = ContextVar("ielts_model_id", default=None)

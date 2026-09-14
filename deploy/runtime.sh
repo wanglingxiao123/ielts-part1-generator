@@ -22,6 +22,36 @@ require_region
 TAG="${1:?a tag is required; this switches live traffic. Use known-good-20260730 to roll back.}"
 IMAGE="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_BACKEND}:${TAG}"
 ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${PROJECT}-runtime"
+MODEL_ID="${IELTS_MODEL_ID:-openai.gpt-5.6-luna}"
+MODEL_AUTH="${IELTS_MODEL_AUTH:-bearer}"
+MODEL_REGION="${IELTS_MODEL_REGION:-${AWS_REGION}}"
+WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/runtime-env.XXXXXX")"
+trap 'rm -rf "$WORKDIR"' EXIT INT TERM
+umask 077
+
+if [ "$MODEL_AUTH" = "bearer" ] && [ -z "${AWS_BEARER_TOKEN_BEDROCK:-}" ]; then
+    echo "ERROR: IELTS_MODEL_AUTH=bearer requires AWS_BEARER_TOKEN_BEDROCK in the environment." >&2
+    echo "       Export it before running deploy/runtime.sh." >&2
+    exit 1
+fi
+
+MODEL_ID="$MODEL_ID" MODEL_AUTH="$MODEL_AUTH" MODEL_REGION="$MODEL_REGION" \
+python3 - "$WORKDIR" <<'PY'
+import json, os, sys
+workdir = sys.argv[1]
+env = {
+    "IELTS_AUDIO_BUCKET": os.environ["S3_BUCKET"],
+    "AWS_REGION": os.environ["AWS_REGION"],
+    "IELTS_MODEL_ID": os.environ["MODEL_ID"],
+    "IELTS_MODEL_AUTH": os.environ["MODEL_AUTH"],
+    "IELTS_MODEL_REGION": os.environ["MODEL_REGION"],
+}
+token = os.environ.get("AWS_BEARER_TOKEN_BEDROCK")
+if os.environ["MODEL_AUTH"] == "bearer" and token:
+    env["AWS_BEARER_TOKEN_BEDROCK"] = token
+with open(os.path.join(workdir, "env.json"), "w", encoding="utf-8") as fh:
+    json.dump(env, fh)
+PY
 
 if ! aws ecr describe-images --repository-name "$ECR_BACKEND" --image-ids imageTag="$TAG" \
      >/dev/null 2>&1; then
@@ -50,7 +80,7 @@ if [ -n "$existing" ] && [ "$existing" != "None" ]; then
         --network-configuration '{"networkMode":"PUBLIC"}' \
         --protocol-configuration '{"serverProtocol":"HTTP"}' \
         --lifecycle-configuration "$LIFECYCLE" \
-        --environment-variables "IELTS_AUDIO_BUCKET=${S3_BUCKET},AWS_REGION=${AWS_REGION}" \
+        --environment-variables "file://$WORKDIR/env.json" \
         --query 'agentRuntimeArn' --output text
 else
     echo "creating runtime $RUNTIME_NAME"
@@ -61,7 +91,7 @@ else
         --network-configuration '{"networkMode":"PUBLIC"}' \
         --protocol-configuration '{"serverProtocol":"HTTP"}' \
         --lifecycle-configuration "$LIFECYCLE" \
-        --environment-variables "IELTS_AUDIO_BUCKET=${S3_BUCKET},AWS_REGION=${AWS_REGION}" \
+        --environment-variables "file://$WORKDIR/env.json" \
         --query 'agentRuntimeArn' --output text
 fi
 
