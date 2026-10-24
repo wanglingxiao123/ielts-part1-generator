@@ -3,9 +3,9 @@
 #
 #   bash deploy/provision.sh
 #
-# Creates: the S3 bucket, 2 ECR repos, 1 ECS cluster, 1 security group, 1 log group, 3 IAM roles.
+# Creates: the S3 bucket, 2 ECR repos, 1 ECS cluster, 1 security group, 1 log group, 2 IAM roles.
 # Does NOT create: the AgentCore Runtime (see runtime.sh), the ECS service (see service.sh),
-# the ALB / CloudFront edge (see edge.sh).
+# the public ALB edge (see edge.sh).
 #
 # Everything here is cheap or free while idle. The standing costs in this stack are a RUNNING web
 # task (start/stop) and the ALB once edge.sh has run (see stop.sh on what that does and does not
@@ -17,7 +17,7 @@ require_region
 
 echo "== login allow-list =="
 echo "  ALLOWED_EMAIL_DOMAINS=${ALLOWED_EMAIL_DOMAINS}"
-echo "  (default: britishcouncil.org; export ALLOWED_EMAIL_DOMAINS before any deploy script to"
+echo "  (default: example.com; export ALLOWED_EMAIL_DOMAINS before any deploy script to"
 echo "   override, and keep the same value for later scripts that publish the web task)"
 
 # The bucket every other piece writes into: materials, audio clips, batch history, the candidate
@@ -28,14 +28,8 @@ echo "== S3 bucket =="
 if aws s3api head-bucket --bucket "$S3_BUCKET" >/dev/null 2>&1; then
     echo "  $S3_BUCKET already exists"
 else
-    # us-east-1 is the one region where `create-bucket` must NOT be given a
-    # LocationConstraint; passing it there is an InvalidLocationConstraint error.
-    if [ "$AWS_REGION" = "us-east-1" ]; then
-        aws s3api create-bucket --bucket "$S3_BUCKET" >/dev/null
-    else
-        aws s3api create-bucket --bucket "$S3_BUCKET" \
-            --create-bucket-configuration "LocationConstraint=${AWS_REGION}" >/dev/null
-    fi
+    aws s3api create-bucket --bucket "$S3_BUCKET" \
+        --create-bucket-configuration "LocationConstraint=${AWS_REGION}" >/dev/null
     # Versioning is what `teardown.sh --purge-s3` has to walk to empty the bucket, and it is on
     # because a material overwritten by a bad revision should be recoverable.
     aws s3api put-bucket-versioning --bucket "$S3_BUCKET" \
@@ -58,9 +52,12 @@ for repo in "$ECR_BACKEND" "$ECR_FRONTEND"; do
         echo "  $repo already exists"
     else
         aws ecr create-repository --repository-name "$repo" \
+            --image-tag-mutability IMMUTABLE \
             --image-scanning-configuration scanOnPush=true \
             --query 'repository.repositoryUri' --output text
     fi
+    aws ecr put-image-tag-mutability --repository-name "$repo" \
+        --image-tag-mutability IMMUTABLE >/dev/null
 done
 
 echo "== CloudWatch log group =="
@@ -106,6 +103,8 @@ EXEC_ROLE="${PROJECT}-ecs-exec"
 if aws iam get-role --role-name "$EXEC_ROLE" >/dev/null 2>&1; then
     echo "  $EXEC_ROLE already exists"
 else
+    # China ECS documentation retains ecs-tasks.amazonaws.com (not the endpoint suffix).
+    # https://docs.amazonaws.cn/en_us/AmazonECS/latest/developerguide/task-iam-roles.html
     aws iam create-role --role-name "$EXEC_ROLE" --assume-role-policy-document '{
       "Version":"2012-10-17",
       "Statement":[{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},
@@ -117,7 +116,7 @@ fi
 # them) would otherwise never get it back on a re-provision. The symptom is a task that cannot pull
 # its own image.
 aws iam attach-role-policy --role-name "$EXEC_ROLE" \
-    --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+    --policy-arn arn:${AWS_PARTITION}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
 echo "  $EXEC_ROLE execution policy attached"
 
 echo "== IAM: web task role (the SigV4 caller) =="
@@ -135,111 +134,22 @@ else
     echo "  created $WEB_ROLE"
 fi
 
-# Outside the branch above, deliberately, and for the same reason the runtime role's policy is: a
-# policy written only on creation means an account whose role already exists never receives a
-# permission this version added. The symptom is the worst kind -- provision reports success, and the
-# failure arrives later as AccessDenied from a deployment that was just "provisioned successfully".
-# `put-role-policy` overwrites by name, so re-running is free.
-#
-# InvokeAgentRuntime authorises against BOTH the runtime and its endpoint resource, so both ARN
-# shapes are listed. Wildcarding the id is unavoidable here because the runtime does not exist yet at
-# provision time; deploy/runtime.sh prints the real ARN, and narrowing this to it afterwards is a
-# one-line change worth making if the stack outlives the demo.
+# Invoking a Runtime is distinct from provider/model access. Scope both resource
+# shapes to this China account/region; the runtime execution role remains deferred.
 aws iam put-role-policy --role-name "$WEB_ROLE" --policy-name "${PROJECT}-web-inline" \
   --policy-document "{
     \"Version\":\"2012-10-17\",
     \"Statement\":[
       {\"Effect\":\"Allow\",\"Action\":\"bedrock-agentcore:InvokeAgentRuntime\",
        \"Resource\":[
-         \"arn:aws:bedrock-agentcore:${AWS_REGION}:${ACCOUNT_ID}:runtime/*\",
-         \"arn:aws:bedrock-agentcore:${AWS_REGION}:${ACCOUNT_ID}:runtime/*/endpoint/*\"]},
+         \"arn:${AWS_PARTITION}:bedrock-agentcore:${AWS_REGION}:${ACCOUNT_ID}:runtime/*\",
+         \"arn:${AWS_PARTITION}:bedrock-agentcore:${AWS_REGION}:${ACCOUNT_ID}:runtime/*/endpoint/*\"]},
       {\"Effect\":\"Allow\",\"Action\":[\"s3:GetObject\",\"s3:PutObject\"],
-       \"Resource\":\"arn:aws:s3:::${S3_BUCKET}/*\"},
-      {\"Effect\":\"Allow\",\"Action\":\"s3:ListBucket\",\"Resource\":\"arn:aws:s3:::${S3_BUCKET}\"},
+       \"Resource\":\"arn:${AWS_PARTITION}:s3:::${S3_BUCKET}/*\"},
+      {\"Effect\":\"Allow\",\"Action\":\"s3:ListBucket\",\"Resource\":\"arn:${AWS_PARTITION}:s3:::${S3_BUCKET}\"},
       {\"Effect\":\"Allow\",\"Action\":[\"logs:CreateLogStream\",\"logs:PutLogEvents\"],\"Resource\":\"*\"}
     ]}"
-echo "  $WEB_ROLE inline policy written (InvokeAgentRuntime + the one bucket)"
-
-echo "== IAM: AgentCore runtime role =="
-RT_ROLE="${PROJECT}-runtime"
-if aws iam get-role --role-name "$RT_ROLE" >/dev/null 2>&1; then
-    echo "  $RT_ROLE already exists"
-else
-    # SourceAccount/SourceArn conditions per the docs: without them any AgentCore runtime in any
-    # account could be pointed at this role (the confused-deputy shape).
-    aws iam create-role --role-name "$RT_ROLE" --assume-role-policy-document "{
-      \"Version\":\"2012-10-17\",
-      \"Statement\":[{
-        \"Effect\":\"Allow\",
-        \"Principal\":{\"Service\":\"bedrock-agentcore.amazonaws.com\"},
-        \"Action\":\"sts:AssumeRole\",
-        \"Condition\":{
-          \"StringEquals\":{\"aws:SourceAccount\":\"${ACCOUNT_ID}\"},
-          \"ArnLike\":{\"aws:SourceArn\":\"arn:aws:bedrock-agentcore:${AWS_REGION}:${ACCOUNT_ID}:*\"}}
-      }]}" --query 'Role.Arn' --output text
-    echo "  created $RT_ROLE"
-fi
-
-# The inline policy is written on EVERY run, not only when the role is created. It used to sit inside
-# the `else` above, which meant an account whose role already existed never received a newly added
-# permission -- the upgrade path silently skipped it, and the symptom was an AccessDenied at run time
-# on a deployment that had just been "provisioned" successfully. `put-role-policy` overwrites by
-# name, so re-applying it is free and keeps the policy in the file the single source of truth.
-#
-# bedrock-mantle is a SEPARATE service prefix from bedrock. GPT-5.6 is served only through the
-# mantle endpoint, and `bedrock:InvokeModel` does not cover it -- the call fails with
-# `access_denied ... not authorized to perform: bedrock-mantle:CreateInference`. Two actions are
-# needed, discovered one 401 at a time by deploying: CreateInference for the call itself, and
-# CallWithBearerToken because Strands' bedrock_mantle_config mints a bearer token per request
-# rather than signing with SigV4 directly. Neither appears in the AWS docs we could find.
-#
-# The Code Interpreter actions are what let the audit side run its metrics script somewhere the
-# generator's blueprint does not exist. `strands_tools.shell` would have been the obvious way to
-# let an agent run a script, but it calls `pty.fork()` directly and takes no `agent` parameter,
-# so no sandbox can constrain it -- a shell-equipped audit agent can read the blueprint schema
-# off the local filesystem. Code Interpreter inverts that: the remote environment starts empty
-# and holds only the two files we upload. The identifier is the built-in
-# `aws.codeinterpreter.v1`, so there is no resource to provision here.
-#
-# Scoped to what the loop actually does: pull its image, log, invoke the model, synthesize
-# speech, run the audit metrics remotely, and read/write THIS bucket. No wildcard on S3 -- a
-# demo role should not reach the other 40-odd buckets in this account. ECR and the metrics/token
-# actions are required by the platform itself, not by our code, and the runtime fails to start
-# without them.
-aws iam put-role-policy --role-name "$RT_ROLE" --policy-name "${PROJECT}-runtime-inline" \
-  --policy-document "{
-    \"Version\":\"2012-10-17\",
-    \"Statement\":[
-      {\"Effect\":\"Allow\",\"Action\":[\"ecr:BatchGetImage\",\"ecr:GetDownloadUrlForLayer\"],
-       \"Resource\":\"arn:aws:ecr:${AWS_REGION}:${ACCOUNT_ID}:repository/${ECR_BACKEND}\"},
-      {\"Effect\":\"Allow\",\"Action\":\"ecr:GetAuthorizationToken\",\"Resource\":\"*\"},
-      {\"Effect\":\"Allow\",\"Action\":[\"bedrock:InvokeModel\",\"bedrock:InvokeModelWithResponseStream\",\"bedrock:ListFoundationModels\"],\"Resource\":\"*\"},
-      {\"Effect\":\"Allow\",\"Action\":[\"bedrock-mantle:CreateInference\",\"bedrock-mantle:CreateResponse\",\"bedrock-mantle:CreateChatCompletion\",\"bedrock-mantle:CallWithBearerToken\",\"bedrock:CallWithBearerToken\"],\"Resource\":\"*\"},
-      {\"Effect\":\"Allow\",\"Action\":\"polly:SynthesizeSpeech\",\"Resource\":\"*\"},
-      {\"Effect\":\"Allow\",\"Action\":[\"s3:GetObject\",\"s3:PutObject\",\"s3:DeleteObject\"],
-       \"Resource\":\"arn:aws:s3:::${S3_BUCKET}/*\"},
-      {\"Effect\":\"Allow\",\"Action\":\"s3:ListBucket\",\"Resource\":\"arn:aws:s3:::${S3_BUCKET}\"},
-      {\"Effect\":\"Allow\",\"Action\":[\"logs:CreateLogGroup\",\"logs:CreateLogStream\",
-        \"logs:PutLogEvents\",\"logs:DescribeLogStreams\",\"logs:DescribeLogGroups\"],\"Resource\":\"*\"},
-      {\"Effect\":\"Allow\",\"Action\":\"cloudwatch:PutMetricData\",\"Resource\":\"*\",
-       \"Condition\":{\"StringEquals\":{\"cloudwatch:namespace\":\"bedrock-agentcore\"}}},
-      {\"Effect\":\"Allow\",\"Action\":\"bedrock-agentcore:GetWorkloadAccessToken\",\"Resource\":\"*\"},
-      {\"Effect\":\"Allow\",\"Action\":[
-         \"bedrock-agentcore:StartCodeInterpreterSession\",
-         \"bedrock-agentcore:InvokeCodeInterpreter\",
-         \"bedrock-agentcore:StopCodeInterpreterSession\",
-         \"bedrock-agentcore:GetCodeInterpreterSession\",
-         \"bedrock-agentcore:ListCodeInterpreterSessions\",
-         \"bedrock-agentcore:GetCodeInterpreter\",
-         \"bedrock-agentcore:ListCodeInterpreters\"],
-       \"Resource\":\"*\"},
-      {\"Effect\":\"Allow\",\"Action\":[\"xray:PutTraceSegments\",\"xray:PutTelemetryRecords\"],\"Resource\":\"*\"}
-    ]}"
-echo "  applied ${PROJECT}-runtime-inline (bucket-scoped, incl. Code Interpreter)"
-
-echo
-echo "provisioned. next:"
-echo "  1. bash backend/scripts/deploy.sh $ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_BACKEND"
-echo "  2. bash deploy/runtime.sh      # create the AgentCore Runtime"
-echo "  3. bash deploy/service.sh      # push the web image and create the ECS service"
-echo "  4. bash deploy/start.sh        # scale to 1 and print the URL"
+echo "  $WEB_ROLE inline policy written (China-scoped Runtime invocation, bucket and logs)"
+echo "Core infrastructure provisioned. Model/runtime IAM and deployment remain pending."
+echo "next: bash deploy/edge.sh"
+echo "build: bash backend/scripts/deploy.sh ${ECR_REGISTRY}/${ECR_BACKEND} <tag>"

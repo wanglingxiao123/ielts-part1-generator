@@ -16,6 +16,7 @@ preference to recomputing. That way changing this algorithm later leaves old mat
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from typing import Dict, List, Optional, Sequence
 
@@ -29,17 +30,21 @@ SPEAKERS = (NARRATOR, PROVIDER, ENQUIRER)
 
 ROLES = {NARRATOR: "narrator", PROVIDER: "provider", ENQUIRER: "enquirer"}
 
-# Fixed: the real exam narrator is steady, slightly slow and announcement-like.
-NARRATOR_VOICE = "Brian"
-# Swapped as a pair, never mixed with a third voice.
-DIALOGUE_VOICES = ("Amy", "Arthur")
+# Explicit deployment preset; never silently switch engines after a synthesis failure.
+PRESET = os.environ.get("IELTS_POLLY_PRESET", "british-neural")
+_PRESETS = {
+    "british-neural": ("neural", "Brian", ("Amy", "Arthur")),
+    "china-standard": ("standard", "Emma", ("Amy", "Brian")),
+}
+if PRESET not in _PRESETS:
+    raise ValueError("Unknown IELTS_POLLY_PRESET")
+ENGINE, NARRATOR_VOICE, DIALOGUE_VOICES = _PRESETS[PRESET]
 
 # Every voice this module can emit. describe-voices must confirm all three exist in the
 # target region before synthesis runs -- see assumptions.BY_ID["arthur-available"].
 REQUIRED_VOICES = (NARRATOR_VOICE,) + DIALOGUE_VOICES
 
 LANGUAGE_CODE = "en-GB"
-ENGINE = "neural"
 
 
 class VoiceMapError(ValueError):

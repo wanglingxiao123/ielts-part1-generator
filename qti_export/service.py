@@ -11,9 +11,9 @@
 * ``operation=revise_material`` 的完整评估版本仍把 ``package`` 放在顶层，但 ``quality`` 同时
   保存材料和题目两套检查，题目门禁位于 ``quality.questions``。
 
-``normalize_document`` 把第二种翻成第一种，之后两者走同一条门禁。翻译而不是给门禁开旁路：
-修订版本同样要满足「两侧答案一致、题号闭合、字数上限自洽」，否则导出去的包会把一个未经
-互证的答案写进 ``correctResponse``。
+``normalize_document`` only adapts storage shapes. The Web export path treats the teacher-selected
+version as authoritative and checks export structure, not historical model verdicts. Standard
+answers and explicit accepted alternatives are exported without content re-adjudication.
 """
 from __future__ import annotations
 
@@ -118,11 +118,13 @@ def export_document(
     raw: Optional[bytes] = None,
 ) -> ExportBundle:
     """存储里的任一形状 → 内容包。失败一律抛 ``ExportRejected``，原因逐条列出。"""
+    if document.get("id") and document.get("status") != "ready":
+        raise ExportRejected(["版本尚未生成完成，不能导出进行中的草稿。"])
     doc = normalize_document(document)
     if not isinstance(doc.get("package"), dict):
         raise ExportRejected(["这份文档里没有题目包（package）"])
     try:
-        return emitter.render(doc, slug=material_id, version_ordinal=version_ordinal, raw=raw)
+        return emitter.render(doc, slug=material_id, version_ordinal=version_ordinal, raw=raw, teacher_version=True)
     except GateFailure as exc:
         raise ExportRejected(list(exc.failures)) from exc
     except LayoutNotImplemented as exc:

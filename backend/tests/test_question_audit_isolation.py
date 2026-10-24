@@ -45,6 +45,8 @@ from backend.steps.agent_steps import (
     build_question_audit_payload,
 )
 
+pytestmark = pytest.mark.usefixtures("offline_agent_models")
+
 
 @pytest.fixture
 def metrics(material, question_face) -> dict:
@@ -385,8 +387,8 @@ class TestTheReviewEnvelopeRejectsAnEmptyReconstruction:
     def test_a_decoy_first_object_does_not_qualify(self):
         """Measured on the material side: a ``{"verdict": "PASS"}`` decoy was accepted as a pass.
 
-        ``extract_json`` returns the first balanced object, so requiring the four load-bearing keys is
-        what makes a decoy fail rather than win.
+        The report selector skips a decoy, but the chosen report must still meet
+        the complete review contract before anything can be accepted.
         """
         from backend.steps.agent_steps import _question_audit_envelope
         from backend.steps.call import ModelCallError
@@ -397,10 +399,9 @@ class TestTheReviewEnvelopeRejectsAnEmptyReconstruction:
                 '"question_qc_status": "FAIL"}'
         with pytest.raises(ModelCallError) as exc:
             _question_audit_envelope(reply, "question audit")
-        # Pinned to the decoy's own failure mode. Without this the test would keep passing if the
-        # decoy check were removed, because the second object is a nine-of-ten review that the
-        # coverage gate now rejects for an unrelated reason -- a green test asserting nothing.
-        assert "missing required keys" in str(exc.value)
+        # The complete envelope is selected, but its one-item review still fails
+        # the unchanged coverage/consistency gate; the decoy never becomes a pass.
+        assert "disagrees with itself" in str(exc.value)
 
     def test_a_real_review_passes(self):
         """A COMPLETE review: ten rebuilt answers, ten reviewed ids, counts that match.

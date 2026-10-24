@@ -21,6 +21,10 @@
 # carries Bedrock and S3 permissions the probe never uses -- and that is fine rather than sloppy: the
 # probe process makes no AWS calls at all, so a permission it never invokes grants nothing. A
 # dedicated empty role would be marginally tidier and would add a second thing to remember to delete.
+source "$(dirname "$0")/settings.sh" || exit 1
+case "${1:-}" in
+    create|'') require_model_ready || exit 1 ;;
+esac
 source "$(dirname "$0")/config.sh"
 
 PROBE_RUNTIME_NAME="${PROBE_RUNTIME_NAME:-ielts_part1_probe}"
@@ -40,7 +44,7 @@ require_creds
 require_region
 
 CMD="${1:-}"
-ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${PROJECT}-runtime"
+ROLE_ARN="arn:${AWS_PARTITION}:iam::${ACCOUNT_ID}:role/${PROJECT}-runtime"
 
 # `|| true` because config.sh sets `-e`: without it, an AWS call that fails for an unrelated reason
 # (expired token mid-run, a throttle) would abort the script at an assignment, and during the DELETE
@@ -60,13 +64,13 @@ probe_status() {
 case "$CMD" in
 create)
     TAG="${2:?usage: probe-runtime.sh create <image-tag>; build it with backend/probe.Dockerfile}"
-    IMAGE="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_BACKEND}:${TAG}"
+    IMAGE="${ECR_REGISTRY}/${ECR_BACKEND}:${TAG}"
 
     if ! aws ecr describe-images --repository-name "$ECR_BACKEND" --image-ids imageTag="$TAG" \
          >/dev/null 2>&1; then
         echo "ERROR: $IMAGE not found. Build and push the probe image first:" >&2
         echo "  docker build --platform linux/arm64 -f backend/probe.Dockerfile -t ielts-probe:$TAG ." >&2
-        echo "  aws ecr get-login-password | docker login --username AWS --password-stdin ${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com" >&2
+        echo "  aws ecr get-login-password | docker login --username AWS --password-stdin ${ECR_REGISTRY}" >&2
         echo "  docker tag ielts-probe:$TAG $IMAGE && docker push $IMAGE" >&2
         exit 1
     fi

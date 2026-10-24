@@ -4,65 +4,62 @@
 #   bash deploy/teardown.sh --yes            # infra only, S3 objects kept
 #   bash deploy/teardown.sh --yes --purge-s3 # also delete every generated material
 #
-# For "the demo is over for now", use deploy/stop.sh instead -- it costs nothing while stopped
-# and keeps everything ready for the next demo. This script is for "we are done with the project".
+# For "the demo is over for now", use deploy/stop.sh instead. The ALB remains billable
+# and keeps its URL for the next demo. This script is for "we are done with the project".
 
 source "$(dirname "$0")/config.sh"
 
-# Flipping `Enabled` in a distribution config. Held in a variable rather than a heredoc so the
-# surrounding `if` blocks stay readable; the CLI has no --enabled flag for this.
-DISABLE_CF_PY='
-import json, sys
-path = sys.argv[1]
-with open(path) as fh:
-    cfg = json.load(fh)
-cfg["Enabled"] = False
-with open(path, "w") as fh:
-    json.dump(cfg, fh)
-'
-
 if [ "${1:-}" != "--yes" ]; then
-    echo "This deletes the CloudFront distribution, ALB, target group, ECS service, cluster," >&2
-    echo "AgentCore Runtime, ECR repos, IAM roles, security groups and log group for" >&2
-    echo "'$PROJECT'. The delivered HTTPS URL stops working and CANNOT be recreated -- a new" >&2
-    echo "distribution gets a different *.cloudfront.net hostname." >&2
+    echo "This deletes the ALB, target group, ECS service/cluster, ECR repos," >&2
+    echo "IAM roles, security groups and log group for '$PROJECT'. The ALB URL is lost." >&2
     echo >&2
     echo "Re-run with --yes to proceed, or use deploy/stop.sh to just pause the demo." >&2
     exit 1
 fi
 require_creds
-
-# CloudFront first: a distribution must be disabled AND fully propagated before it can be deleted,
-# and that wait runs into minutes. Starting the disable here lets the rest of the teardown proceed
-# while it propagates; the delete itself is at the very end of this script.
-echo "== CloudFront (disable) =="
-ALB_DNS=$(aws elbv2 describe-load-balancers --names "$ALB_NAME" \
-          --query 'LoadBalancers[0].DNSName' --output text 2>/dev/null || true)
-CF_ID=""
-if [ -n "$ALB_DNS" ] && [ "$ALB_DNS" != "None" ]; then
-    CF_ID=$(aws cloudfront list-distributions \
-            --query "DistributionList.Items[?Origins.Items[0].DomainName=='${ALB_DNS}'].Id | [0]" \
-            --output text 2>/dev/null || true)
-fi
-if [ -n "$CF_ID" ] && [ "$CF_ID" != "None" ]; then
-    etag=$(aws cloudfront get-distribution-config --id "$CF_ID" --query 'ETag' --output text)
-    aws cloudfront get-distribution-config --id "$CF_ID" \
-        --query 'DistributionConfig' --output json >"/tmp/${PROJECT}-cf-disable.json"
-    python3 -c "$DISABLE_CF_PY" "/tmp/${PROJECT}-cf-disable.json"
-    aws cloudfront update-distribution --id "$CF_ID" --if-match "$etag" \
-        --distribution-config "file:///tmp/${PROJECT}-cf-disable.json" >/dev/null
-    echo "  disabled $CF_ID; it is deleted at the end of this script"
-else
-    echo "  not present"
-fi
+INCOMPLETE=0
+incomplete() {
+    echo "  INCOMPLETE: $*" >&2
+    INCOMPLETE=1
+}
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+# Treat only an explicit not-found response as absent; denied/failed deletion is partial.
+delete_resource() {
+    local label="$1" missing_code="$2"
+    shift 2
+    if "$@" > /dev/null 2>"$WORK/delete.err"; then
+        echo "  deleted $label"
+    elif grep -q "($missing_code)" "$WORK/delete.err"; then
+        echo "  $label not present"
+    else
+        cat "$WORK/delete.err" >&2
+        incomplete "$label deletion failed"
+    fi
+}
+lookup_resource() {
+    local missing_code="$1"
+    shift
+    if "$@" 2>"$WORK/lookup.err"; then
+        return 0
+    elif grep -q "($missing_code)" "$WORK/lookup.err"; then
+        echo None
+    else
+        cat "$WORK/lookup.err" >&2
+        return 1
+    fi
+}
 
 echo "== ECS service =="
-if aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
-   --query 'services[0].status' --output text 2>/dev/null | grep -q ACTIVE; then
+SERVICE_STATUS=$(lookup_resource ClusterNotFoundException aws ecs describe-services \
+    --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+    --query 'services[0].status' --output text)
+if [ "$SERVICE_STATUS" = ACTIVE ]; then
     aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" \
         --desired-count 0 >/dev/null
-    aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" || true
+    aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
     aws ecs delete-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" --force >/dev/null
+    aws ecs wait services-inactive --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
     echo "  deleted $ECS_SERVICE"
 else
     echo "  not present"
@@ -70,56 +67,47 @@ fi
 
 # After the service is gone, so no target is still registered with the group.
 echo "== load balancer =="
-ALB_ARN=$(aws elbv2 describe-load-balancers --names "$ALB_NAME" \
-          --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || true)
+ALB_ARN=$(lookup_resource LoadBalancerNotFound aws elbv2 describe-load-balancers --names "$ALB_NAME" \
+          --query 'LoadBalancers[0].LoadBalancerArn' --output text)
 if [ -n "$ALB_ARN" ] && [ "$ALB_ARN" != "None" ]; then
     aws elbv2 delete-load-balancer --load-balancer-arn "$ALB_ARN" >/dev/null
     echo "  deleted $ALB_NAME"
     # The listener goes with the ALB. The target group does not, and it cannot be deleted while the
     # ALB still references it — hence the wait.
-    aws elbv2 wait load-balancers-deleted --load-balancer-arns "$ALB_ARN" 2>/dev/null || true
+    aws elbv2 wait load-balancers-deleted --load-balancer-arns "$ALB_ARN"
 else
     echo "  not present"
 fi
 
 echo "== target group =="
-TG_ARN=$(aws elbv2 describe-target-groups --names "$TG_NAME" \
-         --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || true)
+TG_ARN=$(lookup_resource TargetGroupNotFound aws elbv2 describe-target-groups --names "$TG_NAME" \
+         --query 'TargetGroups[0].TargetGroupArn' --output text)
 if [ -n "$TG_ARN" ] && [ "$TG_ARN" != "None" ]; then
     aws elbv2 delete-target-group --target-group-arn "$TG_ARN" >/dev/null 2>&1 \
         && echo "  deleted $TG_NAME" \
-        || echo "  $TG_NAME still referenced; retry in a minute"
+        || incomplete "$TG_NAME deletion failed; inspect the target group and retry"
 else
     echo "  not present"
 fi
 
 echo "== ECS cluster =="
-aws ecs delete-cluster --cluster "$ECS_CLUSTER" >/dev/null 2>&1 \
-    && echo "  deleted $ECS_CLUSTER" || echo "  not present"
+delete_resource "$ECS_CLUSTER" ClusterNotFoundException \
+    aws ecs delete-cluster --cluster "$ECS_CLUSTER"
 
-echo "== AgentCore runtime =="
-arn=$(aws bedrock-agentcore-control list-agent-runtimes \
-      --query "agentRuntimes[?agentRuntimeName=='$RUNTIME_NAME'].agentRuntimeArn" \
-      --output text 2>/dev/null)
-if [ -n "$arn" ] && [ "$arn" != "None" ]; then
-    id="${arn##*/}"
-    aws bedrock-agentcore-control delete-agent-runtime --agent-runtime-id "$id" >/dev/null \
-        && echo "  deleted $RUNTIME_NAME"
-else
-    echo "  not present"
-fi
+# China provisioning does not own a model Runtime or runtime IAM role.
+# Their lifecycle remains pending the provider implementation.
 
 echo "== ECR repositories =="
 for repo in "$ECR_BACKEND" "$ECR_FRONTEND"; do
-    aws ecr delete-repository --repository-name "$repo" --force >/dev/null 2>&1 \
-        && echo "  deleted $repo" || echo "  $repo not present"
+    delete_resource "$repo" RepositoryNotFoundException \
+        aws ecr delete-repository --repository-name "$repo" --force
 done
 
 echo "== IAM roles =="
 # `-web-task` used to be missing from this list, so a teardown left one role behind — the one that
 # carries InvokeAgentRuntime and S3 write access, which is the least appropriate one to orphan.
-for role in "${PROJECT}-ecs-exec" "${PROJECT}-web-task" "${PROJECT}-runtime"; do
-    if aws iam get-role --role-name "$role" >/dev/null 2>&1; then
+for role in "${PROJECT}-ecs-exec" "${PROJECT}-web-task"; do
+    if aws iam get-role --role-name "$role" >/dev/null 2>"$WORK/role.err"; then
         for p in $(aws iam list-attached-role-policies --role-name "$role" \
                    --query 'AttachedPolicies[].PolicyArn' --output text); do
             aws iam detach-role-policy --role-name "$role" --policy-arn "$p"
@@ -129,8 +117,11 @@ for role in "${PROJECT}-ecs-exec" "${PROJECT}-web-task" "${PROJECT}-runtime"; do
             aws iam delete-role-policy --role-name "$role" --policy-name "$p"
         done
         aws iam delete-role --role-name "$role" && echo "  deleted $role"
-    else
+    elif grep -q '(NoSuchEntity)' "$WORK/role.err"; then
         echo "  $role not present"
+    else
+        cat "$WORK/role.err" >&2
+        incomplete "could not inspect $role"
     fi
 done
 
@@ -144,15 +135,15 @@ for sg_name in "$SG_NAME" "$ALB_SG_NAME"; do
     if [ -n "$sg" ] && [ "$sg" != "None" ]; then
         aws ec2 delete-security-group --group-id "$sg" 2>/dev/null \
             && echo "  deleted $sg_name ($sg)" \
-            || echo "  $sg_name still in use; retry in a minute once the ENI is released"
+            || incomplete "$sg_name deletion failed; inspect ENI references and retry"
     else
         echo "  $sg_name not present"
     fi
 done
 
 echo "== log group =="
-aws logs delete-log-group --log-group-name "$LOG_GROUP" 2>/dev/null \
-    && echo "  deleted $LOG_GROUP" || echo "  not present"
+delete_resource "$LOG_GROUP" ResourceNotFoundException \
+    aws logs delete-log-group --log-group-name "$LOG_GROUP"
 
 echo "== S3 =="
 if [ "${2:-}" = "--purge-s3" ]; then
@@ -167,38 +158,29 @@ for kind in ("Versions", "DeleteMarkers"):
         out = subprocess.run(
             ["aws", "s3api", "list-object-versions", "--bucket", bucket,
              "--max-keys", "500", "--query", "{0}[].{{Key:Key,VersionId:VersionId}}".format(kind),
-             "--output", "json"], capture_output=True, text=True)
+             "--output", "json"], capture_output=True, text=True, check=True)
         items = json.loads(out.stdout or "null") or []
         if not items:
             break
         payload = json.dumps({"Objects": items, "Quiet": True})
-        subprocess.run(["aws", "s3api", "delete-objects", "--bucket", bucket,
-                        "--delete", payload], capture_output=True, text=True)
+        deleted = subprocess.run(["aws", "s3api", "delete-objects", "--bucket", bucket,
+                                  "--delete", payload, "--output", "json"],
+                                 capture_output=True, text=True, check=True)
+        if json.loads(deleted.stdout or "{}").get("Errors"):
+            sys.exit("ERROR: S3 returned object deletion errors; purge stopped.")
         print("    removed {0} {1}".format(len(items), kind.lower()))
 PY
     aws s3api delete-bucket --bucket "$S3_BUCKET" \
         && echo "  deleted bucket $S3_BUCKET" \
-        || echo "  bucket not empty or already gone"
+        || incomplete "bucket deletion failed; inspect $S3_BUCKET"
 else
     n=$(aws s3 ls "s3://$S3_BUCKET/" --recursive 2>/dev/null | wc -l | tr -d ' ')
     echo "  KEPT $S3_BUCKET ($n objects). Pass --purge-s3 to delete generated materials too."
 fi
 
-# Last, because the disable had to propagate. A distribution still `InProgress` cannot be deleted,
-# so waiting here is the only correct order.
-if [ -n "$CF_ID" ] && [ "$CF_ID" != "None" ]; then
-    echo
-    echo "== CloudFront (delete) =="
-    echo "  waiting for the disable to propagate (several minutes)..."
-    aws cloudfront wait distribution-deployed --id "$CF_ID" 2>/dev/null || true
-    etag=$(aws cloudfront get-distribution-config --id "$CF_ID" \
-           --query 'ETag' --output text 2>/dev/null || true)
-    if [ -n "$etag" ]; then
-        aws cloudfront delete-distribution --id "$CF_ID" --if-match "$etag" >/dev/null 2>&1 \
-            && echo "  deleted $CF_ID" \
-            || echo "  not deletable yet; re-run this script, or delete $CF_ID in the console"
-    fi
-fi
-
 echo
-echo "teardown complete."
+if [ "$INCOMPLETE" != 0 ]; then
+    echo 'Teardown incomplete; resolve the errors above and retry.' >&2
+    exit 1
+fi
+echo "Teardown commands finished. Review resource results above; this is not a verified inventory of remaining resources."

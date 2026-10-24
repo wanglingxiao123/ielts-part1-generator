@@ -39,11 +39,9 @@ const REPLAN_STEPS = [
 
 const MATERIAL_REVISION_STEPS = [
   '已接收请求',
-  '修改听力材料',
-  '复核新材料',
-  '重建信息点',
-  '生成完整十题',
-  '独立盲审',
+  '修改相关原文和答案',
+  '检查变更范围与字段',
+  '独立检查关联影响',
   '生成新版本',
 ] as const
 
@@ -107,20 +105,10 @@ const REPLAN_STAGE_INDEX: Record<QuestionRevisionStage, number> = {
 }
 
 const MATERIAL_STAGE_INDEX: Record<QuestionRevisionStage, number> = {
-  queued: 0,
-  analysing: 0,
-  material_revising: 1,
-  material_auditing: 2,
-  revising_material: 1,
-  validating_material: 2,
-  auditing_material: 2,
-  planning: 3,
-  feasibility: 3,
-  generating: 4,
-  revising: 4,
-  validating: 4,
-  auditing: 5,
-  storing: 6,
+  queued: 0, analysing: 0, material_revising: 1, material_auditing: 3,
+  revising_material: 1, validating_material: 2, auditing_material: 3,
+  planning: 1, feasibility: 2, generating: 1, revising: 1,
+  validating: 2, auditing: 3, storing: 4,
 }
 
 export function LocalMaterialRevisionProgress({
@@ -316,7 +304,7 @@ export function QuestionRevisionAction({
           <div className="question-revision-result-head">
             <strong>
               {isMaterialRevision
-                ? '正在修改材料并重新命题'
+                ? '正在修改相关原文和题目'
                 : isReplanning
                   ? '正在重新命题'
                   : '正在修改题目'}
@@ -370,7 +358,7 @@ export function QuestionRevisionAction({
           title="需要修改材料"
           dismissable={false}
         >
-          <p>这些意见需要修改听力材料。确认后将生成新材料、重建信息点和完整十题；现有版本不会被覆盖或自动采用。</p>
+          <p>确认后将以当前所选版本为基础，修改意见涉及的原文、答案和证据，并检查关联内容；其他题面和无关原文保持不变。现有版本不会被覆盖或自动采用。</p>
           <ReasonList reasons={state.revisionResult.reasons} />
           <div className="question-replan-confirm">
             <button

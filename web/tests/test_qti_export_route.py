@@ -192,7 +192,7 @@ def test_a_set_that_fails_the_gates_is_a_422_listing_every_reason(auth, runtime,
     error = response.json()["error"]
     assert error["code"] == "QTI_EXPORT_REJECTED"
     reasons = error["detail"]["reasons"]
-    assert any(r.startswith("G2") for r in reasons)
+    assert not any(r.startswith("G2") for r in reasons)
     assert any(r.startswith("G3") for r in reasons)
 
 

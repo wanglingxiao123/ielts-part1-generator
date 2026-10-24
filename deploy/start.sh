@@ -3,10 +3,16 @@
 #
 #   bash deploy/start.sh
 #
-# Costs nothing while stopped, so the normal cycle is start -> demo -> stop.
+# The ALB remains provisioned and billable while web tasks are stopped.
 
 source "$(dirname "$0")/config.sh"
 require_creds
+bash "$(dirname "$0")/edge.sh" --check-only
+CURRENT_TD=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+    --query 'services[0].taskDefinition' --output text)
+aws ecs describe-task-definition --task-definition "$CURRENT_TD" --output json \
+    | python3 "$(dirname "$0")/validate_edge.py" taskdef \
+        "$AWS_REGION" "$ACCOUNT_ID" "$ECR_REGISTRY/$ECR_FRONTEND" "$TASK_FAMILY" >/dev/null
 
 echo "scaling $ECS_SERVICE to 1..."
 aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" \

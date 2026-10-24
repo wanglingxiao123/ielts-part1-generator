@@ -7,12 +7,122 @@ from backend.orchestration.manual_material_local_revision import (
     _base_question_quality,
     _blueprint_immutable_surface,
     _local_question_gate,
+    _local_material_gate,
+    _material_audit_passed,
     _question_quality_for_storage,
     _relax_local_confirmation_density,
     material_turns,
     project_local_candidate,
 )
 from backend.deterministic.validate import ValidationResult
+from backend.deterministic.crosscheck import CrossCheckResult
+
+
+@pytest.mark.parametrize("patch", [
+    {"verdict": "FAIL"}, {"assessable": False},
+    {"findings": [{"severity": "major"}]},
+    {"findings": [{"severity": "critical"}]},
+    {"findings": [{"severity": "unknown"}]},
+])
+def test_local_baseline_comparison_never_overrides_a_failed_material_audit(patch):
+    audit = {"assessable": True, "verdict": "PASS", "findings": []}
+    assert _material_audit_passed(audit)
+    assert not _material_audit_passed({**audit, **patch})
+
+
+def test_local_material_reconciles_only_proven_unchanged_baseline_details():
+    original = {"turns": [
+        {"text": "The kettle cost fifty-six pounds."},
+        {"text": "It goes back to the card you paid with."},
+        {"text": "No, that's all very clear. Thank you so much for your help."},
+    ]}
+    projected = {"turns": [
+        *original["turns"][:2], {"text": "That's clear. Thanks for your help."},
+    ]}
+    extras = [
+        {"type": "price", "turn_index": 0, "evidence": "The kettle cost fifty-six pounds."},
+        {"type": "option", "turn_index": 1, "evidence": "It goes back to the card you paid with"},
+    ]
+    check = CrossCheckResult({"unintended_target": extras})
+    baseline = CrossCheckResult({"planned": 10, "matched": 10, "unintended_target": []})
+    blockers, advisories = _local_material_gate(check, baseline, original, projected, 2)
+    assert blockers == []
+    assert len(advisories) == 2
+    assert check.hard_defects == extras  # Preserve the original report, never rewrite it to PASS.
+
+    # No baseline evidence, or a missing target, must still fail.
+    assert len(_local_material_gate(check, None, original, projected, 2)[0]) == 2
+    check.unrecoverable = [{"number": 4, "turn_index": 0}]
+    assert "Q4" in _local_material_gate(check, baseline, original, projected, 2)[0][0]
+
+
+@pytest.mark.parametrize("change", ["edited_turn", "changed_source", "unsupported_quote",
+                                   "short_quote", "unknown_anchor", "incomplete_baseline"])
+def test_local_material_does_not_hide_new_or_unproven_defects(change):
+    import copy
+    original = {"turns": [{"text": "The price is fifty pounds. Delivery is four pounds."},
+                           {"text": "Thank you."}]}
+    projected = copy.deepcopy(original)
+    projected["turns"][1]["text"] = "Thanks."
+    old = {"type": "price", "turn_index": 0, "evidence": "The price is fifty pounds."}
+    new = dict(old)
+    turn_index = 1
+    if change == "edited_turn":
+        turn_index = 0
+    elif change == "changed_source":
+        projected["turns"][0]["text"] += " It is free today."
+    elif change == "unsupported_quote":
+        new["evidence"] = "The price is nine pounds."
+    elif change == "short_quote":
+        new["evidence"] = "price"
+    elif change == "unknown_anchor":
+        new["turn_index"] = None
+    blockers, advisories = _local_material_gate(
+        CrossCheckResult({"unintended_target": [new]}),
+        CrossCheckResult({"planned": 10, "matched": 9 if change == "incomplete_baseline" else 10,
+                          "unintended_target": [old]}),
+        original, projected, turn_index)
+    assert len(blockers) == 1
+    assert advisories == []
+
+
+@pytest.mark.asyncio
+async def test_failed_local_audit_persists_diagnostics_without_creating_version(monkeypatch):
+    from audio_storage.object_store import InMemoryObjectStore
+    from backend.orchestration.slot_store import SlotStore
+    from backend.orchestration import manual_material_local_revision as subject
+    base = {"turns": [{"speaker": "speaker2", "text": "Thank you."}]}
+    changed = {"turns": [{"speaker": "speaker2", "text": "Thanks."}]}
+    async def revise(*args):
+        return {"outcome": "local_material_edit", "material": changed, "reason": "Shorten."}
+    async def validate(*args):
+        return ValidationResult([], [], {})
+    async def audit(*args):
+        return {"request_satisfied": False, "scope_preserved": True,
+                "dependencies_consistent": False,
+                "blocking_findings": [{"edit_index": 0, "message": "new contradiction"}], "notes": []}
+    monkeypatch.setattr(subject.agent_steps, "revise_material_turn", revise)
+    from backend.steps import assessment_edit
+    monkeypatch.setattr(assessment_edit, "review", audit)
+    monkeypatch.setattr(subject, "validate_questions", validate)
+    monkeypatch.setattr(subject, "validate", validate)
+    monkeypatch.setattr(subject, "crosscheck", lambda *args: CrossCheckResult({
+        "planned": 1, "matched": 0,
+        "unrecoverable": [{"number": 1, "turn_index": 0}],
+    }))
+    store = SlotStore(InMemoryObjectStore())
+    events = [event async for event in subject.revise_material_local(
+        store=store, material_id="fixture", request_id="request",
+        base_version_id="original", material=base, blueprint={"items": []},
+        package={}, base_version={},
+        comments=[{"id": "c", "anchor": {"index": 0}}], actor="test",
+    )]
+    assert events[-1]["type"] == "question_revision_failed"
+    request = store.load_question_revision("fixture", "request")
+    assert request["material_diagnostics"]["impact_review"]["blocking_findings"][0]["message"] == "new contradiction"
+    assert request["local_patch"]["before"] == "Thank you."
+    assert request["local_patch"]["after"] == "Thanks."
+    assert store.load_question_version("fixture", "request") is None
 
 
 def test_projection_keeps_only_anchored_turn_text():

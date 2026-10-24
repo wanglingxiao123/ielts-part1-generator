@@ -13,19 +13,49 @@
 source "$(dirname "$0")/config.sh"
 require_creds
 require_region
+echo "China model/provider implementation remains pending; this script publishes only the web service."
 
 TAG="${1:?a tag is required; name this build. Tags are immutable, so do not reuse one.}"
-REPO="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_FRONTEND}"
+REPO="${ECR_REGISTRY}/${ECR_FRONTEND}"
 IMAGE="${REPO}:${TAG}"
 
-RUNTIME_ARN=$(aws bedrock-agentcore-control list-agent-runtimes \
-              --query "agentRuntimes[?agentRuntimeName=='$RUNTIME_NAME'].agentRuntimeArn" \
-              --output text)
-if [ -z "$RUNTIME_ARN" ] || [ "$RUNTIME_ARN" = "None" ]; then
-    echo "ERROR: runtime $RUNTIME_NAME not found; run deploy/runtime.sh first" >&2
+RUNTIME_ARN=$(aws bedrock-agentcore-control list-agent-runtimes --output json \
+    | python3 "$(dirname "$0")/validate_edge.py" runtime "$RUNTIME_NAME" "$AWS_REGION" "$ACCOUNT_ID")
+echo "runtime: $RUNTIME_ARN"
+
+# Validate release and registration settings before edge, IAM, SSM or image mutations.
+if [ -z "${ALLOWED_EMAIL_DOMAINS:-}" ] || [ "${ALLOWED_EMAIL_DOMAINS}" = "*" ]; then
+    echo 'ERROR: ALLOWED_EMAIL_DOMAINS must explicitly restrict registration.' >&2
     exit 1
 fi
-echo "runtime: $RUNTIME_ARN"
+WORKDIR=$(mktemp -d)
+trap 'rm -rf "$WORKDIR"' EXIT
+MUTABILITY=$(aws ecr describe-repositories --repository-names "$ECR_FRONTEND" \
+    --query 'repositories[0].imageTagMutability' --output text)
+[ "$MUTABILITY" = IMMUTABLE ] || {
+    echo 'ERROR: web repository must use IMMUTABLE tags; run deploy/provision.sh.' >&2
+    exit 1
+}
+if aws ecr describe-images --repository-name "$ECR_FRONTEND" --image-ids "imageTag=$TAG" \
+    >/dev/null 2>"$WORKDIR/image.err"; then
+    echo "ERROR: web tag '$TAG' already exists; use a new immutable tag." >&2
+    exit 1
+elif ! grep -q '(ImageNotFoundException)' "$WORKDIR/image.err"; then
+    cat "$WORKDIR/image.err" >&2
+    echo 'ERROR: could not verify that the web image tag is unused.' >&2
+    exit 1
+fi
+
+# Reconcile and validate the ALB and both SGs before publishing a service.
+# edge.sh fails on extra ingress/listeners instead of accepting public task access.
+bash "$(dirname "$0")/edge.sh"
+TG_ARN=$(aws elbv2 describe-target-groups --names "$TG_NAME" \
+    --query 'TargetGroups[0].TargetGroupArn' --output text)
+[ -n "$TG_ARN" ] && [ "$TG_ARN" != None ] || {
+    echo 'ERROR: ALB target group missing; run deploy/edge.sh.' >&2; exit 1;
+}
+SERVICE_STATUS=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+    --output json | python3 "$(dirname "$0")/validate_edge.py" service-target "$TG_ARN")
 
 # The signing key must be stable across restarts: a per-process random key would invalidate every
 # existing cookie on each deploy. Generated once and kept in SSM.
@@ -45,25 +75,16 @@ aws iam put-role-policy --role-name "${PROJECT}-ecs-exec" \
     --policy-name "${PROJECT}-read-secret" --policy-document "{
       \"Version\":\"2012-10-17\",
       \"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"ssm:GetParameters\",
-        \"Resource\":\"arn:aws:ssm:${AWS_REGION}:${ACCOUNT_ID}:parameter${SECRET_PARAM}\"}]}"
-
-if [ -z "${ALLOWED_EMAIL_DOMAINS:-}" ] || [ "${ALLOWED_EMAIL_DOMAINS}" = "*" ]; then
-    # Fail closed. config.sh defaults this to britishcouncil.org, so reaching here means it was
-    # explicitly overridden to "*" (or emptied).
-    echo "ERROR: ALLOWED_EMAIL_DOMAINS is unset or '*', which would let ANY email address register." >&2
-    echo "       Refusing to deploy an open-registration service. Set it explicitly, e.g.:" >&2
-    echo "         ALLOWED_EMAIL_DOMAINS=example.com bash deploy/service.sh ${TAG}" >&2
-    exit 1
-fi
+        \"Resource\":\"arn:${AWS_PARTITION}:ssm:${AWS_REGION}:${ACCOUNT_ID}:parameter${SECRET_PARAM}\"}]}"
 
 echo "== build + push web image =="
 aws ecr get-login-password --region "$AWS_REGION" \
-    | docker login --username AWS --password-stdin "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+    | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
 docker build --platform linux/arm64 -f web/Dockerfile -t "$IMAGE" .
 docker push "$IMAGE"
 
 echo "== register task definition =="
-cat > /tmp/${PROJECT}-taskdef.json <<JSON
+cat > "$WORKDIR/taskdef.json" <<JSON
 {
   "family": "${TASK_FAMILY}",
   "networkMode": "awsvpc",
@@ -71,8 +92,8 @@ cat > /tmp/${PROJECT}-taskdef.json <<JSON
   "runtimePlatform": {"cpuArchitecture": "ARM64", "operatingSystemFamily": "LINUX"},
   "cpu": "${TASK_CPU}",
   "memory": "${TASK_MEMORY}",
-  "executionRoleArn": "arn:aws:iam::${ACCOUNT_ID}:role/${PROJECT}-ecs-exec",
-  "taskRoleArn": "arn:aws:iam::${ACCOUNT_ID}:role/${PROJECT}-web-task",
+  "executionRoleArn": "arn:${AWS_PARTITION}:iam::${ACCOUNT_ID}:role/${PROJECT}-ecs-exec",
+  "taskRoleArn": "arn:${AWS_PARTITION}:iam::${ACCOUNT_ID}:role/${PROJECT}-web-task",
   "containerDefinitions": [{
     "name": "web",
     "image": "${IMAGE}",
@@ -94,7 +115,7 @@ cat > /tmp/${PROJECT}-taskdef.json <<JSON
     ],
     "secrets": [
       {"name": "SESSION_SECRET",
-       "valueFrom": "arn:aws:ssm:${AWS_REGION}:${ACCOUNT_ID}:parameter${SECRET_PARAM}"}
+       "valueFrom": "arn:${AWS_PARTITION}:ssm:${AWS_REGION}:${ACCOUNT_ID}:parameter${SECRET_PARAM}"}
     ],
     "logConfiguration": {
       "logDriver": "awslogs",
@@ -107,7 +128,7 @@ cat > /tmp/${PROJECT}-taskdef.json <<JSON
   }]
 }
 JSON
-REVISION=$(aws ecs register-task-definition --cli-input-json "file:///tmp/${PROJECT}-taskdef.json" \
+REVISION=$(aws ecs register-task-definition --cli-input-json "file://$WORKDIR/taskdef.json" \
            --query 'taskDefinition.revision' --output text)
 echo "  registered ${TASK_FAMILY}:${REVISION}"
 
@@ -120,39 +141,7 @@ SG_ID=$(aws ec2 describe-security-groups \
 # nothing on the internet can open a connection to it.
 NET="awsvpcConfiguration={subnets=[${SUBNET_ID}],securityGroups=[${SG_ID}],assignPublicIp=ENABLED}"
 
-# The target group the ALB forwards to. Absent when `deploy/edge.sh` has not been run, and in that
-# case the service is created without a load balancer — the old direct-IP shape still works, it just
-# hands out a new address on every deploy.
-TG_ARN=$(aws elbv2 describe-target-groups --names "$TG_NAME" \
-         --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || true)
-if [ -z "$TG_ARN" ] || [ "$TG_ARN" = "None" ]; then
-    TG_ARN=""
-    echo "  NOTE: no target group — run deploy/edge.sh for a stable HTTPS URL"
-fi
-
 echo "== ECS service =="
-CURRENT_LB=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
-             --query 'services[0].loadBalancers[0].targetGroupArn' --output text 2>/dev/null || true)
-SERVICE_STATUS=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
-                 --query 'services[0].status' --output text 2>/dev/null || true)
-
-if [ "$SERVICE_STATUS" = "ACTIVE" ] && [ -n "$TG_ARN" ] && \
-   { [ "$CURRENT_LB" = "None" ] || [ -z "$CURRENT_LB" ]; }; then
-    # ECS cannot attach a load balancer to a service that was created without one. Recreating it is
-    # the only route, and it is stated rather than done quietly: the service is deleted and rebuilt,
-    # so the task is briefly gone. desiredCount is restored below.
-    echo "  the service predates the ALB and ECS cannot attach one in place."
-    echo "  deleting and recreating it (the task will be down for a minute)."
-    WANT=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
-           --query 'services[0].desiredCount' --output text)
-    aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" \
-        --desired-count 0 >/dev/null
-    aws ecs delete-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" --force >/dev/null
-    aws ecs wait services-inactive --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
-    SERVICE_STATUS="GONE"
-    RESTORE_COUNT="$WANT"
-fi
-
 if [ "$SERVICE_STATUS" = "ACTIVE" ]; then
     aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" \
         --task-definition "${TASK_FAMILY}:${REVISION}" --network-configuration "$NET" \
@@ -181,7 +170,7 @@ fi
 
 echo
 if [ -n "$TG_ARN" ]; then
-    echo "next: bash deploy/start.sh   then  bash deploy/status.sh  for the CloudFront URL"
+    echo "next: bash deploy/start.sh   then  bash deploy/status.sh  for the public ALB URL"
 else
     echo "next: bash deploy/start.sh"
 fi

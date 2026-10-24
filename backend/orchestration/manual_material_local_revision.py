@@ -26,6 +26,65 @@ _CONFIRMATION_DENSITY_ERROR = re.compile(
 _QUESTION_NUMBER = re.compile(r"\bQ(\d+)\b")
 
 
+def _material_audit_passed(audit: Dict[str, Any]) -> bool:
+    findings = audit.get("findings", [])
+    return (
+        audit.get("assessable") is True
+        and audit.get("verdict") in {"PASS", "PASS_WITH_MINOR_EDITS"}
+        and isinstance(findings, list)
+        and all(
+            isinstance(row, dict)
+            and str(row.get("severity") or "").lower() in {"minor", "advisory", "info"}
+            for row in findings
+        )
+    )
+
+
+def _local_material_gate(
+    check, baseline_check, material: Dict[str, Any],
+    projected: Dict[str, Any], turn_index: int,
+) -> tuple[List[str], List[str]]:
+    """Reconcile extra details only on literally unchanged source turns.
+
+    Both independent audits must recover every planned point. Their lists of additional
+    contextual details need not be identical: literal source comparison establishes
+    whether those details predate the edit. Missing answers, unknown anchors, changed
+    turns and unsupported quotations remain blocking.
+    """
+    blockers, advisories = [], []
+    before, after = material_turns(material), material_turns(projected)
+    for row in check.unrecoverable:
+        blockers.append("材料盲审未恢复 Q%s（Turn %s）" % (
+            row.get("number"), row.get("turn_index")))
+    baseline_complete = (
+        baseline_check is not None and baseline_check.planned > 0
+        and baseline_check.matched == baseline_check.planned
+        and not baseline_check.unrecoverable
+    )
+
+    def supported(row, turns):
+        index = row.get("turn_index")
+        if type(index) is not int or not 0 <= index < len(turns):
+            return False
+        quote = " ".join(str(row.get("evidence") or "").split()).casefold()
+        text = " ".join(str(turns[index].get("text") or "").split()).casefold()
+        return len(quote) >= 8 and quote in text
+
+    for row in check.unintended_target:
+        index = row.get("turn_index")
+        existing = (
+            type(index) is int and 0 <= index < min(len(before), len(after))
+            and index != turn_index and before[index] == after[index]
+            and baseline_complete and supported(row, before) and supported(row, after)
+        )
+        detail = "Turn %s：%s" % (index, str(row.get("evidence") or "")[:160])
+        if existing:
+            advisories.append("原稿复审已恢复全部考点；额外信息的原句在本次修改中完全未变：" + detail)
+        else:
+            blockers.append("材料盲审发现未规划的信息：" + detail)
+    return blockers, advisories
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -311,6 +370,9 @@ async def revise_material_local(
         revised_blueprint, confirmed_updates = _apply_confirmed_updates(
             revised_blueprint, candidate.get("confirmed_updates"))
         revised_package = _replace_evidence(copy.deepcopy(package), before, after)
+        request["local_patch"] = {
+            "turn_index": turn_index, "before": before, "after": after,
+        }
         if _blueprint_immutable_surface(revised_blueprint) != _blueprint_immutable_surface(blueprint):
             raise ValueError("local revision changed blueprint targets or structure")
         if _question_surface(revised_package) != _question_surface(package):
@@ -318,51 +380,42 @@ async def revise_material_local(
         request.update(stage="validating", updated_at=_now())
         store.save_question_revision(material_id, request_id, request)
         yield {"type": "question_revision_validating", "request_id": request_id}
-        validation = await validate(projected, revised_blueprint)
+        from .assessment_patch import introduced_errors
+        from ..steps import assessment_edit
+        base_validation, validation, base_question_validation, question_validation = await asyncio.gather(
+            validate(material, blueprint), validate(projected, revised_blueprint),
+            validate_questions(material, blueprint, package),
+            validate_questions(projected, revised_blueprint, revised_package),
+        )
         _relax_local_confirmation_density(validation)
-        if not validation.ok:
-            raise ValueError("; ".join(validation.errors[:8]))
+        blockers = introduced_errors(base_validation, validation) + introduced_errors(
+            base_question_validation, question_validation)
+        request["material_diagnostics"] = {
+            "policy": "accepted_baseline",
+            "base_validation": base_validation.as_dict(), "validation": validation.as_dict(),
+            "base_question_validation": base_question_validation.as_dict(),
+            "question_validation": question_validation.as_dict(), "introduced_errors": blockers,
+        }
+        store.save_question_revision(material_id, request_id, request)
+        if blockers:
+            raise ValueError("; ".join(blockers[:8]))
         request.update(stage="auditing", updated_at=_now())
         store.save_question_revision(material_id, request_id, request)
         yield {"type": "question_revision_auditing", "request_id": request_id}
-        audit = await agent_steps.audit_blind(projected, {})
-        check = crosscheck(revised_blueprint, audit)
-        if check.hard_defects:
-            raise ValueError("material/blueprint cross-check rejected the local patch")
-        question_validation = await validate_questions(
-            projected, revised_blueprint, revised_package)
-        face = revised_package.get("question_face")
-        if not isinstance(face, dict):
-            raise ValueError("local revision carries no question_face")
-        metrics = question_metrics(projected, face)
-        question_review = await agent_steps.audit_questions_blind(
-            projected, face, metrics)
-        question_cross_check = crosscheck_questions(
-            revised_package, question_review, projected)
-        question_candidate = QuestionCandidate(
-            revised_package, question_review, question_cross_check,
-            question_validation, "manual_material_local")
-        affected_questions = set(confirmed_updates)
-        for item in revised_blueprint.get("items") or []:
-            if (
-                isinstance(item, dict)
-                and item.get("turn_index") == turn_index
-                and isinstance(item.get("number"), int)
-                and not isinstance(item.get("number"), bool)
-            ):
-                affected_questions.add(item["number"])
-        question_blockers, baseline_advisories = _local_question_gate(
-            question_candidate, affected_questions)
-        if question_blockers:
-            raise ValueError(
-                "question quality rejected the local patch: %s"
-                % "; ".join(question_blockers[:8]))
-        question_quality = _question_quality_for_storage(
-            candidate_quality=question_candidate.as_dict(),
-            base_version=base_version,
-            package_changed=revised_package != package,
-            baseline_advisories=baseline_advisories,
+        audit = await assessment_edit.review(
+            {"material": material, "blueprint": blueprint, "package": package},
+            {"material": projected, "blueprint": revised_blueprint, "package": revised_package},
+            comments, [{"turn_index": turn_index, "before": before, "after": after}],
         )
+        request["material_diagnostics"]["impact_review"] = audit
+        store.save_question_revision(material_id, request_id, request)
+        if (audit["blocking_findings"] or not all(audit[k] for k in (
+                "request_satisfied", "scope_preserved", "dependencies_consistent"))):
+            raise ValueError("本次修改的关联检查未通过：" + "; ".join(
+                r["message"] for r in audit["blocking_findings"]))
+        baseline_advisories = []
+        question_quality = {"review_scope": "accepted_baseline_local_edit",
+                            "impact_review": audit, "validation": question_validation.as_dict()}
 
         request.update(stage="storing", updated_at=_now())
         store.save_question_revision(material_id, request_id, request)
@@ -374,8 +427,7 @@ async def revise_material_local(
             "operation": "revise_material_local", "material": projected,
             "blueprint": revised_blueprint, "package": revised_package,
             "quality": {
-                "material": {"audit": audit, "cross_check": check.as_dict(),
-                             "validation": validation.as_dict()},
+                "material": request["material_diagnostics"],
                 "questions": question_quality,
             },
             "baseline_advisories": baseline_advisories,

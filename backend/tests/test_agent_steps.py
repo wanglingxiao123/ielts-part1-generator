@@ -20,6 +20,7 @@ The overlap is only safe while the two agree, which is what
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 
@@ -38,6 +39,8 @@ from backend.steps.agent_steps import (
 )
 from backend.steps.call import ModelCallError
 
+pytestmark = pytest.mark.usefixtures("offline_agent_models")
+
 
 def _reply(**over) -> str:
     """A well-formed reply with the named keys overridden. ``None`` as a value deletes the key."""
@@ -51,6 +54,82 @@ def _reply(**over) -> str:
 
 
 _ABSENT = object()
+
+
+@pytest.mark.asyncio
+async def test_local_material_audit_stays_blind_and_uses_fresh_agents(monkeypatch):
+    from backend.steps import agent_steps
+    seen, agents = [], []
+    def build():
+        agent = object()
+        agents.append(agent)
+        return agent
+    async def invoke(agent, payload, label):
+        seen.append(payload)
+        return json.dumps({
+            "verdict": "PASS", "score": {"total": 90},
+            "findings": [], "blind_information_map": [],
+        })
+    monkeypatch.setattr(agent_steps, "build_audit_agent", build)
+    monkeypatch.setattr(agent_steps, "assert_no_plan_on_disk", lambda: None)
+    monkeypatch.setattr(agent_steps, "_invoke", invoke)
+    for text in ["Thank you.", "Thanks."]:
+        await agent_steps.audit_local_material_blind({"turns": [{"text": text}]}, {})
+    assert agents[0] is not agents[1]
+    assert "Thanks." not in seen[0]
+    assert "Thank you." not in seen[1]
+    for payload in seen:
+        assert "Do not cap the map at ten" in payload
+        assert "zero-based array index" in payload
+        assert '"answer_key"' not in payload and '"blueprint"' not in payload
+
+
+@pytest.mark.asyncio
+async def test_material_stamp_uses_each_requests_model_and_preserves_content(monkeypatch):
+    from copy import deepcopy
+    from backend.model import provider
+    from backend.steps.agent_steps import _stamp
+
+    default = "moonshotai.kimi-k2.5"
+    selected = "moonshotai.kimi-k3"
+    monkeypatch.setattr(provider, "MODEL_ID", default)
+    # Metadata stamping must not resolve credentials or rediscover the catalogue.
+    def no_lookup(*args, **kwargs):
+        pytest.fail("Stamping must not perform model or catalogue lookup")
+    monkeypatch.setattr(provider, "list_models", no_lookup)
+    monkeypatch.setattr(provider, "build_model", no_lookup)
+    original = {
+        "model": "model-supplied-guess",
+        "listening_material_parts": [{
+            "scenario": "existing scenario",
+            "script": {"turns": [{"speaker": "speaker1", "text": "Keep this text."}]},
+        }],
+    }
+
+    async def stamp(identifier):
+        with provider.use_model(identifier):
+            await asyncio.sleep(0)
+            result = _stamp(deepcopy(original), "fallback scenario")
+            assert result["listening_material_parts"] == original["listening_material_parts"]
+            assert result["extracted_at"]
+            return result["model"]
+
+    assert await asyncio.gather(stamp(default), stamp(selected)) == [default, selected]
+    assert _stamp({}, "")["model"] == default
+
+
+def test_material_stamp_restores_model_after_nested_override_and_failure(monkeypatch):
+    from backend.model import provider
+    from backend.steps.agent_steps import _stamp
+
+    monkeypatch.setattr(provider, "MODEL_ID", "moonshotai.kimi-k2.5")
+    with provider.use_model("moonshotai.kimi-k3"):
+        with pytest.raises(RuntimeError, match="step failed"):
+            with provider.use_model("openai.gpt-5.6-luna"):
+                assert _stamp({}, "")["model"] == "openai.gpt-5.6-luna"
+                raise RuntimeError("step failed")
+        assert _stamp({}, "")["model"] == "moonshotai.kimi-k3"
+    assert _stamp({}, "")["model"] == "moonshotai.kimi-k2.5"
 
 
 @pytest.mark.asyncio

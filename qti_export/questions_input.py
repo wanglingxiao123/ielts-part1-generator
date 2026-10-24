@@ -215,12 +215,31 @@ def load(path: str | Path) -> tuple[dict, bytes]:
 
 
 # ------------------------------------------------------------------ 门禁
-def run_gates(doc: dict, source: str = "") -> GateResult:
+def run_gates(doc: dict, source: str = "", *, teacher_version: bool = False) -> GateResult:
     """G1..G6。通过则返回 GateResult，否则抛 GateFailure（列全部失败项）。"""
     failures: list[str] = []
     advisories: list[str] = [str(a) for a in (doc.get("advisories") or [])]
 
     package = doc.get("package") or {}
+    if teacher_version:
+        if not isinstance(package, dict) or not isinstance(package.get("question_face"), dict):
+            raise GateFailure(["缺少 question_face 对象"], source)
+        face = package["question_face"]
+        for label, rows in (("questions", face.get("questions")), ("groups", face.get("groups")),
+                            ("instructions", face.get("instructions")),
+                            ("answer_key", package.get("answer_key"))):
+            if not isinstance(rows, list) or not rows or any(not isinstance(r, dict) for r in rows):
+                raise GateFailure(["%s 必须是非空对象列表" % label], source)
+        for row in face["questions"] + package["answer_key"]:
+            if type(row.get("number")) is not int:
+                raise GateFailure(["题目和答案必须有整数题号"], source)
+        for answer in package["answer_key"]:
+            if not isinstance(answer.get("canonical"), str) or not answer["canonical"].strip():
+                raise GateFailure(["答案缺少 canonical 文本"], source)
+            alternatives = answer.get("alternatives", [])
+            if not isinstance(alternatives, list) or any(
+                    not isinstance(a, str) or not a.strip() for a in alternatives):
+                raise GateFailure(["alternatives 必须是非空文本组成的列表"], source)
     qface = package.get("question_face") or {}
     questions = list(qface.get("questions") or [])
     groups = list(qface.get("groups") or [])
@@ -228,79 +247,84 @@ def run_gates(doc: dict, source: str = "") -> GateResult:
     answer_key = list(package.get("answer_key") or [])
     evidence = list(package.get("evidence") or [])
 
-    # ---------------------------------------------------------- G1 上游审核
-    if doc.get("ok") is not True:
-        failures.append(f"G1: ok={doc.get('ok')!r}，只转换 ok=true 的素材")
-    status = str(doc.get("status"))
-    if status not in ("PASS", "WARNING"):
-        failures.append(f"G1: status={status!r}，只接受 PASS / WARNING")
-    validation = doc.get("validation") or {}
-    if validation.get("ok") is not True:
-        failures.append(f"G1: validation.ok={validation.get('ok')!r}")
-    if validation.get("errors"):
-        failures.append(f"G1: validation.errors 非空：{validation['errors']}")
-    review = doc.get("review") or {}
-    readiness = str(review.get("content_review_readiness"))
-    if readiness != "READY_FOR_HUMAN_REVIEW":
-        failures.append(f"G1: review.content_review_readiness={readiness!r}")
-    qc = str(review.get("question_qc_status"))
-    if qc not in ("PASS", "WARNING"):
-        failures.append(f"G1: review.question_qc_status={qc!r}")
-    counts = (review.get("summary") or {}).get("counts") or {}
-    for severity in ("CRITICAL", "MAJOR"):
-        if int(counts.get(severity) or 0):
-            failures.append(f"G1: review.summary.counts.{severity}={counts[severity]}")
-    if str(review.get("visual_qc_status")) == "NOT_RUN":
-        advisories.append("visual_qc_status=NOT_RUN：卷面视觉未经上游核对")
+    # Teacher-selected versions are exported as authored, without re-adjudicating old audits.
+    cc_items = []
+    if not teacher_version:
+        # ---------------------------------------------------------- G1 上游审核
+        if doc.get("ok") is not True:
+            failures.append(f"G1: ok={doc.get('ok')!r}，只转换 ok=true 的素材")
+        status = str(doc.get("status"))
+        if status not in ("PASS", "WARNING"):
+            failures.append(f"G1: status={status!r}，只接受 PASS / WARNING")
+        validation = doc.get("validation") or {}
+        if validation.get("ok") is not True:
+            failures.append(f"G1: validation.ok={validation.get('ok')!r}")
+        if validation.get("errors"):
+            failures.append(f"G1: validation.errors 非空：{validation['errors']}")
+        review = doc.get("review") or {}
+        readiness = str(review.get("content_review_readiness"))
+        if readiness != "READY_FOR_HUMAN_REVIEW":
+            failures.append(f"G1: review.content_review_readiness={readiness!r}")
+        qc = str(review.get("question_qc_status"))
+        if qc not in ("PASS", "WARNING"):
+            failures.append(f"G1: review.question_qc_status={qc!r}")
+        counts = (review.get("summary") or {}).get("counts") or {}
+        for severity in ("CRITICAL", "MAJOR"):
+            if int(counts.get(severity) or 0):
+                failures.append(f"G1: review.summary.counts.{severity}={counts[severity]}")
+        if str(review.get("visual_qc_status")) == "NOT_RUN":
+            advisories.append("visual_qc_status=NOT_RUN：卷面视觉未经上游核对")
 
-    # ------------------------------------------------- G2 题目与脚本互证
-    cc = doc.get("cross_check") or {}
-    if cc.get("ok") is not True:
-        failures.append(f"G2: cross_check.ok={cc.get('ok')!r}")
-    for key in ("hard_defects", "leakage", "equally_supported_rivals"):
-        if cc.get(key):
-            failures.append(f"G2: cross_check.{key} 非空：{cc[key]}")
-    cc_items = list(cc.get("items") or [])
-    compared, agreed = cc.get("compared"), cc.get("agreed")
-    if compared != len(cc_items):
-        failures.append(f"G2: cross_check.compared={compared!r} != items 条数 {len(cc_items)}")
-    if compared != len(questions):
-        failures.append(f"G2: cross_check.compared={compared!r} != 题数 {len(questions)}")
-    needs_review = {
-        int(i["number"]) for i in (cc.get("needs_review") or []) if isinstance(i.get("number"), int)
-    }
-    if isinstance(agreed, int) and agreed + len(needs_review) != compared:
-        failures.append(
-            f"G2: agreed({agreed}) + needs_review({len(needs_review)}) != compared({compared})"
-        )
-    # 结论口径：非 agree 的结论必须是白名单里的，并且必须被上游挂进 needs_review。
-    # 只要答案两侧一致，引文相邻不阻断转换 —— 进 correctResponse 的是答案。
-    for item in cc_items:
-        n, outcome = item.get("number"), str(item.get("outcome"))
-        if outcome not in TOLERATED_CROSS_CHECK_OUTCOMES:
-            failures.append(f"G2: Q{n} 的 cross_check.outcome={outcome!r} 不在白名单 {TOLERATED_CROSS_CHECK_OUTCOMES}")
-        elif outcome != "agree" and n not in needs_review:
-            failures.append(f"G2: Q{n} 结论是 {outcome!r} 却没有进 needs_review")
-        if not answers_agree(item.get("writer_answer", ""), item.get("auditor_answer", "")):
+        # ------------------------------------------------- G2 题目与脚本互证
+        cc = doc.get("cross_check") or {}
+        if cc.get("ok") is not True:
+            failures.append(f"G2: cross_check.ok={cc.get('ok')!r}")
+        for key in ("hard_defects", "leakage", "equally_supported_rivals"):
+            if cc.get(key):
+                failures.append(f"G2: cross_check.{key} 非空：{cc[key]}")
+        cc_items = list(cc.get("items") or [])
+        compared, agreed = cc.get("compared"), cc.get("agreed")
+        if compared != len(cc_items):
+            failures.append(f"G2: cross_check.compared={compared!r} != items 条数 {len(cc_items)}")
+        if compared != len(questions):
+            failures.append(f"G2: cross_check.compared={compared!r} != 题数 {len(questions)}")
+        needs_review = {
+            int(i["number"]) for i in (cc.get("needs_review") or []) if isinstance(i.get("number"), int)
+        }
+        if isinstance(agreed, int) and agreed + len(needs_review) != compared:
             failures.append(
-                f"G2: Q{n} 两侧答案不一致：writer={item.get('writer_answer')!r} "
-                f"auditor={item.get('auditor_answer')!r}"
+                f"G2: agreed({agreed}) + needs_review({len(needs_review)}) != compared({compared})"
             )
-    consistency = cc.get("consistency") or {}
-    if consistency.get("ok") is not True:
-        failures.append(f"G2: cross_check.consistency.ok={consistency.get('ok')!r}")
-    if consistency.get("errors"):
-        failures.append(f"G2: cross_check.consistency.errors 非空：{consistency['errors']}")
-    if cc.get("quotes_checked") is not True:
-        advisories.append("cross_check.quotes_checked 不为 true：引文未逐条比对")
-    if needs_review:
-        advisories.append(
-            "cross_check.needs_review 覆盖 Q" + ", Q".join(str(n) for n in sorted(needs_review))
-            + "：答案一致但引文落在相邻 turn，需人工确认"
-        )
+        # 结论口径：非 agree 的结论必须是白名单里的，并且必须被上游挂进 needs_review。
+        # 只要答案两侧一致，引文相邻不阻断转换 —— 进 correctResponse 的是答案。
+        for item in cc_items:
+            n, outcome = item.get("number"), str(item.get("outcome"))
+            if outcome not in TOLERATED_CROSS_CHECK_OUTCOMES:
+                failures.append(f"G2: Q{n} 的 cross_check.outcome={outcome!r} 不在白名单 {TOLERATED_CROSS_CHECK_OUTCOMES}")
+            elif outcome != "agree" and n not in needs_review:
+                failures.append(f"G2: Q{n} 结论是 {outcome!r} 却没有进 needs_review")
+            if not answers_agree(item.get("writer_answer", ""), item.get("auditor_answer", "")):
+                failures.append(
+                    f"G2: Q{n} 两侧答案不一致：writer={item.get('writer_answer')!r} "
+                    f"auditor={item.get('auditor_answer')!r}"
+                )
+        consistency = cc.get("consistency") or {}
+        if consistency.get("ok") is not True:
+            failures.append(f"G2: cross_check.consistency.ok={consistency.get('ok')!r}")
+        if consistency.get("errors"):
+            failures.append(f"G2: cross_check.consistency.errors 非空：{consistency['errors']}")
+        if cc.get("quotes_checked") is not True:
+            advisories.append("cross_check.quotes_checked 不为 true：引文未逐条比对")
+        if needs_review:
+            advisories.append(
+                "cross_check.needs_review 覆盖 Q" + ", Q".join(str(n) for n in sorted(needs_review))
+                + "：答案一致但引文落在相邻 turn，需人工确认"
+            )
 
     # --------------------------------------- G3 题号 / 答案键 / 证据三方闭合
     numbers = sorted(int(q["number"]) for q in questions if isinstance(q.get("number"), int))
+    if not questions:
+        failures.append("G3: 题目包为空")
     if len(numbers) != len(questions):
         failures.append("G3: 存在 number 缺失或非整数的 question")
     if numbers != list(range(1, len(numbers) + 1)):
@@ -311,7 +335,7 @@ def run_gates(doc: dict, source: str = "") -> GateResult:
     if sorted(set(ak_numbers)) != numbers:
         failures.append(f"G3: answer_key 题号 {ak_numbers} 与题面题号 {numbers} 不一致")
     ev_numbers = sorted({int(e["number"]) for e in evidence if isinstance(e.get("number"), int)})
-    if ev_numbers != numbers:
+    if not teacher_version and ev_numbers != numbers:
         failures.append(f"G3: evidence 覆盖 {ev_numbers} 与题号 {numbers} 不一致")
     for q in questions:
         n = q.get("number")
@@ -412,14 +436,14 @@ def run_gates(doc: dict, source: str = "") -> GateResult:
         canonical = str(a.get("canonical") or "").strip()
         if not canonical:
             failures.append(f"G5: Q{n} 的 canonical 为空")
-        elif not limit.fits(canonical):
+        elif not teacher_version and not limit.fits(canonical):
             lexical, nums = count_tokens(canonical)
             failures.append(
                 f"G5: Q{n} 的标准答案 {canonical!r} 越限（{lexical} 实词 + {nums} 数字，"
                 f"上限「{limit.text}」）"
             )
         for alt in a.get("alternatives") or []:
-            if not limit.fits(str(alt)):
+            if not teacher_version and not limit.fits(str(alt)):
                 failures.append(f"G5: Q{n} 的 alternatives 项 {alt!r} 越限「{limit.text}」")
         limits[n] = limit
 

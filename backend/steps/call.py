@@ -14,13 +14,14 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from strands import Agent
 
-__all__ = ["ModelCallError", "call_json", "extract_json"]
+__all__ = ["ModelCallError", "call_json", "extract_json", "extract_unique_envelope"]
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
+_JSON_DOCUMENT_START_RE = re.compile(r'[\[{"]')
 
 
 class ModelCallError(RuntimeError):
@@ -72,6 +73,40 @@ def extract_json(text: str) -> Dict[str, Any]:
     if value is not None:
         return value
     raise ModelCallError("model response contained no JSON object: %r" % stripped[:200])
+
+
+def extract_unique_envelope(text: str, required_keys: Sequence[str]) -> Dict[str, Any]:
+    """Select one complete top-level envelope, without salvaging nested fragments.
+
+    Prose and Markdown fences may surround JSON documents. Decode each object or
+    array once and skip its entire span; objects nested in examples, strings or
+    arrays are not independent reports. Any malformed JSON container fails closed,
+    including a truncated draft before/after an otherwise complete report.
+    Selection uses required keys only, never a favourable verdict or quality score.
+    Callers must still run all envelope and quality checks.
+    """
+    decoder = json.JSONDecoder()
+    candidates = []
+    position = 0
+    while position < len(text):
+        # Quoted JSON strings are consumed too, so an escaped report is not
+        # mistaken for an independent object.
+        start = _JSON_DOCUMENT_START_RE.search(text, position)
+        if start is None:
+            break
+        position = start.start()
+        try:
+            value, end = decoder.raw_decode(text, position)
+        except ValueError:
+            raise ModelCallError("reply contains malformed or truncated JSON") from None
+        position = end
+        if isinstance(value, dict) and all(key in value for key in required_keys):
+            candidates.append(value)
+    if not candidates:
+        raise ModelCallError("reply is missing required keys in a complete top-level envelope")
+    if len(candidates) != 1:
+        raise ModelCallError("reply contains multiple complete envelopes; selection is ambiguous")
+    return candidates[0]
 
 
 async def call_json(model: Any, system_prompt: str, user_message: str) -> Dict[str, Any]:

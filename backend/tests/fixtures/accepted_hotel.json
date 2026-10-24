@@ -1,0 +1,755 @@
+{
+  "material": {
+    "model": "us.moonshotai.kimi-k3",
+    "extracted_at": "2026-10-24T09:12:30.112851+00:00",
+    "test_package": "Test 1",
+    "content_kind": "listening_material",
+    "source_htmls": [],
+    "listening_material_parts": [
+      {
+        "reference": "Part 1",
+        "test_package": "Test 1",
+        "scenario": "A traveller phones a hotel to book a family room, and the receptionist supplies the dates, rates, room details, facilities and booking reference.",
+        "script": {
+          "reference": "Part 1",
+          "test_package": "Test 1",
+          "turns": [
+            {
+              "speaker": "speaker1",
+              "text": "This is the IELTS Listening test. You will hear a number of different recordings, and you will have to answer questions on what you hear. There will be time for you to read the instructions and questions, and you will have a chance to check your work. All the recordings will be played once only. The test is in four parts. At the end of the test, you will be given ten minutes to transfer your answers to the answer sheet. Now turn to Part 1. Part 1. You will hear a man telephoning a hotel to book a room for his family. First, you have some time to look at questions 1 to 4. Now listen carefully and answer questions 1 to 4."
+            },
+            {
+              "speaker": "speaker2",
+              "text": "Good morning, Lakeview Hotel, reception. How can I help you today?"
+            },
+            {
+              "speaker": "speaker3",
+              "text": "Good morning. I'm calling to book a room for a family holiday next month, and I'd like to check what you have available, please."
+            },
+            {
+              "speaker": "speaker2",
+              "text": "Of course, I'd be happy to help with that. Could I take your name, please, sir?"
+            },
+            {
+              "speaker": "speaker3",
+              "text": "Yes, it's Carter, that's C-A-R-T-E-R."
+            },
+            {
+              "speaker": "speaker2",
+              "text": "Thank you, Mr Carter. And when were you thinking of staying with us?"
+            },
+            {
+              "speaker": "speaker3",
+              "text": "Well, we were hoping to come in March, around the middle of the month, if you have anything free then. It's our first proper family holiday this year."
+            },
+            {
+              "speaker": "speaker2",
+              "text": "Let me have a look at the calendar. Which exact dates did you have in mind?"
+            },
+            {
+              "speaker": "speaker3",
+              "text": "The 12th of March, arriving in the afternoon, if that's all right."
+            },
+            {
+              "speaker": "speaker2",
+              "text": "The 12th, that's fine, we do have rooms then. And how many people will the booking be for?"
+            },
+            {
+              "speaker": "speaker3",
+              "text": "There'll be four of us — my wife, our two children and me."
+            },
+            {
+              "speaker": "speaker2",
+              "text": "Four guests, lovely, a family trip. And how long are you planning to stay?"
+            },
+            {
+              "speaker": "speaker3",
+              "text": "Three nights, so we'd be checking out on the 15th."
+            },
+            {
+              "speaker": "speaker2",
+              "text": "The 15th of March, that's right, three nights altogether. Lovely, let me put all of that into the system for you."
+            },
+            {
+              "speaker": "speaker1",
+              "text": "Before you hear the rest of the conversation, you have some time to look at questions 5 to 10. Now listen and answer questions 5 to 10."
+            },
+            {
+              "speaker": "speaker3",
+              "text": "Before we go any further, could you tell me the nightly rate for a family room, please?"
+            },
+            {
+              "speaker": "speaker2",
+              "text": "It's a hundred pounds a night... no, sorry, let me check that again — it's actually 95 pounds a night, not a hundred."
+            },
+            {
+              "speaker": "speaker3",
+              "text": "95 pounds a night. That's very reasonable for four people. And is breakfast included in that price?"
+            },
+            {
+              "speaker": "speaker2",
+              "text": "Yes, a full cooked breakfast is included for all four of you, every morning of your stay."
+            },
+            {
+              "speaker": "speaker3",
+              "text": "That's good to hear. And is a family room actually free for those nights?"
+            },
+            {
+              "speaker": "speaker2",
+              "text": "Yes, we have a family room free for those nights. It's a good size, with a double bed and two single beds, so the children will have plenty of space of their own."
+            },
+            {
+              "speaker": "speaker3",
+              "text": "Perfect for us. And where will our room be in the hotel itself?"
+            },
+            {
+              "speaker": "speaker2",
+              "text": "You'd be in Room 204, on the second floor. It's nice and quiet up there, well away from the road."
+            },
+            {
+              "speaker": "speaker3",
+              "text": "Lovely. And does the room look out over the lake or the car park?"
+            },
+            {
+              "speaker": "speaker2",
+              "text": "Both are possible on that floor, so it's really up to you. The car park side is a little quieter in the mornings, I should say."
+            },
+            {
+              "speaker": "speaker3",
+              "text": "We'll take the lake view, definitely — the children will love looking out at the boats."
+            },
+            {
+              "speaker": "speaker2",
+              "text": "No problem at all. I'll make a note on the booking, so the one facing the water is yours."
+            },
+            {
+              "speaker": "speaker3",
+              "text": "Great. Now, one practical thing — is there Wi-Fi in the rooms? The children can't live without it."
+            },
+            {
+              "speaker": "speaker2",
+              "text": "There is, yes. It used to be £8 a day, but not any more — the Wi-Fi is free in every room now."
+            },
+            {
+              "speaker": "speaker3",
+              "text": "Oh, that's useful to know. And what other facilities does the hotel have for guests? We like to keep busy in the evenings."
+            },
+            {
+              "speaker": "speaker2",
+              "text": "Well, the sauna is open from seven in the morning till ten at night, and there's a small gym as well, if you're feeling energetic while you're here."
+            },
+            {
+              "speaker": "speaker3",
+              "text": "Wonderful. I think that's everything we need, then. My wife will be very pleased about the sauna."
+            },
+            {
+              "speaker": "speaker2",
+              "text": "In that case, let me give you your booking reference, so you have it ready for when you arrive. It's HB7K42 — that's H-B-7-K-4-2."
+            },
+            {
+              "speaker": "speaker3",
+              "text": "HB7K42. Got it, thank you. And that's everything confirmed for the 12th of March, is it?"
+            },
+            {
+              "speaker": "speaker2",
+              "text": "That's right, Mr Carter, everything is booked and confirmed for those three nights. We look forward to seeing you and your family then. Goodbye."
+            },
+            {
+              "speaker": "speaker3",
+              "text": "Goodbye, and thanks again for all your help."
+            },
+            {
+              "speaker": "speaker1",
+              "text": "That is the end of Part 1. You now have half a minute to check your answers to Part 1. Now turn to Part 2."
+            }
+          ],
+          "speaker_count": 3
+        },
+        "source_htmls": []
+      }
+    ]
+  },
+  "blueprint": {
+    "blueprint_schema_version": 3,
+    "narration_mode": "full",
+    "split_after": 4,
+    "question_layout_plan": {
+      "split_after": 4,
+      "first_layout": "note",
+      "second_layout": "form"
+    },
+    "completion_layout_coverage": {
+      "note": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "form": [
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ]
+    },
+    "items": [
+      {
+        "number": 1,
+        "group": 1,
+        "type": "name",
+        "target": "Carter",
+        "evidence": "it's Carter, that's C-A-R-T-E-R.",
+        "turn_index": 4,
+        "item_form": "note",
+        "form_group": "A",
+        "response_form": "word",
+        "answer_category": "person_name",
+        "narrator_window_id": 1,
+        "distractor": false,
+        "confirmed": true
+      },
+      {
+        "number": 2,
+        "group": 1,
+        "type": "datetime",
+        "target": "12th of March",
+        "evidence": "The 12th of March, arriving in the afternoon",
+        "turn_index": 8,
+        "item_form": "note",
+        "form_group": "A",
+        "response_form": "phrase",
+        "answer_category": "date",
+        "narrator_window_id": 1,
+        "distractor": false,
+        "confirmed": false
+      },
+      {
+        "number": 3,
+        "group": 1,
+        "type": "quantity",
+        "target": "four",
+        "evidence": "There'll be four of us",
+        "turn_index": 10,
+        "item_form": "note",
+        "form_group": "A",
+        "response_form": "word",
+        "answer_category": "quantity",
+        "narrator_window_id": 1,
+        "distractor": false,
+        "confirmed": true
+      },
+      {
+        "number": 4,
+        "group": 1,
+        "type": "datetime",
+        "target": "15th of March",
+        "evidence": "The 15th of March, that's right, three nights altogether.",
+        "turn_index": 13,
+        "item_form": "note",
+        "form_group": "A",
+        "response_form": "phrase",
+        "answer_category": "date",
+        "narrator_window_id": 1,
+        "distractor": false,
+        "confirmed": true
+      },
+      {
+        "number": 5,
+        "group": 2,
+        "type": "price",
+        "target": "95",
+        "evidence": "it's actually 95 pounds a night, not a hundred",
+        "turn_index": 16,
+        "item_form": "form",
+        "form_group": "B",
+        "response_form": "numeric",
+        "answer_category": "price",
+        "narrator_window_id": 2,
+        "distractor": true,
+        "confirmed": true
+      },
+      {
+        "number": 6,
+        "group": 2,
+        "type": "option",
+        "target": "family room",
+        "evidence": "we have a family room free for those nights",
+        "turn_index": 20,
+        "item_form": "form",
+        "form_group": "B",
+        "response_form": "phrase",
+        "answer_category": "requirement",
+        "narrator_window_id": 2,
+        "distractor": false,
+        "confirmed": false
+      },
+      {
+        "number": 7,
+        "group": 2,
+        "type": "option",
+        "target": "lake view",
+        "evidence": "We'll take the lake view, definitely",
+        "turn_index": 25,
+        "item_form": "form",
+        "form_group": "B",
+        "response_form": "phrase",
+        "answer_category": "preference",
+        "narrator_window_id": 2,
+        "distractor": true,
+        "confirmed": false
+      },
+      {
+        "number": 8,
+        "group": 2,
+        "type": "price",
+        "target": "free",
+        "evidence": "the Wi-Fi is free in every room now",
+        "turn_index": 28,
+        "item_form": "form",
+        "form_group": "B",
+        "response_form": "word",
+        "answer_category": "price",
+        "narrator_window_id": 2,
+        "distractor": true,
+        "confirmed": false
+      },
+      {
+        "number": 9,
+        "group": 2,
+        "type": "option",
+        "target": "sauna",
+        "evidence": "the sauna is open from seven in the morning till ten at night",
+        "turn_index": 30,
+        "item_form": "form",
+        "form_group": "B",
+        "response_form": "word",
+        "answer_category": "facility",
+        "narrator_window_id": 2,
+        "distractor": false,
+        "confirmed": false
+      },
+      {
+        "number": 10,
+        "group": 2,
+        "type": "number",
+        "target": "HB7K42",
+        "evidence": "It's HB7K42 — that's H-B-7-K-4-2.",
+        "turn_index": 32,
+        "item_form": "form",
+        "form_group": "B",
+        "response_form": "word",
+        "answer_category": "document",
+        "narrator_window_id": 2,
+        "distractor": false,
+        "confirmed": true
+      }
+    ],
+    "correction": {
+      "earlier": "a hundred pounds a night",
+      "final": "95 pounds a night",
+      "marker": "actually"
+    },
+    "indirect_confirmation": {
+      "answer_term": "lake view",
+      "reference_phrase": "the one facing the water"
+    }
+  },
+  "package": {
+    "reference": "Part 1",
+    "test_package": "Test 1",
+    "material_id": "Test 1, Part 1: Lakeview Hotel family-room booking",
+    "question_face": {
+      "instructions": [
+        {
+          "group_id": "G1",
+          "question_range": "1-4",
+          "instruction_text": "Complete the notes below. Write NO MORE THAN TWO WORDS AND/OR A NUMBER for each answer.",
+          "word_limit": "NO MORE THAN TWO WORDS AND/OR A NUMBER",
+          "numeral_allowance": 1
+        },
+        {
+          "group_id": "G2",
+          "question_range": "5-10",
+          "instruction_text": "Complete the form below. Write NO MORE THAN TWO WORDS AND/OR A NUMBER for each answer.",
+          "word_limit": "NO MORE THAN TWO WORDS AND/OR A NUMBER",
+          "numeral_allowance": 1
+        }
+      ],
+      "groups": [
+        {
+          "group_id": "G1",
+          "narrator_window_id": 1,
+          "layout": "note",
+          "title": "FAMILY HOLIDAY BOOKING",
+          "signposts": [
+            "The caller gives his name, then agrees the arrival date, party size and length of stay"
+          ],
+          "structure": {
+            "note_sections": [
+              {
+                "heading": "The caller",
+                "question_numbers": [
+                  1
+                ]
+              },
+              {
+                "heading": "Arrival",
+                "question_numbers": [
+                  2
+                ]
+              },
+              {
+                "heading": "The party",
+                "question_numbers": [
+                  3
+                ]
+              },
+              {
+                "heading": "Departure",
+                "question_numbers": [
+                  4
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "group_id": "G2",
+          "narrator_window_id": 2,
+          "layout": "form",
+          "title": "STAY AND BOOKING DETAILS",
+          "signposts": [
+            "The receptionist quotes the corrected nightly price, then describes the accommodation, hotel facilities and booking reference"
+          ],
+          "structure": {
+            "row_labels": [
+              "Nightly rate",
+              "Accommodation type",
+              "Facing side",
+              "Wi-Fi charge",
+              "Evening facility",
+              "Booking reference"
+            ]
+          }
+        }
+      ],
+      "questions": [
+        {
+          "number": 1,
+          "group_id": "G1",
+          "carrier_before": "Family name",
+          "blank": "1 ................",
+          "carrier_after": "",
+          "blank_position": "final",
+          "answer_category": "person_name",
+          "response_form": "word"
+        },
+        {
+          "number": 2,
+          "group_id": "G1",
+          "carrier_before": "",
+          "blank": "2 ................",
+          "carrier_after": "(day and month)",
+          "blank_position": "initial",
+          "answer_category": "date",
+          "response_form": "phrase"
+        },
+        {
+          "number": 3,
+          "group_id": "G1",
+          "carrier_before": "Total number of guests:",
+          "blank": "3 ................",
+          "carrier_after": "",
+          "blank_position": "final",
+          "answer_category": "quantity",
+          "response_form": "word"
+        },
+        {
+          "number": 4,
+          "group_id": "G1",
+          "carrier_before": "",
+          "blank": "4 ................",
+          "carrier_after": "(day and month)",
+          "blank_position": "initial",
+          "answer_category": "date",
+          "response_form": "phrase"
+        },
+        {
+          "number": 5,
+          "group_id": "G2",
+          "carrier_before": "£",
+          "blank": "5 ................",
+          "carrier_after": "",
+          "blank_position": "final",
+          "answer_category": "price",
+          "response_form": "numeric"
+        },
+        {
+          "number": 6,
+          "group_id": "G2",
+          "carrier_before": "",
+          "blank": "6 ................",
+          "carrier_after": "",
+          "blank_position": "final",
+          "answer_category": "requirement",
+          "response_form": "phrase"
+        },
+        {
+          "number": 7,
+          "group_id": "G2",
+          "carrier_before": "",
+          "blank": "7 ................",
+          "carrier_after": "",
+          "blank_position": "final",
+          "answer_category": "preference",
+          "response_form": "phrase"
+        },
+        {
+          "number": 8,
+          "group_id": "G2",
+          "carrier_before": "is currently",
+          "blank": "8 ................",
+          "carrier_after": "",
+          "blank_position": "final",
+          "answer_category": "price",
+          "response_form": "word"
+        },
+        {
+          "number": 9,
+          "group_id": "G2",
+          "carrier_before": "The",
+          "blank": "9 ................",
+          "carrier_after": "is open from 7 a.m. until 10 p.m.",
+          "blank_position": "initial",
+          "answer_category": "facility",
+          "response_form": "word"
+        },
+        {
+          "number": 10,
+          "group_id": "G2",
+          "carrier_before": "",
+          "blank": "10 ................",
+          "carrier_after": "",
+          "blank_position": "final",
+          "answer_category": "document",
+          "response_form": "word"
+        }
+      ]
+    },
+    "answer_key": [
+      {
+        "number": 1,
+        "canonical": "Carter",
+        "alternatives": [
+          "CARTER"
+        ],
+        "word_limit": "NO MORE THAN TWO WORDS AND/OR A NUMBER",
+        "numeral_allowance": 1,
+        "counting_rule": "Whitespace splits tokens; a hyphenated compound counts as one word; a pure number consumes the numeral allowance rather than a word; a slash does not create a second answer."
+      },
+      {
+        "number": 2,
+        "canonical": "12th of March",
+        "alternatives": [
+          "12 March",
+          "12th March",
+          "March 12",
+          "March 12th"
+        ],
+        "word_limit": "NO MORE THAN TWO WORDS AND/OR A NUMBER",
+        "numeral_allowance": 1,
+        "counting_rule": "Whitespace splits tokens; a hyphenated compound counts as one word; a pure number consumes the numeral allowance rather than a word; a slash does not create a second answer."
+      },
+      {
+        "number": 3,
+        "canonical": "four",
+        "alternatives": [
+          "4"
+        ],
+        "word_limit": "NO MORE THAN TWO WORDS AND/OR A NUMBER",
+        "numeral_allowance": 1,
+        "counting_rule": "Whitespace splits tokens; a hyphenated compound counts as one word; a pure number consumes the numeral allowance rather than a word; a slash does not create a second answer."
+      },
+      {
+        "number": 4,
+        "canonical": "15th of March",
+        "alternatives": [
+          "15 March",
+          "15th March",
+          "March 15",
+          "March 15th"
+        ],
+        "word_limit": "NO MORE THAN TWO WORDS AND/OR A NUMBER",
+        "numeral_allowance": 1,
+        "counting_rule": "Whitespace splits tokens; a hyphenated compound counts as one word; a pure number consumes the numeral allowance rather than a word; a slash does not create a second answer."
+      },
+      {
+        "number": 5,
+        "canonical": "95",
+        "alternatives": [
+          "£95",
+          "ninety-five"
+        ],
+        "word_limit": "NO MORE THAN TWO WORDS AND/OR A NUMBER",
+        "numeral_allowance": 1,
+        "counting_rule": "Whitespace splits tokens; a hyphenated compound counts as one word; a pure number consumes the numeral allowance rather than a word; a slash does not create a second answer."
+      },
+      {
+        "number": 6,
+        "canonical": "family room",
+        "alternatives": [],
+        "word_limit": "NO MORE THAN TWO WORDS AND/OR A NUMBER",
+        "numeral_allowance": 1,
+        "counting_rule": "Whitespace splits tokens; a hyphenated compound counts as one word; a pure number consumes the numeral allowance rather than a word; a slash does not create a second answer."
+      },
+      {
+        "number": 7,
+        "canonical": "lake view",
+        "alternatives": [],
+        "word_limit": "NO MORE THAN TWO WORDS AND/OR A NUMBER",
+        "numeral_allowance": 1,
+        "counting_rule": "Whitespace splits tokens; a hyphenated compound counts as one word; a pure number consumes the numeral allowance rather than a word; a slash does not create a second answer."
+      },
+      {
+        "number": 8,
+        "canonical": "free",
+        "alternatives": [],
+        "word_limit": "NO MORE THAN TWO WORDS AND/OR A NUMBER",
+        "numeral_allowance": 1,
+        "counting_rule": "Whitespace splits tokens; a hyphenated compound counts as one word; a pure number consumes the numeral allowance rather than a word; a slash does not create a second answer."
+      },
+      {
+        "number": 9,
+        "canonical": "sauna",
+        "alternatives": [],
+        "word_limit": "NO MORE THAN TWO WORDS AND/OR A NUMBER",
+        "numeral_allowance": 1,
+        "counting_rule": "Whitespace splits tokens; a hyphenated compound counts as one word; a pure number consumes the numeral allowance rather than a word; a slash does not create a second answer."
+      },
+      {
+        "number": 10,
+        "canonical": "HB7K42",
+        "alternatives": [
+          "hb7k42"
+        ],
+        "word_limit": "NO MORE THAN TWO WORDS AND/OR A NUMBER",
+        "numeral_allowance": 1,
+        "counting_rule": "Whitespace splits tokens; a hyphenated compound counts as one word; a pure number consumes the numeral allowance rather than a word; a slash does not create a second answer."
+      }
+    ],
+    "evidence": [
+      {
+        "number": 1,
+        "turn_index": 4,
+        "quote": "it's Carter, that's C-A-R-T-E-R.",
+        "narrator_window_id": 1,
+        "paraphrase_relation": "signpost",
+        "carrier_entity": "the caller's family name recorded on the booking",
+        "evidence_entity": "the caller states his name is Carter and spells it C-A-R-T-E-R",
+        "proposition_relation": "the name the caller gives is the name the receptionist records for the same booking",
+        "proposition_alignment_result": "aligned"
+      },
+      {
+        "number": 2,
+        "turn_index": 8,
+        "quote": "The 12th of March, arriving in the afternoon",
+        "narrator_window_id": 1,
+        "paraphrase_relation": "signpost",
+        "carrier_entity": "the arrival day and month of the family's stay, named by the Arrival heading",
+        "evidence_entity": "the caller says they will arrive on the 12th of March, in the afternoon",
+        "proposition_relation": "the same arrival date for the same booking, spoken by the caller and entered as a form field",
+        "proposition_alignment_result": "aligned"
+      },
+      {
+        "number": 3,
+        "turn_index": 10,
+        "quote": "There'll be four of us",
+        "narrator_window_id": 1,
+        "paraphrase_relation": "signpost",
+        "carrier_entity": "the total number of guests in the caller's party",
+        "evidence_entity": "the caller says there will be four of them: his wife, two children and himself",
+        "proposition_relation": "the same party size for the same booking",
+        "proposition_alignment_result": "aligned"
+      },
+      {
+        "number": 4,
+        "turn_index": 13,
+        "quote": "The 15th of March, that's right, three nights altogether.",
+        "narrator_window_id": 1,
+        "paraphrase_relation": "paraphrase",
+        "carrier_entity": "the departure day and month of the stay, named by the Departure heading",
+        "evidence_entity": "the receptionist confirms checkout on the 15th of March after three nights",
+        "proposition_relation": "the same checkout date for the same booking, stated by the caller and confirmed by the receptionist",
+        "proposition_alignment_result": "aligned"
+      },
+      {
+        "number": 5,
+        "turn_index": 16,
+        "quote": "it's actually 95 pounds a night, not a hundred",
+        "narrator_window_id": 2,
+        "paraphrase_relation": "signpost",
+        "carrier_entity": "the nightly rate in pounds for the room",
+        "evidence_entity": "the receptionist corrects the rate from a hundred to 95 pounds a night",
+        "proposition_relation": "the same nightly price for the same room, with the corrected final value decisive",
+        "proposition_alignment_result": "aligned"
+      },
+      {
+        "number": 6,
+        "turn_index": 20,
+        "quote": "we have a family room free for those nights",
+        "narrator_window_id": 2,
+        "paraphrase_relation": "paraphrase",
+        "carrier_entity": "the type of accommodation booked for the stay",
+        "evidence_entity": "the receptionist confirms a family room is free for those nights and describes its beds",
+        "proposition_relation": "the same room type allocated to the same booking for the same nights",
+        "proposition_alignment_result": "aligned"
+      },
+      {
+        "number": 7,
+        "turn_index": 25,
+        "quote": "We'll take the lake view, definitely",
+        "narrator_window_id": 2,
+        "paraphrase_relation": "signpost",
+        "carrier_entity": "the side the guests prefer their room to face",
+        "evidence_entity": "the caller chooses the lake view over the car park side",
+        "proposition_relation": "the same room-facing preference for the same room on the same floor",
+        "proposition_alignment_result": "aligned"
+      },
+      {
+        "number": 8,
+        "turn_index": 28,
+        "quote": "the Wi-Fi is free in every room now",
+        "narrator_window_id": 2,
+        "paraphrase_relation": "paraphrase",
+        "carrier_entity": "the current charge for Wi-Fi in the rooms",
+        "evidence_entity": "the receptionist says Wi-Fi used to cost £8 a day but is free in every room now",
+        "proposition_relation": "the same Wi-Fi price status for the same rooms, with the current value decisive",
+        "proposition_alignment_result": "aligned"
+      },
+      {
+        "number": 9,
+        "turn_index": 30,
+        "quote": "the sauna is open from seven in the morning till ten at night",
+        "narrator_window_id": 2,
+        "paraphrase_relation": "paraphrase",
+        "carrier_entity": "the hotel facility available to guests in the evenings, with its opening hours",
+        "evidence_entity": "the receptionist says the sauna is open from seven in the morning till ten at night",
+        "proposition_relation": "the same facility with the same opening hours, offered in answer to the caller's question about evening facilities",
+        "proposition_alignment_result": "aligned"
+      },
+      {
+        "number": 10,
+        "turn_index": 32,
+        "quote": "It's HB7K42 — that's H-B-7-K-4-2.",
+        "narrator_window_id": 2,
+        "paraphrase_relation": "signpost",
+        "carrier_entity": "the booking reference code for the reservation",
+        "evidence_entity": "the receptionist gives the booking reference HB7K42 and spells it out",
+        "proposition_relation": "the same reference issued for the same booking the caller has just confirmed",
+        "proposition_alignment_result": "aligned"
+      }
+    ]
+  }
+}

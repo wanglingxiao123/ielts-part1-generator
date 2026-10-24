@@ -546,8 +546,8 @@ async def _replan_questions_from_comments(payload: Dict[str, Any]):
 
 
 async def _revise_material_from_comments(payload: Dict[str, Any]):
-    """Stream a confirmed material revision and complete question regeneration."""
-    from .orchestration.manual_material_revision import revise_material_from_comments
+    """Stream a scoped edit of the teacher-selected assessment."""
+    from .orchestration.accepted_material_revision import revise_material_from_comments
     from .orchestration.slot_store import build_slot_store
 
     required = (

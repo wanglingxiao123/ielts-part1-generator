@@ -21,6 +21,31 @@ if str(REPO_ROOT) not in sys.path:
 FIXTURES = REPO_ROOT / "skills" / "shared" / "tests" / "fixtures"
 
 
+@pytest.fixture
+def offline_agent_models(monkeypatch):
+    """Opt-in setup for Agent structure/envelope tests, not provider auth tests.
+
+    Construct real Agents and their tools without operator credentials. Model
+    execution is forbidden: these tests inspect Agents or replace `_invoke`.
+    """
+    from backend.model import provider
+    from strands.models.openai import OpenAIModel
+    from strands.models.openai_responses import OpenAIResponsesModel
+
+    monkeypatch.setattr(provider, "AUTH_MODE", "bearer")
+    monkeypatch.setattr(provider, "MODEL_ID", "moonshotai.kimi-k2.5")
+    monkeypatch.setattr(provider, "REGION", "us-east-1")
+    monkeypatch.setenv("IELTS_ALLOWED_MODEL_IDS", "moonshotai.kimi-k2.5")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "offline-agent-test-token")
+
+    async def no_model_calls(*args, **kwargs):
+        pytest.fail("Agent structure/envelope tests must not invoke a model")
+        yield  # Keep the model's async-generator interface.
+
+    monkeypatch.setattr(OpenAIModel, "stream", no_model_calls)
+    monkeypatch.setattr(OpenAIResponsesModel, "stream", no_model_calls)
+
+
 def _load(name: str) -> dict:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 

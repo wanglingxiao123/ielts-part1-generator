@@ -24,8 +24,10 @@ in ``orchestration/loop.py``.
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -49,7 +51,7 @@ from ..deterministic.question_crosscheck import (
     review_consistency,
 )
 from ..model import provider
-from .call import ModelCallError, extract_json
+from .call import ModelCallError, extract_json, extract_unique_envelope
 
 __all__ = [
     "BlindAuditInput",
@@ -110,7 +112,7 @@ def _stamp(material: Dict[str, Any], scenario_text: str) -> Dict[str, Any]:
     """
     if not isinstance(material, dict):
         return material
-    material["model"] = provider.MODEL_ID
+    material["model"] = provider.current_model_id()
     material["extracted_at"] = datetime.now(timezone.utc).isoformat()
     parts = material.get("listening_material_parts")
     if isinstance(parts, list) and parts and isinstance(parts[0], dict):
@@ -233,8 +235,27 @@ async def _invoke(agent: Any, message: str, label: str) -> str:
     to pre-defined agents left the translation behind, and nothing failed loudly enough to notice: a
     throttle still produced a material, just via the most expensive path available.
     """
+    started = time.monotonic()
     try:
-        return str(await agent.invoke_async(message))
+        result = await agent.invoke_async(message)
+        reply = str(result)
+        if label == "question audit":
+            # Log only bounded metadata before envelope parsing can fail. Never
+            # serialize the result, prompt, reasoning, tool messages or usage extras.
+            stop = getattr(result, "stop_reason", None)
+            if stop not in ("end_turn", "max_tokens", "tool_use", "stop_sequence",
+                            "guardrail_intervened", "content_filtered", "interrupt", "checkpoint"):
+                stop = "unknown"
+            usage = getattr(getattr(result, "metrics", None), "accumulated_usage", None)
+            safe_usage = {
+                key: usage[key] for key in ("inputTokens", "outputTokens", "totalTokens")
+                if isinstance(usage, dict) and type(usage.get(key)) is int and usage[key] >= 0
+            }
+            logging.getLogger(__name__).info(
+                "question_audit_response stop_reason=%s reply_chars=%d elapsed_seconds=%.3f usage=%s",
+                stop, len(reply), time.monotonic() - started, safe_usage,
+            )
+        return reply
     except ModelCallError:
         raise
     except Exception as exc:  # noqa: BLE001 - SDK raises provider-specific errors
@@ -372,6 +393,32 @@ async def audit_blind(material: Dict[str, Any], metrics: Dict[str, Any]) -> Dict
     return _audit_envelope(await _invoke(agent, payload, "audit"), "audit")
 
 
+async def audit_local_material_blind(
+    material: Dict[str, Any], metrics: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Reconstruct a complete, precisely anchored map for a local-edit comparison.
+
+    Input stays material-only. Neither the requested edit nor the questions, planning
+    artefacts or the other audit are available to this fresh auditor.
+    """
+    payload = build_audit_payload(BlindAuditInput(material=material, metrics=metrics))
+    payload += (
+        "\n\nFor this independent reconstruction, enumerate EVERY separately recordable "
+        "detail, including contextual details and individual charges even when a total "
+        "is also given. Do not cap the map at ten entries merely because the recording "
+        "announces ten questions. Do not merge different facts into a single map row. "
+        "For each entry use one contiguous verbatim quotation from ONE turn, with that "
+        "turn's exact zero-based array index (including narrator turns). Never join "
+        "quotations using ellipses or slash separators. Put supporting confirmations "
+        "in the mechanism description, not in the evidence quotation. For a spelled "
+        "name or code, anchor to the turn containing the complete spelling."
+    )
+    assert_blind(payload)
+    assert_no_plan_on_disk()
+    agent = build_audit_agent()
+    return _audit_envelope(await _invoke(agent, payload, "audit"), "audit")
+
+
 class BlindQuestionAuditInput(object):
     """Everything the question auditor is allowed to see. Immutable, and exactly three fields.
 
@@ -475,9 +522,10 @@ def _question_audit_envelope(reply: str, label: str,
                              material: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Parse and shape-check a question audit reply.
 
-    Same decoy problem as ``_audit_envelope``: ``extract_json`` returns the first balanced object, so a
-    reply that opens with a summary object delivers that instead of the review. Requiring the four
-    load-bearing keys makes a decoy fail to qualify and puts the call back on the retry budget.
+    Select the unique complete top-level report carrying the four load-bearing
+    keys. A leading summary or copied question cannot hide a later complete report.
+    Multiple reports, malformed JSON and nested fragments fail rather than selecting
+    whichever report happens to pass the gates.
 
     ``reconstructed_answers`` is additionally checked for being a non-empty list, which the other
     envelopes have no equivalent of. It is the one field that is *worthless when well-formed but
@@ -517,7 +565,7 @@ def _question_audit_envelope(reply: str, label: str,
     infrastructure retry budget with a fresh agent. That is the right remedy: an arithmetic slip in a
     long structured reply is exactly the kind of thing a second attempt does not repeat.
     """
-    audit = extract_json(reply)
+    audit = extract_unique_envelope(reply, _QUESTION_AUDIT_REQUIRED_KEYS)
     missing = [key for key in _QUESTION_AUDIT_REQUIRED_KEYS if key not in audit]
     if missing:
         raise ModelCallError(

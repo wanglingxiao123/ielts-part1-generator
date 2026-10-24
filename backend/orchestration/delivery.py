@@ -145,6 +145,9 @@ REVISION_COST_SECONDS = float(os.environ.get("IELTS_REVISION_COST", "120"))
 # number in exactly the log an operator reads first.
 MAX_CONCURRENCY = int(os.environ.get("IELTS_CONCURRENCY", "6"))
 
+# Transport liveness, independent of model progress and the delivery budget.
+STREAM_HEARTBEAT_SECONDS = 15.0
+
 # Slot-stopping reasons that are about the system rather than about the material. Kept as a frozenset
 # beside ``REFILLABLE_FAILURES`` rather than as an ``else`` branch, because the two answer different
 # questions and the wrong default is costly in opposite directions: an unrecognised material fault
@@ -291,6 +294,8 @@ async def run_request(
             scenarios, batch_id, store=store, budget=budget, concurrency=concurrency,
             run_material=run_material, run_question_stage=run_question_stage, group_id=group_id,
             model_id=model_id):
+        if event is None:
+            continue
         await emit(event)
         if event.get("type") == "request_completed":
             summary = {k: v for k, v in event.items() if k not in ("type", "at")}
@@ -343,8 +348,12 @@ async def stream_request(
                      detail="slot state could not be persisted: %s" % exc))
         return
 
-    async for row in _pump(queue, _advance_all(records, ctx, concurrency)):
-        yield row
+    pump = _pump(queue, _advance_all(records, ctx, concurrency))
+    try:
+        async for row in pump:
+            yield row
+    finally:
+        await pump.aclose()
 
     delivered: List[Dict[str, Any]] = []
     for record in store.list_slots(batch_id):
@@ -1061,9 +1070,11 @@ async def _pump(queue: asyncio.Queue, work):
     racing ``queue.get()`` against the worker and cancelling the pending get can drop an item already
     handed to it.
 
-    Yielded rather than accumulated, because the events are the heartbeat. Collecting them and
-    replaying at the end would leave the connection silent for the whole request, which is what the
-    ``stage``-as-keepalive contract (``events.py``) exists to prevent.
+    Long model stages may produce no events. Yield None every 15 quiet seconds:
+    AgentCore serializes it as SSE ``data: null``, which the Web Runtime reader
+    ignores as a non-object. It carries no progress, sequence number or retry.
+    Keep the same pending queue reader across heartbeats so a timeout cannot
+    discard an event already handed to that reader.
 
     ``work`` is awaited in the ``finally``, so a consumer that stops reading (a browser that went
     away, closing the generator) does not leave the slot tasks running unattended. The sentinel is
@@ -1080,14 +1091,28 @@ async def _pump(queue: asyncio.Queue, work):
             await queue.put(sentinel)
 
     closer = asyncio.ensure_future(close())
+    pending = None
     try:
         while True:
-            item = await queue.get()
+            if pending is None:
+                pending = asyncio.create_task(queue.get())
+            done, _ = await asyncio.wait({pending}, timeout=STREAM_HEARTBEAT_SECONDS)
+            if not done:
+                yield None
+                continue
+            item = pending.result()
+            pending = None
             if item is sentinel:
                 break
             yield item
     finally:
         closer.cancel()
+        if pending is not None:
+            pending.cancel()
+            try:
+                await pending
+            except asyncio.CancelledError:
+                pass
         try:
             await closer
         except asyncio.CancelledError:

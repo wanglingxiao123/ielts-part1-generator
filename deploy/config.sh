@@ -1,34 +1,8 @@
 #!/usr/bin/env bash
-# Shared settings for the demo deployment. Sourced by the other scripts.
-#
-# Shape: CloudFront (HTTPS, stable hostname) -> ALB (HTTP, private) -> Fargate task.
-#
-# It used to be one Fargate task with a public ENI IP and nothing in front of it. That was right for
-# a demo started and stopped around a session, and wrong for the thing this became: a URL handed to
-# a client. Two reasons, both structural rather than stylistic.
-#
-# **The address changed on every deploy.** A task's public IP belongs to the task, so each rolling
-# update handed out a new one -- five different addresses in one afternoon. A delivered URL cannot
-# work that way.
-#
-# **Login was in plaintext.** Port 80 with no TLS anywhere means the password and the session cookie
-# are readable by anything on the path. For a reviewer typing a password daily that is not a
-# theoretical exposure.
-#
-# CloudFront terminates TLS on its own `*.cloudfront.net` certificate, so no domain and no Route53
-# are needed. The ALB gives it a stable origin, and the task's security group now admits only the
-# ALB -- the task has no public ingress at all.
-
+# Discovered deployment configuration: public ALB -> Fargate, China regions only.
 set -euo pipefail
-
-# Accept the region from either AWS_REGION or AWS_DEFAULT_REGION (or default), then force BOTH to
-# agree. The AWS CLI resolves its region from AWS_DEFAULT_REGION / the active profile -- NOT from
-# AWS_REGION -- so without exporting AWS_DEFAULT_REGION here every `aws` call could silently target
-# the profile's default region while require_region() below only validates AWS_REGION. That mismatch
-# is how a us-east-1 create-bucket gets sent to a us-west-2 endpoint and fails with
-# IllegalLocationConstraint.
-export AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
-export AWS_DEFAULT_REGION="$AWS_REGION"
+source "$(dirname "${BASH_SOURCE[0]}")/settings.sh"
+require_region
 
 # Discovered from the caller's own credentials rather than hardcoded, so this repo carries no
 # account identity. Override by exporting ACCOUNT_ID if you need a different target.
@@ -36,6 +10,8 @@ if [ -z "${ACCOUNT_ID:-}" ]; then
     ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text 2>/dev/null || true)"
 fi
 export ACCOUNT_ID
+ECR_REGISTRY="$(ecr_registry "$ACCOUNT_ID")"
+export ECR_REGISTRY
 
 # Optional. Leave unset to use the default credential chain (env vars, instance role, or the
 # default profile). Set it only if your credentials live in a named profile.
@@ -43,7 +19,7 @@ if [ -n "${AWS_PROFILE:-}" ]; then export AWS_PROFILE; fi
 
 # Who may register through the web login. Default to the client domain rather than to open
 # registration; override before running any deploy script if a different allow-list is needed.
-export ALLOWED_EMAIL_DOMAINS="${ALLOWED_EMAIL_DOMAINS:-britishcouncil.org}"
+export ALLOWED_EMAIL_DOMAINS="${ALLOWED_EMAIL_DOMAINS:-example.com}"
 
 export PROJECT="ielts-part1"
 export S3_BUCKET="${S3_BUCKET:-ielts-part1-materials-${ACCOUNT_ID}}"
@@ -81,55 +57,22 @@ if [ -z "${SUBNET_ID:-}" ]; then
 fi
 export SUBNET_ID
 
-# Port 80, not 8080: many corporate networks block outbound 8080, which makes a demo URL on that
-# port unreachable for exactly the audience a demo is for.
-export WEB_PORT=80
-
-# Who may reach the **ALB**. The task itself no longer has public ingress: its security group admits
-# only the ALB's security group (see `deploy/edge.sh`), so this is the only network-level knob.
-#
-# 0.0.0.0/0 here is what makes a delivered CloudFront URL work -- CloudFront fetches from the origin
-# over the public internet from a large, changing set of IPs. Narrowing it to an office CIDR would
-# break CloudFront, not secure it. (Restricting the origin to CloudFront specifically is possible
-# with the `com.amazonaws.global.cloudfront.origin-facing` managed prefix list plus a custom header
-# check; it is not done here, and the consequence is stated plainly: anyone who discovers the ALB
-# hostname can bypass CloudFront and reach the app over plain HTTP. Access control remains the
-# application's login plus ALLOWED_EMAIL_DOMAINS.)
+# Only the ALB may admit clients. Backend ingress is granted by edge.sh.
 export INGRESS_CIDR="${INGRESS_CIDR:-0.0.0.0/0}"
 
-# ALB idle timeout. Must exceed the SSE heartbeat interval (`WEB_SSE_HEARTBEAT`, 15s) by a wide
-# margin, or a generating batch is severed mid-stream. 120s leaves eight heartbeats of slack.
+# Must exceed the web SSE heartbeat interval.
 export ALB_IDLE_TIMEOUT="${ALB_IDLE_TIMEOUT:-120}"
-
-# 0.5 vCPU / 1 GB: the web tier only proxies and serves static files.
 export TASK_CPU=512
 export TASK_MEMORY=1024
-
-# Independent AgentCore invocations the web fan-out may keep in flight at once. This is a
-# throughput guard, not a per-batch material limit. Override on deployment if account quotas require
-# a lower value; 429 responses are the signal to reduce it.
 export WEB_FANOUT_CONCURRENCY="${WEB_FANOUT_CONCURRENCY:-20}"
 
 require_creds() {
-    if ! aws sts get-caller-identity --query Account --output text >/dev/null 2>&1; then
-        echo "ERROR: AWS credentials are expired or absent." >&2
-        echo "       Configure them (env vars, a named profile, or an instance role) and re-run." >&2
-        exit 1
-    fi
     local actual
-    actual="$(aws sts get-caller-identity --query Account --output text)"
-    if [ -n "${ACCOUNT_ID:-}" ] && [ "$actual" != "$ACCOUNT_ID" ]; then
-        echo "ERROR: authenticated as account $actual, expected $ACCOUNT_ID." >&2
-        echo "       Refusing to create resources in an unexpected account." >&2
-        exit 1
+    actual="$(aws sts get-caller-identity --query Account --output text)" || {
+        echo 'ERROR: AWS credentials are expired or absent.' >&2; return 1;
+    }
+    if [ "$actual" != "$ACCOUNT_ID" ]; then
+        echo "ERROR: authenticated as account $actual, expected $ACCOUNT_ID; refusing mutations." >&2
+        return 1
     fi
-}
-
-require_region() {
-    # GPT-5.6 has no cross-region inference; a Runtime elsewhere cannot reach the model at all.
-    case "$AWS_REGION" in
-        us-east-1|us-east-2|us-west-2) ;;
-        *) echo "ERROR: $AWS_REGION cannot serve openai.gpt-5.6-*; use us-east-1, us-east-2 or us-west-2" >&2
-           exit 1 ;;
-    esac
 }

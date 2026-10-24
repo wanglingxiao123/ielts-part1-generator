@@ -1,5 +1,9 @@
 # IELTS Listening Part 1 材料生成系统
 
+> **中国区迁移分支（已部署，持续验收）**：默认宁夏，公网 ALB HTTP `:9000`，不使用 CloudFront。
+> 模型采用海外 Bedrock 已托管 Kimi K2.5 / Kimi K3，生产凭证通过中国区 Secrets Manager 引用。Runtime、Web、音频及版本导出已部署并验证；旧 Mantle/GPT 适配保留，GPT 选项暂时隐藏。客户场景验收仍在继续。
+> 当前操作说明见 [中国区部署说明](docs/CHINA_DEPLOYMENT.md)；海外部署使用 `main` 或历史版本。
+
 这是一个面向 IELTS 出题人员的材料生产与审核系统。用户选择场景和数量后，系统生成候选
 听力对话、十个信息点和对应题目，分别执行程序校验与独立 AI 盲审，再将完整套件逐套返回浏览器。
 
@@ -140,7 +144,8 @@ digest、健康检查和遗留问题。
 │   ├── config.sh                     # 共享资源名和部署参数
 │   ├── provision.sh                  # S3、ECR、ECS、IAM、日志组
 │   ├── runtime.sh                    # 创建/更新 AgentCore Runtime
-│   ├── edge.sh                       # ALB、CloudFront、安全组
+│   ├── settings.sh                   # 中国区、分区和端口配置（离线）
+│   ├── edge.sh                       # 公网 ALB、安全组、HTTP 非标准端口
 │   ├── service.sh                    # 构建 Web 镜像并创建 ECS 服务
 │   ├── start.sh / stop.sh            # 日常启停
 │   ├── status.sh                     # 资源状态与访问地址
@@ -153,17 +158,16 @@ digest、健康检查和遗留问题。
 ```mermaid
 flowchart LR
     U["浏览器<br/>React"]
-    CF["CloudFront<br/>HTTPS"]
-    ALB["ALB<br/>HTTP"]
+    ALB["公网 ALB<br/>HTTP :9000"]
     WEB["ECS Fargate<br/>FastAPI Web"]
     RT["AgentCore Runtime<br/>生成与审核 Loop"]
     CI["AgentCore Code Interpreter<br/>隔离计算审核指标"]
-    MODEL["Bedrock Mantle<br/>GPT-5.6"]
+    MODEL["海外 Bedrock Kimi<br/>生产接入待验证"]
     S3["S3<br/>材料、题目、断点、批注、音频"]
     SSM["SSM<br/>Session Secret"]
     POLLY["Polly<br/>按需音频"]
 
-    U --> CF --> ALB --> WEB
+    U --> ALB --> WEB
     WEB -->|"SigV4 调用"| RT
     WEB <--> S3
     SSM -. "任务启动时注入" .-> WEB
@@ -178,16 +182,17 @@ flowchart LR
 | 组件 | 职责 |
 |---|---|
 | 浏览器 | 选择场景、显示逐套生成进度、审阅原文和题目、提交题目或 Turn 批注、管理版本、生成音频或提交审核 |
-| CloudFront + ALB | 提供稳定 HTTPS 地址，将动态请求转发到 Web 服务 |
+| ALB | 提供带端口的公网 HTTP 地址，将请求转发到内部 Web 服务 |
 | Web / ECS | 登录、批次历史、后台执行、修订版本、调用 Runtime，并把运行进度投影为 SSE |
 | AgentCore Runtime | 创建 Strands Agent，执行材料与题目的生成、校验、盲审、修改和按需音频 action；`PUBLIC` 网络模式用于访问 AWS 公网服务 |
 | AgentCore Code Interpreter | 在空白远程环境中运行审核指标脚本；只接收脚本和当前 `material` |
-| Bedrock Mantle | 承载生成、审核和修改所需的 GPT-5.6 调用 |
+| 模型服务 | 海外 Bedrock Kimi K2.5；旧 GPT/Mantle 适配保留，生产凭证通过中国区 Secrets Manager 引用 |
 | S3 | 保存候选材料、题目包、批次、断点、用户数据、个人批注、审核状态和按需生成的音频 |
 | SSM | 保存 Web session 签名密钥，避免容器重启后用户集体掉线 |
 | Polly | 仅在用户主动生成音频时合成英式语音 |
 
-登录后可在顶部导航栏切换当前 GPT-5.6 模型。模型列表来自部署区域的 Bedrock 目录；当前选择会用于
+登录后可在顶部导航栏选择部署允许的模型，当前中国区展示 Kimi K2.5 和 Kimi K3，默认选中 K2.5；
+GPT 因实机调用报告 400 暂时隐藏，适配代码保留。模型目录与应用部署区域独立。当前选择会用于
 之后提交的材料生成、题目修改、重新命题和材料修改，刷新页面后仍会保留。已经运行的任务继续使用
 提交时的模型，不会中途切换；`IELTS_MODEL_ID` 仍是目录读取失败或未指定模型时的部署默认值。
 
@@ -211,6 +216,8 @@ flowchart LR
 
 ### 2.3 音频为什么不在生成流程里
 
+中国区音频采用标准英式音色，并通过需要登录的 Web 音频代理播放，支持分段读取；浏览器不直接访问 S3 预签名地址。
+
 生成成功后不会调用 Polly。当前用户界面只有主动点击“生成音频”才会触发音频合成：
 
 - **生成音频**：`preview_audio` 为某个候选材料启动异步合成，但不改变提交审核状态；
@@ -227,17 +234,16 @@ Runtime 立即返回 job id，浏览器通过 `audio_status` 轮询。合成完�
 - Runtime 不直接面向浏览器。当前部署使用 AgentCore `PUBLIC` 网络模式，但调用托管 Runtime
   endpoint 仍需 SigV4 签名和 `bedrock-agentcore:InvokeAgentRuntime` 权限。
 - S3 对象全部私有；音频通过预签名 URL 播放。
-- CloudFront 禁用缓存和压缩。缓存可能串用不同用户的数据；压缩可能缓冲 SSE，使材料在末尾
-  一次性出现。
-- Web 每 15 秒发 SSE 心跳；CloudFront origin read timeout 为 60 秒，ALB idle timeout 默认为
-  120 秒。三者共同保证长时间生成不会因为静默而断流。
+- 公网 ALB 使用非标准 HTTP 端口，容器内部仍为 80；容器安全组仅允许 ALB 访问。
+- Web 每 15 秒发 SSE 心跳，ALB idle timeout 默认为 120 秒；部署后仍需验证客户网络长连接。
+- 当前 POC 入口没有 HTTPS 加密；非标准端口不等于备案豁免。
 
 ### 2.5 鉴权与用户池
 
 系统**没有使用 Cognito**。`web/auth.py` 将用户保存在
 `s3://ielts-part1-materials-{account}/web/users.json`，使用 PBKDF2 密码摘要和由 SSM 密钥签名的
 7 天 HttpOnly cookie；`ALLOWED_EMAIL_DOMAINS` 控制新用户注册。本地开发可回退到本地 JSON。
-注册请使用 `@britishcouncil.org` 邮箱（`deploy/config.sh` 默认值）。部署最早一步就应确认或覆盖
+注册请使用 `@example.com` 邮箱（`deploy/config.sh` 默认值）。部署最早一步就应确认或覆盖
 `ALLOWED_EMAIL_DOMAINS`；显式设为 `*` 会允许任意邮箱域名注册，`deploy/service.sh` 会拒绝这种配置。
 这套方案面向小规模、受控用户使用，不提供邮箱验证、找回密码、MFA 或企业 SSO。
 
@@ -679,511 +685,67 @@ Skill 自动发现不等于新学科已经端到端可用。扩展 Reading/Writi
 
 ## 4. 部署前准备
 
-### 4.1 工具与 AWS 条件
+本分支实现中国区基础设施准备和海外 Kimi 本地适配，生产 Runtime 凭证已有专用配置工具，正式发布仍待验收。请先阅读
+[中国区部署说明](docs/CHINA_DEPLOYMENT.md) 和 [Agent 部署指南](AGENT_DEPLOYMENT.md)。
 
-- AWS CLI v2，凭证可调用目标账号；
-- Docker，能构建 `linux/arm64` 镜像；
-- Python 3.12（项目声明最低 `>=3.11`，部署和测试建议统一使用 3.12）；
-- Node.js 20+ 与 npm；
-- AWS 区域必须是 `us-east-1`、`us-east-2` 或 `us-west-2`；脚本会拒绝其他区域，因为当前 GPT-5.6
-  接入不提供跨区推理；
-- 默认 VPC 中至少有两个位于不同可用区、可分配公网 IP 的子网；也可显式传入 VPC 与子网。
+- 默认 `cn-northwest-1`，也支持 `cn-north-1`；不接受海外部署区域。
+- 使用独立中国区账号与凭证。所有资源在目标账号重新创建，不迁移历史数据。
+- ARN 使用 `aws-cn`；ECR 使用 `amazonaws.com.cn` 后缀。模型区域不能决定部署区域。
+- 基础镜像和依赖下载、账号权限、配额及具体服务行为仍需目标环境验证。
+- 公网入口拟定为 `http://<ALB DNS>:9000`；域名和证书不是本阶段前置条件，但它不是 HTTPS。
 
-先确认身份和区域：
+## 5. 分阶段准备与验证
 
-```bash
-aws sts get-caller-identity
-export AWS_REGION=us-east-1
-```
-
-### 4.2 两类 IAM 权限
-
-不要混淆下面两类身份：
-
-1. **部署者身份**：你当前的 IAM user/role，负责执行 `deploy/*.sh`、构建并推送镜像；
-2. **运行期角色**：`provision.sh` 创建的三个项目角色，由 ECS 和 AgentCore 在运行时承担。
-
-部署者必须能够创建运行期角色，并通过 `iam:PassRole` 把角色交给 ECS/AgentCore。
-
-### 4.3 部署者 IAM policy
-
-下面策略覆盖当前 `provision`、镜像推送、`runtime`、`edge`、`service`、日常启停、状态查询和
-`teardown` 脚本。它以可直接提交给 IAM 的 JSON 表示，不含需要替换的账号占位符；资源创建与
-查询动作使用 `"Resource": "*"`，IAM 角色操作则限制为 `ielts-part1-*`。
-
-> 这是覆盖当前脚本的项目部署策略，不是严格的最小权限基线。ECS、EC2、ELB、CloudFront 和
-> AgentCore 的创建/查询动作中有一部分使用 `"Resource": "*"`；建议通过专用部署 role、
-> permissions boundary 或组织 SCP 进一步限制账号和区域。若组织要求 KMS、强制标签或私有
-> 网络，还需由云平台管理员补充相应条件。
-
-<details>
-<summary>展开部署者 IAM policy JSON</summary>
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "ReadCallerIdentity",
-      "Effect": "Allow",
-      "Action": "sts:GetCallerIdentity",
-      "Resource": "*"
-    },
-    {
-      "Sid": "CreateProjectBucket",
-      "Effect": "Allow",
-      "Action": "s3:CreateBucket",
-      "Resource": "*"
-    },
-    {
-      "Sid": "ManageProjectBucket",
-      "Effect": "Allow",
-      "Action": [
-        "s3:DeleteBucket",
-        "s3:GetBucketLocation",
-        "s3:GetBucketVersioning",
-        "s3:ListBucket",
-        "s3:ListBucketVersions",
-        "s3:PutBucketVersioning",
-        "s3:PutBucketPublicAccessBlock",
-        "s3:PutEncryptionConfiguration"
-      ],
-      "Resource": "arn:aws:s3:::ielts-part1-materials-*"
-    },
-    {
-      "Sid": "ManageProjectBucketObjects",
-      "Effect": "Allow",
-      "Action": [
-        "s3:GetObject",
-        "s3:PutObject",
-        "s3:DeleteObject",
-        "s3:DeleteObjectVersion"
-      ],
-      "Resource": "arn:aws:s3:::ielts-part1-materials-*/*"
-    },
-    {
-      "Sid": "EcrAuthorization",
-      "Effect": "Allow",
-      "Action": "ecr:GetAuthorizationToken",
-      "Resource": "*"
-    },
-    {
-      "Sid": "ProjectEcrRepositories",
-      "Effect": "Allow",
-      "Action": [
-        "ecr:CreateRepository",
-        "ecr:DeleteRepository",
-        "ecr:DescribeRepositories",
-        "ecr:DescribeImages",
-        "ecr:ListImages",
-        "ecr:PutImageTagMutability",
-        "ecr:BatchCheckLayerAvailability",
-        "ecr:GetDownloadUrlForLayer",
-        "ecr:BatchGetImage",
-        "ecr:InitiateLayerUpload",
-        "ecr:UploadLayerPart",
-        "ecr:CompleteLayerUpload",
-        "ecr:PutImage"
-      ],
-      "Resource": "arn:aws:ecr:*:*:repository/ielts-part1-*"
-    },
-    {
-      "Sid": "ProjectEcsAndNetworking",
-      "Effect": "Allow",
-      "Action": [
-        "ecs:CreateCluster",
-        "ecs:DeleteCluster",
-        "ecs:DescribeClusters",
-        "ecs:RegisterTaskDefinition",
-        "ecs:CreateService",
-        "ecs:UpdateService",
-        "ecs:DeleteService",
-        "ecs:DescribeServices",
-        "ecs:ListTasks",
-        "ecs:DescribeTasks",
-        "ec2:DescribeVpcs",
-        "ec2:DescribeSubnets",
-        "ec2:DescribeSecurityGroups",
-        "ec2:DescribeNetworkInterfaces",
-        "ec2:CreateSecurityGroup",
-        "ec2:DeleteSecurityGroup",
-        "ec2:AuthorizeSecurityGroupIngress",
-        "ec2:RevokeSecurityGroupIngress"
-      ],
-      "Resource": "*"
-    },
-    {
-      "Sid": "ProjectLoadBalancerAndCdn",
-      "Effect": "Allow",
-      "Action": [
-        "elasticloadbalancing:CreateLoadBalancer",
-        "elasticloadbalancing:DeleteLoadBalancer",
-        "elasticloadbalancing:DescribeLoadBalancers",
-        "elasticloadbalancing:ModifyLoadBalancerAttributes",
-        "elasticloadbalancing:CreateTargetGroup",
-        "elasticloadbalancing:DeleteTargetGroup",
-        "elasticloadbalancing:DescribeTargetGroups",
-        "elasticloadbalancing:DescribeTargetHealth",
-        "elasticloadbalancing:ModifyTargetGroupAttributes",
-        "elasticloadbalancing:CreateListener",
-        "elasticloadbalancing:DescribeListeners",
-        "cloudfront:CreateDistribution",
-        "cloudfront:GetDistribution",
-        "cloudfront:GetDistributionConfig",
-        "cloudfront:ListDistributions",
-        "cloudfront:UpdateDistribution",
-        "cloudfront:DeleteDistribution"
-      ],
-      "Resource": "*"
-    },
-    {
-      "Sid": "ProjectRuntime",
-      "Effect": "Allow",
-      "Action": [
-        "bedrock-agentcore:CreateAgentRuntime",
-        "bedrock-agentcore:UpdateAgentRuntime",
-        "bedrock-agentcore:GetAgentRuntime",
-        "bedrock-agentcore:ListAgentRuntimes",
-        "bedrock-agentcore:DeleteAgentRuntime"
-      ],
-      "Resource": "*"
-    },
-    {
-      "Sid": "ProjectSessionSecret",
-      "Effect": "Allow",
-      "Action": [
-        "ssm:GetParameter",
-        "ssm:PutParameter"
-      ],
-      "Resource": "arn:aws:ssm:*:*:parameter/ielts-part1/session-secret"
-    },
-    {
-      "Sid": "DescribeLogs",
-      "Effect": "Allow",
-      "Action": "logs:DescribeLogGroups",
-      "Resource": "*"
-    },
-    {
-      "Sid": "ProjectLogs",
-      "Effect": "Allow",
-      "Action": [
-        "logs:CreateLogGroup",
-        "logs:DeleteLogGroup",
-        "logs:PutRetentionPolicy",
-        "logs:GetLogEvents"
-      ],
-      "Resource": [
-        "arn:aws:logs:*:*:log-group:/ecs/ielts-part1-web",
-        "arn:aws:logs:*:*:log-group:/ecs/ielts-part1-web:*"
-      ]
-    },
-    {
-      "Sid": "ManageProjectRoles",
-      "Effect": "Allow",
-      "Action": [
-        "iam:CreateRole",
-        "iam:GetRole",
-        "iam:PutRolePolicy",
-        "iam:DeleteRolePolicy",
-        "iam:ListRolePolicies",
-        "iam:AttachRolePolicy",
-        "iam:DetachRolePolicy",
-        "iam:ListAttachedRolePolicies",
-        "iam:DeleteRole"
-      ],
-      "Resource": "arn:aws:iam::*:role/ielts-part1-*"
-    },
-    {
-      "Sid": "CreateRequiredServiceLinkedRoles",
-      "Effect": "Allow",
-      "Action": "iam:CreateServiceLinkedRole",
-      "Resource": "*",
-      "Condition": {
-        "StringEquals": {
-          "iam:AWSServiceName": [
-            "ecs.amazonaws.com",
-            "elasticloadbalancing.amazonaws.com"
-          ]
-        }
-      }
-    },
-    {
-      "Sid": "PassRuntimeRoleToAgentCore",
-      "Effect": "Allow",
-      "Action": "iam:PassRole",
-      "Resource": "arn:aws:iam::*:role/ielts-part1-runtime",
-      "Condition": {
-        "StringEquals": {
-          "iam:PassedToService": "bedrock-agentcore.amazonaws.com"
-        }
-      }
-    },
-    {
-      "Sid": "PassEcsRolesToEcsTasks",
-      "Effect": "Allow",
-      "Action": "iam:PassRole",
-      "Resource": [
-        "arn:aws:iam::*:role/ielts-part1-ecs-exec",
-        "arn:aws:iam::*:role/ielts-part1-web-task"
-      ],
-      "Condition": {
-        "StringEquals": {
-          "iam:PassedToService": "ecs-tasks.amazonaws.com"
-        }
-      }
-    }
-  ]
-}
-```
-
-</details>
-
-`iam:PassRole` 风险较高：它允许 AWS 服务以指定角色运行。不要把它改成不受限的
-`"Resource": "*"`，也不要移除 `iam:PassedToService` 条件。
-
-`iam:CreateServiceLinkedRole` 只允许 ECS 和 Elastic Load Balancing 创建各自的服务关联角色。
-账号中已经存在这些角色时不会再次创建；新账号若缺少这项权限，首次创建 ECS service 或 ALB
-可能在部署中途失败。
-
-策略按默认资源名限制 S3 桶为 `ielts-part1-materials-*`。如果通过 `S3_BUCKET` 改成其他前缀，
-必须同步修改策略中的两个 S3 ARN，否则 `provision.sh` 会在建桶或写入配置时被拒绝。
-
-将策略保存为本地 `ielts-part1-deployer-policy.json` 后，可用 CLI 创建并附加：
+配置示例（仅设置本地变量，不创建资源）：
 
 ```bash
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-
-aws iam create-policy \
-  --policy-name IELTSPart1Deployer \
-  --policy-document file://ielts-part1-deployer-policy.json
-
-# 附加到当前用于部署的 role：
-aws iam attach-role-policy \
-  --role-name <DEPLOYER_ROLE_NAME> \
-  --policy-arn arn:aws:iam::${ACCOUNT_ID}:policy/IELTSPart1Deployer
-
-# 如果使用 IAM user，则改用：
-aws iam attach-user-policy \
-  --user-name <DEPLOYER_USER_NAME> \
-  --policy-arn arn:aws:iam::${ACCOUNT_ID}:policy/IELTSPart1Deployer
+export AWS_REGION=cn-northwest-1
+export ALB_PUBLIC_PORT=9000
+export ALLOWED_EMAIL_DOMAINS=example.com
 ```
 
-创建和附加 managed policy 的操作者本身还需要 `iam:CreatePolicy` 以及
-`iam:AttachRolePolicy` 或 `iam:AttachUserPolicy`。通常这一步由账号管理员执行；获得部署者权限
-后，日常部署不需要这些管理动作。
+`provision.sh` 和 `edge.sh` 分别准备基础资源、ALB；`status.sh` 显示 ALB 地址。
+运行这些脚本前需要明确目标账号和资源变更授权；模型凭证与角色工具先输出只读计划。
 
-### 4.4 脚本创建的运行期角色
-
-| 角色 | 使用者 | 核心权限 |
-|---|---|---|
-| `ielts-part1-ecs-exec` | ECS 平台 | 拉取 Web 镜像、写日志、读取 session secret |
-| `ielts-part1-web-task` | Web 应用 | 调用 AgentCore、读写项目 S3 桶 |
-| `ielts-part1-runtime` | AgentCore | 调用模型、Code Interpreter 和 Polly，读写项目 S3 桶 |
-
-这些策略由 `deploy/provision.sh` 和 `deploy/service.sh` 自动创建，无需手工复制。
-`bedrock-mantle:*` 与 `bedrock:*` 是不同权限前缀；Runtime 调用 GPT-5.6 需要脚本中列出的
-Mantle 权限，不能只授予 `bedrock:InvokeModel`。盲审指标还需要
-`bedrock-agentcore:StartCodeInterpreterSession`、`InvokeCodeInterpreter` 和
-`StopCodeInterpreterSession` 等权限；当前 Runtime 内联策略已经包含。
-
-## 5. 从零部署
-
-所有命令从仓库根目录执行。
+`runtime.sh`、模型探针和 Runtime 回退会主动停止，等待采用密钥引用的正式 Runtime 发布流程与镜像验收。
+**目前不能照旧执行整套从零部署，也不能把基础设施适配当作完整生成服务已经可用。**
+Web 发布仍依赖可用 Runtime。生产接入完成后再验证完整部署和业务链路。
 
 ```bash
-# 0. 选择区域并确认身份
-export AWS_REGION=us-east-1
-aws sts get-caller-identity
-
-# 0.1 谁可以注册登录（默认 britishcouncil.org；如需覆盖，在最早一步设置）
-export ALLOWED_EMAIL_DOMAINS=britishcouncil.org
-
-# 0.2 bearer 默认需要 Bedrock API key
-export AWS_BEARER_TOKEN_BEDROCK=...
-
-# 1. 创建 S3、ECR、ECS cluster、日志组和三个运行期角色
-bash deploy/provision.sh
-
-# provision.sh 当前不会设置 tag mutability；显式锁住两个 repository，保证旧标签不会被覆盖
-aws ecr put-image-tag-mutability \
-  --repository-name ielts-part1-backend \
-  --image-tag-mutability IMMUTABLE
-aws ecr put-image-tag-mutability \
-  --repository-name ielts-part1-frontend \
-  --image-tag-mutability IMMUTABLE
-
-# 为本次部署选择一个未使用过的不可变标签
-export RELEASE_TAG=20260801-agent-autonomy
-
-# 2. 构建并推送 AgentCore Runtime 镜像
-bash backend/scripts/deploy.sh \
-  "$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${AWS_REGION}.amazonaws.com/ielts-part1-backend" \
-  "$RELEASE_TAG"
-
-# 3. 创建 AgentCore Runtime
-bash deploy/runtime.sh "$RELEASE_TAG"
-
-# 4. 创建 ALB、CloudFront、目标组和网络规则
-bash deploy/edge.sh
-
-# 5. 构建 Web 镜像并创建 ECS 服务
-bash deploy/service.sh "$RELEASE_TAG"
-
-# 6. 将 ECS 服务扩到 1，并打印访问地址
-bash deploy/start.sh
+.venv-backend/bin/python -m pytest backend/tests/test_china_deployment.py -q
 ```
 
-建议先执行 `edge.sh` 再执行 `service.sh`。ECS 不能给已存在且未配置负载均衡器的服务原地增加
-ALB；顺序相反时，`service.sh` 会明确删除并重建服务。
-
-`provision.sh` 当前只创建 repository，不设置 tag mutability，所以上面的两条命令不能省略。
-`deploy.sh`、`runtime.sh` 和 `service.sh` 都要求显式传入 tag。不要复用 `dev` 或覆盖旧标签。
-
-回退不走这三个脚本，用 `deploy/rollback.sh`（见 §5.3）。`service.sh <known-good-tag>` 不是可用的
-回退路径：它无条件执行 `docker build && docker push`，而两个 ECR repository 都是 IMMUTABLE，推送
-已存在的 tag 必然失败；它还依赖可用的 Docker daemon，因此不适合作为紧急回退路径。
-
-### 5.1 验证
-
-```bash
-bash deploy/status.sh
-curl -si https://<CLOUDFRONT_DOMAIN>/healthz | head -1
-```
-
-健康检查应返回 `HTTP/2 200` 或 `HTTP/1.1 200`。新 CloudFront 分发通常需要 5 到 10 分钟变为
-`Deployed`，传播期间出现 502/503 不一定表示应用部署失败。
-
-### 5.2 日常更新与启停
-
-更新时使用新的发布标签重新构建镜像，再明确切换 Runtime 和 Web。旧标签保留用于回退：
-
-```bash
-export RELEASE_TAG=20260802-fix-1
-bash backend/scripts/deploy.sh \
-  "$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${AWS_REGION}.amazonaws.com/ielts-part1-backend" \
-  "$RELEASE_TAG"
-bash deploy/runtime.sh "$RELEASE_TAG"
-bash deploy/service.sh "$RELEASE_TAG"
-
-bash deploy/stop.sh    # ECS desiredCount=0；保留 ALB、CloudFront 和稳定 URL
-bash deploy/start.sh   # ECS desiredCount=1；等待服务稳定
-bash deploy/status.sh
-```
-
-`stop.sh` 只停止 Fargate 任务。ALB 仍有固定费用，CloudFront 地址继续存在但在无健康目标时返回
-503。
-
-每次部署后在 [`deploy/RELEASES.md`](deploy/RELEASES.md) 补一行。镜像标签本身不携带 git commit，
-不记录就等于没有回退能力。
-
-### 5.3 回退到已验证版本
-
-```bash
-bash deploy/rollback.sh --to prod-20260801 --dry-run   # 先看清当前与目标，什么都不改
-bash deploy/rollback.sh --to prod-20260801
-```
-
-`--to` 后面是 `deploy/RELEASES.md` 里的 git tag；Runtime version 和 taskdef revision 从该 tag 的
-附注中解析，所以台账和实际回退目标不会各说各话。也可以绕过 tag 直接指定
-`--runtime-version 17` / `--taskdef 31`，两者可单独使用，只回退一层。
-
-回退不需要 Docker，也不需要构建：两个产物已经在 AWS 里存在——ECS task definition revision 钉住了
-旧 Web 镜像，AgentCore Runtime version 钉住了旧后端镜像。脚本只是把流量重新指向它们。
-
-**不会改变的东西**（结构上决定，不是靠小心）：
-
-- **CloudFront 与 ALB**：交付 URL 是分发的属性，不属于任何版本，只有 `edge.sh` / `teardown.sh`
-  管理它们，回退脚本不调用这两个；
-- **S3**：不读不写任何对象，材料、批次、用户和音频原样保留；
-- **登录态**：`SESSION_SECRET` 来自 SSM，跨回退稳定，已登录用户不会掉线。
-
-实测：Web 层回退约 3 分钟（`update-service` 到 `services-stable`）；Runtime 层重推镜像到 READY
-约 1 分钟。演练记录和耗时见 `deploy/RELEASES.md`。
-
-回退**不能**解决的一种情况：如果被回退掉的那个版本已经按新结构写过数据（改了 `_candidates/`
-记录或 `material.json` 的形状），回退后旧代码会读到新格式。桶开了版本控制，但版本控制救不了结构
-不兼容。涉及数据结构的改动应换用新的 key 前缀发布。
-
-**Runtime 层只有一条路径：重推镜像。** `update-agent-runtime-endpoint --agent-runtime-version`
-对 `DEFAULT` 端点是不可用的（AWS 直接回 `ConflictException: Default endpoints are managed through
-agent updates`，2026-08-07 回退途中实测），所以 `rollback.sh` 用 `update-agent-runtime` 把目标版本
-记录的镜像和整份配置重放回去。
-
-代价是**版本号必然只增**：回退到 v17 的镜像会产生 v19，于是「v19 装的是 v17 的镜像」。因此
-**版本号不能反推代码版本**，要知道线上跑的是哪一版只能查 `containerUri`：
-
-```bash
-aws bedrock-agentcore-control get-agent-runtime \
-  --agent-runtime-id <id> --agent-runtime-version <n> \
-  --query 'agentRuntimeArtifact.containerConfiguration.containerUri' --output text
-```
-
-| 命令 | 含义 |
-|---|---|
-| `rollback.sh --runtime-version 17` | 回到 **v17 记录的镜像和配置**，不是让 v17 重新 live |
-| `rollback.sh --runtime-image <tag>` | 直接按 ECR 镜像标签回退，配置沿用当前版本 |
-| `runtime.sh <tag>` | 正常发布路径；回退不必用它，但它做的是同一件事 |
-
-脚本按这条现实设计了三件事：**先 Runtime 后 web**（Runtime 是会失败的那一步，让它失败在什么都没动
-的时候），web 步失败则把 Runtime **补偿**回原样，以及动手前**预检**两层镜像是否还在 ECR、taskdef
-是否 `ACTIVE`。目标镜像与当前一致时，脚本直接跳过而不是产生一个换不动代码的新版本号。回退结果以
-`containerUri` 和 taskdef 核对，不一致就非零退出；`/healthz` 200 只说明有东西在应答，分不清
-「回退成功」和「什么都没发生」。
-
-### 5.4 拆除
-
-```bash
-bash deploy/teardown.sh --yes
-bash deploy/teardown.sh --yes --purge-s3
-```
-
-第一条保留 S3 数据，因此仍会产生少量存储费用；第二条连同桶内所有对象版本一起删除。脚本
-不会删除 SSM 中的 `/ielts-part1/session-secret`，也不会注销历史 ECS task definition revision；
-需要完全清理账号时应另行删除。拆除 CloudFront 后原 `*.cloudfront.net` 地址无法恢复，重建会
-获得新域名。部分 AWS 删除是异步的，若目标组或安全组仍被引用，等待一分钟后重新执行同一命令。
+测试使用模拟 AWS 返回，不访问云端。`start.sh` / `stop.sh` 只改变 Web 副本数，保留 ALB；
+`rollback.sh --taskdef <revision>` 用于 Web 回退，模型相关回退暂缓。
+`teardown.sh` 为显式拆除入口，不在本轮执行；删除 ALB 后原访问地址不能保证保留。
 
 ## 6. 部署资源与配置
 
 ### 6.1 创建的主要资源
 
-| 资源 | 名称 |
-|---|---|
-| S3 bucket | `ielts-part1-materials-{account}` |
-| ECR repositories | `ielts-part1-backend`、`ielts-part1-frontend` |
-| ECS cluster/service | `ielts-part1` / `ielts-part1-web` |
-| ECS task definition | `ielts-part1-web`，ARM64，0.5 vCPU / 1 GB |
-| AgentCore Runtime | `ielts_part1_runtime` |
-| AgentCore Code Interpreter | 内置 `aws.codeinterpreter.v1`，按材料创建临时 session |
-| CloudWatch log group | `/ecs/ielts-part1-web`，保留 7 天 |
-| SSM SecureString | `/ielts-part1/session-secret` |
-| ALB / target group | `ielts-part1-alb` / `ielts-part1-tg` |
-| CloudFront | 以 ALB 为 origin 的动态分发 |
+S3 桶、ECR 仓库、ECS 集群、CloudWatch 日志组、IAM 角色、安全组、目标组和公网 ALB。
+不再创建 CloudFront。AgentCore Runtime 在密钥引用发布流程与镜像验收后部署。
 
 ### 6.2 部署参数
 
-`deploy/config.sh` 中的值均可通过环境变量覆盖：
-
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `AWS_REGION` | `us-east-1` | 仅支持 `us-east-1` / `us-east-2` / `us-west-2` |
-| `ACCOUNT_ID` | 从当前凭证发现 | 目标账号 |
-| `AWS_PROFILE` | 未设置 | 可选命名 profile |
-| `S3_BUCKET` | `ielts-part1-materials-{account}` | 项目单桶 |
-| `VPC_ID` | 默认 VPC | 目标 VPC |
-| `SUBNET_IDS` | 默认 VPC 的公有子网 | ALB 至少需要两个不同 AZ 的子网 |
-| `SUBNET_ID` | `SUBNET_IDS` 第一个 | Fargate 任务子网 |
-| `INGRESS_CIDR` | `0.0.0.0/0` | ALB ingress；收窄到办公网会阻断 CloudFront 回源 |
-| `ALB_IDLE_TIMEOUT` | `120` | 必须显著大于 SSE 心跳 |
-| `TASK_CPU` / `TASK_MEMORY` | `512` / `1024` | Web 任务规格 |
+| `AWS_REGION` | `cn-northwest-1` | 支持宁夏和北京，统一 `AWS_DEFAULT_REGION` |
+| `AWS_PARTITION` | `aws-cn` | 中国区资源 ARN 分区 |
+| `AWS_DNS_SUFFIX` | `amazonaws.com.cn` | ECR 等部署地址后缀 |
+| `ALB_PUBLIC_PORT` | `9000` | 公网 HTTP，拒绝 80/443/8080 和非法端口 |
+| `WEB_PORT` | `80` | 容器内部端口，仅 ALB 可访问 |
+| `INGRESS_CIDR` | `0.0.0.0/0` | 可收窄为客户公网出口 CIDR |
+| `ALB_IDLE_TIMEOUT` | `120` | 大于 Web 15 秒 SSE 心跳 |
+| `VPC_ID` / `SUBNET_IDS` | 自动发现 | 可显式配置 VPC 和不同可用区的公共子网 |
 
-当前 ALB origin 可通过公网 HTTP 直接访问。若要阻止绕过 CloudFront，需要额外实现 CloudFront
-origin-facing 托管前缀列表和自定义 header 校验；现有脚本未实现这一层。
+完整说明见 [中国区部署说明](docs/CHINA_DEPLOYMENT.md)。
 
 ### 6.3 Web 运行参数
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `ALLOWED_EMAIL_DOMAINS` | `britishcouncil.org` | 允许注册的邮箱域名；`deploy/config.sh` 默认值 |
+| `ALLOWED_EMAIL_DOMAINS` | `example.com` | 允许注册的邮箱域名；`deploy/config.sh` 默认值 |
 | `SESSION_SECRET` | 无 | `service.sh` 生成并从 SSM 注入 |
 | `AGENT_RUNTIME_ARN` | 部署时注入 | Runtime ARN |
 | `IELTS_AUDIO_BUCKET` | 项目 S3 桶 | 材料与按需音频存储 |
@@ -1196,11 +758,17 @@ origin-facing 托管前缀列表和自定义 header 校验；现有脚本未实�
 
 ### 6.4 Runtime 参数
 
+以下是当前模型与运行参数。模型本地接入不代表中国区 Runtime 已部署；详见中国区部署说明。
+
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `IELTS_MODEL_ID` | `openai.gpt-5.6-luna` | 模型 id |
-| `IELTS_MODEL_REGION` | `AWS_REGION` | 模型区域 |
-| `IELTS_MODEL_AUTH` | `bearer` | 使用 `AWS_BEARER_TOKEN_BEDROCK` 做 API key 鉴权；`mantle` 为 SigV4 兜底 |
+| `IELTS_MODEL_ID` | `moonshotai.kimi-k2.5` | 部署默认模型 |
+| `IELTS_MODEL_REGION` | `us-east-1` | 海外模型区域，独立于应用区域 |
+| `IELTS_MODEL_AUTH` | `bearer` | 生产配置用 `secret` 读取中国区密钥引用；本地可用 `profile`；保留 `bearer`，中国区禁止隐式 `mantle` |
+| `IELTS_MODEL_SECRET_ARN` | 无 | `secret` 模式必填，中国区 Secrets Manager 完整 ARN |
+| `IELTS_MODEL_SECRET_ACCOUNT_ID` | 无 | 生产配置中固定为中国区账号，校验 secret 归属 |
+| `IELTS_MODEL_PROFILE` | 无 | profile 模式必填的本地海外账号配置名称 |
+| `IELTS_ALLOWED_MODEL_IDS` | 默认模型 | 逗号分隔的允许模型，限已实现适配的型号 |
 | `AWS_BEARER_TOKEN_BEDROCK` | 无 | bearer 模式所需的 Bedrock API key |
 | `IELTS_CODE_INTERPRETER_REGION` | `AWS_REGION` | 审核指标 Code Interpreter 区域 |
 | `IELTS_CODE_INTERPRETER_ID` | `aws.codeinterpreter.v1` | 内置 Code Interpreter identifier |
@@ -1313,20 +881,19 @@ bash backend/scripts/check_ping.sh
 
 | 现象 | 检查与处理 |
 |---|---|
-| CloudFront 503，`running=0` | 服务已停止，执行 `bash deploy/start.sh` |
-| CloudFront 502，任务在运行 | 查看目标组健康状态和 `/ecs/ielts-part1-web` 日志 |
-| 新分发暂时 502/503 | 等待 `status.sh` 显示 CloudFront `Deployed` |
-| 生成流中途断开 | 核对 15 秒心跳、CloudFront 60 秒 origin read、ALB 120 秒 idle |
-| 材料在结尾一次性出现 | 检查 CloudFront `Compress` 必须为 `false` |
+| ALB 503，`running=0` | 服务已停止；仅在 Web 已部署后使用 `bash deploy/start.sh` |
+| ALB 502，任务在运行 | 查看目标组健康状态和 `/ecs/ielts-part1-web` 日志 |
+| 模型发布提示 pending | 正式 Runtime 发布流程和镜像未完成验收，不应绕过停止点 |
+| 生成流中途断开 | 后续端到端验证中核对 15 秒心跳、ALB 120 秒 idle 和客户代理 |
+| 材料在结尾一次性出现 | 检查客户端网络或代理是否缓冲 SSE；ALB 入口不增加压缩代理 |
 | 模型返回 429 | 下调 `WEB_FANOUT_CONCURRENCY`，不要盲目增加重试 |
-| `bedrock-mantle:CreateInference` denied | Runtime 角色缺少 Mantle 权限，重新运行 `provision.sh` 或核对内联策略 |
+| `bedrock-mantle:CreateInference` denied | 核对实际使用的海外身份及模型推理权限；中国区 `provision.sh` 不配置海外账号权限 |
 | Code Interpreter 创建或调用失败 | 核对 Runtime 角色的 Code Interpreter 权限和 `IELTS_CODE_INTERPRETER_REGION` |
 | 生成 Agent 一直等待工具确认 | 确认代码通过 `agents.py` 设置了非交互 shell 环境变量 |
-| `invalid_api_key` / security token invalid | 先运行 `aws sts get-caller-identity` 检查本地凭证是否过期 |
+| `invalid_api_key` / security token invalid | `profile` 模式检查 `IELTS_MODEL_PROFILE` 对应的海外登录是否有效；`bearer` 模式检查 token 是否过期。默认 AWS 身份可能是中国区账号，不能作为海外模型凭证有效的证明 |
 | 试听后长时间无音频 | 查看 `_candidates/{material_id}.job.json`；首次合成通常需 1 到 2 分钟 |
 | 登录后随机失效 | 核对 ECS task definition 是否从 SSM 注入同一个 `SESSION_SECRET` |
 | `teardown` 无法删除目标组/安全组 | AWS 仍在释放 ALB/ENI，等待一分钟后重跑 |
-| CloudFront 无法删除 | 分发必须先 disable 并完成传播；等待后重跑 `teardown.sh` |
 
 日志位置：
 
@@ -1340,9 +907,9 @@ bash backend/scripts/check_ping.sh
 - 仓库不保存 access key、账号 id 或 session secret；
 - S3 开启四项 public access block 和 SSE-S3；
 - session 使用 HttpOnly cookie，签名密钥保存在 SSM SecureString；
-- 运行期使用三个职责分离的 IAM role；
-- 当前未配置 WAF、MFA、集中审计日志或 CloudFront 自定义错误页；
-- 当前 ALB origin 可被知道主机名的人通过公网 HTTP 绕过 CloudFront。
+- 本阶段准备 ECS execution role 与 Web task role；Runtime execution role 由 deploy/runtime_role.py 单独配置；
+- 当前未配置 WAF、MFA 或集中审计日志；
+- 当前 POC 入口为公网 HTTP，没有传输加密，客户网络与运营商要求仍需验证。
 
 ### 已知限制
 
@@ -1358,7 +925,7 @@ bash backend/scripts/check_ping.sh
   Loop 和前端尚未实现；
 - `stop.sh` 不删除 ALB，因此不能把常驻成本降为零；
 - `teardown.sh` 默认保留 S3，且始终保留 SSM secret 和历史 task definition revision；
-- GPT-5.6 当前部署限制在 `us-east-1` / `us-east-2`；
+- 模型采用海外 Bedrock 已托管 Kimi，原有 Mantle/GPT 适配保留；生产跨境链路待验证；
 - QTI 导出不含听力音频，且 `mapEntry` 是精确比对（不裁剪首尾空白、不做 Unicode 归一化），
   下游投递层应自行归一化考生输入，并用包内 `reject_candidates.json` 做一次判分回归。
 

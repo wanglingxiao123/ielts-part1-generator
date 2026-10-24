@@ -279,9 +279,10 @@ def build_material(
     *,
     slug: str,
     version_ordinal: int = 1,
+    teacher_version: bool = False,
 ) -> Material:
     """门禁 → IR。``slug`` 是存储键里的材料 id，``raw`` 是输入字节（只用于 provenance 哈希）。"""
-    gate = qin.run_gates(doc, slug)
+    gate = qin.run_gates(doc, slug, teacher_version=teacher_version)
     package = gate.package
     groups = build_groups(gate)
     group_by_id = {g.group_id: g for g in groups}
@@ -292,7 +293,7 @@ def build_material(
         if isinstance(e.get("number"), int)
     }
     distractors_by_number: Dict[int, List[str]] = {}
-    for rec in ((doc.get("review") or {}).get("reconstructed_answers") or []):
+    for rec in ([] if teacher_version else ((doc.get("review") or {}).get("reconstructed_answers") or [])):
         n = rec.get("number")
         if not isinstance(n, int):
             continue
@@ -328,18 +329,27 @@ def build_material(
         suffix = str(question.get("carrier_after") or "")
         label = _label_for(number, group, index)
 
-        spec = accept_sets.build(
-            question,
-            {"canonical": canonical, "target": target, "alternatives": answer.get("alternatives") or []},
-            limit,
-            evidence=evidence_by_number.get(number, ""),
-            prefix=prefix,
-            suffix=suffix,
-            distractors=distractors_by_number.get(number, []),
-            visible_text=_visible_text_for_question(
-                group, number, label, prefix, suffix
-            ),
-        )
+        if teacher_version:
+            # The selected version owns its marking scheme. Do not infer or remove answers
+            # from an earlier auditor's rivals, grammar preferences or content heuristics.
+            accepted = list(dict.fromkeys([canonical] + list(answer.get("alternatives") or [])))
+            spec = accept_sets.AnswerSpec(
+                number=number, target=canonical, accept=accepted,
+                upstream_alternatives=list(answer.get("alternatives") or []),
+            )
+        else:
+            spec = accept_sets.build(
+                question,
+                {"canonical": canonical, "target": target, "alternatives": answer.get("alternatives") or []},
+                limit,
+                evidence=evidence_by_number.get(number, ""),
+                prefix=prefix,
+                suffix=suffix,
+                distractors=distractors_by_number.get(number, []),
+                visible_text=_visible_text_for_question(
+                    group, number, label, prefix, suffix
+                ),
+            )
         review += [f"Q{number}: {msg}" for msg in spec.review]
 
         base = EXPECTED_LENGTH_BASE.get(str(question.get("response_form")), 25)
@@ -796,11 +806,11 @@ class ExportBundle:
         return buf.getvalue()
 
 
-def render(doc: dict, *, slug: str, version_ordinal: int = 1, raw: Optional[bytes] = None) -> ExportBundle:
+def render(doc: dict, *, slug: str, version_ordinal: int = 1, raw: Optional[bytes] = None, teacher_version: bool = False) -> ExportBundle:
     """门禁 → IR → item + manifest。抛 ``GateFailure`` / ``LayoutNotImplemented`` / ``ValueError``。"""
     if raw is None:
         raw = json.dumps(doc, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    mat = build_material(doc, raw, slug=slug, version_ordinal=version_ordinal)
+    mat = build_material(doc, raw, slug=slug, version_ordinal=version_ordinal, teacher_version=teacher_version)
     item_xml = serialize(emit_item(mat))
     manifest_xml = serialize(emit_manifest(mat))
     rejects = {

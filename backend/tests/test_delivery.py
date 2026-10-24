@@ -1201,3 +1201,146 @@ class TestCrossCheckNormalisation:
             found = _cross_check_dict(value)
             assert sorted(found) == ["ambiguous", "unintended_target", "unrecoverable"]
             assert all(v == [] for v in found.values())
+
+
+class TestQuietRuntimeHeartbeat:
+    def test_quiet_stage_heartbeats_then_delivers_every_queued_event(self, monkeypatch):
+        monkeypatch.setattr(delivery_module, "STREAM_HEARTBEAT_SECONDS", 0.005)
+
+        async def go():
+            queue = asyncio.Queue()
+            release = asyncio.Event()
+            expected = [{"type": "stage", "stage": str(i)} for i in range(20)]
+
+            async def work():
+                await release.wait()
+                for event in expected:
+                    await queue.put(event)
+
+            stream = delivery_module._pump(queue, work())
+            try:
+                # Multiple timeouts must retain the reader, not cancel work.
+                assert await asyncio.wait_for(anext(stream), 1) is None
+                assert await asyncio.wait_for(anext(stream), 1) is None
+                release.set()
+                seen = [event async for event in stream if event is not None]
+                assert seen == expected
+            finally:
+                await stream.aclose()
+
+        asyncio.run(go())
+
+    def test_closing_during_heartbeat_cleans_worker_and_queue_reader(self, monkeypatch):
+        monkeypatch.setattr(delivery_module, "STREAM_HEARTBEAT_SECONDS", 0.005)
+
+        async def go():
+            before = asyncio.all_tasks()
+            stopped = asyncio.Event()
+
+            async def work():
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    stopped.set()
+
+            stream = delivery_module._pump(asyncio.Queue(), work())
+            assert await asyncio.wait_for(anext(stream), 1) is None
+            await stream.aclose()
+            assert stopped.is_set()
+            assert not (asyncio.all_tasks() - before)
+
+        asyncio.run(go())
+
+    def test_worker_error_after_heartbeat_is_not_hidden(self, monkeypatch):
+        monkeypatch.setattr(delivery_module, "STREAM_HEARTBEAT_SECONDS", 0.005)
+
+        async def go():
+            release = asyncio.Event()
+
+            async def work():
+                await release.wait()
+                raise RuntimeError("worker failed")
+
+            stream = delivery_module._pump(asyncio.Queue(), work())
+            assert await asyncio.wait_for(anext(stream), 1) is None
+            release.set()
+            with pytest.raises(RuntimeError, match="worker failed"):
+                await anext(stream)
+
+        asyncio.run(go())
+
+    def test_run_request_ignores_transport_heartbeat_and_keeps_summary(self, monkeypatch):
+        monkeypatch.setattr(delivery_module, "STREAM_HEARTBEAT_SECONDS", 0.005)
+        recorder = Recorder([material_ok], [questions_ok()])
+        emitted = []
+
+        async def material(scenario, slot_id, emit, may_revise):
+            await asyncio.sleep(0.02)
+            return await recorder.run_material(scenario, slot_id, emit, may_revise)
+
+        async def emit(event):
+            emitted.append(event)
+
+        summary = asyncio.run(run_request(
+            [FakeScenario()], "batch-heartbeat", store=memory_store(), emit=emit,
+            run_material=material, run_question_stage=recorder.run_questions))
+        assert summary["status"] == SUCCEEDED
+        assert summary["delivered"] == 1
+        assert all(isinstance(event, dict) for event in emitted)
+        assert emitted[-1]["type"] == "request_completed"
+
+    def test_stream_close_during_quiet_stage_awaits_worker_cleanup(self, monkeypatch):
+        monkeypatch.setattr(delivery_module, "STREAM_HEARTBEAT_SECONDS", 0.005)
+
+        async def go():
+            stopped = asyncio.Event()
+
+            async def material(scenario, slot_id, emit, may_revise):
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    stopped.set()
+
+            stream = delivery_module.stream_request(
+                [FakeScenario()], "batch-heartbeat-close", store=memory_store(),
+                run_material=material)
+            try:
+                async with asyncio.timeout(1):
+                    async for event in stream:
+                        if event is None:
+                            break
+            finally:
+                await stream.aclose()
+            assert stopped.is_set()
+
+        asyncio.run(go())
+
+    def test_sdk_null_heartbeat_is_ignored_by_web_runtime_pump(self):
+        from io import BytesIO
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        import threading
+        from botocore.response import StreamingBody
+        from bedrock_agentcore.runtime import BedrockAgentCoreApp
+        from web.fanout import FanOut, _CHILD_DONE
+
+        sdk = BedrockAgentCoreApp()
+        event = {"type": "stage", "stage": "material_started", "slot_id": "slot-1"}
+        async def frames():
+            yield None
+            yield event
+
+        async def serialize():
+            return b"".join([chunk async for chunk in sdk._stream_with_error_handling(frames())])
+
+        wire = asyncio.run(serialize())
+        assert wire.startswith(b"data: null\n\n")
+        body = StreamingBody(BytesIO(wire), len(wire))
+        runtime = Mock()
+        runtime.invoke.return_value = ("text/event-stream", body, "offline-session")
+        owner = SimpleNamespace(_stopped=threading.Event(), runtime=runtime,
+                                _bodies_lock=threading.Lock(), _bodies={})
+        child = SimpleNamespace(payload={}, slot_ids=["slot-1"], index=0)
+        pushed = []
+        FanOut._pump(owner, child, pushed.append)
+        assert pushed == [event, _CHILD_DONE]

@@ -85,6 +85,7 @@ from .auth import (
     InvalidSession,
     build_auth,
 )
+from .audio_proxy import AudioProxy
 from .batch_history import BatchHistory, BatchRecorder, new_batch_id
 from .comment_store import CommentError, CommentService
 from .fanout import (
@@ -216,6 +217,7 @@ class WebTier:
                  question_versions: Optional[QuestionVersionService] = None,
                  executions: Optional[ExecutionManager] = None) -> None:
         self.auth = auth
+        self.audio_proxy = AudioProxy.from_environment()
         self.runtime = runtime
         self.static_dir = static_dir
         self.cookie_secure = cookie_secure
@@ -289,6 +291,11 @@ class WebTier:
                 "user_store": type(self.auth.store).__name__,
                 "fanout_concurrency": self.fanout_concurrency,
             }
+
+        @app.get("/api/material-audio")
+        def material_audio(request: Request, key: str):
+            # ApiAuthMiddleware protects this route with the same session as material reading.
+            return self.audio_proxy.response(key, request.headers.get("range"))
 
         @app.post("/api/auth/register")
         async def register(request: Request) -> JSONResponse:
@@ -574,8 +581,8 @@ class WebTier:
             same material never collide in a downstream item bank.
 
             **Rejections are 422 with every reason listed, never a partial package.** The converter
-            re-runs the admission gates (upstream review passed, both auditors agree on every answer,
-            question numbers close, word limits self-consistent). A set that fails them is not
+            checks the selected version's export structure (question/answer numbers close,
+            required fields and instructions are self-consistent), not historical audit verdicts. A set that fails them is not
             exported with the failing questions dropped -- a nine-question Part 1 that validates
             against the XSD is exactly the kind of artefact that gets imported and only noticed by a
             candidate. Conversion itself is pure and stdlib-only (`qti_export/`); it never touches
@@ -617,7 +624,7 @@ class WebTier:
             except ExportRejected as exc:
                 return JSONResponse(
                     _error_body("QTI_EXPORT_REJECTED",
-                                "这套题目未通过导出门禁，不能生成 QTI 包。",
+                                "当前版本缺少必要字段或结构不一致，不能生成 QTI 包。",
                                 material_id=material_id, version_ordinal=ordinal,
                                 reasons=exc.reasons),
                     status_code=422,
@@ -1233,7 +1240,16 @@ class WebTier:
         if SSE_CONTENT_TYPE in content_type:
             return StreamingResponse(_relay(body), media_type=SSE_CONTENT_TYPE,
                                      headers=_SSE_HEADERS)
-        return JSONResponse(read_json(body))
+        result = read_json(body)
+        if payload.get("action") == "presign_audio" and self.audio_proxy.configured:
+            try:
+                result = self.audio_proxy.rewrite_links(result)
+            except (ValueError, TypeError):
+                return JSONResponse(
+                    _error_body("AUDIO_LINK_INVALID", "暂时无法获取音频播放地址。"),
+                    status_code=502,
+                )
+        return JSONResponse(result)
 
     def _start_revision_execution(
         self,

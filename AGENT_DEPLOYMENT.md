@@ -1,210 +1,87 @@
-# Agent 部署指南
+# Agent 部署指南（中国区迁移阶段）
 
-本文件供负责部署本项目的编码 Agent 使用。权威脚本位于 `deploy/` 和
-`backend/scripts/deploy.sh`；README 第 4 至第 6 节说明 IAM、资源和参数。本文件负责规定执行顺序、
-安全边界和验收方式。
+本分支的权威脚本位于 `deploy/` 和 `backend/scripts/deploy.sh`，配置与当前限制见
+[中国区部署说明](docs/CHINA_DEPLOYMENT.md)。旧海外部署流程保留在 `main` 和历史版本中。
 
-## 1. 开始前确认
+## 1. 当前发布边界
 
-部署前必须确认以下信息；缺少时一次性向用户询问，不要自行猜测：
+本阶段完成中国区基础设施适配，并接入海外 Bedrock 已托管 Kimi 的本地模型适配。生产 Runtime IAM 与海外凭证引用已有专用配置工具，正式 Runtime 发布仍待验收，
+`runtime.sh`、模型探针和涉及 Runtime 的回退会主动停止；不得通过删除检查来绕过。
+不把模型区域直接设为海外以自动开启跨境调用，不把中国区角色视为海外模型访问凭证。
+
+不要沿用旧版 Runtime → Web 的从零部署命令作为本阶段的完成标准。
+在模型接入未完成前，只能进行明确授权的基础设施准备；不能宣称生成服务已上线。
+
+## 2. 实际操作前确认
 
 | 项目 | 要求 |
 |---|---|
-| 部署模式 | `首次部署` 或 `更新部署` |
-| 目标提交 | 用户指定的 commit；未指定时报告当前 `HEAD` 并请求确认 |
-| AWS 区域 | `us-east-1` 或 `us-east-2` |
-| 发布标签 | 本次唯一的 `RELEASE_TAG`，不得复用已有 ECR 标签 |
-| 邮箱域名 | Web 部署固定使用 `ALLOWED_EMAIL_DOMAINS=example.com` |
+| 任务范围 | 本地验证、基础资源准备或后续已完成模型适配的发布，必须区分 |
+| 代码 | 报告分支、commit 和未提交改动；不切换或修改 main |
+| 账号与区域 | 中国区账号；宁夏默认，北京可配置；不得使用海外凭证误操作 |
+| 网络 | VPC、至少两个可用区子网、客户网络能访问所选 ALB 端口 |
+| 公网入口 | ALB HTTP，默认 9000；非标准端口不代表备案豁免或 HTTPS |
+| 发布标签 | 若构建镜像，使用唯一 RELEASE_TAG，保持旧镜像可回退 |
+| 注册范围 | 使用客户确认的 ALLOWED_EMAIL_DOMAINS，不能设置为 * |
+| 模型 | 海外 Bedrock Kimi K2.5；正式 Runtime 发布验收前保留发布停止点 |
 
-先执行只读检查：
+只读检查可包含 Git 状态、目标账号身份、Docker 可用性和已存在资源。
+不得输出 access key、secret、session token、Cookie、SSM SecureString 内容或 ECR 登录密码。
 
-```bash
-git status --short
-git branch --show-current
-git log -1 --oneline
-aws sts get-caller-identity
-docker info
-```
-
-同时确认：
-
-- 当前 commit 与用户要求一致；
-- 工作区没有未说明的源码改动；
-- AWS 凭证有效，账号和区域正确；
-- Docker daemon 可用并能构建 `linux/arm64`；
-- `RELEASE_TAG` 在需要推送的 ECR repository 中尚不存在；
-- 首次部署满足 README 第 4 节的 IAM、VPC 和子网条件。
-
-只汇报 AWS 账号和资源标识，不得输出 access key、secret、session token、Cookie、SSM
-SecureString 内容或 ECR 登录密码。
-
-## 2. 执行边界
-
-- 不修改业务代码、配置契约或部署脚本来“绕过”部署错误。
-- 不提交代码、不创建 Git tag、不改写 Git 历史，除非用户明确要求。
-- 不执行 `deploy/teardown.sh`，也不删除 S3、用户、批次、材料或音频。
-- 不创建线上账号、批注、材料批次或其他测试数据。
-- 默认不重复运行完整测试套件。先核对目标 commit 已有的 CI/交接门禁结果；缺少可信结果时停止并
-  询问用户，不要自行启动耗时测试。
-- Web 镜像构建自带 `tsc -b && vite build`；构建失败必须停止，不得跳过类型检查。
-- 不复用 `dev`、`latest` 或任何已存在标签。ECR 标签必须保持不可变，旧镜像用于回退。
-- 执行会改变 AWS 状态的命令前，先简短汇报部署模式、目标 commit、区域、标签和准备部署的层。
-
-## 3. 判断部署范围
-
-更新部署先比较当前线上 commit 与目标 commit。只按实际改动路径决定，不因“保持两层同标签”而
-无条件重建未受影响层。
-
-| 改动路径 | 部署层 |
-|---|---|
-| `backend/`、`skills/`、`config/` | Runtime |
-| `web/`、`frontend/` | Web |
-| `audio_storage/` | Runtime + Web |
-| 仅 Markdown、截图或其他文档 | 不部署 |
-| `deploy/` | 阅读改动后判断；脚本变化不自动等于镜像变化 |
-
-如果改动跨层或无法证明只影响一层，则部署两层。两层部署必须先 Runtime、后 Web。
-
-部署前记录当前状态，用于失败补偿：
+## 3. 配置约定
 
 ```bash
-bash deploy/status.sh
+export AWS_REGION=cn-northwest-1
+export ALB_PUBLIC_PORT=9000
+export ALLOWED_EMAIL_DOMAINS=example.com
 ```
 
-另行记录当前 Runtime 的 `containerUri`、Runtime version、ECS task definition revision 和 Web
-镜像 URI。不要只凭 Runtime version 推断代码版本。
+`AWS_REGION` 优先于 `AWS_DEFAULT_REGION`，最终统一；部署区不从 `IELTS_MODEL_REGION` 推导。
+China ARN 使用 `aws-cn`，ECR registry 使用 `amazonaws.com.cn`。不能全局替换 IAM service principal。
+ALB 对公网使用 ALB_PUBLIC_PORT，Web 对 ALB 仍使用内部 80，不公开容器端口。
 
-## 4. 首次部署
+## 4. 脚本和执行顺序
 
-所有命令从仓库根目录执行。README 第 5 节是命令的权威说明。
+先完成账号预检和专用模型凭证配置。以下为基础设施脚本职责，不表示应用已经发布：
+
+1. `provision.sh`：基础资源、日志和权限。
+2. `edge.sh`：ALB、安全组、目标组、HTTP 监听器；既有不兼容配置应明确报错。
+3. `backend/scripts/deploy.sh <china-ecr-uri> <unique-tag>`：按目标 ECR 区域构建/推送镜像。
+4. **基础设施脚本不负责生产 Runtime 凭证和 IAM；需使用第 7 节工具**：不得继续假定 Runtime 可用。
+5. 生产凭证与角色配置后，仍需完成密钥引用、镜像、Runtime → Web 的正式发布验收。
+
+`service.sh` 仍要求可用 Runtime 和目标组。`start.sh` / `stop.sh` 调整 Web 副本数，
+不会拆除 ALB。`status.sh` 输出 ALB 的默认域名与实际公网端口。
+
+## 5. 验证与失败处理
+
+本地验证命令：
 
 ```bash
-export AWS_REGION=<us-east-1-or-us-east-2>
-export RELEASE_TAG=<unique-release-tag>
-
-aws sts get-caller-identity
-bash deploy/provision.sh
-
-aws ecr put-image-tag-mutability \
-  --repository-name ielts-part1-backend \
-  --image-tag-mutability IMMUTABLE
-aws ecr put-image-tag-mutability \
-  --repository-name ielts-part1-frontend \
-  --image-tag-mutability IMMUTABLE
-
-bash backend/scripts/deploy.sh \
-  "$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${AWS_REGION}.amazonaws.com/ielts-part1-backend" \
-  "$RELEASE_TAG"
-bash deploy/runtime.sh "$RELEASE_TAG"
-
-bash deploy/edge.sh
-ALLOWED_EMAIL_DOMAINS=example.com bash deploy/service.sh "$RELEASE_TAG"
-bash deploy/start.sh
+.venv-backend/bin/python -m pytest backend/tests/test_china_deployment.py -q
 ```
 
-每一步成功后再进入下一步。Runtime 未达到 `READY` 时不得部署 Web；`edge.sh` 应在首次
-`service.sh` 之前执行。
+这些测试在 PATH 注入模拟 aws，不访问真实账号。没有运行云端测试就不得报告云端通过。
+不要因迁移而重复运行与改动无关的全部模型/音频测试，付费模型探针仅在当前任务已明确授权模型验证时运行。
 
-## 5. 更新部署
+后续实际发布中，每一步成功后再进入下一步。失败应停在失败层，记录已产生的变更；
+不自动 teardown，不删除客户数据，不修改业务代码来绕过配置错误。
 
-根据第 3 节确定层级，并为本次发布使用新标签。
+## 6. 回退与汇报
 
-### 仅 Runtime
+- 本轮不提交、推送、合并或创建 tag；main 保持原样。
+- 后续 Web 回退使用目标账号的 task definition revision；不能使用 Global 资源标识。
+- 涉及 Runtime 的回退在正式 Runtime 发布流程验收前仍停止；不得回放旧海外环境变量到中国区。
+- ALB 地址属于负载均衡器，不属于镜像；回退 Web 不应删除或重建 ALB。
+- `teardown.sh` 只有在单独明确授权时才运行，它会破坏当前访问入口。
 
-```bash
-export AWS_REGION=<us-east-1-or-us-east-2>
-export RELEASE_TAG=<unique-release-tag>
+汇报必须区分：代码修改、本地模拟验证、真实云端验证。列出当前分支、改动层、
+测试结果，以及待确认的模型/音频/公网访问事项。真实部署后再增加账号、区域、
+Runtime ARN、ECS revision、镜像 digest、ALB URL 和实际健康检查结果。
 
-bash backend/scripts/deploy.sh \
-  "$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${AWS_REGION}.amazonaws.com/ielts-part1-backend" \
-  "$RELEASE_TAG"
-bash deploy/runtime.sh "$RELEASE_TAG"
-```
+## 7. 生产凭证配置工具
 
-### 仅 Web
-
-```bash
-export AWS_REGION=<us-east-1-or-us-east-2>
-export RELEASE_TAG=<unique-release-tag>
-
-ALLOWED_EMAIL_DOMAINS=example.com bash deploy/service.sh "$RELEASE_TAG"
-```
-
-### Runtime + Web
-
-先完整部署并确认 Runtime `READY`，再部署 Web：
-
-```bash
-export AWS_REGION=<us-east-1-or-us-east-2>
-export RELEASE_TAG=<unique-release-tag>
-
-bash backend/scripts/deploy.sh \
-  "$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${AWS_REGION}.amazonaws.com/ielts-part1-backend" \
-  "$RELEASE_TAG"
-bash deploy/runtime.sh "$RELEASE_TAG"
-ALLOWED_EMAIL_DOMAINS=example.com bash deploy/service.sh "$RELEASE_TAG"
-```
-
-已有 ECS 服务会保持原 `desiredCount`。如果服务原本停止，只有用户要求启动时才执行
-`bash deploy/start.sh`。
-
-## 6. 失败处理
-
-- 任一步骤失败后立即停止，不要继续部署下一层。
-- 不要为了通过构建而现场修改源码或测试。
-- Runtime 部署失败时，Web 保持不动，收集失败状态和日志位置后汇报。
-- 两层发布中 Runtime 已成功但 Web 失败时，系统可能处于不兼容状态。停止后根据部署前记录的
-  Runtime 镜像执行补偿回退；先运行 `deploy/rollback.sh --dry-run`，不得猜测版本号或镜像标签。
-- 回退只使用 `deploy/rollback.sh`。不要用 `service.sh` 重推旧标签，ECR 的不可变标签会拒绝该操作。
-- 不执行清理、删桶或 `teardown` 作为故障处理。
-
-示例：
-
-```bash
-bash deploy/rollback.sh --runtime-image <previous-runtime-tag> --dry-run
-bash deploy/rollback.sh --runtime-image <previous-runtime-tag>
-```
-
-如果缺少可靠的旧镜像或 task definition 记录，停止并请求用户决定，不要扩大变更。
-
-## 7. 部署后验证
-
-至少完成以下检查：
-
-1. `bash deploy/status.sh` 正常返回；
-2. AgentCore Runtime 状态为 `READY`；
-3. ECS 服务 rollout 为稳定状态，`desiredCount` 与部署前一致；
-4. Web task definition 中 `ALLOWED_EMAIL_DOMAINS=example.com`；
-5. Runtime 和 Web 实际镜像 URI 均指向本次预期标签；
-6. CloudFront 状态为 `Deployed`；
-7. `https://<CLOUDFRONT_DOMAIN>/healthz` 返回 200；
-8. 没有遗留的两层错开、失败 deployment 或意外测试数据。
-
-不得仅凭 `/healthz` 200 判断版本正确；必须同时核对 Runtime `containerUri`、ECS task definition
-和镜像 URI。
-
-部署成功后更新 `deploy/RELEASES.md`，记录日期、commit、镜像标签和 digest、Runtime version、
-task definition、部署层和验证结果。只修改该台账，不提交或推送，除非用户明确要求。
-
-## 8. 最终汇报
-
-使用下面的简短格式：
-
-```text
-部署结果：成功 / 失败 / 已回退
-目标 commit：
-部署模式：首次部署 / 更新部署
-实际部署层：Runtime / Web / Runtime + Web / 无需部署
-AWS 区域：
-发布标签：
-Runtime：version、status、containerUri、digest
-Web：task definition、rollout、image、digest
-CloudFront：
-健康检查：
-邮箱域名：example.com
-发布台账：已更新 / 未更新
-未执行：完整测试、线上 E2E、测试数据创建
-遗留问题：
-```
-
-失败时必须说明失败发生在哪一步、哪些层已经改变、是否完成补偿回退，以及当前线上仍指向什么版本。
+见 [模型凭证说明](docs/CHINA_MODEL_CREDENTIALS.md)。`deploy/model_credentials.py`
+只创建专用海外用户/服务凭证并写入中国区 secret；`deploy/runtime_role.py` 只管理
+中国区 Runtime 执行角色并输出不含密钥的环境配置。先审阅默认只读计划，明确授权后使用
+`--apply`。模型验证只使用虚构数据。实际账户与凭证 ID 记录在本地 Trellis，不写入通用源码。

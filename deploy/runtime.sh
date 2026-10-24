@@ -15,13 +15,15 @@
 # Switching Runtime *version* is not a rollback: each version records an image tag, so versions that
 # name the same tag are indistinguishable.
 
+source "$(dirname "$0")/settings.sh" || exit 1
+require_model_ready || exit 1
 source "$(dirname "$0")/config.sh"
 require_creds
 require_region
 
 TAG="${1:?a tag is required; this switches live traffic. Use known-good-20260730 to roll back.}"
-IMAGE="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_BACKEND}:${TAG}"
-ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${PROJECT}-runtime"
+IMAGE="${ECR_REGISTRY}/${ECR_BACKEND}:${TAG}"
+ROLE_ARN="arn:${AWS_PARTITION}:iam::${ACCOUNT_ID}:role/${PROJECT}-runtime"
 MODEL_ID="${IELTS_MODEL_ID:-openai.gpt-5.6-luna}"
 MODEL_AUTH="${IELTS_MODEL_AUTH:-bearer}"
 MODEL_REGION="${IELTS_MODEL_REGION:-${AWS_REGION}}"
@@ -56,7 +58,7 @@ PY
 if ! aws ecr describe-images --repository-name "$ECR_BACKEND" --image-ids imageTag="$TAG" \
      >/dev/null 2>&1; then
     echo "ERROR: $IMAGE not found. Push it first:" >&2
-    echo "  bash backend/scripts/deploy.sh ${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_BACKEND} $TAG" >&2
+    echo "  bash backend/scripts/deploy.sh ${ECR_REGISTRY}/${ECR_BACKEND} $TAG" >&2
     exit 1
 fi
 

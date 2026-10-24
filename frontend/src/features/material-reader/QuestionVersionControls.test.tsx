@@ -244,7 +244,7 @@ describe('根据批注修改题目', () => {
     expect(reviseMaterial).toHaveBeenCalledOnce()
   })
 
-  it('材料修改显示独立的完整再生成阶段', () => {
+  it('材料修改只显示变更范围与关联检查阶段', () => {
     render(
       <QuestionRevisionAction
         state={state({
@@ -261,11 +261,11 @@ describe('根据批注修改题目', () => {
       />,
     )
     const progress = screen.getByRole('status')
-    expect(progress).toHaveTextContent('正在修改材料并重新命题')
-    expect(progress).toHaveTextContent('修改听力材料')
-    expect(progress).toHaveTextContent('复核新材料')
-    expect(progress).toHaveTextContent('重建信息点')
-    expect(progress).toHaveTextContent('生成完整十题')
+    expect(progress).toHaveTextContent('正在修改相关原文和题目')
+    expect(progress).toHaveTextContent('修改相关原文和答案')
+    expect(progress).toHaveTextContent('检查变更范围与字段')
+    expect(progress).toHaveTextContent('独立检查关联影响')
+    expect(progress).not.toHaveTextContent('生成完整十题')
   })
 
   it('无需修改时展示理由和核对依据', () => {
@@ -457,7 +457,7 @@ describe('根据批注修改题目', () => {
       />,
     )
 
-    expect(screen.getByRole('status')).toHaveTextContent('正在修改材料并重新命题')
+    expect(screen.getByRole('status')).toHaveTextContent('正在修改相关原文和题目')
   })
 
   it('成功结果持续说明新版本尚未自动采用，并可关闭', async () => {

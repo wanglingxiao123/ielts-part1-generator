@@ -176,11 +176,11 @@ def test_upstream_and_qti_added_alternatives_keep_their_provenance():
 
     assert row["canonical"] == "14 June"
     assert row["upstream_alternatives"] == ["14th June", "June 14", "14 Jun"]
-    assert row["qti_added_alternatives"] == ["June 14th", "14/6"]
+    assert row["qti_added_alternatives"] == []
     assert row["accept"] == [
-        "14 June", "14th June", "June 14", "June 14th", "14 Jun", "14/6",
+        "14 June", "14th June", "June 14", "14 Jun",
     ]
-    assert any("QTI 在上游 alternatives 之外" in note for note in bundle.review)
+    assert not any("QTI 在上游 alternatives 之外" in note for note in bundle.review)
 
 
 def test_two_groups_may_use_the_same_layout():
@@ -201,7 +201,7 @@ def test_two_groups_may_use_the_same_layout():
     assert len(root.findall(f".//{{{QTI_NS}}}table[@class='ielts-form']")) == 2
 
 
-def test_a_preprinted_currency_symbol_is_not_accepted_twice():
+def test_selected_version_keeps_explicit_currency_alternative():
     doc = load("20260808-booking-hotel-45425df4")
     question = doc["package"]["question_face"]["questions"][2]
     answer = doc["package"]["answer_key"][2]
@@ -216,9 +216,8 @@ def test_a_preprinted_currency_symbol_is_not_accepted_twice():
 
     bundle = export_document(doc, material_id="preprinted-currency")
     row = json.loads(bundle.reject_candidates)["items"][2]
-    assert row["accept"] == ["145"]
-    assert "£145" in row["reject"]
-    assert "£145.00" in row["reject"]
+    assert row["accept"] == ["145", "£145"]
+    assert row["reject"] == []
 
 
 def test_manifest_points_at_the_item(bundle, material_id):
@@ -260,20 +259,17 @@ def test_item_and_manifest_validate_against_qti_2_2_4_xsd(bundle):
 # ── admission gates ───────────────────────────────────────────────────────────
 
 
-def test_a_failed_delivery_document_is_rejected_with_reasons():
+def test_old_quality_verdict_does_not_veto_selected_package():
     doc = load(FIXTURE_IDS[0])
     doc["ok"] = False
-    with pytest.raises(ExportRejected) as info:
-        export_document(doc, material_id=FIXTURE_IDS[0])
-    assert any("G1" in r and "ok=False" in r for r in info.value.reasons)
+    assert len(export_document(doc, material_id=FIXTURE_IDS[0]).material.gaps) == 10
 
 
-def test_a_disagreeing_answer_is_rejected_not_exported_with_the_question_dropped():
+def test_old_auditor_disagreement_does_not_change_selected_answer():
     doc = load(FIXTURE_IDS[0])
     doc["cross_check"]["items"][0]["auditor_answer"] = "something else entirely"
-    with pytest.raises(ExportRejected) as info:
-        export_document(doc, material_id=FIXTURE_IDS[0])
-    assert any("G2" in r and "两侧答案不一致" in r for r in info.value.reasons)
+    bundle = export_document(doc, material_id=FIXTURE_IDS[0])
+    assert bundle.material.gaps[0].target == doc["package"]["answer_key"][0]["canonical"]
 
 
 def test_a_missing_question_number_is_rejected():
@@ -376,12 +372,10 @@ def test_a_material_revision_exports_without_regeneration():
     assert len(bundle.material.gaps) == 10
 
 
-def test_a_material_revision_with_missing_nested_quality_still_fails():
+def test_selected_version_does_not_require_old_quality():
     version = _as_material_version(load(FIXTURE_IDS[0]))
     version["quality"]["questions"] = {}
-    with pytest.raises(ExportRejected) as info:
-        export_document(version, material_id=FIXTURE_IDS[0], version_ordinal=5)
-    assert any("G1: status='None'" in reason for reason in info.value.reasons)
+    assert len(export_document(version, material_id=FIXTURE_IDS[0], version_ordinal=5).material.gaps) == 10
 
 
 def test_a_revision_version_exports_under_its_ordinal():
@@ -396,7 +390,7 @@ def test_a_version_not_marked_ready_fails_the_first_gate():
     version["status"] = "running"
     with pytest.raises(ExportRejected) as info:
         export_document(version, material_id=FIXTURE_IDS[0], version_ordinal=2)
-    assert any("G1: ok=False" in r for r in info.value.reasons)
+    assert any("尚未生成完成" in r for r in info.value.reasons)
 
 
 # ── identifiers ───────────────────────────────────────────────────────────────
