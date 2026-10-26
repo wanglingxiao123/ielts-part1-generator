@@ -9,9 +9,8 @@ export interface Session {
   /** '' when anonymous. Also the per-user key for locally persisted batch state. */
   email: string
   /**
-   * The first account ever registered (web/auth.py). A LABEL, not a permission:
-   * the backend gates every `/api/*` path on "has a valid session" and nothing
-   * else, so there is no capability this could honestly unlock client-side.
+   * Persisted administrator flag. Controls admin navigation and page mounting;
+   * admin API endpoints must independently enforce this permission server-side.
    */
   isAdmin: boolean
   /**

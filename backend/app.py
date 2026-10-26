@@ -105,19 +105,29 @@ async def invoke(payload: Dict[str, Any]):
     if action == "presign_audio":
         return await _presign(payload or {})
 
+    if action == "prompt_trial":
+        from .prompt_runtime import prompt_trial
+
+        try:
+            return await prompt_trial(payload or {})
+        except Exception as exc:
+            return _error("prompt_trial_failed", "%s: %s" % (type(exc).__name__, str(exc)[:300]))
+
+    from .prompt_runtime import stream_with_prompts
+
     if action == "generate_sets":
-        return _generate_sets(payload or {})
+        return stream_with_prompts(_generate_sets, payload or {})
 
     if action == "revise_questions_from_comments":
-        return _revise_questions_from_comments(payload or {})
+        return stream_with_prompts(_revise_questions_from_comments, payload or {})
 
     if action == "replan_questions_from_comments":
-        return _replan_questions_from_comments(payload or {})
+        return stream_with_prompts(_replan_questions_from_comments, payload or {})
 
     if action == "revise_material_from_comments":
-        return _revise_material_from_comments(payload or {})
+        return stream_with_prompts(_revise_material_from_comments, payload or {})
     if action == "revise_material_local":
-        return _revise_material_local(payload or {})
+        return stream_with_prompts(_revise_material_local, payload or {})
 
     if action != "generate":
         return {
@@ -126,7 +136,7 @@ async def invoke(payload: Dict[str, Any]):
                      "revise_questions_from_comments or replan_questions_from_comments" % action
         }
 
-    return _generate(payload)
+    return stream_with_prompts(_generate, payload or {})
 
 
 def _error(code: str, message: str, **detail: Any) -> Dict[str, Any]:

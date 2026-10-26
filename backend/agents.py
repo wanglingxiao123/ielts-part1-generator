@@ -59,6 +59,7 @@ from typing import Any, Dict, List, Optional
 
 from . import paths
 from .model import provider
+from prompt_config.catalogue import apply_role
 
 __all__ = [
     "AUDIT_POOL",
@@ -324,7 +325,7 @@ def _build(
 
     return Agent(
         model=provider.build_model(max_output_tokens=max_tokens, reasoning_effort=effort),
-        system_prompt=system_prompt,
+        system_prompt=apply_role(system_prompt),
         plugins=[AgentSkills(skills=_load_pool(pool))],
         tools=tools,
         sandbox=ReadOnlySkillSandbox(pool_dir(pool)),

@@ -933,3 +933,7 @@ bash backend/scripts/check_ping.sh
 
 本项目产出原创练习材料，不复制真题内容，也不代表 IELTS、Cambridge 或 British Council 的
 授权或背书。
+
+## 管理员提示词管理
+
+管理员可在「提示词管理」中编辑业务提示词、保存草稿、独立试运行、发布及回滚，无需为每次文本修改重新部署。运行中的任务固定使用启动时的版本；Skill 文本第一阶段只读。使用方法、配置目录及代码/配置回退区别见 [提示词管理说明](docs/prompt-management.md)。

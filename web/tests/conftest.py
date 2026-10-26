@@ -338,3 +338,8 @@ __all__ = [
     "register",
     "threading",
 ]
+
+
+@pytest.fixture(autouse=True)
+def isolated_prompt_directory(tmp_path, monkeypatch):
+    monkeypatch.setenv("IELTS_PROMPT_DIRECTORY", str(tmp_path / "prompt-config"))

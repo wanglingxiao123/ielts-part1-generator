@@ -407,9 +407,11 @@ class BatchHistory:
 
     def recorder(self, batch_id: str, *, owner: str, requested_total: int,
                  custom_label: str = "",
-                 scenarios: List[Dict[str, Any]], model_id: str = "") -> "BatchRecorder":
+                 scenarios: List[Dict[str, Any]], model_id: str = "",
+                 prompt_release: Optional[Dict[str, str]] = None) -> "BatchRecorder":
         return BatchRecorder(self, batch_id, owner=owner, requested_total=requested_total,
-                             scenarios=scenarios, custom_label=custom_label, model_id=model_id)
+                             scenarios=scenarios, custom_label=custom_label, model_id=model_id,
+                             prompt_release=prompt_release)
 
     def reserve_refill(
         self, batch_id: str, seats: List[Dict[str, Any]], *, owner: str
@@ -487,6 +489,15 @@ class BatchHistory:
                 model_id=str(record.get("model_id") or ""),
             )
 
+    def fail_refill(self, batch_id, execution_id, message):
+        with self._lock:
+            record = self.store.load_index(batch_id)
+            if record and (record.get("refill_execution") or {}).get("execution_id") == execution_id:
+                record["refill_execution"].update(status="failed", message=message,
+                                                  completed_at=time.time())
+                record.update(state="complete", completed_at=time.time(), updated_at=time.time())
+                self.store.save_index(batch_id, record)
+
     def refill_recorder(
         self, batch_id: str, execution_id: str, targets: List[Dict[str, Any]]
     ) -> "BatchRecorder":
@@ -516,7 +527,8 @@ class BatchRecorder:
                  custom_label: str = "", initial_record: Optional[Dict[str, Any]] = None,
                  refill_execution_id: str = "",
                  refill_targets: Optional[Dict[str, Dict[str, Any]]] = None,
-                 model_id: str = "") -> None:
+                 model_id: str = "",
+                 prompt_release: Optional[Dict[str, str]] = None) -> None:
         self._history = history
         self._batch_id = batch_id
         self._lock = threading.Lock()
@@ -530,6 +542,7 @@ class BatchRecorder:
             # 扩写的完整英文句，而场景目录里当然没有自定义场景的条目。
             "custom_label": custom_label,
             "model_id": model_id,
+            "prompt_release": prompt_release,
             "scenarios": scenarios,
             "materials": [],
             "counts": {},
@@ -617,7 +630,7 @@ class BatchRecorder:
         artifacts.update({
             key: event.get(key)
             for key in ("material", "blueprint", "audit", "cross_check", "route",
-                        "validation_findings", "group_key", "degraded_reason")
+                        "validation_findings", "group_key", "degraded_reason", "prompt_release")
             if event.get(key) is not None
         })
         with self._lock:

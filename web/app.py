@@ -55,6 +55,7 @@ recorder from the fanned-out stream.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -217,6 +218,8 @@ class WebTier:
                  question_versions: Optional[QuestionVersionService] = None,
                  executions: Optional[ExecutionManager] = None) -> None:
         self.auth = auth
+        from prompt_config.store import PromptStore
+        self.prompts = PromptStore()
         self.audio_proxy = AudioProxy.from_environment()
         self.runtime = runtime
         self.static_dir = static_dir
@@ -274,6 +277,8 @@ class WebTier:
     def _build(self) -> FastAPI:
         app = FastAPI(title="IELTS Part 1 web tier", docs_url=None, redoc_url=None)
         app.add_middleware(ApiAuthMiddleware, auth=self.auth)
+        from .prompt_admin import install
+        install(app, self, USER_SCOPE_KEY)
 
         @app.get("/healthz")
         async def healthz() -> Dict[str, Any]:
@@ -433,10 +438,14 @@ class WebTier:
 
             execution_id = str(reservation["execution_id"])
             if not reservation.get("reused"):
-                self._start_batch_refill(
-                    batch_id, execution_id, list(reservation["targets"]),
-                    custom_label=str(reservation.get("custom_label") or ""),
-                    model_id=str(reservation.get("model_id") or ""))
+                try:
+                    await asyncio.to_thread(self._start_batch_refill,
+                        batch_id, execution_id, list(reservation["targets"]),
+                        custom_label=str(reservation.get("custom_label") or ""),
+                        model_id=str(reservation.get("model_id") or ""))
+                except Exception as exc:
+                    return JSONResponse(_infra_error_body(
+                        "REFILL_START_FAILED", "补生成未开始，请稍后重试。", exc), status_code=503)
             return JSONResponse({
                 "batch_id": batch_id,
                 "execution_id": execution_id,
@@ -856,7 +865,7 @@ class WebTier:
                 "actor": actor,
                 "model_id": body.get("model_id"),
             }
-            return self._start_revision_execution(payload, material_id, revision)
+            return await asyncio.to_thread(self._start_revision_execution, payload, material_id, revision)
 
         @app.post("/api/material-question-replans/{material_id}")
         async def replan_material_questions(material_id: str, request: Request) -> Any:
@@ -914,7 +923,7 @@ class WebTier:
                 "actor": actor,
                 "model_id": body.get("model_id"),
             }
-            return self._start_revision_execution(payload, material_id, revision)
+            return await asyncio.to_thread(self._start_revision_execution, payload, material_id, revision)
 
         @app.post("/api/material-revisions/{material_id}")
         async def revise_material(material_id: str, request: Request) -> Any:
@@ -973,7 +982,7 @@ class WebTier:
                 "actor": actor,
                 "model_id": body.get("model_id"),
             }
-            return self._start_revision_execution(payload, material_id, revision)
+            return await asyncio.to_thread(self._start_revision_execution, payload, material_id, revision)
 
         @app.post("/api/material-local-revisions/{material_id}")
         async def revise_material_locally(material_id: str, request: Request) -> Any:
@@ -1045,7 +1054,7 @@ class WebTier:
                 "comments": comments, "actor": actor,
                 "model_id": body.get("model_id"),
             }
-            return self._start_revision_execution(payload, material_id, revision)
+            return await asyncio.to_thread(self._start_revision_execution, payload, material_id, revision)
 
         @app.post("/api/batch-history/{batch_id}/submit")
         async def submit_batch(batch_id: str, request: Request) -> JSONResponse:
@@ -1200,6 +1209,10 @@ class WebTier:
             return JSONResponse(_error_body("bad_request", "payload must be a JSON object"),
                                 status_code=400)
 
+        if str(payload.get("action", "")).startswith(("prompt_", "revise_", "replan_")) or any(
+                str(key).startswith("_prompt") for key in payload):
+            return JSONResponse(_error_body("FORBIDDEN", "提示词配置由服务端选择。"), status_code=403)
+
         if str(payload.get("action") or "generate") in ("generate", "generate_sets"):
             if not self.runtime.configured:
                 # A per-batch precondition, not a per-child failure: with no Runtime ARN every
@@ -1211,11 +1224,16 @@ class WebTier:
                                 "call"),
                     status_code=503,
                 )
-            return self._fanned_out_generate(
-                payload,
-                owner=str(user.get("email") or ""),
-                idempotency_key=str(request.headers.get("x-idempotency-key") or ""),
-            )
+            try:
+                return await asyncio.to_thread(self._fanned_out_generate,
+                    payload,
+                    owner=str(user.get("email") or ""),
+                    idempotency_key=str(request.headers.get("x-idempotency-key") or ""),
+                )
+            except Exception as exc:
+                return JSONResponse(_infra_error_body(
+                    "GENERATION_START_FAILED", "生成未开始，请稍后重试。", exc), status_code=503)
+
 
         session_id = self.session_for(str(user.get("email") or "anonymous"))
 
@@ -1258,6 +1276,26 @@ class WebTier:
         revision: Dict[str, Any],
     ) -> StreamingResponse:
         request_id = str(revision.get("request_id") or "")
+        try:
+            source = revision
+            seen = set()
+            while source.get("source_request_id"):
+                source_id = str(source["source_request_id"])
+                if source_id in seen:
+                    raise ValueError("revision source cycle")
+                seen.add(source_id)
+                source = self.question_versions.load_request(material_id, source_id)
+                if not source:
+                    raise ValueError("revision source is missing")
+            root_request = str(source.get("request_id") or request_id)
+            payload = dict(payload, _prompt_release=self.prompts.pin("revision:" + root_request))
+            revision = self.question_versions.bind_prompt_release(
+                material_id, revision, payload["_prompt_release"])
+        except Exception:
+            self.question_versions.fail_request(
+                material_id, revision, "提示词配置读取失败，修改任务未开始。")
+            LOG.exception("Revision prompt binding failed request_id=%s", request_id)
+            return JSONResponse(_error_body("PROMPT_BINDING_FAILED", "提示词配置读取失败，请稍后重试。"), 503)
 
         def producer(publish) -> None:
             try:
@@ -1317,6 +1355,7 @@ class WebTier:
         else:
             self._batch_counter += 1
             batch_id = new_batch_id(self._batch_counter)
+        payload = dict(payload, _prompt_release=self.prompts.pin("batch:" + batch_id))
         children, slot_ids = plan_children(payload, batch_id=batch_id)
         # `batch_id` reaches the browser through `batch_started`. Without it the frontend minted its
         # own id, put that in `/batches/:batchId`, and the history panel then asked about a batch id
@@ -1334,6 +1373,7 @@ class WebTier:
             # 是模型扩写的完整英文句，场景目录里也没有自定义场景的条目。
             custom_label=fan.custom_label(),
             model_id=str(payload.get("model_id") or ""),
+            prompt_release=payload["_prompt_release"],
         )
         def producer(publish) -> None:
             async def consume() -> None:
@@ -1349,13 +1389,20 @@ class WebTier:
         self, batch_id: str, execution_id: str, targets: List[Dict[str, Any]],
         *, custom_label: str = "", model_id: str = "",
     ) -> None:
+        # Legacy batches predate editable prompts and retain the bundled baseline.
+        try:
+            prompt_ref = self.prompts.pin("batch:" + batch_id, default=True)
+        except Exception:
+            self.history.fail_refill(batch_id, execution_id, "提示词配置读取失败，补生成未开始。")
+            raise
         children = []
         slot_ids: List[str] = []
         for target in targets:
             slot_id = str(target["slot_id"])
             scenario = str(target["scenario_key"])
             payload: Dict[str, Any] = {
-                "action": "generate_sets", "scenarios": [scenario], "count": 1}
+                "action": "generate_sets", "scenarios": [scenario], "count": 1,
+                "_prompt_release": prompt_ref}
             if model_id:
                 payload["model_id"] = model_id
             if scenario == "custom":

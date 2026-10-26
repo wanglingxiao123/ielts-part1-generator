@@ -297,6 +297,7 @@ class SlotStore(object):
     def save_question_version(
         self, material_id: str, version_id: str, payload: Dict[str, Any]
     ) -> None:
+        payload = _with_prompt_release(payload)
         key = _question_version_key(material_id, version_id)
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         try:
@@ -353,6 +354,7 @@ class SlotStore(object):
 
     # --- plumbing --------------------------------------------------------------------------
     def _put(self, key: str, payload: Dict[str, Any]) -> None:
+        payload = _with_prompt_release(payload)
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         try:
             self._store.put(key, body)
@@ -441,3 +443,9 @@ def build_slot_store() -> SlotStore:
 def describe_slot_store(store: SlotStore) -> str:
     return "%s(%s)" % (type(store._store).__name__,
                        "durable" if store.persistent else "memory")
+
+
+def _with_prompt_release(payload):
+    from prompt_config.context import metadata
+    ref = metadata()
+    return dict(payload, prompt_release=ref) if ref else payload

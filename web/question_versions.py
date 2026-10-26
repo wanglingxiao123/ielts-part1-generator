@@ -650,6 +650,12 @@ class QuestionVersionService:
         )
         return matches[0]
 
+    def bind_prompt_release(self, material_id, record, prompt_release):
+        record = dict(record, prompt_release=dict(prompt_release))
+        self._put(_request_key(material_id, str(record["request_id"])), record)
+        self._put(_running_key(material_id), record)
+        return record
+
     def fail_request(self, material_id: str, record: Dict[str, Any], message: str) -> None:
         failed = dict(record)
         failed.update({"status": "failed", "message": message, "completed_at": _now()})

@@ -118,9 +118,9 @@ export const realTransport: Transport = async (spec) => {
     }
     throw new ApiError(
       res.status,
-      body?.error.code ?? 'HTTP_ERROR',
-      body?.error.message ?? `请求失败 (${res.status})`,
-      body?.error.detail,
+      body?.error?.code ?? 'HTTP_ERROR',
+      body?.error?.message ?? `请求失败 (${res.status})`,
+      body?.error?.detail,
     )
   }
   if (res.status === 204) return null

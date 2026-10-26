@@ -62,3 +62,6 @@ AGENTS.md
 skills/*/*/material.json
 skills/*/*/blueprint.json
 skills/*/*/*.tmp
+
+# Local dynamic prompt drafts/releases; production uses S3.
+/.local/prompt-config/

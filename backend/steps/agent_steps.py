@@ -235,6 +235,18 @@ async def _invoke(agent: Any, message: str, label: str) -> str:
     to pre-defined agents left the translation behind, and nothing failed loudly enough to notice: a
     throttle still produced a material, just via the most expensive path available.
     """
+    from prompt_config.catalogue import apply_task, task_supplement
+    from prompt_config.context import metadata
+
+    message = apply_task(message, label)
+    supplement = task_supplement(label)
+    if supplement:
+        agent.system_prompt = (agent.system_prompt or "") + "\n\n" + supplement
+    config = metadata()
+    logging.getLogger(__name__).info(
+        "model_action label=%s prompt_release=%s prompt_digest=%s",
+        label, config.get("release_id"), config.get("digest"),
+    )
     started = time.monotonic()
     try:
         result = await agent.invoke_async(message)

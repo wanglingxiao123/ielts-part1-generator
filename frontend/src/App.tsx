@@ -9,6 +9,7 @@ import { LatestBatchRoute } from '@/features/batch-progress/LatestBatchRoute'
 import { MaterialPage } from '@/features/material-reader/MaterialPage'
 import { ComparePage } from '@/features/compare/ComparePage'
 import { ReviewQueuePage } from '@/features/review-queue/ReviewQueuePage'
+import { PromptManagerPage } from '@/features/admin-prompts/PromptManagerPage'
 import { useBatchStore } from '@/stores/batchStore'
 import { loadModels, selectModel, useModelPreference } from '@/stores/modelPreference'
 
@@ -71,6 +72,11 @@ function TopBar() {
           <NavLink to="/review-queue" className={({ isActive }) => (isActive ? 'active' : '')}>
             审核队列
           </NavLink>
+          {session.isAdmin && (
+            <NavLink to="/admin/prompts" className={({ isActive }) => (isActive ? 'active' : '')}>
+              提示词管理
+            </NavLink>
+          )}
           {/* /dev/fixtures is deliberately NOT linked: dev harness, see above. */}
         </nav>
       )}
@@ -112,6 +118,7 @@ export function App() {
       <TopBar />
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/admin/prompts" element={<RequireAuth><PromptManagerPage /></RequireAuth>} />
         <Route
           path="/"
           element={

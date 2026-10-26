@@ -27,6 +27,7 @@ COPY config/ /app/config/
 # visible symptom was a material_completed event carrying `material_id: null`, and a cold instance
 # 500ing on `list_candidates`; nothing said "missing module" until the traceback was read.
 COPY audio_storage/ /app/audio_storage/
+COPY prompt_config/ /app/prompt_config/
 # The skill assets are copied at build time and read at runtime. They are never transcribed
 # into the backend: the human-maintained files stay the single source of truth.
 # Both pools, since IELTS_SKILLS_ROOT points at their parent: an agent whose pool is missing
