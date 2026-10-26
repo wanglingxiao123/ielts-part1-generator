@@ -7,6 +7,7 @@ from pathlib import Path
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -15,6 +16,8 @@ from .runtime_client import read_json
 
 
 def install(app, tier, user_scope_key):
+    from .prompt_scenarios import install as install_scenarios
+    install_scenarios(app, tier, user_scope_key)
     def denied(request):
         if not (request.scope.get(user_scope_key) or {}).get("is_admin"):
             return JSONResponse({"error": {"code": "FORBIDDEN", "message": "仅管理员可管理提示词。"}}, 403)
@@ -38,6 +41,14 @@ def install(app, tier, user_scope_key):
             return response
         return await asyncio.to_thread(state)
 
+    @app.get("/api/admin/prompts/tests")
+    async def get_tests(request: Request, offset: int = 0):
+        if response := denied(request):
+            return response
+        if offset < 0:
+            return error(ValueError("无效的历史记录页。"))
+        return await asyncio.to_thread(trial_history, tier, offset)
+
     @app.post("/api/admin/prompts/{operation}")
     async def change_prompts(operation: str, request: Request):
         if response := denied(request):
@@ -58,6 +69,12 @@ def install(app, tier, user_scope_key):
                     raise ValueError("请选择需要回退的版本。")
                 await asyncio.to_thread(tier.prompts.publish, actor, body.get("expected_etag"),
                                         release_id=body["release_id"])
+            elif operation == "restore-defaults":
+                default_id = tier.prompts.bundled()["release_id"]
+                if body.get("release_id") != default_id:
+                    raise Conflict("内置默认版本已改变，请刷新后重新确认。")
+                await asyncio.to_thread(tier.prompts.publish, actor, body.get("expected_etag"),
+                                        release_id=default_id)
             elif operation == "test":
                 if not tier.runtime.configured:
                     raise ValueError("尚未配置模型运行服务。")
@@ -77,9 +94,43 @@ def install(app, tier, user_scope_key):
         record, _ = await asyncio.to_thread(tier.prompts.storage.read, "tests/" + test_id + ".json")
         if record is None:
             return JSONResponse({"error": {"message": "试运行不存在。"}}, 404)
-        if record["status"] == "running" and time.time() - record["created_at"] > 1200:
-            record = dict(record, status="failed", error="试运行已超时或服务重启，请重新测试。")
-        return record
+        return await asyncio.to_thread(trial_detail, tier, record)
+
+
+def trial_status(record):
+    if record["status"] == "running" and time.time() - record["created_at"] > 1200:
+        return dict(record, status="failed", error="试运行已超时或服务重启，请重新测试。")
+    return record
+
+
+def trial_detail(tier, record):
+    record = trial_status(dict(record))
+    # Legacy records retain their real provenance; never substitute today's defaults.
+    for side, ref in (("baseline", record.get("baseline_snapshot_release") or record.get("baseline_release")),
+                      ("draft", record.get("draft_release"))):
+        field = side + "_prompt"
+        if field not in record and ref:
+            bundle, _ = tier.prompts.storage.read("releases/" + ref + ".json")
+            if bundle and record.get("prompt_id") in bundle.get("values", {}):
+                record[field] = bundle["values"][record["prompt_id"]]
+    return record
+
+
+def trial_history(tier, offset=0):
+    keys = tier.prompts.storage.list_keys("tests/")
+    def summary(key):
+        record, _ = tier.prompts.storage.read(key)
+        if record is None:
+            return None
+        record = trial_status(record)
+        fields = ("test_id", "prompt_id", "model_id", "created_at", "status",
+                  "actor", "baseline_release", "draft_release")
+        return {**{field: record.get(field) for field in fields}, "has_input": "input" in record}
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        records = [row for row in pool.map(summary, keys) if row]
+    records.sort(key=lambda row: (row["created_at"], row["test_id"]), reverse=True)
+    return {"items": records[offset:offset + 20],
+            "next_offset": offset + 20 if offset + 20 < len(records) else None}
 
 
 def start_trial(tier, body, actor):
@@ -107,7 +158,9 @@ def start_trial(tier, body, actor):
                       prompt_id=prompt_id, model_id=body.get("model_id") or "",
                       baseline_release=baseline_source, draft_release=candidate["release_id"],
                       baseline_digest=baseline["digest"], draft_digest=candidate["digest"],
-                      draft_etag=etag)
+                      baseline_snapshot_release=baseline["release_id"],
+                      input=sample, baseline_prompt=baseline["values"][prompt_id],
+                      draft_prompt=candidate["values"][prompt_id], draft_etag=etag)
         key = "tests/" + test_id + ".json"
         token = tier.prompts.storage.write(key, record)
     except Exception:

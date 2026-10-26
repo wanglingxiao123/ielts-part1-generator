@@ -9,7 +9,7 @@ import { App } from '@/App'
 import { PromptManagerPage } from './PromptManagerPage'
 
 vi.mock('@/api/adminPrompts', () => ({
-  adminPrompts: { get: vi.fn(), save: vi.fn(), publish: vi.fn(), rollback: vi.fn(), test: vi.fn(), result: vi.fn() },
+  adminPrompts: { get: vi.fn(), save: vi.fn(), publish: vi.fn(), rollback: vi.fn(), test: vi.fn(), result: vi.fn(), history: vi.fn(), restoreDefaults: vi.fn() },
 }))
 vi.mock('@/stores/modelPreference', () => ({
   useModelPreference: () => ({
@@ -25,6 +25,7 @@ const initial: PromptState = {
     { id: 'audit', name: '独立审核', purpose: '审核对话', default: '默认审核规则', source: 'audit.py', protected: '只读审核权限' },
   ],
   active: { release_id: 'release-1', values: { generate: '当前生成规则', audit: '当前审核规则' } },
+  bundled: { release_id: 'bundled-default', values: { generate: '默认生成规则', audit: '默认审核规则' } },
   active_etag: 'active-1',
   draft: { values: { generate: '草稿生成规则', audit: '草稿审核规则' } },
   draft_etag: 'draft-1',
@@ -247,4 +248,59 @@ describe('administrator prompt manager', () => {
     await userEvent.click(screen.getByRole('button', { name: /刷新服务器版本/ }))
     await waitFor(() => expect(screen.getByLabelText('草稿业务文本')).toHaveValue('草稿生成规则'))
   })
+})
+
+it('clears a completed trial and input after publishing a new active version', async () => {
+  await ready()
+  vi.mocked(adminPrompts.test).mockResolvedValue({ test_id: 'old-test' })
+  vi.mocked(adminPrompts.result).mockResolvedValue({ status: 'completed', baseline: '旧版本结果', draft: '旧草稿结果' })
+  await userEvent.click(screen.getByRole('button', { name: '试运行' }))
+  fireEvent.change(screen.getByLabelText('输入样例'), { target: { value: '旧输入' } })
+  await userEvent.click(screen.getByRole('button', { name: '运行对比' }))
+  await screen.findByText('旧草稿结果')
+  vi.mocked(adminPrompts.publish).mockResolvedValue({ ...initial, active: { ...initial.active, release_id: 'new-release' } })
+  await userEvent.click(screen.getByRole('button', { name: '发布整套草稿' }))
+  await screen.findByText('整套配置已发布，仅对新任务生效。')
+  expect(screen.getByLabelText('输入样例')).toHaveValue('')
+  expect(screen.queryByText('旧草稿结果')).not.toBeInTheDocument()
+  expect(screen.queryByText(/old-test/)).not.toBeInTheDocument()
+})
+
+it('shows immutable historical prompt text and reuses input without restoring old versions', async () => {
+  await ready()
+  vi.mocked(adminPrompts.history).mockResolvedValue({ items: [{ test_id: 'history-1', status: 'completed', prompt_id: 'audit', model_id: 'model-a', has_input: true }], next_offset: null })
+  vi.mocked(adminPrompts.result).mockResolvedValue({ status: 'completed', prompt_id: 'audit', input: '停车对话', baseline_prompt: '历史基线规则', draft_prompt: '历史草稿规则', baseline: '历史生效输出', draft: '历史草稿输出' })
+  await userEvent.click(screen.getByRole('button', { name: '试运行历史' }))
+  await userEvent.click(await screen.findByRole('button', { name: /独立审核/ }))
+  await screen.findByText('历史草稿输出')
+  expect(screen.getByText('历史基线规则')).toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name: '复用输入' }))
+  expect(screen.getByLabelText('输入样例')).toHaveValue('停车对话')
+  expect(screen.getByLabelText('草稿业务文本')).toHaveValue('草稿审核规则')
+  expect(screen.queryByText('历史草稿输出')).not.toBeInTheDocument()
+  expect(adminPrompts.test).not.toHaveBeenCalled()
+  expect(adminPrompts.rollback).not.toHaveBeenCalled()
+})
+
+it('labels missing legacy input and snapshots without substituting current text', async () => {
+  await ready()
+  vi.mocked(adminPrompts.history).mockResolvedValue({ items: [{ test_id: 'legacy', status: 'completed', prompt_id: 'audit', has_input: false }], next_offset: null })
+  vi.mocked(adminPrompts.result).mockResolvedValue({ status: 'completed', prompt_id: 'audit', baseline: '旧输出' })
+  await userEvent.click(screen.getByRole('button', { name: '试运行历史' }))
+  await userEvent.click(await screen.findByRole('button', { name: /独立审核/ }))
+  await screen.findByText('该记录未保存输入。')
+  expect(screen.getByRole('button', { name: '复用输入' })).toBeDisabled()
+  expect(screen.getAllByText('该记录未保存可恢复的提示词快照。')).toHaveLength(2)
+})
+
+it('requires preview confirmation before publishing bundled defaults', async () => {
+  await ready()
+  await userEvent.click(screen.getByRole('button', { name: '发布记录' }))
+  await userEvent.click(screen.getByRole('button', { name: '恢复内置默认提示词' }))
+  expect(adminPrompts.restoreDefaults).not.toHaveBeenCalled()
+  expect(screen.getByText('默认生成规则')).toBeInTheDocument()
+  vi.mocked(adminPrompts.restoreDefaults).mockResolvedValue({ ...initial, active: { release_id: 'restored', values: initial.bundled!.values } })
+  await userEvent.click(screen.getByRole('button', { name: '确认恢复并发布' }))
+  expect(adminPrompts.restoreDefaults).toHaveBeenCalledWith('bundled-default', 'active-1')
+  await screen.findByText('已恢复内置默认提示词，并保留发布历史。')
 })

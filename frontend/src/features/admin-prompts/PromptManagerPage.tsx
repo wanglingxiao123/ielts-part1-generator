@@ -4,6 +4,8 @@ import { ApiError, userMessage } from '@/api/http'
 import { useSession } from '@/auth/useSession'
 import { useModelPreference } from '@/stores/modelPreference'
 import './prompt-manager.css'
+import { TrialResults, TrialHistoryPanel } from './TrialResults'
+import { ScenarioComparison } from './ScenarioComparison'
 
 function valuesFor(state: PromptState): PromptValues {
   return Object.fromEntries(state.catalogue.map((prompt) => [
@@ -41,8 +43,10 @@ export function PromptManagerPage() {
 
 function PromptEditor() {
   const [view, setView] = useState('edit')
+  const [scenarioOpened, setScenarioOpened] = useState(false)
   const [search, setSearch] = useState('')
   const [compare, setCompare] = useState(false)
+  const [showDefaults, setShowDefaults] = useState(false)
   const [state, setState] = useState<PromptState | null>(null)
   const [values, setValues] = useState<PromptValues>({})
   const [selected, setSelected] = useState('')
@@ -116,11 +120,17 @@ function PromptEditor() {
     }
   }
 
+  function clearTrial() {
+    setInput(''); setTrialId(''); setTrial(null); setTrialContext(null); setTrialError('')
+  }
+
   async function mutate(operation: () => Promise<PromptState>, message: string) {
     setBusy(true); setError(''); setNotice('')
     try {
       const next = await operation()
       if (!mounted.current) return
+      if (next.active.release_id !== state?.active.release_id) clearTrial()
+      setShowDefaults(false)
       setState(next); setValues(valuesFor(next)); setConflict(false); setNotice(message)
     } catch (err) {
       if (mounted.current) fail(err)
@@ -134,6 +144,7 @@ function PromptEditor() {
     try {
       const next = await adminPrompts.get()
       if (!mounted.current) return
+      if (next.active.release_id !== state?.active.release_id) clearTrial()
       setState(next)
       // A refresh updates concurrency tokens without overwriting unsaved business text.
       if (!dirty) setValues(valuesFor(next))
@@ -169,7 +180,7 @@ function PromptEditor() {
 
   const changedCount = state?.catalogue.filter((item) => (values[item.id] ?? item.default) !== (state.active.values[item.id] ?? item.default)).length ?? 0
   const visiblePrompts = state?.catalogue.filter((item) => `${item.name} ${item.purpose}`.toLowerCase().includes(search.toLowerCase())) ?? []
-  const tabs = [{ id: 'edit', label: '提示词编辑' }, { id: 'trial', label: '试运行' }, { id: 'history', label: '发布记录' }, { id: 'skills', label: 'Skill 资料' }]
+  const tabs = [{ id: 'edit', label: '提示词编辑' }, { id: 'trial', label: '试运行' }, { id: 'scenario', label: '完整场景对比' }, { id: 'tests', label: '试运行历史' }, { id: 'history', label: '发布记录' }, { id: 'skills', label: 'Skill 资料' }]
   return (
     <main className="page prompt-manager">
       <header className="pm-header">
@@ -179,7 +190,7 @@ function PromptEditor() {
       {error && <div role="alert" className="pm-alert pm-error">{error}</div>}
       {notice && <div role="status" className="pm-alert pm-notice">{notice}</div>}
       <div className="pm-toolbar">
-        <nav aria-label="提示词管理导航" className="pm-tabs">{tabs.map((tab) => <button key={tab.id} aria-current={view === tab.id ? 'page' : undefined} className={view === tab.id ? 'is-active' : ''} onClick={() => setView(tab.id)}><Icon name={tab.id} />{tab.label}{tab.id === 'trial' && testing && <span className="pm-dot" />}</button>)}</nav>
+        <nav aria-label="提示词管理导航" className="pm-tabs">{tabs.map((tab) => <button key={tab.id} aria-current={view === tab.id ? 'page' : undefined} className={view === tab.id ? 'is-active' : ''} onClick={() => { setView(tab.id); if (tab.id === 'scenario') setScenarioOpened(true) }}><Icon name={tab.id} />{tab.label}{tab.id === 'trial' && testing && <span className="pm-dot" />}</button>)}</nav>
         <button className="pm-refresh" disabled={busy} aria-label="刷新服务器版本（保留本地编辑）" title="刷新服务器版本，保留本地编辑" onClick={() => void refresh()}><Icon name="refresh" />刷新</button>
       </div>
       {!state && <div className="pm-empty">{busy ? '正在加载工作区…' : '暂时无法加载配置，请点击刷新重试。'}</div>}
@@ -220,15 +231,27 @@ function PromptEditor() {
               {trialError && <div role="alert" className="pm-alert pm-error">{trialError} <button className="btn" onClick={() => setPollAttempt((value) => value + 1)}>重试查询结果</button></div>}
               {trial && trialContext ? <div aria-label="试运行结果" aria-live="polite" className="pm-trial-results">
                 <div className="pm-result-heading"><strong>{trial.status === 'running' ? '正在运行独立对比…' : trial.status === 'completed' ? '试运行完成' : '试运行失败'}</strong><span>{trialContext.prompt} · {trial.model_id ?? trialContext.model}</span></div>
-                {trial.error && <p role="alert" className="pm-error">{trial.error}</p>}
-                <div className="pm-columns"><div><h4><span className="pm-dot neutral" />生效版本输出</h4><pre>{trial.baseline ?? '等待输出…'}</pre></div><div><h4><span className="pm-dot" />草稿版本输出</h4><pre>{trial.draft ?? '等待输出…'}</pre></div></div>
-                <details className="pm-disclosure"><summary>查看测试版本与编号</summary><p>对比版本：{trial.baseline_release ?? '正在确认'}<br />草稿版本：{trial.draft_release ?? '正在确认'}<br />测试编号：{trialId}</p></details>
+                <TrialResults key={trialId} trial={trial} id={trialId} />
               </div> : <div className="pm-trial-empty"><Icon name="trial" /><strong>看看调整带来了什么变化</strong><span>运行后，两份输出会并排显示在这里。</span></div>}
             </section>
           </div>
         </div>
+        <div hidden={view !== 'scenario'}>{scenarioOpened && <ScenarioComparison state={state} dirty={dirty} />}</div>
+        {view === 'tests' && <TrialHistoryPanel catalogue={state.catalogue} disabled={busy || testing} onReuse={(record) => {
+          clearTrial(); setInput(record.input ?? ''); setSelected(record.prompt_id ?? ''); setSearch(''); setView('trial')
+          setNotice('已复用历史输入。下一次运行将对比当前生效版本与当前已保存的草稿。')
+        }} />}
         <section hidden={view !== 'history'} className="pm-library" aria-labelledby="pm-history-title">
           <div className="pm-card-heading"><div><span className="pm-eyebrow">版本管理</span><h3 id="pm-history-title">发布历史</h3><p className="pm-purpose">回滚仅影响新任务，已有材料保持不变。</p></div><span className="pm-count">{state.history.length} 个版本</span></div>
+          {state.bundled && <div className="pm-default-restore">
+            <div className="pm-output-heading"><div><strong>内置默认提示词</strong><p className="pm-purpose">恢复整套业务提示词，保留所有发布历史。</p></div><button className="btn" disabled={busy || conflict || dirty} onClick={() => setShowDefaults(!showDefaults)}>恢复内置默认提示词</button></div>
+            {showDefaults && <div aria-label="确认恢复默认提示词">
+              <p>请核对以下默认内容。确认后将创建新的生效版本，仅影响新任务；已保存的草稿保留。</p>
+              {state.catalogue.map((item) => <details className="pm-disclosure" key={item.id}><summary>{item.name}</summary><pre>{state.bundled!.values[item.id] || '（未设置业务补充）'}</pre></details>)}
+              <button className="btn" onClick={() => setShowDefaults(false)}>取消</button>{' '}
+              <button className="btn btn-primary" disabled={busy || conflict || dirty} onClick={() => void mutate(() => adminPrompts.restoreDefaults(state.bundled!.release_id, state.active_etag), '已恢复内置默认提示词，并保留发布历史。')}>确认恢复并发布</button>
+            </div>}
+          </div>}
           <div className="pm-history-list">{state.history.map((release, index) => <div key={release.release_id} className="pm-release"><span className={`pm-release-icon ${release.release_id === state.active.release_id ? 'current' : ''}`}><Icon name="history" /></span><div className="pm-release-info"><div><strong>{release.release_id === state.active.release_id ? '当前生效版本' : `历史版本 ${state.history.length - index}`}</strong><code title={release.release_id}>{shortVersion(release.release_id)}</code></div><p>{release.actor} <span>·</span> {release.created_at ? new Date(typeof release.created_at === 'number' ? release.created_at * 1000 : release.created_at).toLocaleString() : '随应用提供'}</p></div><button className="btn" aria-label={`回滚至 ${release.release_id}`} disabled={busy || conflict || dirty || release.release_id === state.active.release_id} onClick={() => void mutate(() => adminPrompts.rollback(release.release_id, state.active_etag), '已创建回滚发布记录，仅对新任务生效。')}>{release.release_id === state.active.release_id ? '使用中' : '回滚至此版本'}</button></div>)}</div>
         </section>
         <section hidden={view !== 'skills'} className="pm-library" aria-labelledby="pm-skills-title"><div className="pm-card-heading"><div><span className="pm-eyebrow">规则参考</span><h3 id="pm-skills-title">Skills 规则来源（只读）</h3><p className="pm-purpose">查看各环节遵循的规范。当前版本暂不支持在线修改。</p></div><span className="pm-admin"><Icon name="lock" />只读资料</span></div><div className="pm-skill-grid">{state.skills.map((skill) => <details key={skill.path} className="pm-skill"><summary><Icon name="skills" /><span><strong>{skill.path.split('/').slice(-1)[0]}</strong><small>{skill.path.split('/').slice(0, -1).join(' / ')}</small></span><span className="pm-open">查看</span></summary><pre>{skill.text}</pre></details>)}</div></section>

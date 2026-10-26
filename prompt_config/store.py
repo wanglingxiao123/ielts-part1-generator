@@ -36,6 +36,10 @@ class MemoryStore:
         with self.lock:
             return copy.deepcopy(self.data.get(key, (None, None)))
 
+    def list_keys(self, prefix):
+        with self.lock:
+            return sorted(key for key in self.data if key.startswith(prefix))
+
     def write(self, key, value, expected=None):
         with self.lock:
             if self.data.get(key, (None, None))[1] != expected:
@@ -72,6 +76,11 @@ class FileStore:
         with self._locked():
             return self._read(key)
 
+    def list_keys(self, prefix):
+        with self._locked():
+            return sorted(str(path.relative_to(self.directory))
+                          for path in (self.directory / prefix).glob("*.json"))
+
     def write(self, key, value, expected=None):
         with self._locked():
             if self._read(key)[1] != expected:
@@ -107,6 +116,13 @@ class S3Store:
             return None, None
         with result["Body"] as body:
             return json.loads(body.read()), result["ETag"]
+
+    def list_keys(self, prefix):
+        pages = self.client.get_paginator("list_objects_v2").paginate(
+            Bucket=self.bucket, Prefix=PREFIX + prefix)
+        return [item["Key"][len(PREFIX):]
+                for page in pages for item in page.get("Contents", [])
+                if item["Key"].endswith(".json")]
 
     def write(self, key, value, expected=None):
         from botocore.exceptions import ClientError
@@ -213,6 +229,7 @@ class PromptStore:
                 break
             item = self.resolve(item["previous"])
         return dict(catalogue=entries(), active=active, active_etag=etag,
+                    bundled=self.bundled(),
                     draft=draft, draft_etag=draft_etag, history=history)
 
     def pin(self, operation, *, default=False):

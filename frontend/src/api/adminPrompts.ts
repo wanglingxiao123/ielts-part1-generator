@@ -12,6 +12,7 @@ export interface PromptState {
     protected: unknown
   }>
   active: { release_id: string; values: PromptValues }
+  bundled?: { release_id: string; values: PromptValues }
   active_etag: string | null
   draft: { values: PromptValues } | null
   draft_etag: string | null
@@ -20,6 +21,14 @@ export interface PromptState {
 }
 
 export interface PromptTrial {
+  test_id?: string
+  prompt_id?: string
+  created_at?: number
+  actor?: string
+  input?: string
+  baseline_prompt?: string
+  draft_prompt?: string
+  baseline_snapshot_release?: string
   status: 'running' | 'completed' | 'failed'
   baseline?: string
   draft?: string
@@ -30,6 +39,11 @@ export interface PromptTrial {
   baseline_digest?: string
   draft_digest?: string
   draft_etag?: string
+}
+
+export interface TrialHistory {
+  items: Array<PromptTrial & { test_id: string; has_input: boolean }>
+  next_offset: number | null
 }
 
 // These endpoints belong to the authenticated web tier, never the generation adapter.
@@ -50,6 +64,10 @@ export const adminPrompts = {
     post<PromptState>(`${root}/publish`, { expected_etag, draft_etag }),
   rollback: (release_id: string, expected_etag: string | null) =>
     post<PromptState>(`${root}/rollback`, { release_id, expected_etag }),
+  restoreDefaults: (release_id: string, expected_etag: string | null) =>
+    post<PromptState>(`${root}/restore-defaults`, { release_id, expected_etag }),
+  history: (offset = 0, signal?: AbortSignal) =>
+    get<TrialHistory>(`${root}/tests?offset=${offset}`, signal),
   test: (body: { prompt_id: string; input: string; model_id: string; draft_etag: string | null }) =>
     post<{ test_id: string }>(`${root}/test`, body),
   result: (id: string, signal?: AbortSignal) =>
