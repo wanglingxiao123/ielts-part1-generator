@@ -54,14 +54,12 @@ export function TrialResults({ trial, id }: { trial: PromptTrial; id: string }) 
   </>
 }
 
-export function TrialHistoryPanel({ catalogue, onReuse, disabled }: {
-  catalogue: PromptState['catalogue']; onReuse: (record: PromptTrial) => void; disabled: boolean
+export function TrialHistoryPanel({ catalogue, selected, onSelect }: {
+  catalogue: PromptState['catalogue']; selected: string; onSelect: (id: string) => void
 }) {
   const [page, setPage] = useState<TrialHistory | null>(null)
   const [offset, setOffset] = useState(0)
   const [reload, setReload] = useState(0)
-  const [selected, setSelected] = useState('')
-  const [record, setRecord] = useState<PromptTrial | null>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   useEffect(() => {
@@ -74,41 +72,15 @@ export function TrialHistoryPanel({ catalogue, onReuse, disabled }: {
     }).finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
   }, [offset, reload])
-  useEffect(() => {
-    if (!selected) return
-    const controller = new AbortController()
-    let timer: ReturnType<typeof setTimeout> | undefined
-    setRecord(null); setError('')
-    async function read() {
-      try {
-        const next = await adminPrompts.result(selected, controller.signal)
-        if (controller.signal.aborted) return
-        setRecord(next)
-        if (next.status === 'running') timer = setTimeout(() => void read(), 1500)
-      } catch (err) {
-        if (!controller.signal.aborted) setError(userMessage(err, '测试详情读取失败'))
-      }
-    }
-    void read()
-    return () => { controller.abort(); clearTimeout(timer) }
-  }, [selected, reload])
   const name = (id?: string) => catalogue.find((item) => item.id === id)?.name ?? id ?? '未知模块'
   return <section className="pm-library" aria-label="试运行历史">
-    <div className="pm-card-heading"><div><h3>试运行历史</h3><p className="pm-purpose">查看当时的样例与结果，或复用输入进行新的对比。</p></div><button className="btn" disabled={loading} onClick={() => { setOffset(0); setReload((n) => n + 1) }}>刷新记录</button></div>
+    <div className="pm-card-heading"><div><h3>最近的测试</h3><p className="pm-purpose">查看当时的样例与结果，或复用输入进行新的对比。</p></div><button className="btn" disabled={loading} onClick={() => { setOffset(0); setReload((n) => n + 1) }}>刷新记录</button></div>
     {error && <p role="alert">{error}</p>}
     {loading ? <p>正在读取历史记录…</p> : page?.items.length ? <div className="pm-history-list">
-      {page.items.map((item) => <button className={`pm-trial-history-row ${selected === item.test_id ? 'is-selected' : ''}`} key={item.test_id} onClick={() => setSelected(item.test_id)}>
-        <strong>{name(item.prompt_id)}</strong><span>{item.created_at ? new Date(item.created_at * 1000).toLocaleString() : '时间未知'}</span><span>{item.model_id}</span><span>{item.status === 'completed' ? '已完成' : item.status === 'failed' ? '失败' : '运行中'}</span><code>{item.test_id.slice(0, 8)}</code>
+      {page.items.map((item) => <button className={`pm-trial-history-row ${selected === item.test_id ? 'is-selected' : ''}`} key={item.test_id} onClick={() => onSelect(item.test_id)}>
+        <strong>{name(item.prompt_id)}</strong><span>{item.created_at ? new Date(item.created_at * 1000).toLocaleString() : '时间未知'}</span><span>{item.model_id}</span><span>{item.status === 'completed' ? '已完成' : item.status === 'failed' ? '失败' : '运行中'}</span><span>{item.baseline_release ? item.baseline_release.slice(0, 8) : '版本未记录'} → {item.draft_release?.slice(0, 8) ?? '版本未记录'}</span><code>{item.test_id.slice(0, 8)}</code>
       </button>)}
     </div> : <p>暂无试运行记录。</p>}
     <div className="pm-history-pagination"><button className="btn" disabled={loading || offset === 0} onClick={() => setOffset(Math.max(0, offset - 20))}>上一页</button><button className="btn" disabled={loading || page?.next_offset == null} onClick={() => setOffset(page!.next_offset!)}>下一页</button></div>
-    {selected && !record && !error && <p>正在读取测试详情…</p>}
-    {record && <div className="pm-trial-results">
-      <div className="pm-result-heading"><strong>历史测试 · {name(record.prompt_id)}</strong><span>{record.model_id}</span></div>
-      <p className="pm-purpose">以下为当时的测试快照，不代表当前生效版本。</p>
-      <div className="pm-output-heading"><h4>历史输入样例</h4><button className="btn" disabled={disabled || record.input === undefined || !catalogue.some((item) => item.id === record.prompt_id)} onClick={() => onReuse(record)}>复用输入</button></div>
-      <pre>{record.input ?? '该记录未保存输入。'}</pre>
-      <TrialResults key={selected} trial={record} id={selected} />
-    </div>}
   </section>
 }

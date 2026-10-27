@@ -198,6 +198,10 @@ class ApiAuthMiddleware:
                 )
                 await response(scope, receive, send)
                 return
+            if scope[USER_SCOPE_KEY].get("must_change_password") and path != "/api/auth/password":
+                response = JSONResponse(_error_body("PASSWORD_CHANGE_REQUIRED", "请先修改临时密码。"), status_code=403)
+                await response(scope, receive, send)
+                return
         await self.app(scope, receive, send)
 
 
@@ -279,6 +283,8 @@ class WebTier:
         app.add_middleware(ApiAuthMiddleware, auth=self.auth)
         from .prompt_admin import install
         install(app, self, USER_SCOPE_KEY)
+        from .user_admin import install as install_users
+        install_users(app, self, USER_SCOPE_KEY)
 
         @app.get("/healthz")
         async def healthz() -> Dict[str, Any]:
@@ -308,21 +314,22 @@ class WebTier:
             try:
                 user = self.auth.register(str(body.get("email") or ""),
                                           str(body.get("password") or ""))
+                user, token = self.auth.login_session(user["email"], str(body.get("password") or ""))
             except AuthError as exc:
                 return JSONResponse(_error_body(exc.code, exc.message), status_code=exc.status)
             # Registering logs you in: a separate login round trip after a successful register
             # only exists to be forgotten.
-            return self._with_session(JSONResponse({"user": user}), user["email"])
+            return self._with_session(JSONResponse({"user": user}), token)
 
         @app.post("/api/auth/login")
         async def login(request: Request) -> JSONResponse:
             body = _as_dict(await _json_body(request))
             try:
-                user = self.auth.login(str(body.get("email") or ""),
+                user, token = self.auth.login_session(str(body.get("email") or ""),
                                        str(body.get("password") or ""))
             except AuthError as exc:
                 return JSONResponse(_error_body(exc.code, exc.message), status_code=exc.status)
-            return self._with_session(JSONResponse({"user": user}), user["email"])
+            return self._with_session(JSONResponse({"user": user}), token)
 
         @app.post("/api/auth/logout")
         def logout() -> JSONResponse:
@@ -1176,10 +1183,10 @@ class WebTier:
             return None
         return document, ordinal
 
-    def _with_session(self, response: JSONResponse, email: str) -> JSONResponse:
+    def _with_session(self, response: JSONResponse, token: str) -> JSONResponse:
         response.set_cookie(
             SESSION_COOKIE,
-            self.auth.issue_token(email),
+            token,
             max_age=SESSION_TTL_SECONDS,
             httponly=True,
             samesite="lax",

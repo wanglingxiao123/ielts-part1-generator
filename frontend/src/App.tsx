@@ -1,3 +1,4 @@
+import { PasswordPage } from "@/auth/PasswordPage"
 import { lazy, Suspense, useEffect } from 'react'
 import { NavLink, Route, Routes } from 'react-router-dom'
 import { LoginPage } from '@/auth/LoginPage'
@@ -10,6 +11,7 @@ import { MaterialPage } from '@/features/material-reader/MaterialPage'
 import { ComparePage } from '@/features/compare/ComparePage'
 import { ReviewQueuePage } from '@/features/review-queue/ReviewQueuePage'
 import { PromptManagerPage } from '@/features/admin-prompts/PromptManagerPage'
+import { UserManagerPage } from '@/features/admin-users/UserManagerPage'
 import { useBatchStore } from '@/stores/batchStore'
 import { loadModels, selectModel, useModelPreference } from '@/stores/modelPreference'
 
@@ -43,8 +45,8 @@ function TopBar() {
   const batchId = useBatchStore((s) => s.batchId)
   const models = useModelPreference()
   useEffect(() => {
-    if (session.isAuthenticated) loadModels()
-  }, [session.isAuthenticated])
+    if (session.isAuthenticated && !session.user?.must_change_password) loadModels()
+  }, [session.isAuthenticated, session.user?.must_change_password])
   return (
     <div className="topbar">
       <h1>IELTS Part 1 材料生成</h1>
@@ -53,6 +55,7 @@ function TopBar() {
           bounces them back to the form they are already looking at. */}
       {session.isAuthenticated && (
         <nav>
+          {!session.user?.must_change_password && <>
           <NavLink to="/" end className={({ isActive }) => (isActive ? 'active' : '')}>
             场景选择
           </NavLink>
@@ -73,15 +76,22 @@ function TopBar() {
             审核队列
           </NavLink>
           {session.isAdmin && (
+            <NavLink to="/admin/users" className={({ isActive }) => (isActive ? 'active' : '')}>
+              用户管理
+            </NavLink>
+          )}
+          {session.isAdmin && (
             <NavLink to="/admin/prompts" className={({ isActive }) => (isActive ? 'active' : '')}>
               提示词管理
             </NavLink>
           )}
           {/* /dev/fixtures is deliberately NOT linked: dev harness, see above. */}
+          </>}
         </nav>
       )}
       <div className="spacer" />
-      {session.isAuthenticated && (
+      {session.isAuthenticated && <NavLink to="/account/password" className="btn">修改密码</NavLink>}
+      {session.isAuthenticated && !session.user?.must_change_password && (
         <label className="topbar-model" title={models.warning ?? '下一次 AI 操作使用的模型'}>
           <span>模型</span>
           <select
@@ -119,6 +129,8 @@ export function App() {
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/admin/prompts" element={<RequireAuth><PromptManagerPage /></RequireAuth>} />
+        <Route path="/account/password" element={<RequireAuth><PasswordPage /></RequireAuth>} />
+        <Route path="/admin/users" element={<RequireAuth><UserManagerPage /></RequireAuth>} />
         <Route
           path="/"
           element={

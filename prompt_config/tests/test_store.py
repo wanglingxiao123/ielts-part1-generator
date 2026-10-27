@@ -19,6 +19,38 @@ def publish(store):
     store.save_draft(changed(), "admin", None)
     return store.publish("admin", None, draft_etag=store.state()["draft_etag"])
 
+def test_release_diff_tracks_predecessor_including_rollback_and_first_defaults():
+    store = PromptStore(MemoryStore())
+    first = publish(store)
+    one = store.release_detail(first["release_id"])
+    assert one["comparison_note"] is None
+    assert one["changes"][0]["before"] == defaults()[one["changes"][0]["id"]]
+    second_values = dict(first["values"])
+    second_values["role.audit"] += "\nCheck corrections."
+    state = store.state()
+    store.save_draft(second_values, "admin", state["draft_etag"])
+    second = store.publish("admin", state["active_etag"], draft_etag=store.state()["draft_etag"])
+    two = store.release_detail(second["release_id"])
+    assert two["base_release_id"] == first["release_id"]
+    assert [c["id"] for c in two["changes"]] == ["role.audit"]
+    assert store.state()["history"][0]["changed_ids"] == ["role.audit"]
+    rollback = store.publish("admin", store.state()["active_etag"], release_id=first["release_id"])
+    back = store.release_detail(rollback["release_id"])
+    assert back["base_release_id"] == second["release_id"]
+    assert back["changes"][0]["before"] == second_values["role.audit"]
+    assert back["changes"][0]["after"] == first["values"]["role.audit"]
+    # An unrelated trial snapshot is not exposed as a publication.
+    trial = store.snapshot(defaults(), "admin")
+    with pytest.raises(ValueError):
+        store.release_detail(trial["release_id"])
+
+
+def test_legacy_first_publication_labels_default_comparison_as_reference():
+    store = PromptStore(MemoryStore())
+    legacy = store.snapshot(changed(), "admin", previous=None)
+    store.storage.write("active.json", {"release_id": legacy["release_id"]})
+    assert "参考" in store.release_detail(legacy["release_id"])["comparison_note"]
+
 
 def test_draft_publish_rollback_and_task_pinning():
     store = PromptStore(MemoryStore())

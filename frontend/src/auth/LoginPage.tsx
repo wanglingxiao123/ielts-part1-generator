@@ -193,6 +193,7 @@ export function LoginPage() {
           {registering ? '已有账号？返回登录' : '没有账号？注册'}
         </button>
 
+        {!registering && <p className="muted auth-hint">忘记密码？请联系本系统管理员重置。</p>}
         {registering && <p className="muted auth-hint">密码至少 {MIN_PASSWORD} 位。</p>}
       </form>
     </div>

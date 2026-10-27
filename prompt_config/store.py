@@ -212,8 +212,13 @@ class PromptStore:
                 raise Conflict("草稿已改变，请重新检查后发布。")
             values = draft["values"]
         # Bundle first, then one CAS pointer: a losing writer leaves an inert orphan only.
+        previous = (pointer or {}).get("release_id")
+        # Retain the first publication's exact bundled text across later deployments.
+        comparison_base = previous or self.snapshot(
+            self.bundled()["values"], "application", bundled_source=self.bundled()["release_id"]
+        )["release_id"]
         bundle = self.snapshot(values, actor, rollback_of=release_id,
-                               previous=(pointer or {}).get("release_id"))
+                               previous=previous, comparison_base=comparison_base)
         self.storage.write("active.json", {"release_id": bundle["release_id"]}, expected)
         return bundle
 
@@ -222,15 +227,49 @@ class PromptStore:
         pointer, etag = self.storage.read("active.json")
         active = self.resolve(pointer["release_id"] if pointer else self.bundled()["release_id"])
         draft, draft_etag = self.storage.read("draft.json")
-        history, item = [], active
+        bundles, item = [], active
         for _ in range(100):
-            history.append({k: v for k, v in item.items() if k != "values"})
+            bundles.append(item)
             if not item.get("previous"):
                 break
             item = self.resolve(item["previous"])
+        by_id = {item["release_id"]: item for item in bundles}
+        history = []
+        for item in bundles:
+            base, note = self.comparison_base(item, by_id)
+            history.append(dict(
+                {k: v for k, v in item.items() if k != "values"},
+                changed_ids=[key for key in item["values"]
+                             if item["values"][key] != base["values"].get(key)],
+                base_release_id=base["release_id"], comparison_note=note))
         return dict(catalogue=entries(), active=active, active_etag=etag,
                     bundled=self.bundled(),
                     draft=draft, draft_etag=draft_etag, history=history)
+
+    def comparison_base(self, bundle, known=None):
+        source = bundle.get("previous") or bundle.get("comparison_base")
+        if source:
+            return (known or {}).get(source) or self.resolve(source), None
+        if bundle["release_id"].startswith("bundled-"):
+            return bundle, None
+        return self.bundled(), "该历史版本未保存首次发布前的默认快照；此处以当前内置默认文本作为参考。"
+
+    def release_detail(self, release_id):
+        # Limit this UI to publication history, not private trial snapshots.
+        state = self.state()
+        if not any(item["release_id"] == release_id for item in state["history"]):
+            raise ValueError("发布历史中不存在该版本。")
+        bundle = self.resolve(release_id)
+        base, note = self.comparison_base(bundle)
+        return dict(
+            release_id=release_id, base_release_id=base["release_id"],
+            base_label=("内置默认版本" if base.get("bundled_source")
+                        or base["release_id"].startswith("bundled-") else "发布前版本"),
+            comparison_note=note, values=bundle["values"],
+            changes=[dict(id=key, before=base["values"].get(key, ""), after=value)
+                     for key, value in bundle["values"].items()
+                     if value != base["values"].get(key)],
+        )
 
     def pin(self, operation, *, default=False):
         """Durable idempotent binding, separate from mutable batch progress records."""

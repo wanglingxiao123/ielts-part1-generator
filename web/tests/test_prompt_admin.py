@@ -6,7 +6,8 @@ def test_ordinary_user_cannot_read_or_modify_prompts(client):
     register(client, "admin@amazon.com")
     client.cookies.clear()
     register(client, "user@amazon.com")
-    for path in ("/api/admin/prompts", "/api/admin/prompts/test/" + "a" * 32):
+    for path in ("/api/admin/prompts", "/api/admin/prompts/test/" + "a" * 32,
+                 "/api/admin/prompts/releases/" + "a" * 32):
         assert client.get(path).status_code == 403
     for operation in ("draft", "publish", "rollback", "test"):
         assert client.post("/api/admin/prompts/" + operation,

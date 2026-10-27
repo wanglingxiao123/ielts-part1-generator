@@ -16,8 +16,17 @@ export interface PromptState {
   active_etag: string | null
   draft: { values: PromptValues } | null
   draft_etag: string | null
-  history: Array<{ release_id: string; actor: string; created_at: string | number }>
+  history: Array<{ release_id: string; actor: string; created_at: string | number; changed_ids?: string[]; base_release_id?: string; comparison_note?: string | null }>
   skills: Array<{ path: string; text: string }>
+}
+
+export interface PromptReleaseDetail {
+  release_id: string
+  base_release_id: string
+  base_label?: string
+  comparison_note?: string | null
+  values: PromptValues
+  changes: Array<{ id: string; before: string; after: string }>
 }
 
 export interface PromptTrial {
@@ -57,6 +66,8 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 
 const root = '/admin/prompts'
 export const adminPrompts = {
+  release: (id: string, signal?: AbortSignal) =>
+    get<PromptReleaseDetail>(`${root}/releases/${encodeURIComponent(id)}`, signal),
   get: (signal?: AbortSignal) => get<PromptState>(root, signal),
   save: (values: PromptValues, expected_etag: string | null) =>
     post<PromptState>(`${root}/draft`, { values, expected_etag }),

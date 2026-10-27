@@ -8,7 +8,7 @@
  * 4xx, with the messages and codes taken from web/auth.py.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from './AuthProvider'
@@ -18,6 +18,17 @@ import { setAuthFetch, type AuthFetch } from './authApi'
 import { useSession } from './useSession'
 
 const USER = { email: 'a@amazon.com', is_admin: false, created_at: 1_700_000_000 }
+
+it('refreshes administrator identity when returning to the window', async () => {
+  let administrator = true
+  install({ me: () => ok({ user: { ...USER, is_admin: administrator } }) })
+  function Role() { return <span>{useSession().isAdmin ? '管理员身份' : '普通身份'}</span> }
+  render(<AuthProvider><Role /></AuthProvider>)
+  await screen.findByText('管理员身份')
+  administrator = false
+  fireEvent.focus(window)
+  await screen.findByText('普通身份')
+})
 
 function ok(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {

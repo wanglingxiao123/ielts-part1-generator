@@ -17,6 +17,7 @@ export interface AuthUser {
   email: string
   /** True for the first account ever registered (web/auth.py). */
   is_admin: boolean
+  must_change_password?: boolean
   /** Unix seconds. */
   created_at: number | null
 }
@@ -103,6 +104,7 @@ function userFrom(payload: unknown): AuthUser {
   return {
     email: user.email,
     is_admin: Boolean(user.is_admin),
+    must_change_password: Boolean(user.must_change_password),
     created_at: typeof user.created_at === 'number' ? user.created_at : null,
   }
 }
@@ -138,4 +140,8 @@ export async function register(email: string, password: string): Promise<AuthUse
 
 export async function logout(): Promise<void> {
   await post('/auth/logout')
+}
+
+export async function changePassword(current_password: string, new_password: string): Promise<void> {
+  await post("/auth/password", { current_password, new_password })
 }

@@ -1,3 +1,5 @@
+import { WorkspaceDrawer } from "./WorkspaceDrawer"
+import { ReleaseChanges } from './ReleaseChanges'
 import { useEffect, useRef, useState } from 'react'
 import { adminPrompts, type PromptState, type PromptTrial, type PromptValues } from '@/api/adminPrompts'
 import { ApiError, userMessage } from '@/api/http'
@@ -43,6 +45,13 @@ export function PromptManagerPage() {
 
 function PromptEditor() {
   const [view, setView] = useState('edit')
+  const [rulesOpen, setRulesOpen] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [publishOpen, setPublishOpen] = useState(false)
+  const [historicalId, setHistoricalId] = useState('')
+  const [historical, setHistorical] = useState<PromptTrial | null>(null)
+  const [historicalError, setHistoricalError] = useState('')
+  const [historicalReload, setHistoricalReload] = useState(0)
   const [scenarioOpened, setScenarioOpened] = useState(false)
   const [search, setSearch] = useState('')
   const [compare, setCompare] = useState(false)
@@ -111,6 +120,25 @@ function PromptEditor() {
     return () => { controller.abort(); clearTimeout(timer) }
   }, [trialId, pollAttempt])
 
+  useEffect(() => {
+    if (!historicalId) return
+    const controller = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    setHistorical(null); setHistoricalError('')
+    async function read() {
+      try {
+        const record = await adminPrompts.result(historicalId, controller.signal)
+        if (controller.signal.aborted) return
+        setHistorical(record)
+        if (record.status === 'running') timer = setTimeout(() => void read(), 1500)
+      } catch (err) {
+        if (!controller.signal.aborted) setHistoricalError(userMessage(err, '历史测试读取失败，请重试。'))
+      }
+    }
+    void read()
+    return () => { controller.abort(); clearTimeout(timer) }
+  }, [historicalId, historicalReload])
+
   function fail(err: unknown) {
     if (err instanceof ApiError && err.status === 409) {
       setConflict(true)
@@ -121,6 +149,7 @@ function PromptEditor() {
   }
 
   function clearTrial() {
+    setHistoricalId(''); setHistorical(null)
     setInput(''); setTrialId(''); setTrial(null); setTrialContext(null); setTrialError('')
   }
 
@@ -130,6 +159,7 @@ function PromptEditor() {
       const next = await operation()
       if (!mounted.current) return
       if (next.active.release_id !== state?.active.release_id) clearTrial()
+      setPublishOpen(false)
       setShowDefaults(false)
       setState(next); setValues(valuesFor(next)); setConflict(false); setNotice(message)
     } catch (err) {
@@ -178,16 +208,32 @@ function PromptEditor() {
     }
   }
 
+  async function saveAndTrial() {
+    if (!state || busy || conflict) return
+    if (dirty || !state.draft) {
+      setBusy(true); setError(''); setNotice('')
+      try {
+        const next = await adminPrompts.save(values, state.draft_etag)
+        if (!mounted.current) return
+        if (next.active.release_id !== state.active.release_id) clearTrial()
+        setState(next); setValues(valuesFor(next)); setConflict(false)
+      } catch (err) { if (mounted.current) fail(err); return }
+      finally { if (mounted.current) setBusy(false) }
+    }
+    setHistoricalId(''); setView('trial')
+    setNotice('已带入当前模块。填写样例后点击运行对比，才会开始测试。')
+  }
+
   const changedCount = state?.catalogue.filter((item) => (values[item.id] ?? item.default) !== (state.active.values[item.id] ?? item.default)).length ?? 0
   const visiblePrompts = state?.catalogue.filter((item) => `${item.name} ${item.purpose}`.toLowerCase().includes(search.toLowerCase())) ?? []
-  const tabs = [{ id: 'edit', label: '提示词编辑' }, { id: 'trial', label: '试运行' }, { id: 'scenario', label: '完整场景对比' }, { id: 'tests', label: '试运行历史' }, { id: 'history', label: '发布记录' }, { id: 'skills', label: 'Skill 资料' }]
+  const tabs = [{ id: 'edit', label: '提示词编辑' }, { id: 'trial', label: '样例试运行' }, { id: 'scenario', label: '完整场景对比' }, { id: 'history', label: '版本管理' }]
   return (
     <main className="page prompt-manager">
       <header className="pm-header">
         <div className="pm-heading"><span className="pm-brand"><Icon name="edit" /></span><div><h2>提示词管理</h2><p>调整 AI 的工作指令，让每一次生成更符合你的要求。</p></div></div>
-        <span className="pm-admin"><Icon name="lock" />管理员工作区</span>
+        <div className="pm-header-actions"><span className="pm-admin"><Icon name="lock" />管理员工作区</span><button className="btn" disabled={!state} onClick={() => setRulesOpen(true)}><Icon name="skills" />规则参考</button></div>
       </header>
-      {error && <div role="alert" className="pm-alert pm-error">{error}</div>}
+      {error && <div hidden={publishOpen} role="alert" className="pm-alert pm-error">{error}</div>}
       {notice && <div role="status" className="pm-alert pm-notice">{notice}</div>}
       <div className="pm-toolbar">
         <nav aria-label="提示词管理导航" className="pm-tabs">{tabs.map((tab) => <button key={tab.id} aria-current={view === tab.id ? 'page' : undefined} className={view === tab.id ? 'is-active' : ''} onClick={() => { setView(tab.id); if (tab.id === 'scenario') setScenarioOpened(true) }}><Icon name={tab.id} />{tab.label}{tab.id === 'trial' && testing && <span className="pm-dot" />}</button>)}</nav>
@@ -195,6 +241,7 @@ function PromptEditor() {
       </div>
       {!state && <div className="pm-empty">{busy ? '正在加载工作区…' : '暂时无法加载配置，请点击刷新重试。'}</div>}
       {state && <>
+        <div className="pm-release-bar"><div className="pm-publish-state"><span className="pm-status"><i />已生效</span><code title={state.active.release_id}>{shortVersion(state.active.release_id)}</code><span className="pm-publish-note">发布仅影响新任务</span></div><div className="pm-publish-actions"><span>{busy ? '处理中…' : dirty ? '有未保存的编辑' : changedCount ? `无未保存修改 · ${changedCount} 项待发布` : '无未保存修改 · 与当前生效版本一致'}</span><button className="btn btn-primary" disabled={busy || conflict || dirty || !state.draft || changedCount === 0} title={changedCount === 0 ? '与当前生效版本一致' : undefined} onClick={() => setPublishOpen(true)}>发布整套草稿 <span aria-hidden="true">↗</span></button></div></div>
         <div className="pm-workspace" hidden={view !== 'edit' && view !== 'trial'}>
           <aside className="pm-sidebar" aria-label="提示词目录">
             <div className="pm-sidebar-head"><strong>提示词目录</strong><span>{state.catalogue.length}</span></div>
@@ -219,9 +266,12 @@ function PromptEditor() {
               </div>
               <div className="pm-editor-meta"><span>{(values[selected] ?? '').length.toLocaleString()} 字符</span><span>{(values[selected] ?? '') === (state.active.values[selected] ?? prompt.default) ? '与生效版本一致' : '已调整，发布后生效'}</span></div>
               <details className="pm-disclosure"><summary><Icon name="lock" />受保护的规则（只读）</summary><p>输出结构、必需变量、工具权限与审核隔离由程序管理。</p><p>规则来源：<code>{prompt.source}</code></p><pre>{protectedText(prompt.protected)}</pre></details>
+              <div className="pm-editor-actions"><span>保存整套编辑，测试当前选中模块</span><button className="btn" disabled={busy || conflict || !prompt || !dirty} title={!dirty ? '无未保存修改' : undefined} onClick={() => void mutate(() => adminPrompts.save(values, state.draft_etag), '草稿已保存，尚未发布。')}>保存草稿</button><button className="btn btn-primary" disabled={busy || conflict || testing || (!state.draft && !dirty)} onClick={() => void saveAndTrial()}>{dirty || !state.draft ? '保存并试运行' : '前往样例试运行'}</button></div>
               {state.draft && <details className="pm-disclosure"><summary>查看服务器已保存的草稿</summary><pre>{state.draft.values[selected] ?? prompt.default}</pre></details>}
             </section>}
             <section hidden={view !== 'trial'} className="pm-trial-card" aria-labelledby="pm-trial-title">
+              <div className="pm-trial-navigation"><button className="btn" onClick={() => setHistoryOpen(true)}>试运行历史</button>{historicalId && <button className="btn" onClick={() => setHistoricalId('')}>返回当前测试{testing ? ' · 运行中' : ''}</button>}</div>
+              <div hidden={!!historicalId}>
               <div className="pm-card-heading"><div><span className="pm-eyebrow">发布前验证</span><h3 id="pm-trial-title">单任务样例试运行</h3></div><span className="pm-model">{models.models.find((model) => model.id === models.selectedModelId)?.label ?? models.selectedModelId}</span></div>
               <p className="pm-purpose">使用相同样例，对比生效版本与草稿的输出。</p>
               <div className="pm-trial-target"><Icon name="edit" /><span>当前测试</span><strong>{prompt?.name ?? '请选择提示词'}</strong></div>
@@ -233,14 +283,29 @@ function PromptEditor() {
                 <div className="pm-result-heading"><strong>{trial.status === 'running' ? '正在运行独立对比…' : trial.status === 'completed' ? '试运行完成' : '试运行失败'}</strong><span>{trialContext.prompt} · {trial.model_id ?? trialContext.model}</span></div>
                 <TrialResults key={trialId} trial={trial} id={trialId} />
               </div> : <div className="pm-trial-empty"><Icon name="trial" /><strong>看看调整带来了什么变化</strong><span>运行后，两份输出会并排显示在这里。</span></div>}
+              </div>
+              {historicalId && <div className="pm-historical-main">
+                <div className="pm-result-heading"><strong>历史测试 · {state.catalogue.find((item) => item.id === historical?.prompt_id)?.name ?? historical?.prompt_id ?? '正在读取'}</strong><span>{historical?.model_id}</span></div>
+                <p className="pm-purpose">以下为当时的测试快照，不代表当前生效版本。当前测试的输入和进度已保留。</p>
+                {historicalError && <p role="alert">{historicalError}<button className="btn" onClick={() => setHistoricalReload((n) => n + 1)}>重试读取历史测试</button></p>}
+                {!historical && !historicalError && <p>正在读取测试详情…</p>}
+                {historical && <>
+                  <div className="pm-output-heading"><h4>历史输入样例</h4><button className="btn" disabled={busy || testing || historical.input === undefined || !state.catalogue.some((item) => item.id === historical.prompt_id)} onClick={() => {
+                    clearTrial(); setInput(historical.input ?? ''); setSelected(historical.prompt_id ?? ''); setSearch('')
+                    setNotice('已复用历史输入。下一次运行将对比当前生效版本与当前已保存的草稿。')
+                  }}>复用输入</button></div><pre>{historical.input ?? '该记录未保存输入。'}</pre>
+                  <TrialResults key={historicalId} trial={historical} id={historicalId} />
+                </>}
+              </div>}
             </section>
           </div>
         </div>
         <div hidden={view !== 'scenario'}>{scenarioOpened && <ScenarioComparison state={state} dirty={dirty} />}</div>
-        {view === 'tests' && <TrialHistoryPanel catalogue={state.catalogue} disabled={busy || testing} onReuse={(record) => {
-          clearTrial(); setInput(record.input ?? ''); setSelected(record.prompt_id ?? ''); setSearch(''); setView('trial')
-          setNotice('已复用历史输入。下一次运行将对比当前生效版本与当前已保存的草稿。')
-        }} />}
+        <WorkspaceDrawer open={historyOpen} onClose={() => setHistoryOpen(false)} title="试运行历史">
+          {historyOpen && <TrialHistoryPanel catalogue={state.catalogue} selected={historicalId} onSelect={(id) => {
+            setHistorical(null); setHistoricalId(id); setHistoricalReload((n) => n + 1); setHistoryOpen(false)
+          }} />}
+        </WorkspaceDrawer>
         <section hidden={view !== 'history'} className="pm-library" aria-labelledby="pm-history-title">
           <div className="pm-card-heading"><div><span className="pm-eyebrow">版本管理</span><h3 id="pm-history-title">发布历史</h3><p className="pm-purpose">回滚仅影响新任务，已有材料保持不变。</p></div><span className="pm-count">{state.history.length} 个版本</span></div>
           {state.bundled && <div className="pm-default-restore">
@@ -252,10 +317,16 @@ function PromptEditor() {
               <button className="btn btn-primary" disabled={busy || conflict || dirty} onClick={() => void mutate(() => adminPrompts.restoreDefaults(state.bundled!.release_id, state.active_etag), '已恢复内置默认提示词，并保留发布历史。')}>确认恢复并发布</button>
             </div>}
           </div>}
-          <div className="pm-history-list">{state.history.map((release, index) => <div key={release.release_id} className="pm-release"><span className={`pm-release-icon ${release.release_id === state.active.release_id ? 'current' : ''}`}><Icon name="history" /></span><div className="pm-release-info"><div><strong>{release.release_id === state.active.release_id ? '当前生效版本' : `历史版本 ${state.history.length - index}`}</strong><code title={release.release_id}>{shortVersion(release.release_id)}</code></div><p>{release.actor} <span>·</span> {release.created_at ? new Date(typeof release.created_at === 'number' ? release.created_at * 1000 : release.created_at).toLocaleString() : '随应用提供'}</p></div><button className="btn" aria-label={`回滚至 ${release.release_id}`} disabled={busy || conflict || dirty || release.release_id === state.active.release_id} onClick={() => void mutate(() => adminPrompts.rollback(release.release_id, state.active_etag), '已创建回滚发布记录，仅对新任务生效。')}>{release.release_id === state.active.release_id ? '使用中' : '回滚至此版本'}</button></div>)}</div>
+          <div className="pm-history-list">{state.history.map((release, index) => <div key={release.release_id} className="pm-release-entry"><div className="pm-release"><span className={`pm-release-icon ${release.release_id === state.active.release_id ? 'current' : ''}`}><Icon name="history" /></span><div className="pm-release-info"><div><strong>{release.release_id === state.active.release_id ? '当前生效版本' : `历史版本 ${state.history.length - index}`}</strong><code title={release.release_id}>{shortVersion(release.release_id)}</code></div><p>{release.actor} <span>·</span> {release.created_at ? new Date(typeof release.created_at === 'number' ? release.created_at * 1000 : release.created_at).toLocaleString() : '随应用提供'}</p></div><button className="btn" aria-label={`回滚至 ${release.release_id}`} disabled={busy || conflict || dirty || release.release_id === state.active.release_id} onClick={() => void mutate(() => adminPrompts.rollback(release.release_id, state.active_etag), '已创建回滚发布记录，仅对新任务生效。')}>{release.release_id === state.active.release_id ? '使用中' : '回滚至此版本'}</button></div><ReleaseChanges release={release} catalogue={state.catalogue} /></div>)}</div>
         </section>
-        <section hidden={view !== 'skills'} className="pm-library" aria-labelledby="pm-skills-title"><div className="pm-card-heading"><div><span className="pm-eyebrow">规则参考</span><h3 id="pm-skills-title">Skills 规则来源（只读）</h3><p className="pm-purpose">查看各环节遵循的规范。当前版本暂不支持在线修改。</p></div><span className="pm-admin"><Icon name="lock" />只读资料</span></div><div className="pm-skill-grid">{state.skills.map((skill) => <details key={skill.path} className="pm-skill"><summary><Icon name="skills" /><span><strong>{skill.path.split('/').slice(-1)[0]}</strong><small>{skill.path.split('/').slice(0, -1).join(' / ')}</small></span><span className="pm-open">查看</span></summary><pre>{skill.text}</pre></details>)}</div></section>
-        <footer className="pm-publish-bar"><div className="pm-publish-state"><span className="pm-status"><i />已生效</span><code title={state.active.release_id}>{shortVersion(state.active.release_id)}</code><span className="pm-publish-note">发布仅影响新任务</span></div><div className="pm-publish-actions"><span>{busy ? '处理中…' : dirty ? '有未保存的编辑' : `${changedCount} 项待发布`}</span><button className="btn" disabled={busy || conflict || !prompt} onClick={() => void mutate(() => adminPrompts.save(values, state.draft_etag), '草稿已保存，尚未发布。')}>保存草稿</button><button className="btn btn-primary" disabled={busy || conflict || dirty || !state.draft} onClick={() => void mutate(() => adminPrompts.publish(state.active_etag, state.draft_etag), '整套配置已发布，仅对新任务生效。')}>发布整套草稿 <span aria-hidden="true">↗</span></button></div></footer>
+        <WorkspaceDrawer open={rulesOpen} onClose={() => setRulesOpen(false)} title="规则参考"><section className="pm-library" aria-labelledby="pm-skills-title"><div className="pm-card-heading"><div><span className="pm-eyebrow">规则参考</span><h3 id="pm-skills-title">Skills 规则来源（只读）</h3><p className="pm-purpose">查看各环节遵循的规范。当前版本暂不支持在线修改。</p></div><span className="pm-admin"><Icon name="lock" />只读资料</span></div><div className="pm-skill-grid">{state.skills.map((skill) => <details key={skill.path} className="pm-skill"><summary><Icon name="skills" /><span><strong>{skill.path.split('/').slice(-1)[0]}</strong><small>{skill.path.split('/').slice(0, -1).join(' / ')}</small></span><span className="pm-open">查看</span></summary><pre>{skill.text}</pre></details>)}</div></section></WorkspaceDrawer>
+
+        <WorkspaceDrawer open={publishOpen} onClose={() => { if (!busy) setPublishOpen(false) }} title="确认发布整套草稿">
+          <p className="pm-purpose">本次发布包含以下 {changedCount} 项提示词修改，仅影响新任务。不会只发布当前测试的模块。</p>
+          {state.catalogue.filter((item) => (values[item.id] ?? item.default) !== (state.active.values[item.id] ?? item.default)).map((item) => <details className="pm-disclosure" key={item.id}><summary>{item.name}</summary><h4>当前生效</h4><pre>{state.active.values[item.id] ?? item.default}</pre><h4>已保存草稿</h4><pre>{values[item.id] || '（空）'}</pre></details>)}
+          <div className="pm-editor-actions"><button className="btn" disabled={busy} onClick={() => setPublishOpen(false)}>暂不发布</button><button className="btn btn-primary" disabled={busy || conflict || dirty || !state.draft || changedCount === 0} onClick={() => void mutate(() => adminPrompts.publish(state.active_etag, state.draft_etag), '整套配置已发布，仅对新任务生效。')}>{busy ? '正在发布…' : '确认发布'}</button></div>
+          {error && <p role="alert" className="pm-error">{error}</p>}
+        </WorkspaceDrawer>
       </>}
     </main>
   )

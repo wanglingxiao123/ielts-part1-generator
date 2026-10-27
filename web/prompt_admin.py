@@ -49,6 +49,15 @@ def install(app, tier, user_scope_key):
             return error(ValueError("无效的历史记录页。"))
         return await asyncio.to_thread(trial_history, tier, offset)
 
+    @app.get("/api/admin/prompts/releases/{release_id}")
+    async def get_release(release_id: str, request: Request):
+        if response := denied(request):
+            return response
+        try:
+            return await asyncio.to_thread(tier.prompts.release_detail, release_id)
+        except ValueError as exc:
+            return error(exc)
+
     @app.post("/api/admin/prompts/{operation}")
     async def change_prompts(operation: str, request: Request):
         if response := denied(request):

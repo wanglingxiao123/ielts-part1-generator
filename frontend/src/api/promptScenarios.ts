@@ -1,5 +1,6 @@
 import { realTransport } from './http'
-import type { Blueprint, QuestionPackage } from '@/contracts'
+import type { Audit, Blueprint, QuestionPackage } from '@/contracts'
+import type { CrossCheck } from '@/contracts/api'
 
 export interface ScenarioRunRequest {
   request_id: string
@@ -12,6 +13,9 @@ export interface ScenarioRunRequest {
 }
 export interface ScenarioSide {
   status: string
+  attempt?: number
+  retry_action?: 'resume' | 'regenerate' | null
+  previous_attempts?: Array<{ attempt: number; status: string; error?: string; elapsed_seconds?: number }>
   stage?: string
   error?: string
   elapsed_seconds?: number
@@ -19,9 +23,12 @@ export interface ScenarioSide {
   counts?: Record<string, number>
   events?: Array<{ stage?: string; type?: string; at?: number; detail?: unknown; reason?: string }>
   material_result?: {
+    material_id?: string
+    scenario_key?: string
     material: { listening_material_parts?: Array<{ script?: { turns?: Array<{ speaker: string; text: string }> } }> }
     blueprint?: Blueprint
-    audit?: unknown
+    audit?: Audit
+    cross_check?: CrossCheck
     validation_findings?: unknown
   }
   summary?: {
@@ -47,6 +54,8 @@ export interface ScenarioHistory {
 }
 const root = '/admin/prompt-scenarios'
 export const promptScenarios = {
+  retry: (id: string, side: 'baseline' | 'candidate', attempt: number) =>
+    realTransport({ method: 'POST', path: `${root}/${encodeURIComponent(id)}/${side}/retry`, body: { attempt } }) as Promise<{ run_id: string; reused: boolean }>,
   start: (body: ScenarioRunRequest) =>
     realTransport({ method: 'POST', path: root, body }) as Promise<{ run_id: string; reused: boolean }>,
   history: (offset: number, signal?: AbortSignal) =>

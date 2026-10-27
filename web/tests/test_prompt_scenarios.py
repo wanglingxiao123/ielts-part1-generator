@@ -7,7 +7,7 @@ import pytest
 
 from prompt_config.catalogue import defaults
 from prompt_config.store import Conflict, MemoryStore, PromptStore
-from web.prompt_scenarios import start, detail, history, side_key
+from web.prompt_scenarios import start, detail, history, side_key, retry_side
 from .conftest import register
 
 
@@ -86,6 +86,78 @@ def test_admin_only_start_history_detail(client):
     assert client.post('/api/admin/prompt-scenarios', json={}).status_code == 403
     assert client.get('/api/admin/prompt-scenarios').status_code == 403
     assert client.get('/api/admin/prompt-scenarios/' + 'a' * 32).status_code == 403
+    assert client.post('/api/admin/prompt-scenarios/' + 'a' * 32 + '/baseline/retry',
+                       json={'attempt': 0}).status_code == 403
+
+
+@pytest.mark.parametrize("resumable", [True, False])
+def test_retry_only_failed_side_pinned_and_idempotent(tier, resumable):
+    body = setup(tier)
+    run_id = start(tier, body, 'admin')['run_id']
+    tier.executions.run()
+    key = side_key(run_id, 'baseline')
+    row, token = tier.prompts.storage.read(key)
+    old_batch = row['batch_id']
+    row.update(status='incomplete', error='time budget', summary={
+        'slots': [{'resumable': resumable, 'system_fault': False}]})
+    tier.prompts.storage.write(key, row, token)
+    peer, _ = tier.prompts.storage.read(side_key(run_id, 'candidate'))
+    ref = detail(tier, run_id)['versions']['baseline']
+    tier.prompts.publish('admin', None, draft_etag=body['draft_etag'])
+    assert detail(tier, run_id)['sides']['baseline']['retry_action'] == (
+        'resume' if resumable else 'regenerate')
+    assert retry_side(tier, run_id, 'baseline', 0)['reused'] is False
+    assert retry_side(tier, run_id, 'baseline', 0)['reused'] is True
+    assert len(tier.executions.work) == 3
+    tier.executions.work[-1](lambda _: None)
+    after = detail(tier, run_id)
+    assert after['sides']['baseline']['status'] == 'succeeded'
+    call = tier.runtime.calls[-1][0]
+    assert (call['batch_id'] == old_batch) is resumable
+    assert call['group_id'] == old_batch
+    assert call['_prompt_release']['release_id'] == ref['release_id']
+    assert tier.prompts.storage.read(side_key(run_id, 'candidate'))[0] == peer
+    assert tier.prompts.storage.read(f'scenario-runs/{run_id}/baseline-attempt-0.json')[0]['error'] == 'time budget'
+    assert retry_side(tier, run_id, 'baseline', 0)['reused'] is True
+    with pytest.raises(Conflict):
+        retry_side(tier, run_id, 'baseline', 1)
+
+
+def test_retry_blocks_live_peer_and_successful_side(tier):
+    run_id = start(tier, setup(tier), 'admin')['run_id']
+    with pytest.raises(Conflict):
+        retry_side(tier, run_id, 'baseline', 0)
+    tier.executions.run()
+    with pytest.raises(Conflict):
+        retry_side(tier, run_id, 'candidate', 0)
+
+
+def test_retry_setup_failure_is_terminal_and_releases_lease(tier):
+    run_id = start(tier, setup(tier), 'admin')['run_id']
+    tier.runtime.fail_baseline = True
+    tier.executions.run()
+    tier.executions.start = lambda *args: (_ for _ in ()).throw(RuntimeError('worker unavailable'))
+    with pytest.raises(RuntimeError):
+        retry_side(tier, run_id, 'baseline', 0)
+    assert detail(tier, run_id)['sides']['baseline']['status'] == 'failed'
+    assert tier.prompts.storage.read('scenario-lease.json')[0]['expires'] == 0
+
+
+def test_retry_recovers_when_archive_saved_but_reservation_write_failed(tier, monkeypatch):
+    run_id = start(tier, setup(tier), 'admin')['run_id']
+    tier.runtime.fail_baseline = True
+    tier.executions.run()
+    store = tier.prompts.storage
+    original_write = store.write
+    def fail_reservation(key, value, expected=None):
+        if key == side_key(run_id, 'baseline') and value.get('status') == 'queued':
+            raise RuntimeError('storage interruption')
+        return original_write(key, value, expected)
+    monkeypatch.setattr(store, 'write', fail_reservation)
+    with pytest.raises(RuntimeError):
+        retry_side(tier, run_id, 'baseline', 0)
+    monkeypatch.setattr(store, 'write', original_write)
+    assert retry_side(tier, run_id, 'baseline', 0)['reused'] is False
 
 
 def test_sides_pin_versions_and_do_not_publish_or_submit(tier):

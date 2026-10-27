@@ -25,6 +25,7 @@ later:
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
 import hmac
 import json
@@ -32,7 +33,7 @@ import os
 import secrets
 import threading
 import time
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Callable, Dict, List, Optional, Protocol
 
 # 200_000 rounds of PBKDF2-HMAC-SHA256. Measured ~55ms per verify on the deployment's ARM64
 # Fargate size, which is a tolerable cost on a login-only path.
@@ -64,6 +65,21 @@ class EmailNotAllowed(AuthError):
     status = 403
 
 
+class AdminRequired(AuthError):
+    code = "ADMIN_REQUIRED"
+    status = 403
+
+
+class UserConflict(AuthError):
+    code = "USER_CONFLICT"
+    status = 409
+
+
+class UserNotFound(AuthError):
+    code = "USER_NOT_FOUND"
+    status = 404
+
+
 class UserExists(AuthError):
     code = "USER_EXISTS"
     status = 409
@@ -72,6 +88,11 @@ class UserExists(AuthError):
 class InvalidCredentials(AuthError):
     code = "INVALID_CREDENTIALS"
     status = 401
+
+
+class CurrentPasswordIncorrect(AuthError):
+    code = "CURRENT_PASSWORD_INCORRECT"
+    status = 400
 
 
 class InvalidSession(AuthError):
@@ -154,10 +175,10 @@ class SessionSigner:
     def _sign(self, payload: bytes) -> str:
         return _b64(hmac.new(self._key, payload, hashlib.sha256).digest())
 
-    def issue(self, email: str, *, now: Optional[float] = None) -> str:
+    def issue(self, email: str, *, version: int = 0, now: Optional[float] = None) -> str:
         issued = int(now if now is not None else time.time())
         body = json.dumps(
-            {"sub": email, "iat": issued, "exp": issued + self.ttl_seconds},
+            {"sub": email, "ver": version, "iat": issued, "exp": issued + self.ttl_seconds},
             separators=(",", ":"), sort_keys=True,
         ).encode("utf-8")
         return "%s.%s" % (_b64(body), self._sign(body))
@@ -168,6 +189,9 @@ class SessionSigner:
         Signature is checked before the payload is parsed or trusted for anything, including
         expiry: reading `exp` off an unverified payload would let a client pick its own.
         """
+        return self.claims(token, now=now)["sub"]
+
+    def claims(self, token: str, *, now: Optional[float] = None) -> Dict[str, Any]:
         if not token or "." not in token:
             raise InvalidSession("malformed session token")
         payload_b64, signature = token.rsplit(".", 1)
@@ -185,14 +209,14 @@ class SessionSigner:
             raise InvalidSession("malformed session payload")
         if (now if now is not None else time.time()) >= expires:
             raise InvalidSession("session expired")
-        return email
+        return {"sub": email, "ver": body.get("ver", 0)}
 
 
 # ── the user store ───────────────────────────────────────────────────────────
 
 
 class UserStore(Protocol):
-    """Deliberately four methods. Anything wider invites business logic into the backend.
+    """Account reads and atomic registration/role changes.
 
     ``shared`` is not storage at all -- it answers "can another process be serving the same
     users", which is what decides whether a per-process signing key is safe.
@@ -204,14 +228,17 @@ class UserStore(Protocol):
     def put(self, user: Dict[str, Any]) -> None: ...
     def count(self) -> int: ...
     def list_emails(self) -> List[str]: ...
+    def create(self, user: Dict[str, Any]) -> Dict[str, Any]: ...
+    def set_admin(self, actor: str, email: str, desired: bool, expected: bool) -> Dict[str, Any]: ...
+    def directory(self, actor: str) -> Dict[str, Any]: ...
+    def change_password(self, actor, email, current_password, password, version, reset=False): ...
 
 
 class _DictBacked:
     """Shared read/modify/write plumbing for both concrete stores.
 
     Subclasses provide `_read`/`_write` over a single JSON blob. One blob rather than one object
-    per user because the store is also the "how many users exist" authority (first user is
-    admin), and counting objects in S3 is a list call that can lag.
+    per user so first-user registration and administrator changes share one atomic boundary.
     """
 
     shared = False
@@ -229,10 +256,103 @@ class _DictBacked:
         return self._read().get(normalise_email(email))
 
     def put(self, user: Dict[str, Any]) -> None:
-        with self._lock:
-            users = self._read()
+        def update(users):
             users[normalise_email(str(user["email"]))] = dict(user)
+        self._mutate(update)
+
+    def _mutate(self, update: Callable) -> Any:
+        with self._lock:
+            users = copy.deepcopy(self._read())
+            result = update(users)
             self._write(users)
+            return result
+
+    def create(self, user):
+        def update(users):
+            address = normalise_email(user["email"])
+            if address in users:
+                raise UserExists("该邮箱已注册")
+            record = dict(user, email=address, is_admin=not users)
+            users[address] = record
+            return record
+        return self._mutate(update)
+
+    @staticmethod
+    def _require_admin(users, actor):
+        operator = users.get(normalise_email(actor), {})
+        if not operator.get("is_admin") or operator.get("must_change_password"):
+            raise AdminRequired("仅管理员可管理用户，请刷新当前身份。")
+
+    def directory(self, actor):
+        users = self._read()
+        self._require_admin(users, actor)
+        events = [event for user in users.values() for event in user.get("role_history", []) + user.get("security_history", [])]
+        events.sort(key=lambda event: event["at"], reverse=True)
+        return {"users": [AuthService.public(users[key]) for key in sorted(users)],
+                "history": events[:50], "history_total": len(events)}
+
+    def set_admin(self, actor, email, desired, expected):
+        actor, email = normalise_email(actor), normalise_email(email)
+        if type(desired) is not bool or type(expected) is not bool:
+            raise AuthError("用户身份参数无效，请刷新页面后重试。")
+        def update(users):
+            self._require_admin(users, actor)
+            if actor == email:
+                raise UserConflict("不能修改自己的管理员身份。")
+            target = users.get(email)
+            if target is None:
+                raise UserNotFound("该邮箱尚未注册，请先让对方注册。")
+            before = bool(target.get("is_admin"))
+            if before == desired:
+                return {"user": AuthService.public(target), "changed": False}
+            if before != expected:
+                raise UserConflict("该用户的身份已改变，请刷新后重新确认。")
+            if not desired and sum(bool(user.get("is_admin")) for user in users.values()) <= 1:
+                raise UserConflict("必须至少保留一位管理员。")
+            target["is_admin"] = desired
+            target.setdefault("role_history", []).append({
+                "id": secrets.token_hex(16), "actor": actor, "email": email,
+                "before": before, "after": desired, "at": time.time(),
+            })
+            return {"user": AuthService.public(target), "changed": True}
+        return self._mutate(update)
+
+    def change_password(self, actor, email, current_password, password, version, reset=False):
+        actor, email = normalise_email(actor), normalise_email(email)
+        if not isinstance(password, str) or not MIN_PASSWORD_LENGTH <= len(password) <= 1024:
+            raise WeakPassword("新密码须为 8 至 1024 位。")
+        if not isinstance(current_password, str) or len(current_password) > 1024:
+            raise CurrentPasswordIncorrect("当前密码不正确。")
+        encoded = hash_password(password)
+        def update(users):
+            operator = users.get(actor)
+            if operator is None or operator.get("session_version", 0) != version:
+                raise InvalidSession("登录状态已失效，请重新登录。")
+            if not verify_password(current_password, operator.get("password_hash", "")):
+                raise CurrentPasswordIncorrect("当前密码不正确。")
+            if operator.get("must_change_password") and time.time() >= operator.get("temporary_password_expires_at", 0):
+                raise InvalidSession("临时密码已过期，请联系管理员。")
+            if reset:
+                self._require_admin(users, actor)
+                if actor == email or operator.get("must_change_password"):
+                    raise UserConflict("请先通过修改密码入口修改自己的密码。")
+            elif actor != email:
+                raise AdminRequired("只能修改自己的密码。")
+            target = users.get(email)
+            if target is None:
+                raise UserNotFound("该邮箱尚未注册。")
+            if verify_password(password, target.get("password_hash", "")):
+                raise WeakPassword("新密码不能与当前密码相同。")
+            target.update(password_hash=encoded,
+                          session_version=target.get("session_version", 0) + 1,
+                          must_change_password=reset,
+                          temporary_password_expires_at=time.time() + 86400 if reset else None)
+            target.setdefault("security_history", []).append({
+                "id": secrets.token_hex(16), "actor": actor, "email": email,
+                "kind": "password_reset" if reset else "password_change", "at": time.time(),
+            })
+            return AuthService.public(target)
+        return self._mutate(update)
 
     def count(self) -> int:
         return len(self._read())
@@ -323,6 +443,37 @@ class S3UserStore(_DictBacked):
             ContentType="application/json",
         )
 
+    def _mutate(self, update: Callable) -> Any:
+        from botocore.exceptions import ClientError
+        # Serialize all account mutations, including registration, across Web tasks.
+        with self._lock:
+            for _ in range(5):
+                try:
+                    response = self._client.get_object(Bucket=self.bucket, Key=self.key)
+                    with response["Body"] as body:
+                        users = json.loads(body.read()).get("users") or {}
+                    etag = response["ETag"]
+                except ClientError as exc:
+                    if str(exc.response.get("Error", {}).get("Code")) not in {
+                        "404", "NoSuchKey", "NotFound"
+                    }:
+                        raise
+                    users, etag = {}, None
+                result = update(users)
+                try:
+                    self._client.put_object(
+                        Bucket=self.bucket, Key=self.key,
+                        Body=json.dumps({"users": users}, ensure_ascii=False,
+                                        sort_keys=True).encode("utf-8"),
+                        ContentType="application/json",
+                        **({"IfMatch": etag} if etag else {"IfNoneMatch": "*"}),
+                    )
+                    return result
+                except ClientError as exc:
+                    if exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode") not in (409, 412):
+                        raise
+            raise UserConflict("用户数据正在被其他操作更新，请稍后重试。")
+
 
 # ── email domain policy ──────────────────────────────────────────────────────
 
@@ -380,40 +531,51 @@ class AuthService:
             raise UserExists("该邮箱已注册")
         # The first account to exist is the admin. Checked against the store rather than a flag
         # so a wiped store re-bootstraps instead of ending up with no admin at all.
-        is_admin = self.store.count() == 0
         user = {
             "email": address,
             "password_hash": hash_password(password),
-            "is_admin": is_admin,
             "created_at": int(time.time()),
         }
-        self.store.put(user)
-        return self.public(user)
+        return self.public(self.store.create(user))
 
     def login(self, email: str, password: str) -> Dict[str, Any]:
+        return self.public(self._authenticate(email, password))
+
+    def login_session(self, email: str, password: str):
+        user = self._authenticate(email, password)
+        return self.public(user), self.signer.issue(user["email"], version=user.get("session_version", 0))
+
+    def _authenticate(self, email: str, password: str) -> Dict[str, Any]:
         address = normalise_email(email)
         user = self.store.get(address)
         if user is None or not verify_password(password, str(user.get("password_hash", ""))):
             # One message for both branches: distinguishing them tells an attacker which
             # addresses are registered.
             raise InvalidCredentials("邮箱或密码不正确")
-        return self.public(user)
+        if user.get("must_change_password") and time.time() >= user.get("temporary_password_expires_at", 0):
+            raise InvalidCredentials("临时密码已过期，请联系管理员重新重置。")
+        return user
 
     def issue_token(self, email: str) -> str:
-        return self.signer.issue(normalise_email(email))
+        user = self.store.get(normalise_email(email)) or {}
+        return self.signer.issue(normalise_email(email), version=user.get("session_version", 0))
 
     def identify(self, token: Optional[str]) -> Dict[str, Any]:
         """Cookie -> user record. Raises `InvalidSession` for tampered, expired, or deleted.
 
-        A valid signature over a user who no longer exists is still a rejection: deleting a row
-        from the store is the only revocation this design has.
+        A token binds email and password version. The latest stored role governs every request;
+        deleting an account also invalidates its otherwise correctly signed session.
         """
         if not token:
             raise InvalidSession("no session cookie")
-        email = self.signer.verify(token)
-        user = self.store.get(email)
+        claims = self.signer.claims(token)
+        user = self.store.get(claims["sub"])
         if user is None:
             raise InvalidSession("session refers to an unknown account")
+        if claims["ver"] != user.get("session_version", 0):
+            raise InvalidSession("密码已变更，请重新登录。")
+        if user.get("must_change_password") and time.time() >= user.get("temporary_password_expires_at", 0):
+            raise InvalidSession("临时密码已过期，请联系管理员。")
         return self.public(user)
 
     @staticmethod
@@ -423,6 +585,7 @@ class AuthService:
             "email": user["email"],
             "is_admin": bool(user.get("is_admin")),
             "created_at": user.get("created_at"),
+            "must_change_password": bool(user.get("must_change_password")),
         }
 
 

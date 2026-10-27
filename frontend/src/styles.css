@@ -108,6 +108,12 @@ a {
   flex: 1;
 }
 
+@media (max-width: 1000px) {
+  .topbar { overflow-x: auto; gap: 12px; }
+  .topbar > * { flex-shrink: 0; }
+  .topbar h1, .topbar nav a, .topbar .who { white-space: nowrap; }
+}
+
 /* 「还没有生成过材料」那一屏。三个页签现在都永远可点，所以「点进来什么都没有」是一个要好好回答的
    状态，而不是一个要靠灰置去回避的状态。 */
 .empty-batches {

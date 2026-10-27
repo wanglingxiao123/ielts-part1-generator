@@ -9,7 +9,8 @@
  * "redirect to a Hosted UI that does not exist".
  *
  * The cookie is HttpOnly, so mounting cannot read a session out of storage: the
- * single source of truth is `GET /api/auth/me`, called once on mount. That probe
+ * single source of truth is `GET /api/auth/me`, checked on mount and periodically
+ * while signed in (also when returning to the window). The initial probe
  * is also why `isLoading` exists — rendering the login form before it answers
  * would flash a form at an already-signed-in user on every reload.
  */
@@ -49,6 +50,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(next)
     setError(null)
   }, [])
+
+  useEffect(() => {
+    if (!user?.email) return
+    let disposed = false
+    let checking = false
+    async function refreshIdentity() {
+      if (checking || document.visibilityState === 'hidden') return
+      checking = true
+      try {
+        const next = await authApi.me()
+        if (!disposed) setUser(next)
+      } catch {
+        // Keep the session on a network failure; every management API still checks its role.
+      } finally { checking = false }
+    }
+    const timer = setInterval(() => void refreshIdentity(), 30000)
+    window.addEventListener('focus', refreshIdentity)
+    document.addEventListener('visibilitychange', refreshIdentity)
+    return () => {
+      disposed = true; clearInterval(timer)
+      window.removeEventListener('focus', refreshIdentity)
+      document.removeEventListener('visibilitychange', refreshIdentity)
+    }
+  }, [user?.email])
 
   const signUp = useCallback(async (email: string, password: string) => {
     const next = await authApi.register(email, password)

@@ -55,6 +55,19 @@ def detail(tier, run_id):
     result["status"] = ("running" if any(x in ("queued", "running") for x in states)
                         else "completed" if all(x == "succeeded" for x in states)
                         else "finished_with_issues")
+    for row in result["sides"].values():
+        row["attempt"] = row.get("attempt", 0)
+        row["retry_action"] = None
+        if result["status"] != "running" and row["status"] != "succeeded":
+            slots = (row.get("summary") or {}).get("slots") or []
+            row["retry_action"] = ("resume" if any(
+                slot.get("resumable") and not slot.get("system_fault") for slot in slots
+            ) else "regenerate")
+            if row["retry_action"] == "resume" and any(
+                (slot.get("last_failure") or {}).get("reason") == "time_budget"
+                for slot in slots
+            ):
+                row["error"] = "本次执行时间已用完，已保存检查点，可以继续生成。"
     return result
 
 
@@ -175,6 +188,66 @@ def start(tier, body, actor):
     return {"run_id": run_id, "reused": False}
 
 
+def retry_side(tier, run_id, side, attempt):
+    """Reserve only the failed side; the observed attempt is the idempotency key."""
+    if side not in SIDES or not re.fullmatch(r"[a-f0-9]{32}", run_id):
+        raise ValueError("无效的对比记录或侧别。")
+    if type(attempt) is not int or attempt < 0:
+        raise ValueError("缺少有效的尝试编号，请刷新记录。")
+    store = tier.prompts.storage
+    record = detail(tier, run_id)
+    if record is None:
+        raise ValueError("对比记录不存在。")
+    row = record["sides"][side]
+    if row["attempt"] > attempt:
+        return {"run_id": run_id, "reused": True}
+    if row["attempt"] != attempt or not row["retry_action"]:
+        raise Conflict("该侧已完成或仍在执行，请刷新查看。")
+    lease, token = store.read("scenario-lease.json")
+    if lease and lease.get("expires", 0) > time.time():
+        raise Conflict("已有场景对比正在执行，请等待完成。")
+    lease_token = store.write("scenario-lease.json",
+                             {"run_id": run_id, "expires": time.time() + WALL}, token)
+    reserved = False
+    try:
+        old, old_token = store.read(side_key(run_id, side))
+        if old is None or old.get("attempt", 0) != attempt:
+            raise Conflict("尝试记录已改变，请刷新。")
+        archive_key = f"{ROOT}{run_id}/{side}-attempt-{attempt}.json"
+        archived, _ = store.read(archive_key)
+        if archived is None:
+            store.write(archive_key, old)
+        next_attempt = attempt + 1
+        batch = old.get("batch_id", f"prompt-compare-{run_id}-{side}")
+        resume = row["retry_action"] == "resume"
+        now = time.time()
+        updated = {
+            "status": "queued", "stage": "queued", "created_at": now,
+            "deadline_at": now + WALL, "attempt": next_attempt,
+            "batch_id": batch if resume else f"prompt-compare-{run_id}-{side}-{next_attempt}",
+            "events": [], "counts": {}, "elapsed_seconds": 0,
+            "previous_attempts": (old.get("previous_attempts") or []) + [{
+                "attempt": attempt, "status": row["status"], "error": old.get("error"),
+                "elapsed_seconds": old.get("elapsed_seconds"), "action": row["retry_action"],
+            }],
+        }
+        if resume and old.get("material_result"):
+            updated["material_result"] = old["material_result"]
+        store.write(side_key(run_id, side), updated, old_token)
+        reserved = True
+        tier.executions.start(f"prompt-scenario:{run_id}:{side}:{next_attempt}",
+                              lambda publish: run_side(tier, record, side, lease_token))
+    except Exception:
+        if reserved:
+            current, etag = store.read(side_key(run_id, side))
+            if current and current["status"] == "queued":
+                store.write(side_key(run_id, side), dict(
+                    current, status="failed", error="启动失败，可重新尝试。"), etag)
+        store.write("scenario-lease.json", {"expires": 0}, lease_token)
+        raise
+    return {"run_id": run_id, "reused": False}
+
+
 def run_side(tier, record, side, lease_etag):
     store = tier.prompts.storage
     run_id = record["run_id"]
@@ -193,10 +266,12 @@ def run_side(tier, record, side, lease_etag):
     try:
         save()
         ref = record["versions"][side]
-        batch_id = f"prompt-compare-{run_id}-{side}"
+        group_id = f"prompt-compare-{run_id}-{side}"
+        batch_id = row.get("batch_id", group_id)
+        row["batch_id"] = batch_id
         content_type, stream, _ = tier.runtime.invoke({
             "action": "generate_sets", "scenarios": [record["scenario"]["id"]], "count": 1,
-            "batch_id": batch_id, "group_id": batch_id, "model_id": record["model_id"],
+            "batch_id": batch_id, "group_id": group_id, "model_id": record["model_id"],
             "_prompt_release": {k: ref[k] for k in ("release_id", "digest")},
         }, session_id=new_session_id("prompt-scenario"))
         if "text/event-stream" not in content_type:
@@ -269,7 +344,7 @@ def run_side(tier, record, side, lease_etag):
         finally:
             # The last terminal side releases the shared lease. CAS handles racing finishers.
             other, _ = store.read(side_key(run_id, "candidate" if side == "baseline" else "baseline"))
-            if other and other["status"] not in ("queued", "running"):
+            if other and projected(other)["status"] not in ("queued", "running"):
                 try:
                     store.write("scenario-lease.json", {"expires": 0}, lease_etag)
                 except Conflict:
@@ -290,6 +365,19 @@ def install(app, tier, user_scope_key):
             if not isinstance(body, dict):
                 raise ValueError("请求必须为对象。")
             return await asyncio.to_thread(start, tier, body, request.scope[user_scope_key]["email"])
+        except (ValueError, TypeError) as exc:
+            return JSONResponse({"error": {"message": str(exc)}},
+                                409 if isinstance(exc, Conflict) else 400)
+
+    @app.post("/api/admin/prompt-scenarios/{run_id}/{side}/retry")
+    async def retry(run_id: str, side: str, request: Request):
+        if response := denied(request):
+            return response
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError("请求必须为对象。")
+            return await asyncio.to_thread(retry_side, tier, run_id, side, body.get("attempt"))
         except (ValueError, TypeError) as exc:
             return JSONResponse({"error": {"message": str(exc)}},
                                 409 if isinstance(exc, Conflict) else 400)
