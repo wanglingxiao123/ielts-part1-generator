@@ -1,9 +1,5 @@
 # IELTS Listening Part 1 材料生成系统
 
-> **中国区迁移分支（已部署，持续验收）**：默认宁夏，公网 ALB HTTP `:9000`，不使用 CloudFront。
-> 模型采用海外 Bedrock 已托管 Kimi K2.5 / Kimi K3，生产凭证通过中国区 Secrets Manager 引用。Runtime、Web、音频及版本导出已部署并验证；旧 Mantle/GPT 适配保留，GPT 选项暂时隐藏。客户场景验收仍在继续。
-> 当前操作说明见 [中国区部署说明](docs/CHINA_DEPLOYMENT.md)；海外部署使用 `main` 或历史版本。
-
 这是一个面向 IELTS 出题人员的材料生产与审核系统。用户选择场景和数量后，系统生成候选
 听力对话、十个信息点和对应题目，分别执行程序校验与独立 AI 盲审，再将完整套件逐套返回浏览器。
 
@@ -39,9 +35,9 @@ teardown，也不要在没有明确要求时重复运行完整测试套件。
 digest、健康检查和遗留问题。
 ```
 
-> 🇨🇳 **迁移到 AWS 中国区（宁夏）：** 从 AWS Global 迁移到中国区的架构设计（模型服务提供商变更、
-> 跨云调用认证与网络加固、部署脚本适配）见
-> [`docs/China_Region_架构设计.md`](docs/China_Region_架构设计.md)。
+> 🇨🇳 **AWS Global 与中国区（宁夏）服务对比：** 应用入口、模型服务、认证、语音、存储及发布方式的差异见
+> [架构及服务对比](docs/China_Region_架构设计.md)。部署、更新与回退见
+> [中国区部署指南](docs/CHINA_DEPLOYMENT.md)，版本记录见 [发布台账](deploy/RELEASES.md)。
 
 ## 1. 项目目录
 
@@ -84,7 +80,7 @@ digest、健康检查和遗留问题。
 │   ├── request.py                    # 生成请求解析
 │   ├── agents.py                     # 两类 Strands Agent、Skill 池和工具权限
 │   ├── sandboxed_metrics.py          # 在 AgentCore Code Interpreter 中计算审核指标
-│   ├── model/provider.py             # Bedrock Mantle 模型适配
+│   ├── model/provider.py             # Kimi Chat Completions 与历史 Mantle Responses 适配
 │   ├── steps/
 │   │   └── agent_steps.py            # generate、audit、revise 的输入输出边界
 │   ├── deterministic/                # 校验、指标、锚点与交叉检查包装
@@ -93,7 +89,7 @@ digest、健康检查和遗留问题。
 │   │   ├── question_loop.py          # 单套题目生成、审核与最多两轮修改
 │   │   ├── manual_question_revision.py # 题面级批注修订
 │   │   ├── manual_question_replan.py # 保持材料不变的完整重命题
-│   │   ├── manual_material_revision.py # 修改材料并重建蓝图与十题
+│   │   ├── accepted_material_revision.py # 基于采用版本修改相关事实、答案与证据
 │   │   ├── manual_material_local_revision.py # 单个 Turn 的材料原文局部修改
 │   │   ├── delivery.py               # 完整套件、换材料、断点与精确数量交付
 │   │   ├── batch.py                  # 旧的仅材料 action 与测试入口
@@ -102,6 +98,7 @@ digest、健康检查和遗留问题。
 │   ├── scripts/                      # 部署、冒烟和 CI 门禁
 │   ├── tests/                        # 后端测试
 │   └── docs/                         # 时延、模型接入和交接记录
+├── prompt_config/                    # 共享草稿、发布版本、任务绑定与默认提示词
 ├── qti_export/                       # 题目包 → QTI 2.2.4 内容包（导出给下游题库）
 │   ├── README.md                     # 字段映射、容错规则、准入门禁
 │   ├── questions_input.py            # 输入读取与门禁 G1–G6
@@ -121,7 +118,8 @@ digest、健康检查和遗留问题。
 │   ├── app.py                        # API、静态文件与认证入口
 │   ├── fanout.py                     # 每套一次 Runtime invocation，合并为 SSE
 │   ├── runtime_client.py             # SigV4 AgentCore 客户端
-│   ├── auth.py                       # 登录、session 和用户存储
+│   ├── auth.py                       # 登录、session、管理员与密码管理
+│   ├── batch_recovery.py             # 断点恢复、模型故障重试与请求去重
 │   ├── batch_store.py                # 批次持久化
 │   ├── comment_store.py              # `_comments/` 单人批注存储与校验
 │   ├── question_versions.py           # 修订请求与不可变版本的持久化/采用
@@ -141,15 +139,13 @@ digest、健康检查和遗留问题。
 │   ├── vitest.config.ts
 │   └── tsconfig.json
 ├── deploy/
-│   ├── config.sh                     # 共享资源名和部署参数
-│   ├── provision.sh                  # S3、ECR、ECS、IAM、日志组
-│   ├── runtime.sh                    # 创建/更新 AgentCore Runtime
-│   ├── settings.sh                   # 中国区、分区和端口配置（离线）
-│   ├── edge.sh                       # 公网 ALB、安全组、HTTP 非标准端口
-│   ├── service.sh                    # 构建 Web 镜像并创建 ECS 服务
-│   ├── start.sh / stop.sh            # 日常启停
-│   ├── status.sh                     # 资源状态与访问地址
-│   └── teardown.sh                   # 拆除资源
+│   ├── china_infra.py                # prepare / edge / web / status
+│   ├── push_image.py                 # ARM64 镜像推送与 digest 固定
+│   ├── runtime_release.py           # Runtime 发布和旧镜像回退
+│   ├── model_credentials.py         # 海外模型专用凭证与中国区 Secret
+│   ├── model_access.py              # Kimi K3 调用权限
+│   ├── runtime_role.py              # 中国区 Runtime 执行角色
+│   └── RELEASES.md                  # 发布记录规范与历史入口
 └── docs/ui/                          # UI 原型
 ```
 
@@ -162,7 +158,7 @@ flowchart LR
     WEB["ECS Fargate<br/>FastAPI Web"]
     RT["AgentCore Runtime<br/>生成与审核 Loop"]
     CI["AgentCore Code Interpreter<br/>隔离计算审核指标"]
-    MODEL["海外 Bedrock Kimi<br/>生产接入待验证"]
+    MODEL["海外 Bedrock Kimi<br/>K2.5 / K3"]
     S3["S3<br/>材料、题目、断点、批注、音频"]
     SSM["SSM<br/>Session Secret"]
     POLLY["Polly<br/>按需音频"]
@@ -186,13 +182,13 @@ flowchart LR
 | Web / ECS | 登录、批次历史、后台执行、修订版本、调用 Runtime，并把运行进度投影为 SSE |
 | AgentCore Runtime | 创建 Strands Agent，执行材料与题目的生成、校验、盲审、修改和按需音频 action；`PUBLIC` 网络模式用于访问 AWS 公网服务 |
 | AgentCore Code Interpreter | 在空白远程环境中运行审核指标脚本；只接收脚本和当前 `material` |
-| 模型服务 | 海外 Bedrock Kimi K2.5；旧 GPT/Mantle 适配保留，生产凭证通过中国区 Secrets Manager 引用 |
+| 模型服务 | 海外 Bedrock Kimi K2.5 / K3；旧 GPT/Mantle 适配保留，生产凭证通过中国区 Secrets Manager 引用 |
 | S3 | 保存候选材料、题目包、批次、断点、用户数据、个人批注、审核状态和按需生成的音频 |
 | SSM | 保存 Web session 签名密钥，避免容器重启后用户集体掉线 |
 | Polly | 仅在用户主动生成音频时合成英式语音 |
 
 登录后可在顶部导航栏选择部署允许的模型，当前中国区展示 Kimi K2.5 和 Kimi K3，默认选中 K2.5；
-GPT 因实机调用报告 400 暂时隐藏，适配代码保留。模型目录与应用部署区域独立。当前选择会用于
+GPT 适配代码作为历史兼容保留，不在中国区交付模型列表中开放。模型目录与应用部署区域独立。当前选择会用于
 之后提交的材料生成、题目修改、重新命题和材料修改，刷新页面后仍会保留。已经运行的任务继续使用
 提交时的模型，不会中途切换；`IELTS_MODEL_ID` 仍是目录读取失败或未指定模型时的部署默认值。
 
@@ -224,7 +220,7 @@ GPT 因实机调用报告 400 暂时隐藏，适配代码保留。模型目录�
 - **提交审核**：只记录用户选择的材料，不调用 Polly，也不会删除同场景的其他候选材料。
 
 Runtime 立即返回 job id，浏览器通过 `audio_status` 轮询。合成完成后才能通过
-`presign_audio` 获得限时播放地址。底层仍保留 `select` action 作为兼容入口，但当前“提交审核”
+`presign_audio` 获得本站鉴权音频地址。底层仍保留 `select` action 作为兼容入口，但当前“提交审核”
 流程不会调用它。这样生成批次和提交审核都不会因为 30 到 45 次 Polly 请求而变慢。
 
 ### 2.4 网络与凭证边界
@@ -233,19 +229,20 @@ Runtime 立即返回 job id，浏览器通过 `audio_status` 轮询。合成完�
 - Web 使用 ECS task role 的临时凭证签名 `InvokeAgentRuntime`，没有长期 access key。
 - Runtime 不直接面向浏览器。当前部署使用 AgentCore `PUBLIC` 网络模式，但调用托管 Runtime
   endpoint 仍需 SigV4 签名和 `bedrock-agentcore:InvokeAgentRuntime` 权限。
-- S3 对象全部私有；音频通过预签名 URL 播放。
+- S3 对象全部私有；浏览器通过 Web 的 `/api/material-audio` 鉴权代理播放音频。
 - 公网 ALB 使用非标准 HTTP 端口，容器内部仍为 80；容器安全组仅允许 ALB 访问。
 - Web 每 15 秒发 SSE 心跳，ALB idle timeout 默认为 120 秒；部署后仍需验证客户网络长连接。
-- 当前 POC 入口没有 HTTPS 加密；非标准端口不等于备案豁免。
+- 当前入口使用 HTTP，没有 HTTPS 传输加密；自有域名与 HTTPS 接入需另行配置。
 
 ### 2.5 鉴权与用户池
 
 系统**没有使用 Cognito**。`web/auth.py` 将用户保存在
 `s3://ielts-part1-materials-{account}/web/users.json`，使用 PBKDF2 密码摘要和由 SSM 密钥签名的
 7 天 HttpOnly cookie；`ALLOWED_EMAIL_DOMAINS` 控制新用户注册。本地开发可回退到本地 JSON。
-注册请使用 `@example.com` 邮箱（`deploy/config.sh` 默认值）。部署最早一步就应确认或覆盖
-`ALLOWED_EMAIL_DOMAINS`；显式设为 `*` 会允许任意邮箱域名注册，`deploy/service.sh` 会拒绝这种配置。
-这套方案面向小规模、受控用户使用，不提供邮箱验证、找回密码、MFA 或企业 SSO。
+注册邮箱须属于部署时通过 `china_infra.py web --email-domains` 配置的客户域名；
+`example.com` 仅为工具默认示例，交付时应替换。部署工具拒绝 `*`。
+第一个注册成功的账户自动成为管理员，首次开放入口时应由指定负责人完成注册，再由管理员管理其他账号。
+用户可在账户菜单修改密码；忘记密码时联系管理员重置。当前不提供邮箱验证、自助邮件找回、MFA 或企业 SSO。
 
 ### 2.6 题目如何交付给下游（QTI 2.2.4 导出）
 
@@ -265,13 +262,12 @@ ielts-<material_id>-v<n>.zip
 
 - **导出的是页面正在显示的版本**，版本号进 `assessmentItem/@identifier`（`ielts-<material_id>-v<n>`），
   同一材料的两个版本在下游题库里不会互相覆盖。`?version_id=` 缺省为当前采用版本。
-- **先过门禁，再转换；不过就整份拒绝（422）并列出全部原因。** 门禁重放上游的一致性结论：审核通过、
-  命题与盲审两侧答案一致、题号闭合、字数上限自洽。绝不把出问题的题丢掉后导出九道题的包。
-- **不声明产不出来的资源。** 这条流水线没有听力音频可交付，item 里只留 `[audio pending]` 占位，
-  manifest 不声明音频；音频由下游另行挂载。声明了而不存在的资源能过 XSD，却会让导入直接失败。
+- **按老师选定版本导出**：检查题目结构、十题完整性和可序列化性；失败返回 422，不丢题后导出残缺包。
+  页面路径不重新裁决历史模型审核意见，也不重新生成答案。
+- **音频由下游另行挂载**：QTI 包不包含音频，manifest 不声明音频资源。
 
-答案的容错集（`mapping/mapEntry`）按 `qti_export/README.md` §3 的规则从标准答案、卷面文字和上游
-标注的竞争答案推导；无法自动决定的判分口径写进 `review.txt`，下游导入前应有人看过。
+页面导出保留所选版本的标准答案及显式 `alternatives`，不推导额外可接受答案。
+离线 CLI 的审核门禁与答案扩展规则独立说明于 [QTI 模块文档](qti_export/README.md)，不能套用到页面导出。
 `?format=item` 只取 item XML，`?format=summary` 取 JSON 概览。离线转换：
 `python3 -m qti_export <material_id>.json -o build/ --validate`。
 
@@ -321,10 +317,11 @@ flowchart TB
         CL -- "无需修改" --> NC["记录理由与引证<br/>版本不变"]
         CL -- "局部修题" --> QR["只修改锚定题目"]
         CL -- "重新命题" --> RP["确认后重规划蓝图<br/>重建完整十题"]
-        CL -- "修改材料" --> MR["确认后修改材料<br/>重建蓝图与十题"]
+        CL -- "修改材料" --> MR["确认后修改相关事实<br/>同步答案与证据"]
         QR --> QA["完整校验 +<br/>独立盲审"]
         RP --> QA
-        MR --> QA
+        MR --> MI["修改范围与关联影响检查"]
+        MI --> NV
         QA --> NV["生成不可变新版本<br/>不自动采用"]
         NV --> AD["人工检查并采用"]
     end
@@ -366,7 +363,8 @@ flowchart TB
    时先重启一次题目阶段，再失败则更换材料。
 9. **完整交付**：每套必须同时包含材料和十道题才算完成；要求 N 套时，N 套全部完成才算成功。
 10. **人工评价与版本修订***：交付后可以针对题目提交批注。系统先判断无需修改、局部修题、重新命题
-    或修改材料；需要执行时重新通过完整校验和独立盲审，生成一个不会自动采用的新版本。此步骤是
+    或修改材料；按相应路径检查质量。材料事实修改只检查修改范围和关联影响，不重新裁决无关的既有问题，
+    生成一个不会自动采用的新版本。此步骤是
     后续优化能力，不是生成完整套件的必经阶段。
 
 `*` 表示可选的交付后流程。
@@ -412,7 +410,7 @@ title: 酒店预订
 客户联系酒店前台咨询并预订房间……
 ```
 
-### 3.2 创建本轮所需的 Agent
+### 3.2 创建当前流程所需的 Agent
 
 进入具体 AI 步骤时，Python 根据当前阶段创建生成 Agent 或审核 Agent。Agent 不是运行时生成的
 一段新代码；`backend/agents.py` 保存固定定义，Python 每次调用时据此创建一个新的 Strands
@@ -610,7 +608,7 @@ Form / Note / Table，同时检查蓝图的题型和分组符合材料的信息�
 | `no_change` | 记录理由和材料/题目引证，不创建版本 |
 | `question_only` | 只允许修改批注锚定题目的题面、答案键或证据；材料和蓝图不变 |
 | `replan_questions` | 用户确认后重建蓝图和完整十题；可用 `layout_only` 保留原信息点，仅调整 Form/Note/Table 和题组边界 |
-| `revise_material` | 用户确认后修改听力稿，并从新材料重建蓝图、完整十题和对应音频归属 |
+| `revise_material` | 用户确认后，以采用版本为基础修改相关原文事实，同步关联蓝图、答案和证据；无关题面与原文不变，新音频需重新生成 |
 
 原文页支持对单个非旁白 Turn 提交局部修改。`revise_material_local` 只采用锚定 Turn 的文字变化；
 题目、答案、题组和其他 Turn 保持不变。越界意见只返回原因，不创建版本。原文发生变化后，新版本音频
@@ -652,7 +650,7 @@ Runtime read timeout 为 3450 秒。
 | `backend/orchestration/question_loop.py` | 十道题的生成、校验、盲审、交叉检查和最多两轮修改 |
 | `backend/orchestration/manual_question_revision.py` | 批注范围内的局部题目修改 |
 | `backend/orchestration/manual_question_replan.py` | 材料不变的蓝图重规划和完整重命题 |
-| `backend/orchestration/manual_material_revision.py` | 材料、蓝图和十题的一致修订 |
+| `backend/orchestration/accepted_material_revision.py` | 采用版本的范围内事实修改与关联影响检查 |
 | `backend/orchestration/manual_material_local_revision.py` | 单个 Turn 的材料原文局部修改与质量门禁 |
 | `backend/orchestration/delivery.py` | slot 状态、可行性预检、题目重启、换材料、断点和精确数量交付 |
 | `backend/orchestration/slot_store.py` | `_slots/` 与 `_questions/` 的 S3 持久化 |
@@ -685,68 +683,49 @@ Skill 自动发现不等于新学科已经端到端可用。扩展 Reading/Writi
 
 ## 4. 部署前准备
 
-本分支实现中国区基础设施准备和海外 Kimi 本地适配，生产 Runtime 凭证已有专用配置工具，正式发布仍待验收。请先阅读
-[中国区部署说明](docs/CHINA_DEPLOYMENT.md) 和 [Agent 部署指南](AGENT_DEPLOYMENT.md)。
+当前完整发布工具支持中国区宁夏 `cn-northwest-1`。准备中国区账号/profile、海外模型账号/profile、
+可访问的 Docker ARM64 构建环境和客户注册邮箱域名。账号需具备默认 VPC，以及至少两个可用区中有公网 IGW 路由的子网。
+应用资源与海外模型区域分别配置；当前工具不负责迁移历史数据。
 
-- 默认 `cn-northwest-1`，也支持 `cn-north-1`；不接受海外部署区域。
-- 使用独立中国区账号与凭证。所有资源在目标账号重新创建，不迁移历史数据。
-- ARN 使用 `aws-cn`；ECR 使用 `amazonaws.com.cn` 后缀。模型区域不能决定部署区域。
-- 基础镜像和依赖下载、账号权限、配额及具体服务行为仍需目标环境验证。
-- 公网入口拟定为 `http://<ALB DNS>:9000`；域名和证书不是本阶段前置条件，但它不是 HTTPS。
+## 5. 部署、更新与回退
 
-## 5. 分阶段准备与验证
+唯一现行操作流程见 [中国区部署指南](docs/CHINA_DEPLOYMENT.md)：
 
-配置示例（仅设置本地变量，不创建资源）：
+1. 准备海外模型凭证、中国区 Secret 和 Runtime 角色；启用 K3 时配置独立推理权限。
+2. 用 `china_infra.py prepare` 准备资源，构建镜像并用 `push_image.py` 推送唯一标签，保存 digest。
+3. 用 `runtime_release.py` 发布 Runtime，查询并确认 `READY`。
+4. 用 `china_infra.py edge`、`web` 发布入口与 Web，使用 `status` 检查目标健康与部署状态。
+5. 验证客户操作链路并记录发布信息。更新只发布受影响的层；回退复用已验证旧 digest，并核对配置兼容性。
 
-```bash
-export AWS_REGION=cn-northwest-1
-export ALB_PUBLIC_PORT=9000
-export ALLOWED_EMAIL_DOMAINS=example.com
-```
-
-`provision.sh` 和 `edge.sh` 分别准备基础资源、ALB；`status.sh` 显示 ALB 地址。
-运行这些脚本前需要明确目标账号和资源变更授权；模型凭证与角色工具先输出只读计划。
-
-`runtime.sh`、模型探针和 Runtime 回退会主动停止，等待采用密钥引用的正式 Runtime 发布流程与镜像验收。
-**目前不能照旧执行整套从零部署，也不能把基础设施适配当作完整生成服务已经可用。**
-Web 发布仍依赖可用 Runtime。生产接入完成后再验证完整部署和业务链路。
-
-```bash
-.venv-backend/bin/python -m pytest backend/tests/test_china_deployment.py -q
-```
-
-测试使用模拟 AWS 返回，不访问云端。`start.sh` / `stop.sh` 只改变 Web 副本数，保留 ALB；
-`rollback.sh --taskdef <revision>` 用于 Web 回退，模型相关回退暂缓。
-`teardown.sh` 为显式拆除入口，不在本轮执行；删除 ALB 后原访问地址不能保证保留。
+云端写入工具默认 dry-run，添加 `--apply` 才执行；本地镜像构建会实际运行。
+旧 shell 脚本保留为历史参考，不作为中国区交付部署入口。
 
 ## 6. 部署资源与配置
 
 ### 6.1 创建的主要资源
 
-S3 桶、ECR 仓库、ECS 集群、CloudWatch 日志组、IAM 角色、安全组、目标组和公网 ALB。
-不再创建 CloudFront。AgentCore Runtime 在密钥引用发布流程与镜像验收后部署。
+中国区 S3、ECR、ECS、CloudWatch、IAM 角色、Secrets Manager、SSM、AgentCore Runtime、ALB 和安全组。
+Code Interpreter 和 Polly 由 Runtime 按需调用。当前发布工具不创建 CloudFront。
 
-### 6.2 部署参数
+### 6.2 部署工具支持范围
 
-| 变量 | 默认值 | 说明 |
-|---|---|---|
-| `AWS_REGION` | `cn-northwest-1` | 支持宁夏和北京，统一 `AWS_DEFAULT_REGION` |
-| `AWS_PARTITION` | `aws-cn` | 中国区资源 ARN 分区 |
-| `AWS_DNS_SUFFIX` | `amazonaws.com.cn` | ECR 等部署地址后缀 |
-| `ALB_PUBLIC_PORT` | `9000` | 公网 HTTP，拒绝 80/443/8080 和非法端口 |
-| `WEB_PORT` | `80` | 容器内部端口，仅 ALB 可访问 |
-| `INGRESS_CIDR` | `0.0.0.0/0` | 可收窄为客户公网出口 CIDR |
-| `ALB_IDLE_TIMEOUT` | `120` | 大于 Web 15 秒 SSE 心跳 |
-| `VPC_ID` / `SUBNET_IDS` | 自动发现 | 可显式配置 VPC 和不同可用区的公共子网 |
+| 配置 | 当前实现 |
+|---|---|
+| 账号与区域 | 显式 profile、预期账号及 `--region cn-northwest-1` |
+| 网络 | 默认 VPC、跨 AZ 公网子网；不接受旧 shell 的 VPC/子网覆盖变量 |
+| 入口 | ALB HTTP `0.0.0.0/0:9000` → Web `:80`；容器仅允许 ALB 访问 |
+| 长连接 | ALB idle timeout 120 秒，Web 心跳 15 秒 |
+| 镜像 | 同账号中国区 ECR 完整 `URI@sha256:<digest>` |
+| 注册域名 | `--email-domains '<客户邮箱域名>'`，多个域名以逗号分隔 |
 
-完整说明见 [中国区部署说明](docs/CHINA_DEPLOYMENT.md)。
+以下运行环境变量与部署 CLI 参数用途不同；脚本未暴露的配置需先评估实现改动，不能通过旧 shell 变量覆盖。
 
 ### 6.3 Web 运行参数
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `ALLOWED_EMAIL_DOMAINS` | `example.com` | 允许注册的邮箱域名；`deploy/config.sh` 默认值 |
-| `SESSION_SECRET` | 无 | `service.sh` 生成并从 SSM 注入 |
+| `ALLOWED_EMAIL_DOMAINS` | `example.com` | 允许注册的邮箱域名；交付时通过 `--email-domains` 配置 |
+| `SESSION_SECRET` | 无 | `china_infra.py web` 首次生成并从 SSM 注入 |
 | `AGENT_RUNTIME_ARN` | 部署时注入 | Runtime ARN |
 | `IELTS_AUDIO_BUCKET` | 项目 S3 桶 | 材料与按需音频存储 |
 | `USER_STORE_S3_BUCKET` | 项目 S3 桶 | 用户存储；本地未设时回退为本地 JSON |
@@ -758,7 +737,7 @@ S3 桶、ECR 仓库、ECS 集群、CloudWatch 日志组、IAM 角色、安全组
 
 ### 6.4 Runtime 参数
 
-以下是当前模型与运行参数。模型本地接入不代表中国区 Runtime 已部署；详见中国区部署说明。
+以下是当前模型与运行参数。代码默认值与部署注入值可能不同，以部署工具输出为准；详见中国区部署说明。
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
@@ -805,7 +784,7 @@ s3://ielts-part1-materials-{account}/
 │   └── materials/{material_id}.json
 ├── _slots/{request_id}/
 │   ├── request.json
-│   └── slot-*.json
+│   └── slots/slot-*.json
 ├── _questions/{material_id}.json
 ├── _comments/{material_id}.json
 ├── _question_versions/{material_id}/
@@ -817,6 +796,12 @@ s3://ielts-part1-materials-{account}/
 ├── _candidates/{material_id}.json
 ├── _candidates/{material_id}.job.json
 ├── _claims/{group_key}.json
+├── _prompt_config/
+│   ├── releases/                     # 不可变提示词版本
+│   ├── active.json / draft.json      # 生效指针与共享草稿
+│   ├── bindings/                     # 任务固定版本
+│   ├── tests/ / scenario-runs/       # 样例测试与完整场景对比
+│   └── batch-recovery/               # 批次恢复去重与租约
 └── web/users.json
 ```
 
@@ -836,7 +821,7 @@ s3://ielts-part1-materials-{account}/
 
 ```bash
 python3.12 -m venv .venv-backend
-.venv-backend/bin/pip install -e 'backend[dev]'
+.venv-backend/bin/pip install -e 'backend[dev]' 'fastapi>=0.115' 'uvicorn>=0.30' 'boto3>=1.40'
 
 python3 skills/shared/tests/run_tests.py
 python3 audio_storage/tests/run_tests.py
@@ -846,7 +831,7 @@ python3 qti_export/tests/run_tests.py
 bash backend/scripts/ci_gates.sh
 ```
 
-无 AWS 的本地联调：`python3 web/scripts/run_local.py --port 8765`（需先 `cd frontend && npm run build`）。
+无 AWS 的本地联调：`.venv-backend/bin/python web/scripts/run_local.py --port 8765`（需先 `cd frontend && npm run build`）。
 它用内存存储起 Web 层，并预置 `qti_export/tests/fixtures/` 里的三套题目；加
 `--candidates <目录>` 指向候选材料记录（`_candidates/{material_id}.json`）后阅读页也能打开。
 只能登录、阅读、批注、导出 QTI，不能生成或合成音频。
@@ -867,30 +852,27 @@ npm run dev
 `npm run verify` 依次检查 Schema/场景/fixture codegen、TypeScript、Oxlint 和 Vitest。前端契约类型
 由共享 Schema 生成，不应手工修改生成文件。
 
-### 8.3 AWS 冒烟
+### 8.3 部署健康与模型验证
 
-以下命令会访问真实 AWS 服务并可能产生模型或 Polly 费用：
-
-```bash
-.venv-backend/bin/python backend/scripts/smoke_model.py
-.venv-backend/bin/python backend/scripts/run_one.py --scenario booking-hotel
-bash backend/scripts/check_ping.sh
-```
+部署状态使用中国区部署指南的 `china_infra.py status` 和 Runtime 状态查询；Web `/healthz` 只验证进程存活。
+`backend/scripts/check_ping.sh` 默认检查本机 `localhost:8080`，不能作为云端发布通过的证据。
+需要验证海外模型 JSON 与工具调用时，按部署指南运行 `smoke_kimi.py`；它会产生模型费用。
+完整生成、音频及业务验收另行执行，不能由健康检查替代。
 
 ## 9. 运维与排障
 
 | 现象 | 检查与处理 |
 |---|---|
-| ALB 503，`running=0` | 服务已停止；仅在 Web 已部署后使用 `bash deploy/start.sh` |
+| ALB 503，`running=0` | 检查 ECS desired/running 数量、失败原因和最近发布记录，按部署指南恢复 Web |
 | ALB 502，任务在运行 | 查看目标组健康状态和 `/ecs/ielts-part1-web` 日志 |
-| 模型发布提示 pending | 正式 Runtime 发布流程和镜像未完成验收，不应绕过停止点 |
-| 生成流中途断开 | 后续端到端验证中核对 15 秒心跳、ALB 120 秒 idle 和客户代理 |
+| Runtime 非 READY | 查询控制面状态和失败原因；不要重复 apply 作为等待命令 |
+| 生成流中途断开 | 核对 15 秒心跳、ALB 120 秒 idle 和客户代理 |
 | 材料在结尾一次性出现 | 检查客户端网络或代理是否缓冲 SSE；ALB 入口不增加压缩代理 |
 | 模型返回 429 | 下调 `WEB_FANOUT_CONCURRENCY`，不要盲目增加重试 |
-| `bedrock-mantle:CreateInference` denied | 核对实际使用的海外身份及模型推理权限；中国区 `provision.sh` 不配置海外账号权限 |
+| `bedrock-mantle:CreateInference` denied | 核对实际使用的海外身份及模型推理权限；中国区角色不能替代海外模型身份 |
 | Code Interpreter 创建或调用失败 | 核对 Runtime 角色的 Code Interpreter 权限和 `IELTS_CODE_INTERPRETER_REGION` |
 | 生成 Agent 一直等待工具确认 | 确认代码通过 `agents.py` 设置了非交互 shell 环境变量 |
-| `invalid_api_key` / security token invalid | `profile` 模式检查 `IELTS_MODEL_PROFILE` 对应的海外登录是否有效；`bearer` 模式检查 token 是否过期。默认 AWS 身份可能是中国区账号，不能作为海外模型凭证有效的证明 |
+| `invalid_api_key` / security token invalid | 生产 `secret` 模式检查专用凭证有效期与轮换状态；本机登录不会刷新生产凭证。`profile` 模式检查 `IELTS_MODEL_PROFILE` 对应的海外登录是否有效；`bearer` 模式检查 token 是否过期。默认 AWS 身份可能是中国区账号，不能作为海外模型凭证有效的证明 |
 | 试听后长时间无音频 | 查看 `_candidates/{material_id}.job.json`；首次合成通常需 1 到 2 分钟 |
 | 登录后随机失效 | 核对 ECS task definition 是否从 SSM 注入同一个 `SESSION_SECRET` |
 | `teardown` 无法删除目标组/安全组 | AWS 仍在释放 ALB/ENI，等待一分钟后重跑 |
@@ -907,9 +889,9 @@ bash backend/scripts/check_ping.sh
 - 仓库不保存 access key、账号 id 或 session secret；
 - S3 开启四项 public access block 和 SSE-S3；
 - session 使用 HttpOnly cookie，签名密钥保存在 SSM SecureString；
-- 本阶段准备 ECS execution role 与 Web task role；Runtime execution role 由 deploy/runtime_role.py 单独配置；
+- 部署工具分别配置 ECS execution role 与 Web task role；Runtime execution role 由 deploy/runtime_role.py 单独配置；
 - 当前未配置 WAF、MFA 或集中审计日志；
-- 当前 POC 入口为公网 HTTP，没有传输加密，客户网络与运营商要求仍需验证。
+- 当前入口为公网 HTTP，没有传输加密；客户接入要求须在交付配置中明确。
 
 ### 已知限制
 
@@ -917,15 +899,15 @@ bash backend/scripts/check_ping.sh
 - `WEB_FANOUT_CONCURRENCY=20` 是起始配置，不是所有账号配额下的保证值；
 - 版权原因，真题样本不随仓库分发，相关测试会 skip；
 - ECS 服务默认单任务、单任务子网，无自动伸缩、蓝绿部署或应用级多可用区冗余；
-- 用户池是单个 S3 JSON 对象，更新采用整文件读写；进程锁只能保护单实例。扩展到多个 Web task
-  前应迁移到支持条件写或事务的用户存储，避免并发注册相互覆盖；
+- 用户池是单个 S3 JSON 对象，更新使用 ETag 条件写与冲突重试保护注册及管理员修改。
+  Web 后台执行仍按单实例设计，增加副本前须另行设计执行协调与状态恢复；
 - 盲审隔离通过 Skill 分池、输入隔离、临时文件清理和 Code Interpreter 白名单等多层防线实现；
 - Agent 内部校验用于提高单次调用质量；最终以 Python 外部校验结果为准；
 - 当前只实现 Listening Part 1；Skill 池可以发现新目录，但 Reading/Writing 的请求路由、产物契约、
   Loop 和前端尚未实现；
 - `stop.sh` 不删除 ALB，因此不能把常驻成本降为零；
 - `teardown.sh` 默认保留 S3，且始终保留 SSM secret 和历史 task definition revision；
-- 模型采用海外 Bedrock 已托管 Kimi，原有 Mantle/GPT 适配保留；生产跨境链路待验证；
+- 模型采用海外 Bedrock 已托管 Kimi，原有 Mantle/GPT 适配保留；模型推理请求会发往海外服务；
 - QTI 导出不含听力音频，且 `mapEntry` 是精确比对（不裁剪首尾空白、不做 Unicode 归一化），
   下游投递层应自行归一化考生输入，并用包内 `reject_candidates.json` 做一次判分回归。
 
@@ -936,4 +918,4 @@ bash backend/scripts/check_ping.sh
 
 ## 管理员提示词管理
 
-管理员可在「提示词管理」中编辑业务提示词、保存草稿、独立试运行、发布及回滚，无需为每次文本修改重新部署。运行中的任务固定使用启动时的版本；Skill 文本第一阶段只读。使用方法、配置目录及代码/配置回退区别见 [提示词管理说明](docs/prompt-management.md)。
+管理员可在「提示词管理」中编辑业务提示词、保存草稿、独立试运行、发布及回滚，无需为每次文本修改重新部署。运行中的任务固定使用启动时的版本；Skill 文本只读。使用方法、配置目录及代码/配置回退区别见 [提示词管理说明](docs/prompt-management.md)。

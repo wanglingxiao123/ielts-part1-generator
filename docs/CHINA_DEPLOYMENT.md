@@ -1,24 +1,9 @@
-# 中国区 POC：Python SDK 发布与 ALB 入口
+# 中国区（宁夏）部署、更新与回退指南
 
-本分支使用 Python / boto3 工具发布中国区应用。原来的海外 CloudFront 部署保留在
-`main` 和历史版本中，迁移分支不维护两套入口，也不创建 CloudFront。
-
-## 本阶段状态
-
-- 截至 2026-10-23，`china_infra.py` 的 prepare、edge、web 已实际执行；
-  中国区初始 Runtime 已达到 `READY`，`list_models`、scenarios、candidates 检查返回 200。
-  Web/ECS 已稳定运行、ALB target healthy；独立云端请求首页/health 为 200，未登录 me 为 401。
-  用户已确认断开公司 VPN 后可加载登录页，VPN 下访问超时应单独排查。
-- 当前完整发布路径限定宁夏 `cn-northwest-1`：公网 ALB HTTP 9000，内部 Web 80。
-  个别底层工具和旧 shell 配置支持北京，不代表完整发布工具支持北京。
-- 使用中国区 Secrets Manager 引用访问海外 AWS Bedrock 托管的 Kimi K2.5；
-  secret-backed JSON 和工具调用往返已单独验证。生产 Runtime 不依赖开发机海外 profile。
-- 这些结果证明部署和部分接口已可用，不等同于客户网络、登录、SSE、完整生成质量、
-  修订和 QTI 的全量验收。首轮合成测试已保存材料并在出题前按预算暂停；
-  不代表整套题目已交付。续跑已进入题目校验、盲审及修订；答案分歧仍按原有门槛拦截。
-  Runtime 第 2 版已实测静默阶段的 15 秒传输心跳，Web 无需同步更新。验收边界见下文。
-- 音频是独立可选功能，不阻塞核心应用；不迁移历史数据。不自动提交、推送或合并代码。
-- 旧 shell 的模型发布 gate 继续保留；当前发布使用下述 Python 工具，不通过解除旧 gate 上线。
+本项目使用 Python/boto3 工具发布中国区应用，完整流程限定 `cn-northwest-1`。
+原 Global 架构与中国区差异见 [服务对比](China_Region_架构设计.md)。
+应用入口为公网 ALB HTTP 9000，模型为海外 Bedrock Kimi K2.5 / K3，
+生产凭证通过中国区 Secrets Manager 引用。当前工具不部署 CloudFront，也不迁移历史数据。
 
 ## 访问结构
 
@@ -36,12 +21,13 @@
 公网监听端口和容器端口独立。容器安全组只允许 ALB 安全组访问，不开放公网 80。
 ALB DNS 随该 ALB 保留，容器滚动更新不改变入口；删除重建 ALB 后需要重新取得地址。
 
-这是 HTTP POC，登录和会话流量没有 HTTPS 传输加密。非标准端口不是备案豁免或免安全检查的
-承诺。部署前应确认本次测试的运营商要求，以及客户办公网络能否访问所选端口。
+当前入口使用 HTTP，登录和会话流量没有 HTTPS 传输加密。客户需要 HTTPS、自有域名或入口访问限制时，
+须单独落实对应配置；交付前检查客户网络能否访问端口和维持 SSE 长连接。
 
 ## 当前发布配置
 
-从仓库根目录运行工具，使用装有项目依赖和 boto3 的 Python 环境。本节示例只包含占位符；
+从仓库根目录运行工具，使用 Python 3.12、Docker 和可用的中国区 profile。
+本地环境安装见 [README 本地开发](../README.md#8-本地开发与测试)，以下统一使用 `.venv-backend`。本节示例只包含占位符；
 profile 必须已有可用的中国区凭证。每个工具都会验证实际账号，不能用环境中的默认账号替代。
 
 | 设置 | 值 / 含义 |
@@ -73,17 +59,18 @@ IAM service principal 不按 API endpoint 后缀进行全局字符串替换；EC
 本地 `docker build` 会实际构建镜像，不受这些工具的 dry-run 控制。
 
 ```bash
-PY=.venv/bin/python
+PY=.venv-backend/bin/python
 PROFILE='<中国区 profile>'
 ACCOUNT_ID='<12位中国区账号>'
 REGION=cn-northwest-1
 RELEASE_TAG='<本次未使用过的发布标签>'
 SECRET_ARN='<同账号宁夏模型 Secret 完整 ARN>'
+EMAIL_DOMAINS='<客户注册邮箱域名，多个以逗号分隔>'
 ```
 
 ### 1. Prepare 与镜像构建、推送
 
-先完成[生产模型凭证与 Runtime 执行角色准备](CHINA_MODEL_CREDENTIALS.md)，然后检查并 apply：
+先完成[生产模型凭证与 Runtime 执行角色准备](CHINA_MODEL_CREDENTIALS.md)，其中启用 K3 时还需执行 `model_access.py` 配置海外权限，然后检查并 apply：
 
 ```bash
 "$PY" deploy/china_infra.py prepare \
@@ -145,6 +132,25 @@ Runtime 使用 HTTP/PUBLIC，idle timeout 900 秒，最大 session lifetime 2880
 RUNTIME_ARN='<Runtime 发布输出的 runtime_arn>'
 ```
 
+设置 ARN 后执行只读查询（可重复运行，不触发发布）：
+
+```bash
+"$PY" - "$PROFILE" "$REGION" "$RUNTIME_ARN" <<'PYTHON'
+import json
+import sys
+import boto3
+profile, region, arn = sys.argv[1:]
+client = boto3.Session(profile_name=profile, region_name=region).client("bedrock-agentcore-control")
+try:
+    result = client.get_agent_runtime(agentRuntimeId=arn.rsplit("/", 1)[-1])
+    print(json.dumps({key: result.get(key) for key in
+                      ("agentRuntimeArn", "agentRuntimeVersion", "status", "failureReason")}, ensure_ascii=False))
+finally:
+    client.close()
+PYTHON
+```
+
+
 ### 3. Edge 与 Web 发布
 
 ```bash
@@ -160,7 +166,7 @@ RUNTIME_ARN='<Runtime 发布输出的 runtime_arn>'
 "$PY" deploy/china_infra.py web \
   --profile "$PROFILE" --expected-account "$ACCOUNT_ID" --region "$REGION" \
   --image "$WEB_IMAGE" --runtime-arn "$RUNTIME_ARN" \
-  --email-domains example.com
+  --email-domains "$EMAIL_DOMAINS"
 ```
 
 审阅后 apply。Web 阶段重新检查镜像存在、Runtime READY、角色权限及完整 Edge，
@@ -181,6 +187,9 @@ RUNTIME_ARN='<Runtime 发布输出的 runtime_arn>'
 `status` 返回一次 ALB 状态、目标健康、ECS 数量及 deployment 状态，同时给出
 `http://<ALB DNS>:9000`。需要时另行重跑，create/update 成功不等于 target 已 healthy。
 IAM/ALB 的传播延迟可能要求稍后重试；工具不进行长阻塞等待。
+
+首次开放注册时，由指定客户负责人注册第一个账号，该账号自动成为管理员。核对管理员入口后再开放其他用户注册；
+后续账号权限及忘记密码由管理员在用户管理中处理。
 
 ## 回滚与发布记录
 
@@ -203,36 +212,23 @@ Runtime 回滚：使用旧后端 `pinned_image` 重跑 `runtime_release.py`，�
 回退后重新确认 Runtime READY、实际调用入口和核心接口行为。
 
 保留已验证镜像，记录后端/Web digest、Runtime ARN 与前后版本、ECS 前后 task definition ARN、
-部署配置、源码 commit 及未提交变更状态。账号相关输出和验收证据只写入忽略的
-`.trellis/tasks/10-23-china-application-release/` 任务证据目录，不放入公开文档。
+部署配置、源码 commit 及未提交变更状态。账号相关输出和验收证据写入客户指定的受控交付记录，格式见 [发布台账](../deploy/RELEASES.md)，不放入公开文档。
 `main` 中的海外部署是历史参考，不是无需验证即可使用的中国区云资源回滚按钮。
 
-## 旧 shell 脚本：保留的历史入口
+## 更新已有环境
 
-以下脚本用于原有流程参考和回归测试，**不是本次实际应用发布路径**。
-尤其不能通过设置 token、修改 gate 或运行旧 `rollback.sh` 替代上面的 SDK 发布流程。
+- **仅 Web 更新**：构建并推送 Web 镜像，设置新的 `WEB_IMAGE`，保留当前 `RUNTIME_ARN` 和客户域名，重跑第 3 节的 `web` 命令并检查 `status`。已有 Edge 无变更时不需要重建。
+- **仅 Runtime 更新**：构建并推送后端镜像，设置新的 `BACKEND_IMAGE`，重跑第 2 节发布命令并查询 READY；不需要发布未改变的 Web。
+- **共享目录更新**：`skills/`、`prompt_config/`、`audio_storage/` 同时进入两份镜像，需检查两层更新。先完成两份镜像构建，再发布。
+- **凭证轮换**：按模型凭证指南处理，不等于镜像更新；已有模型实例可能继续持有旧凭证。
 
-| 脚本 | 保留的作用 |
-|---|---|
-| `deploy/settings.sh` | 无 AWS 调用的区域、端口和分区配置 |
-| `deploy/config.sh` | 公共配置、账号和网络发现 |
-| `deploy/provision.sh` | S3、ECR、ECS、日志、ECS/Web 角色；保留中国区 Runtime 调用权限，不预设海外模型权限；Runtime execution role 由专用工具配置 |
-| `deploy/edge.sh` | 安全组、目标组、公网 ALB、HTTP 监听器 |
-| `backend/scripts/deploy.sh` | 在目标部署区构建/推送 Runtime 镜像，不决定模型方案 |
-| `deploy/runtime.sh` | 受模型发布 gate 保护的旧发布入口；当前改用 `runtime_release.py` |
-| `deploy/service.sh` | 构建 Web 并绑定 ALB；需要已可用的 Runtime，不能代替模型落地 |
-| `deploy/status.sh` | 显示 ALB 地址及资源状态，不再给出 task 公网 IP 作为客户入口 |
-| `deploy/start.sh` / `stop.sh` | 调整 Web 副本数，保留 ALB |
-| `deploy/rollback.sh` | 历史 Web revision 回退入口；Runtime 路径仍受旧 gate 阻止，不用于本次回滚 |
-| `deploy/teardown.sh` | 显式确认后拆除本阶段基础资源；不删除尚未由本阶段管理的 Runtime/执行角色；本轮没有运行 |
-
-旧 shell 的区域配置优先级仍是 `AWS_REGION` → `AWS_DEFAULT_REGION` → 宁夏默认值，
-并保留北京、CIDR 和子网覆盖设置。这些设置不覆盖 Python CLI 的显式参数和固定网络契约。
+各命令复用前文变量和完整参数，先 dry-run 再 apply。更新前记录旧镜像与配置，确认正在执行的长任务；Web 进程替换可能中断当前执行。
+旧 shell 的 gate、区域及端口覆盖设置仅为历史兼容，不用于当前 SDK 发布或回退。
 
 ## 本地验证
 
 ```bash
-.venv/bin/python -m pytest \
+.venv-backend/bin/python -m pytest \
   backend/tests/test_china_infra.py \
   backend/tests/test_push_image.py \
   backend/tests/test_runtime_release.py \
@@ -245,7 +241,7 @@ Runtime 回滚：使用旧后端 `pinned_image` 重跑 `runtime_release.py`，�
 旧 `backend/tests/test_china_deployment.py` 另用临时 `aws` 模拟器验证 shell gate 和历史契约；
 它不是当前 SDK 发布成功的替代证据。
 
-## 后续验收
+## 客户交付验收清单
 
 1. 确认 ECS deployment 完成、ALB target healthy，并留存实际发布版本和 digest。
 2. 验证 Runtime 模型与 Code Interpreter 集成；传输 smoke 成功不能替代完整审计质量结果。
@@ -258,14 +254,13 @@ Runtime 回滚：使用旧后端 `pinned_image` 重跑 `runtime_release.py`，�
 
 默认模型是 `moonshotai.kimi-k2.5`，通过 Mantle Chat Completions `/v1` 调用。
 中国区部署的可选列表只包含 Kimi K2.5、Kimi K3。
-GPT-5.6 的 luna、sol、terra 的 Mantle Responses `/openai/v1` 适配保留，
-但因用户实机调用报告 400，暂不在中国区允许列表中开放；具体错误原因尚待定位。
+GPT/Mantle Responses 适配仅作为历史兼容保留，不在中国区交付模型列表中开放。
 默认选中项仍为 K2.5；“默认选中”与“允许选择的模型列表”是两个独立配置。
 `IELTS_ALLOWED_MODEL_IDS` 可显式配置已实现适配的模型；不会自动暴露整个 Bedrock 目录。
 K2.5 输出上限为 16384 tokens，不发送 GPT 专用的 `reasoning.effort`。
 K3 的配置 ID 为 `us.moonshotai.kimi-k3`，使用 `bedrock-runtime` 的
 Chat Completions `/openai/v1`，上限 32768 tokens，显式传递 `reasoning_effort`。
-生成使用 medium、审核使用 high。注册域名仍为 `example.com`。
+生成使用 medium、审核使用 high。注册域名由 Web 发布参数配置。
 
 本地凭证通过已有的海外账号 profile 使用，无需把凭证写入项目：
 
@@ -294,37 +289,19 @@ SDK 从显式海外 profile 的可更新凭证为请求签发 token；生产 Run
 旧 shell gate 继续保留。模型凭证轮换与镜像回滚是独立操作：应用在新建模型实例时读取
 `AWSCURRENT`，已有实例不会因 Secret 更新自动更换内存中的 token。
 
-## 当前模型验收限制
+## 执行预算与恢复
 
-Kimi 的单次合成测试不能代表稳定质量或时延。材料与出题、盲审、修订应分别验收。
-`hard_limit_seconds` 当前是启动阶段前的预算检查，不会取消已启动的出题阶段；
-该阶段最多执行既有的两轮修订，因此实际请求可能超过 15 分钟。不要把它当作强制截止时间。
+材料生成、题目盲审和修订耗时受模型响应与质量检查影响。阶段开始前检查剩余预算，
+不会强制取消已启动的模型调用；时间预算不是完成时长保证。预算不足或调用失败时，
+根据页面持久化状态继续剩余套件或重试，不能仅凭心跳认定质量通过。
 
-本轮实测续跑约 22 分钟，收到 86 次心跳并正常结束。材料审核 PASS，但题目两轮修订后
-仍存在答案分歧，最终 `incomplete`、交付 0 套、无系统故障，保留可续跑检查点。
-尚未完成合格题目、QTI 和管理员登录后全流程验收；不能将本次部署成功等同于模型质量达标。
+## 音频与权限
 
+Runtime 角色配置 `polly:SynthesizeSpeech`、`polly:DescribeVoices` 并限制部署区域。
+Web 角色负责 S3 音频读取，不直接调用 Polly。
+中国区发布设置 `IELTS_POLLY_PRESET=china-standard`：Emma 旁白、Amy/Brian 对话。
+引擎和音色参与 manifest 与缓存键；没有失败后自动切换引擎的逻辑。
 
-## 音频与运行权限修复（2026-10-24）
-
-中国区 Runtime 角色需要 `polly:SynthesizeSpeech` 和 `polly:DescribeVoices`，以
-`aws:RequestedRegion` 限定部署区域。Web 角色不直接调用 Polly；不要把音频权限加到 Web 或容器启动角色。
-
-宁夏实测 `neural/en-GB` 音色列表为空；标准引擎提供 Emma、Brian、Amy。
-中国区部署显式设置 `IELTS_POLLY_PRESET=china-standard`：Emma 旁白，Amy/Brian 对话。
-未设置此配置时仍使用原有 `british-neural`。不存在运行失败后自动换引擎的逻辑；
-音频 manifest 和缓存键包含实际引擎及音色，不能把旧引擎的片段混入新录音。
-
-权限检查覆盖 Runtime 的 S3、模型密钥、Code Interpreter、Polly，Web 的 S3/Runtime 调用，
-容器启动的 ECR、SSM 和日志。日志 IAM 模拟返回不一致结果，已用相同执行角色的临时 Fargate 任务
-实际验证日志创建和写入，任务正常退出；未为此扩大权限。海外模型使用独立凭证，不能通过扩大中国区角色权限修复模型访问限制。
-
-
-### 浏览器音频读取
-
-本次现场测试中，S3 预签名 MP3 GET 返回 HTTP 401 `UnauthorizedAccess`。
-中国区 Web 将 `presign_audio` 返回的地址改为本站 `/api/material-audio` 地址，
-由 Web 任务角色通过 S3 SDK 读取音频并流式返回；前端接口结构不变。
-此路由受已有登录会话校验保护，只允许材料／版本音频目录中的 `turn_NNN.mp3`，
-不接受任意外部 URL、其他桶、用户数据文件或目录穿越。支持单段 Range 请求供浏览器定位播放。
-Web 已有 `s3:GetObject` 权限，因此不增加 IAM 权限，也不开放匿名桶读取。
+浏览器通过本站 `/api/material-audio` 鉴权代理读取音频，支持单段 Range。
+Web 使用任务角色读取指定材料/版本目录下的 MP3，不开放匿名桶读取。
+海外模型访问故障应检查独立海外凭证，不能通过扩大中国区角色权限修复。

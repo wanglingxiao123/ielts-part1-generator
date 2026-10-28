@@ -26,27 +26,18 @@ ielts-<material_id>-v<n>.zip
 `<n>` 是页面上的题目版本号（V1 = 原始交付版）。它进 `assessmentItem/@identifier`
 （`ielts-<material_id>-v<n>`），所以同一材料的两个版本在下游题库里不会互相覆盖。
 
-## 0. 五条最先要知道的结论
+## 0. 页面导出与离线 CLI
 
-1. **QTI 没有 2.3。** 官方线是 1.2 → 2.0 → 2.1 → 2.2（→ 2.2.4）→ 3.0。本模块对 2.2.4。
-2. **导出不是「把 JSON 换个格式」，先过门禁。** 转换前重跑六道一致性门禁（§4）：上游审核
-   通过、命题与盲审两侧答案一致、题号闭合、字数上限自洽。任何一道不过就整份拒绝并列出全部
-   原因（HTTP 422），**绝不**把出问题的题丢掉后导出九道题的包——那种包能过 XSD，会一路走到
-   考生面前才暴露。
-3. **不声明产不出来的资源。** 这条流水线没有听力音频可交付，所以 item 里**不生成** `qh5:audio`，
-   manifest 也不声明音频。声明了而不存在的资源 XSD 照样全绿，导入端却会直接失败。音频由下游
-   另行挂载。
-4. **卷面文字决定答案形态，必须进 QTI。** 真实卷面是 `The reservation covers ______ in total`，
-   不是「标签 + 空格」。这些文字（`carrier_before` / `carrier_after`）决定了前者必须带单位
-   （裸 `3` 判错）、`£ ______ per night` 是裸数字（`128 pounds` 判错）。容错集据此裁剪（§3 R6/R7）。
-5. **`package.material_id` 不能当标识符。** 实测常是自由文本（`"Test 1 Part 1"`），既不唯一也不是
-   合法 NCName。存储键里的材料 id（`20260808-booking-hotel-45425df4`）才是身份：全部唯一、合法
-   NCName、还能还原出场景键。
+| 路径 | 输入与检查 | 答案规则 |
+|---|---|---|
+| 页面 `/api/material-qti` | 老师选定版本；检查题目结构与完整性，不重新裁决历史模型意见 | 保留标准答案和显式 `alternatives`，不推导额外写法 |
+| 离线 `python -m qti_export` | 独立输入文件，执行第 4 节审核与一致性门禁 | 使用第 3 节规则推导接受集，补充写法记录供人工复核 |
 
-新版题包中的 `answer_key[].alternatives` 是上游已经确认的可接受写法。转换器会先保留这些写法，
-再按本章规则寻找尚未覆盖且通过字数、题面 affix 与干扰项检查的补充写法。副文件分别记录
-`upstream_alternatives` 与 `qti_added_alternatives`；后一类同时进入 `review.txt`，不会静默扩大
-页面之外的判分范围。历史题包没有 alternatives 时仍可由规则推导，但同样留下人工复核记录。
+页面调用 `export_document` 的 `teacher_version=True` 路径。任何路径都不能丢掉出问题的题后输出残缺包。
+包不包含音频，manifest 不声明音频资源，下游需另行挂载。
+材料身份来自存储键的 `material_id`，版本号进入 item identifier；不要用自由文本标题充当标识符。
+
+下文第 2 节为字段映射；涉及答案变换及审核门禁的描述针对离线 CLI，页面以本节为准。
 
 ## 1. 模块
 
@@ -95,7 +86,7 @@ ielts-<material_id>-v<n>.zip
 完全正常。`note_sections[].question_numbers` 与 `table_rows[].cells[].question_number` 是题号的
 权威归属，优先按它们排布；漏掉的题补在末尾，不静默丢题。
 
-## 3. 答案容错规则（接受集 → `mapEntry`）
+## 3. 离线 CLI 答案容错规则（接受集 → `mapEntry`）
 
 用 `mapping/mapEntry` 枚举而不用 `patternMatch` 正则：枚举能被 XSD 校验、能人工评审、能 diff、
 能逐条写回归用例。一个放宽了的正则会静默把干扰项收进来，而枚举里多一行 `132` 评审时一眼可见。

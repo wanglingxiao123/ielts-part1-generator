@@ -1,8 +1,8 @@
-# 中国区 POC 的海外模型凭证
+# 中国区部署的海外模型凭证
 
 应用部署区与模型账号分开：中国区 Runtime 使用自身角色读取中国区 Secrets Manager，
-通过其中的 Bedrock 专用 API key 调用海外已托管的 Kimi K2.5。
-开发机的 Isengard 登录只用于部署，不复制到 Runtime。
+通过其中的 Bedrock 专用 API key 调用海外已托管的 Kimi K2.5 / K3。
+开发机账号登录用于部署和本地调试，不复制到生产 Runtime。
 
 ## 配置与验证
 
@@ -26,8 +26,8 @@
 5. 将 token 在进程内直接写入中国区 `ielts-part1/overseas-model` secret。
    输出仅包含 secret ARN、凭证 ID、有效期等元数据。
 
-这是有明确有效期的 POC 接入方式。到期前需要轮换；它不会随个人 Isengard 会话到期而失效。
-此 key 的 IAM 权限限制区域及推理动作，应用允许列表进一步限制为 Kimi K2.5；
+专用凭证有明确有效期，到期前需要轮换；其有效期独立于开发机登录会话。
+此 key 的 IAM 权限限制区域及推理动作，应用交付列表包含 Kimi K2.5 / K3，K3 还需下文的独立权限；
 不要把应用允许列表当成 IAM 层的模型限制。
 
 ## Runtime 执行角色与环境
@@ -50,7 +50,7 @@
 应用每次创建模型客户端时读取 AWSCURRENT，使后续请求能使用轮换后的凭证；
 已开始的模型客户端继续持有旧凭证。读取失败会报错，不回退到其他账号凭证。
 
-Runtime 角色只获得对应 secret 的读取权限，以及本项目镜像、材料桶、日志和审计沙箱权限。
+Runtime 角色只获得对应 secret 的读取权限，以及本项目镜像、材料桶、日志、审计沙箱和 Polly 权限。
 它不获得海外模型账号的 IAM 权限。内置 Code Interpreter 的 ARN 账号段是 `aws`，
 不能替换成客户的账号 ID。
 
@@ -70,10 +70,13 @@ Runtime 角色只获得对应 secret 的读取权限，以及本项目镜像、�
 
 ## Kimi K3 的独立接入权限
 
-K2.5 继续使用 Mantle；K3 按 AWS 模型卡推荐使用 `bedrock-runtime` 的 Chat Completions，
-入口 `https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1`，推理配置
-`us.moonshotai.kimi-k3`。官方说明了历史 reasoning 内容在 Converse 下的多轮兼容限制，
-因此本项目不使用 Converse 接入 K3。
+K2.5 使用 Mantle Chat Completions；K3 使用 `bedrock-runtime` Chat Completions。
+本项目的模型与端点配置如下，部署区仍为宁夏：
+
+| 模型 ID | 海外 API 路径 | 权限准备 |
+|---|---|---|
+| `moonshotai.kimi-k2.5` | Mantle `/v1` | `model_credentials.py` 的基础推理策略 |
+| `us.moonshotai.kimi-k3` | Bedrock Runtime `/openai/v1` | 额外执行 `model_access.py` |
 
 ```bash
 .venv-backend/bin/python deploy/model_access.py \
