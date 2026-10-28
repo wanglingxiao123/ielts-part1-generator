@@ -17,6 +17,8 @@
 > 📘 **出题人员请先阅读 [`USER_GUIDE.md`](USER_GUIDE.md)，了解材料生成、审阅、评价和版本采用的
 > 完整操作流程。**
 >
+> 🛠️ **管理员请先阅读 [`ADMIN_GUIDE.md`](ADMIN_GUIDE.md)，了解提示词编辑、测试、发布、回滚和用户权限、密码管理的操作流程。**
+>
 > 本 README 主要面向开发、部署和运维人员。
 
 > 🤖 **使用 Agent 部署：** 请将下面的提示词交给 Agent。完整要求见
@@ -49,6 +51,7 @@ digest、健康检查和遗留问题。
 ├── README.md                         # 技术、部署和运维手册
 ├── AGENT_DEPLOYMENT.md               # 交给 Agent 执行部署的操作规范
 ├── USER_GUIDE.md                     # 出题人员使用说明
+├── ADMIN_GUIDE.md                    # 管理员提示词与用户管理操作指南
 ├── pytest.ini                        # Python 测试发现配置
 ├── config/
 │   └── scenarios.yaml                # 场景分类、角色和场景说明
