@@ -115,3 +115,23 @@ def test_real_pre_upgrade_cookie_defaults_to_zero(tier):
     tier.auth.store.change_password("user@example.com", "user@example.com", "password123", "newpassword111", 0)
     with pytest.raises(InvalidSession):
         tier.auth.identify(token)
+
+
+def test_new_password_limit_preserves_legacy_long_password_verification(tier):
+    from web.auth import WeakPassword, hash_password
+    auth = tier.auth
+    auth.register("admin@example.com", "password123")
+    auth.register("user@example.com", "password123")
+    long_password = "x" * 1025
+    with pytest.raises(WeakPassword):
+        auth.register("new@example.com", long_password)
+    # Simulate an account that registered before a maximum length was introduced.
+    user = auth.store.get("admin@example.com")
+    user["password_hash"] = hash_password(long_password)
+    auth.store.put(user)
+    assert auth.login("admin@example.com", long_password)["is_admin"]
+    auth.store.change_password("admin@example.com", "user@example.com",
+                               long_password, "temporary123", 0, True)
+    auth.store.change_password("admin@example.com", "admin@example.com",
+                               long_password, "newpassword123", 0)
+    assert auth.login("admin@example.com", "newpassword123")["is_admin"]

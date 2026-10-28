@@ -37,6 +37,7 @@ FRONTEND_STAGE_EVENTS = frozenset({
     "re_auditing",
     "anchors_repaired",
     "infra_retry",
+    "feasibility_checked",
     "refilling",
     "material_completed",
     "material_failed",
@@ -46,11 +47,8 @@ FRONTEND_STAGE_EVENTS = frozenset({
 # assumed -- `grep -rn validation_reported frontend/src` returns nothing. Listed here rather than
 # left out so that the distinction is recorded: renaming one of these breaks nobody, renaming one
 # above breaks the page silently.
-# `feasibility_checked` belongs here and not above, and the choice is forced rather than stylistic:
-# the list above is asserted in BOTH directions, so a name the frontend does not yet reference would
-# fail `test_the_frontend_really_does_reference_these_names`. Displaying the verdict to a user is
-# §6.1 stage 11; until then this event exists for an operator reading the stream.
-BACKEND_ONLY_EVENTS = frozenset({"validation_reported", "feasibility_checked"})
+# Prompt scenario comparison now displays feasibility_checked, so it is a frontend contract.
+BACKEND_ONLY_EVENTS = frozenset({"validation_reported"})
 
 # Keys on a successful `material_completed` payload. Present-but-empty is fine; absent is not,
 # because the frontend reads one shape and an absent key cannot be distinguished from "clean".

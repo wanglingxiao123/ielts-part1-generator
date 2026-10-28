@@ -14,6 +14,7 @@ import type {
   PreviewAudioResponse,
   SelectMaterialResponse,
 } from '@/contracts/api'
+import type { BatchRecoveryPlan } from '@/contracts/batchRecovery'
 import type {
   AdoptQuestionVersionResponse,
   MaterialQuestionVersionsResponse,
@@ -25,6 +26,12 @@ import type {
 } from '@/contracts/comments'
 
 export const api = {
+  batchRecovery: (batchId: string) =>
+    request<BatchRecoveryPlan>({ method: 'GET', path: `/batch-history/${encodeURIComponent(batchId)}/recovery` }),
+  recoverBatch: (batchId: string, request_id: string) =>
+    request<{ batch_id: string; execution_id: string; status: 'running' | 'failed'; reused: boolean }>({
+      method: 'POST', path: `/batch-history/${encodeURIComponent(batchId)}/recovery`, body: { request_id },
+    }),
   listModels: () =>
     request<ModelCatalogueResponse>({ method: 'GET', path: '/models' }),
 

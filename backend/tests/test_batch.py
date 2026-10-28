@@ -856,3 +856,13 @@ class TestDeliveryRequestParsing:
         request = parse_delivery_request(catalogue, {"scenarios": ["booking-hotel"], "count": 30,
                                                     "batch_id": "b1"})
         assert len(request.slots) == 30
+
+
+@pytest.mark.parametrize("token", ["a"*32, None, "bad", "A"*32, 123])
+def test_delivery_manual_retry_token_validation(catalogue, token):
+    payload = {"scenarios":["booking-hotel"],"batch_id":"b1","retry_token":token}
+    if token is None or token == "a"*32:
+        assert parse_delivery_request(catalogue,payload).retry_token == token
+    else:
+        with pytest.raises(BadRequest):
+            parse_delivery_request(catalogue,payload)

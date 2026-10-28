@@ -137,7 +137,7 @@ class SlotRecord(object):
 
     __slots__ = ("batch_id", "slot_id", "scenario_id", "state", "attempts", "material_id",
                  "group_key", "last_failure", "checkpoint_at", "created_at", "updated_at",
-                 "replaces", "replaced_by", "system_fault", "question_layout_plan", "model_id")
+                 "replaces", "replaced_by", "system_fault", "question_layout_plan", "model_id", "manual_retry_tokens")
 
     def __init__(
         self,
@@ -157,6 +157,7 @@ class SlotRecord(object):
         system_fault: bool = False,
         question_layout_plan: Optional[Dict[str, Any]] = None,
         model_id: Optional[str] = None,
+        manual_retry_tokens: Optional[List[str]] = None,
     ) -> None:
         self.batch_id = batch_id
         self.slot_id = slot_id
@@ -181,6 +182,7 @@ class SlotRecord(object):
         # True when this slot stopped for a reason that is not about material quality. Kept on the
         # record rather than inferred from `last_failure` prose, because the request's status depends
         # on it and a status must not depend on a string comparison against a message.
+        self.manual_retry_tokens = list(manual_retry_tokens or [])
         self.system_fault = bool(system_fault)
         self.question_layout_plan = dict(question_layout_plan) if question_layout_plan else None
         self.model_id = model_id
@@ -208,6 +210,7 @@ class SlotRecord(object):
                 dict(self.question_layout_plan) if self.question_layout_plan else None
             ),
             "model_id": self.model_id,
+            "manual_retry_tokens": list(self.manual_retry_tokens),
         }
 
     @classmethod
@@ -229,6 +232,7 @@ class SlotRecord(object):
             system_fault=bool(record.get("system_fault")),
             question_layout_plan=record.get("question_layout_plan"),
             model_id=record.get("model_id"),
+            manual_retry_tokens=record.get("manual_retry_tokens"),
         )
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid

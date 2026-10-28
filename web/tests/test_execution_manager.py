@@ -4,6 +4,20 @@ import time
 from web.execution_manager import ExecutionManager
 
 
+def test_failed_thread_registration_can_be_retried(monkeypatch):
+    import pytest
+    manager = ExecutionManager()
+    original = threading.Thread.start
+    monkeypatch.setattr(threading.Thread, "start", lambda self: (_ for _ in ()).throw(RuntimeError("no thread")))
+    with pytest.raises(RuntimeError):
+        manager.start("retryable", lambda _: None)
+    assert manager.get("retryable") is None
+    monkeypatch.setattr(threading.Thread, "start", original)
+    done = threading.Event()
+    execution, started = manager.start("retryable", lambda _: done.set())
+    assert started and done.wait(1)
+
+
 def test_observer_disconnect_does_not_stop_producer():
     release = threading.Event()
     finished = threading.Event()

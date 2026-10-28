@@ -1,3 +1,4 @@
+import { displayDate } from '@/domain/displayDate'
 import { ResetPasswordDialog } from "./ResetPasswordDialog"
 import { useEffect, useRef, useState } from 'react'
 import { adminUsers, type UserDirectory } from '@/api/adminUsers'
@@ -72,7 +73,7 @@ function UserManager({ email }: { email: string }) {
     </section>
     <section className="panel um-panel" aria-labelledby="um-history-title"><div className="um-history-heading"><h2 id="um-history-title">账号操作记录</h2><span>最近 50 条 · 共 {data?.history_total ?? 0} 条</span></div>
       {data?.history.length === 0 && <p className="um-empty">暂无账号操作记录。</p>}
-      <ol className="um-history">{data?.history.map((event) => <li key={event.id}><span className={`um-role ${event.after ? 'is-admin' : ''}`}>{event.kind === 'password_reset' ? '重置密码' : event.kind === 'password_change' ? '本人修改密码' : event.after ? '授予管理员' : '取消管理员'}</span><div><strong>{event.email}</strong><p>{event.actor} 操作 · {new Date(event.at * 1000).toLocaleString()}</p></div></li>)}</ol>
+      <ol className="um-history">{data?.history.map((event) => <li key={event.id}><span className={`um-role ${event.after ? 'is-admin' : ''}`}>{event.kind === 'password_reset' ? '重置密码' : event.kind === 'password_change' ? '本人修改密码' : event.after ? '授予管理员' : '取消管理员'}</span><div><strong>{event.email}</strong><p>{event.actor} 操作 · {displayDate(event.at)}</p></div></li>)}</ol>
     </section>
     <dialog ref={dialog} className="um-dialog" aria-labelledby="um-confirm-title" onCancel={(event) => { event.preventDefault(); if (!busy) setPending(null) }}>
       <h2 id="um-confirm-title">{pending?.is_admin ? '取消管理员权限？' : '设为管理员？'}</h2><p className="um-confirm-email">{pending?.email}</p>

@@ -145,6 +145,16 @@ function renderPage() {
 }
 
 beforeEach(() => {
+  sessionStorage.clear()
+  vi.spyOn(api, 'batchRecovery').mockImplementation(async () => {
+    const state = useBatchStore.getState()
+    const delivered = new Set(Object.values(state.materials).map((m) => `${m.scenario_key}:${m.index}`))
+    return { batch_id: BATCH, status: 'available', requested: 4, delivered: delivered.size,
+      targets: TWO_SCENARIOS.filter((p) => !delivered.has(`${p.scenarioKey}:${p.index}`)).map((p, i) => ({
+        slot_id: `slot-${i+1}`, scenario_key: p.scenarioKey, index: p.index,
+        action: state.resumableSlots.length ? 'resume' : 'restart',
+      })) }
+  })
   seq = 0
   navigations.length = 0
   useBatchStore.getState().reset()
@@ -236,7 +246,7 @@ describe('internal stage wording never reaches the user', () => {
     expect(screen.getAllByText('待审核')).toHaveLength(4)
   })
 
-  it('reports a partial batch as a count, not as a per-material stage log', () => {
+  it('reports a partial batch as a count, not as a per-material stage log', async () => {
     startBatch(TWO_SCENARIOS)
     deliver(buildRecord('balanced', {
       materialId: 'm1',
@@ -260,7 +270,7 @@ describe('internal stage wording never reaches the user', () => {
     } as never)
     renderPage()
 
-    expect(screen.getByText(/有 3 套未能生成/)).toBeInTheDocument()
+    expect(await screen.findByText(/3 套没有可继续的断点/)).toBeInTheDocument()
     // The backend's own failure token and its Chinese rendering both stay out.
     const body = document.body.textContent ?? ''
     expect(body).not.toContain('validation_exhausted')
@@ -299,7 +309,7 @@ describe('generate_sets 的收尾', () => {
     } as never)
   }
 
-  it('断点说的是「下一次接着做」，并把「未能生成」那条挡掉', () => {
+  it('断点提供继续入口，且不出现误导的整批补生成', async () => {
     halfDeliveredThen({
       request_status: 'incomplete',
       requested: 4,
@@ -309,23 +319,24 @@ describe('generate_sets 的收尾', () => {
     renderPage()
 
     expect(screen.getByText(/本次运行时间用完，已存断点/)).toBeInTheDocument()
-    expect(screen.getByText(/不会重新生成已经通过的材料/)).toBeInTheDocument()
+    expect(screen.getAllByText(/不会重新生成已经通过的材料/).length).toBeGreaterThan(0)
     // 交付数来自后端的计划，不是本地数出来的卡片数。
     expect(screen.getByText(/已交付 1 \/ 4 套/)).toBeInTheDocument()
     // 这一条是这个测试真正守的东西：两句话不能同时出现。「未能生成」在这一页有两处出口
     // ——banner 和进度条那行说明文字——断点时两处都不能说它。
     expect(screen.queryByText(/未能生成/)).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /补生成/ })).not.toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: '继续生成剩余 3 套' })).toBeEnabled()
     expect(screen.getByText(/本次已结束，余下留有断点/)).toBeInTheDocument()
   })
 
-  it('可续跑卡位为空的 incomplete 不算断点：那是补不回来的缺口', () => {
+  it('可续跑卡位为空的 incomplete 提供单独补生成入口', async () => {
     // 「时间用完了、存住了」和「候选材料用尽、这几套做不出来」是两回事。后者要给补生成入口。
     halfDeliveredThen({ request_status: 'incomplete', requested: 4, delivered: 1, resumable_slots: [] })
     renderPage()
 
     expect(screen.queryByText(/已存断点/)).not.toBeInTheDocument()
-    expect(screen.getByText(/有 3 套未能生成/)).toBeInTheDocument()
+    expect(await screen.findByText(/3 套没有可继续的断点/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /补生成/ })).toBeInTheDocument()
   })
 
@@ -337,7 +348,7 @@ describe('generate_sets 的收尾', () => {
       delivered: 1,
       resumable_slots: [],
     })
-    const retry = vi.spyOn(api, 'retryBatch').mockResolvedValue({
+    const retry = vi.spyOn(api, 'recoverBatch').mockResolvedValue({
       batch_id: BATCH,
       execution_id: `${BATCH}-refill-1`,
       status: 'running',
@@ -346,15 +357,9 @@ describe('generate_sets 的收尾', () => {
     vi.spyOn(api, 'batchHistoryDetail').mockImplementation(() => new Promise(() => {}))
     renderPage()
 
-    await user.click(screen.getByRole('button', { name: /补生成/ }))
+    await user.click(await screen.findByRole('button', { name: /补生成/ }))
 
-    expect(retry).toHaveBeenCalledWith(BATCH, {
-      seats: [
-        { scenario_key: 'accommodation-rental', index: 1 },
-        { scenario_key: 'booking-hotel', index: 0 },
-        { scenario_key: 'booking-hotel', index: 1 },
-      ],
-    })
+    expect(retry).toHaveBeenCalledWith(BATCH, expect.stringMatching(/^[a-f0-9]{32}$/))
     expect(navigations).toEqual([])
   })
 
@@ -366,7 +371,7 @@ describe('generate_sets 的收尾', () => {
       delivered: 1,
       resumable_slots: [],
     })
-    vi.spyOn(api, 'retryBatch').mockResolvedValue({
+    vi.spyOn(api, 'recoverBatch').mockResolvedValue({
       batch_id: BATCH,
       execution_id: `${BATCH}-refill-1`,
       status: 'running',
@@ -406,7 +411,7 @@ describe('generate_sets 的收尾', () => {
     })
     renderPage()
 
-    await user.click(screen.getByRole('button', { name: /补生成/ }))
+    await user.click(await screen.findByRole('button', { name: /补生成/ }))
 
     await waitFor(() =>
       expect(screen.queryByRole('button', { name: /补生成/ })).not.toBeInTheDocument(),

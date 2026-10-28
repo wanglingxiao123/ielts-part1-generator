@@ -17,7 +17,7 @@ it('uses web REST paths, session credentials, CAS bodies, and encoded trial IDs'
   await adminPrompts.save({ role: 'business text' }, null)
   await adminPrompts.publish('active-etag', 'draft-etag')
   await adminPrompts.rollback('old-release', 'active-etag')
-  await adminPrompts.test({ prompt_id: 'role', input: 'sample', model_id: 'model', draft_etag: 'draft-etag' })
+  await adminPrompts.test({ request_id: 'a'.repeat(32), prompt_id: 'role', input: 'sample', model_id: 'model', draft_etag: 'draft-etag' })
   await adminPrompts.result('test/id', controller.signal)
   expect(adapter).not.toHaveBeenCalled()
   expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
@@ -28,7 +28,7 @@ it('uses web REST paths, session credentials, CAS bodies, and encoded trial IDs'
   expect(JSON.parse(fetchMock.mock.calls[1]![1].body)).toEqual({ values: { role: 'business text' }, expected_etag: null })
   expect(JSON.parse(fetchMock.mock.calls[2]![1].body)).toEqual({ expected_etag: 'active-etag', draft_etag: 'draft-etag' })
   expect(JSON.parse(fetchMock.mock.calls[3]![1].body)).toEqual({ release_id: 'old-release', expected_etag: 'active-etag' })
-  expect(JSON.parse(fetchMock.mock.calls[4]![1].body)).toEqual({ prompt_id: 'role', input: 'sample', model_id: 'model', draft_etag: 'draft-etag' })
+  expect(JSON.parse(fetchMock.mock.calls[4]![1].body)).toEqual({ request_id: 'a'.repeat(32), prompt_id: 'role', input: 'sample', model_id: 'model', draft_etag: 'draft-etag' })
 })
 
 it('preserves a conflict status for the editor to handle', async () => {

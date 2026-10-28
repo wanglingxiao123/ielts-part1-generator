@@ -28,3 +28,16 @@ it('requires matching new passwords and clears password fields after success', a
   expect(await screen.findByRole('status')).toHaveTextContent('旧登录会话已失效')
   expect(screen.queryByDisplayValue('temporary123')).not.toBeInTheDocument()
 })
+
+it('accepts a legacy current password longer than the new-password limit', async () => {
+  vi.mocked(changePassword).mockResolvedValue()
+  render(<PasswordPage />)
+  const current = screen.getByLabelText('临时密码')
+  expect(current).not.toHaveAttribute('maxlength')
+  const legacy = 'x'.repeat(1025)
+  fireEvent.change(current, { target: { value: legacy } })
+  fireEvent.change(screen.getByLabelText('新密码'), { target: { value: 'replacement123' } })
+  fireEvent.change(screen.getByLabelText('确认新密码'), { target: { value: 'replacement123' } })
+  await userEvent.click(screen.getByRole('button', { name: '保存新密码' }))
+  expect(changePassword).toHaveBeenCalledWith(legacy, 'replacement123')
+})

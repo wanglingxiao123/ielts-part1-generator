@@ -1,3 +1,4 @@
+import { displayDate } from '@/domain/displayDate'
 import { useEffect, useState } from 'react'
 import { adminPrompts, type PromptState, type PromptTrial, type TrialHistory } from '@/api/adminPrompts'
 import { userMessage } from '@/api/http'
@@ -78,7 +79,7 @@ export function TrialHistoryPanel({ catalogue, selected, onSelect }: {
     {error && <p role="alert">{error}</p>}
     {loading ? <p>正在读取历史记录…</p> : page?.items.length ? <div className="pm-history-list">
       {page.items.map((item) => <button className={`pm-trial-history-row ${selected === item.test_id ? 'is-selected' : ''}`} key={item.test_id} onClick={() => onSelect(item.test_id)}>
-        <strong>{name(item.prompt_id)}</strong><span>{item.created_at ? new Date(item.created_at * 1000).toLocaleString() : '时间未知'}</span><span>{item.model_id}</span><span>{item.status === 'completed' ? '已完成' : item.status === 'failed' ? '失败' : '运行中'}</span><span>{item.baseline_release ? item.baseline_release.slice(0, 8) : '版本未记录'} → {item.draft_release?.slice(0, 8) ?? '版本未记录'}</span><code>{item.test_id.slice(0, 8)}</code>
+        <strong>{name(item.prompt_id)}</strong><span>{item.created_at ? displayDate(item.created_at) : '时间未知'}</span><span>{item.model_id}</span><span>{item.status === 'completed' ? '已完成' : item.status === 'failed' ? '失败' : '运行中'}</span><span>{item.baseline_release ? item.baseline_release.slice(0, 8) : '版本未记录'} → {item.draft_release?.slice(0, 8) ?? '版本未记录'}</span><code>{item.test_id.slice(0, 8)}</code>
       </button>)}
     </div> : <p>暂无试运行记录。</p>}
     <div className="pm-history-pagination"><button className="btn" disabled={loading || offset === 0} onClick={() => setOffset(Math.max(0, offset - 20))}>上一页</button><button className="btn" disabled={loading || page?.next_offset == null} onClick={() => setOffset(page!.next_offset!)}>下一页</button></div>

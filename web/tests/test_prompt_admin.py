@@ -2,6 +2,68 @@ from .conftest import register
 from prompt_config.catalogue import defaults
 
 
+def test_trial_retries_reuse_result_even_after_draft_changes(tier, monkeypatch):
+    import io
+    import json
+    import pytest
+    from types import SimpleNamespace
+    from web.prompt_admin import start_trial, TrialRequestConflict
+    calls = []
+    class InlineThread:
+        def __init__(self, target, **kwargs):
+            self.target = target
+        def start(self):
+            self.target()
+    def invoke(payload, **kwargs):
+        calls.append(payload)
+        return "application/json", io.BytesIO(json.dumps({"output": "ok", "model_id": "model"}).encode()), None
+    monkeypatch.setattr("web.prompt_admin.threading.Thread", InlineThread)
+    tier.runtime = SimpleNamespace(invoke=invoke)
+    tier.prompts.save_draft(defaults(), "admin", None)
+    body = {"request_id": "a" * 32, "prompt_id": "role.audit", "input": "example",
+            "model_id": "model", "draft_etag": tier.prompts.state()["draft_etag"]}
+    first = start_trial(tier, body, "admin")
+    tier.prompts.save_draft(defaults(), "admin", body["draft_etag"])
+    assert start_trial(tier, body, "admin") == {"test_id": first["test_id"], "reused": True}
+    assert len(calls) == 2
+    with pytest.raises(TrialRequestConflict):
+        start_trial(tier, dict(body, input="different example"), "admin")
+    body.update(request_id="b" * 32, draft_etag=tier.prompts.state()["draft_etag"])
+    assert start_trial(tier, body, "admin")["test_id"] != first["test_id"]
+    assert len(calls) == 4
+
+
+def test_trial_worker_start_failure_is_terminal_and_does_not_block_next(tier, monkeypatch):
+    from web.prompt_admin import start_trial
+    def fail(*args):
+        raise RuntimeError("synthetic thread allocation failure")
+    monkeypatch.setattr("web.prompt_admin.threading.Thread.start", fail)
+    tier.prompts.save_draft(defaults(), "admin", None)
+    body = {"request_id": "a" * 32, "prompt_id": "role.audit", "input": "example",
+            "draft_etag": tier.prompts.state()["draft_etag"]}
+    first = start_trial(tier, body, "admin")
+    record = tier.prompts.storage.read("tests/" + first["test_id"] + ".json")[0]
+    assert record["status"] == "failed"
+    assert tier.prompts.storage.read("trial-lease.json")[0]["expires"] == 0
+    assert start_trial(tier, body, "admin")["reused"] is True
+    assert start_trial(tier, dict(body, request_id="b" * 32), "admin")["test_id"] != first["test_id"]
+
+
+def test_trial_occupancy_has_distinct_http_error_code(client, tier, monkeypatch):
+    import time
+    from types import SimpleNamespace
+    register(client)
+    tier.runtime = SimpleNamespace(configured=True)
+    tier.prompts.save_draft(defaults(), "admin", None)
+    tier.prompts.storage.write("trial-lease.json", {"test_id": "other", "expires": time.time() + 60})
+    response = client.post("/api/admin/prompts/test", json={
+        "request_id": "a" * 32, "prompt_id": "role.audit", "input": "example",
+        "draft_etag": tier.prompts.state()["draft_etag"],
+    })
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "TRIAL_BUSY"
+
+
 def test_ordinary_user_cannot_read_or_modify_prompts(client):
     register(client, "admin@amazon.com")
     client.cookies.clear()
@@ -210,3 +272,18 @@ def test_history_pages_legacy_records_and_never_invents_input(client, tier):
     tier.prompts.storage.write('tests/' + 'a' * 32 + '.json', {
         'test_id': 'a' * 32, 'status': 'running', 'created_at': time.time() - 1300})
     assert client.get('/api/admin/prompts/test/' + 'a' * 32).json()['status'] == 'failed'
+
+
+def test_restore_defaults_sync_requires_previewed_draft_and_returns_synced_state(client, tier):
+    register(client)
+    values = defaults()
+    values['task.audit'] = 'Temporary audit draft'
+    tier.prompts.save_draft(values, 'admin', None)
+    state = client.get('/api/admin/prompts').json()
+    body = {'release_id': state['bundled']['release_id'], 'expected_etag': state['active_etag'], 'sync_draft': True}
+    assert client.post('/api/admin/prompts/restore-defaults', json=body).status_code == 400
+    body['draft_etag'] = state['draft_etag']
+    result = client.post('/api/admin/prompts/restore-defaults', json=body)
+    assert result.status_code == 200
+    assert result.json()['active']['values'] == result.json()['draft']['values'] == defaults()
+    assert '已同步' in result.json()['operation_notice']

@@ -74,6 +74,7 @@ import type { Thresholds } from '@/config/runtimeConfig'
 import { UsabilityCompare } from '../compare/UsabilityCompare'
 import { selectActivePhase, useBatchStore } from '@/stores/batchStore'
 import { useReviewQueue } from '@/stores/reviewQueueStore'
+import { BatchRecoveryPanel } from './BatchRecoveryPanel'
 import { BatchHistoryPanel } from './BatchHistoryPanel'
 import { DistributionThumb } from './DistributionThumb'
 import { useBatchStream } from './useBatchStream'
@@ -437,7 +438,6 @@ export function BatchProgressPage() {
   const submitToQueue = useReviewQueue((s) => s.submit)
   const thresholds = getThresholds()
   const [now, setNow] = useState(Date.now())
-  const [retryBusy, setRetryBusy] = useState(false)
   const [refillWatching, setRefillWatching] = useState(false)
   const [snapshotError, setSnapshotError] = useState<string | null>(null)
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set<string>())
@@ -676,7 +676,7 @@ export function BatchProgressPage() {
    * （比如候选材料用尽），那种情况该走下面的「未能生成」，不该说「下一次接着做」。
    */
   const checkpointed =
-    store.requestStatus === 'incomplete' && store.resumableSlots.length > 0
+    isLiveBatch && store.requestStatus === 'incomplete' && store.resumableSlots.length > 0
   const scenarioCount = groups.length
   const perScenario = groups[0]?.slots.length ?? 0
   /** 计划总套数。骨架期 store.total 已经有值，所以进度条一开始就说得出分母。 */
@@ -698,27 +698,6 @@ export function BatchProgressPage() {
     setPick(EMPTY_PICK)
     setSnapshotError(null)
     navigate(`/batches/${nextBatchId}`)
-  }
-
-  const doRetry = async () => {
-    if (!batchId) return
-    setRetryBusy(true)
-    try {
-      // Scenario keys, not material ids. Sending ids made the adapter resolve each one back to a
-      // scenario through the in-memory `sessions` map, which is empty after a reload and for any
-      // historical batch — so 补生成 threw 「没有可补生成的场景」 in exactly the situations where a
-      // user most wants it. The page already knows each pending slot's scenario; there is nothing
-      // to look up.
-      const res = await api.retryBatch(batchId, {
-        seats: missingSlots,
-      })
-      if (res.batch_id === batchId) {
-        setRefillWatching(true)
-        setHistoryToken((n) => n + 1)
-      }
-    } finally {
-      setRetryBusy(false)
-    }
   }
 
   const enterCompare = (scenarioKey: string) => {
@@ -854,7 +833,7 @@ export function BatchProgressPage() {
       {historical.error && (
         <div className="banner banner-bad">
           <strong>无法加载这个历史批次</strong>
-          <div>{historical.error}</div>
+          <div>{historical.error}<button className="btn" onClick={() => setHistoryToken((n) => n + 1)}>重新读取批次</button></div>
         </div>
       )}
 
@@ -877,14 +856,13 @@ export function BatchProgressPage() {
         </div>
       )}
 
-      {/* 任务中断过的历史批次。缺的套**不会**再补，所以不给「补生成」入口——那是一句做不到的承诺；
-          要补就是重新提一批。 */}
+      {/* 中断不代表必须重跑整批；恢复面板会读取实际断点并给出可执行入口。 */}
       {historical.batch?.interrupted && (
         <div className="banner banner-warn">
           <strong>这一批的生成任务中途中断了</strong>
           <div>
             已到达的 {historical.batch.materials ? Object.keys(historical.batch.materials).length : 0}{' '}
-            套是完整的、可以照常使用；缺的部分不会再补齐。需要补的话请重新提交一批。
+            套是完整的、可以照常使用；已交付材料会保留；下方会检查缺失部分能否从断点继续或单独补生成。
           </div>
         </div>
       )}
@@ -921,7 +899,7 @@ export function BatchProgressPage() {
           <div>
             已交付 {store.deliveredCount ?? completed} / {store.requestedCount ?? store.total} 套。
             余下 {store.resumableSlots.length} 套的进度已经存住，下一次运行会从断点继续，
-            <strong>不会重新生成已经通过的材料</strong>。这一页不用一直等。
+            <strong>不会重新生成已经通过的材料</strong>。可在下方检查断点并继续生成。
           </div>
         </div>
       )}
@@ -930,30 +908,15 @@ export function BatchProgressPage() {
       {isLiveBatch && store.requestStatus === 'system_failure' && (
         <div className="banner banner-bad">
           <strong>出题因系统故障中断</strong>
-          <div>这不是材料质量问题，需要有人查看后端日志；在这一页重试不会有帮助。</div>
+          <div>这不是材料质量问题，需要先核对故障原因。下方会分别检查哪些版位仍可恢复，不会自动重跑故障版位。</div>
         </div>
       )}
 
-      {/* 「有几套没生成出来」是结果，不是环节：这里只说数量和补生成的入口，
-          不再逐套播报它卡在哪个内部环节、试了几次。 */}
-      {!checkpointed && finished && missingSlots.length > 0 &&
-        !historical.batch?.interrupted && !readOnly && (
-        <div className="banner banner-warn">
-          <strong>有 {missingSlots.length} 套未能生成</strong>
-          <div>
-            已生成的 {completed} 套可以照常选用。缺的部分可以单独补生成，不必重跑整批。
-            <div style={{ marginTop: 8 }}>
-              <button
-                type="button"
-                className="btn"
-                disabled={retryBusy}
-                onClick={() => void doRetry()}
-              >
-                补生成这 {missingSlots.length} 套
-              </button>
-            </div>
-          </div>
-        </div>
+      {finished && missingSlots.length > 0 && !readOnly && batchId && (
+        <BatchRecoveryPanel key={batchId} batchId={batchId} onStarted={() => {
+          setRefillWatching(true)
+          setHistoryToken((n) => n + 1)
+        }} />
       )}
 
       {/* 历史批次取回来之前不铺骨架卡：那会先闪一屏「生成中…」再换成真卡，而这一批几天前就跑完了。 */}

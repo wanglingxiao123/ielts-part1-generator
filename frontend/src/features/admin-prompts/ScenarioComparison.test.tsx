@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { promptScenarios, type ScenarioRun } from '@/api/promptScenarios'
@@ -151,4 +151,17 @@ it('keeps historical read errors visible after hiding the new-comparison form', 
   await userEvent.click(await screen.findByRole('button', { name: /酒店预订/ }))
   expect(await screen.findByRole('alert')).toBeVisible()
   expect(screen.getByRole('button', { name: '返回当前对比' })).toBeEnabled()
+})
+
+
+it('shows history failures inside the drawer and allows retry', async () => {
+  vi.mocked(promptScenarios.history).mockRejectedValueOnce(new Error('offline')).mockResolvedValue({ items: [], next_offset: null })
+  render(<ScenarioComparison state={state} dirty={false} />)
+  await userEvent.click(screen.getByRole('button', { name: '场景对比历史' }))
+  const drawer = within(screen.getByRole('dialog', { name: '场景对比历史' }))
+  expect(await drawer.findByRole('alert')).toHaveTextContent('场景对比历史读取失败')
+  expect(drawer.queryByText('暂无完整场景对比。')).not.toBeInTheDocument()
+  await userEvent.click(drawer.getByRole('button', { name: '刷新记录' }))
+  expect(await drawer.findByText('暂无完整场景对比。')).toBeInTheDocument()
+  expect(drawer.queryByRole('alert')).not.toBeInTheDocument()
 })

@@ -200,6 +200,25 @@ class PromptStore:
         draft = dict(values=self.validate(values), actor=actor, updated_at=time.time())
         self.storage.write("draft.json", draft, expected)
 
+    def restore_defaults(self, actor, expected, default_id, draft_etag):
+        bundle = self.bundled()
+        if bundle["release_id"] != default_id:
+            raise Conflict("内置默认版本已改变，请刷新后重新确认。")
+        if self.storage.read("draft.json")[1] != draft_etag:
+            raise Conflict("共享草稿已改变，请刷新后重新确认恢复。")
+        self.publish(actor, expected, release_id=default_id)
+        # Active and draft are separate CAS documents. Once publication succeeds,
+        # never report a later draft-sync failure as if nothing was published.
+        try:
+            self.save_draft(bundle["values"], actor, draft_etag)
+        except Conflict:
+            return "默认提示词已恢复并生效；共享草稿被其他管理员更新，已保留对方的修改，请核对草稿差异。"
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("Default restore draft synchronization failed")
+            return "默认提示词已恢复并生效，但草稿同步未确认。请刷新核对；不要重复发布。"
+        return "已恢复默认提示词并发布，共享草稿也已同步，发布历史保留。"
+
     def publish(self, actor, expected, *, draft_etag=None, release_id=None):
         pointer, etag = self.storage.read("active.json")
         if etag != expected:

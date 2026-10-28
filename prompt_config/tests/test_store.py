@@ -131,3 +131,50 @@ def test_local_file_store_shares_releases_across_instances(tmp_path):
     assert second.pin("batch:shared") == first.pin("batch:shared")
     with pytest.raises(Conflict):
         second.save_draft(defaults(), "other", None)
+
+
+def test_restore_defaults_synchronizes_draft_and_preserves_history():
+    store = PromptStore(MemoryStore())
+    original = publish(store)
+    state = store.state()
+    notice = store.restore_defaults('admin', state['active_etag'], state['bundled']['release_id'], state['draft_etag'])
+    after = store.state()
+    assert after['active']['values'] == after['draft']['values'] == defaults()
+    assert any(row['release_id'] == original['release_id'] for row in after['history'])
+    assert '已同步' in notice
+
+
+def test_restore_defaults_stale_draft_does_not_publish():
+    store = PromptStore(MemoryStore())
+    publish(store)
+    state = store.state()
+    store.save_draft(defaults(), 'other', state['draft_etag'])
+    with pytest.raises(Conflict):
+        store.restore_defaults('admin', state['active_etag'], state['bundled']['release_id'], state['draft_etag'])
+    assert store.state()['active_etag'] == state['active_etag']
+
+
+@pytest.mark.parametrize('failure', ['concurrent', 'unavailable'])
+def test_restore_defaults_reports_partial_success_without_overwriting_competing_draft(monkeypatch, failure):
+    store = PromptStore(MemoryStore())
+    publish(store)
+    state = store.state()
+    real_publish = store.publish
+    competing = changed()
+    competing['role.audit'] += '\nKeep my audit edit.'
+    def raced(*args, **kwargs):
+        result = real_publish(*args, **kwargs)
+        store.save_draft(competing, 'other', state['draft_etag'])
+        return result
+    monkeypatch.setattr(store, 'publish', raced)
+    if failure == 'unavailable':
+        def unavailable(*args, **kwargs):
+            raise RuntimeError('storage unavailable')
+        monkeypatch.setattr(store, 'publish', real_publish)
+        monkeypatch.setattr(store, 'save_draft', unavailable)
+    notice = store.restore_defaults('admin', state['active_etag'], state['bundled']['release_id'], state['draft_etag'])
+    after = store.state()
+    assert after['active']['values'] == defaults()
+    assert after['draft']['values'] == (competing if failure == 'concurrent' else state['draft']['values'])
+    assert '已恢复并生效' in notice
+    assert '已同步' not in notice

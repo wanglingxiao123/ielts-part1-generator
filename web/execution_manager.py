@@ -90,11 +90,18 @@ class ExecutionManager:
                 with self._lock:
                     self._finished_at[execution_id] = time.monotonic()
 
-        threading.Thread(
-            target=run,
-            name="web-execution-%s" % execution_id[:12],
-            daemon=True,
-        ).start()
+        try:
+            threading.Thread(
+                target=run,
+                name="web-execution-%s" % execution_id[:12],
+                daemon=True,
+            ).start()
+        except Exception:
+            execution.finish()
+            with self._lock:
+                if self._executions.get(execution_id) is execution:
+                    self._executions.pop(execution_id)
+            raise
         return execution, True
 
     def get(self, execution_id: str) -> Optional[Execution]:

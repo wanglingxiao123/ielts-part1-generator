@@ -407,6 +407,7 @@ async def _generate_sets(payload: Dict[str, Any]):
         async for event in stream_request(
             request.slots, request.batch_id, budget=request.budget,
             concurrency=request.concurrency, group_id=request.group_id, model_id=model_id,
+            retry_token=request.retry_token,
         ):
             yield event
 

@@ -170,6 +170,12 @@ def _with_seats(materials: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ]
 
 
+def canonical_scenario_key(value):
+    """Runtime custom hashes identify the single planned custom scenario."""
+    key = str(value or "")
+    return "custom" if key.startswith("custom-") else key
+
+
 def derive(record: Dict[str, Any], *, now: Optional[float] = None) -> Dict[str, Any]:
     """The batch record as the history panel needs it: status, read-only, counts, scenarios.
 
@@ -427,7 +433,7 @@ class BatchHistory:
             if record.get("submitted_at"):
                 raise ValueError("submitted batches cannot be refilled")
             present = {
-                (str(row.get("scenario_key") or ""), _as_int(row.get("index")))
+                (canonical_scenario_key(row.get("scenario_key")), _as_int(row.get("index")))
                 for row in record.get("materials") or [] if isinstance(row, dict)
             }
             slot_for: Dict[Tuple[str, int], str] = {}
@@ -635,10 +641,10 @@ class BatchRecorder:
         })
         with self._lock:
             if self._refill_execution_id:
-                seat = (summary["scenario_key"], summary["index"])
+                seat = (canonical_scenario_key(summary["scenario_key"]), summary["index"])
                 self._record["materials"] = [
                     row for row in self._record["materials"]
-                    if (str(row.get("scenario_key") or ""), _as_int(row.get("index"))) != seat
+                    if (canonical_scenario_key(row.get("scenario_key")), _as_int(row.get("index"))) != seat
                 ]
                 self._record["materials"].append(summary)
             elif not any(m.get("material_id") == summary["material_id"]
@@ -651,7 +657,7 @@ class BatchRecorder:
         with self._lock:
             if self._refill_execution_id:
                 arrived = len({
-                    (str(row.get("scenario_key") or ""), _as_int(row.get("index")))
+                    (canonical_scenario_key(row.get("scenario_key")), _as_int(row.get("index")))
                     for row in self._record.get("materials") or [] if isinstance(row, dict)
                 })
                 requested = int(_as_float(self._record.get("requested_total")))
@@ -667,11 +673,13 @@ class BatchRecorder:
                     key: int(_as_float(event.get(key)))
                     for key in ("succeeded", "failed", "skipped", "degraded")
                 }
+            self._record["request_status"] = event.get("request_status")
+            self._record["resumable_slots"] = event.get("resumable_slots") or []
             self._record["state"] = "complete"
             self._record["completed_at"] = _as_float(event.get("at")) or time.time()
             if self._refill_execution_id:
                 arrived = len({
-                    (str(row.get("scenario_key") or ""), _as_int(row.get("index")))
+                    (canonical_scenario_key(row.get("scenario_key")), _as_int(row.get("index")))
                     for row in self._record.get("materials") or [] if isinstance(row, dict)
                 })
                 requested = int(_as_float(self._record.get("requested_total")))
@@ -773,7 +781,7 @@ class BatchRecorder:
                         key: snapshot.get(key)
                         for key in (
                             "materials", "counts", "state", "updated_at", "completed_at",
-                            "refill_execution",
+                            "refill_execution", "request_status", "resumable_slots",
                         )
                     })
                     store.save_index(self._batch_id, latest)

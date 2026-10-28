@@ -2,7 +2,16 @@ import { realTransport } from './http'
 
 export type PromptValues = Record<string, string>
 
+export interface PromptTrialRequest {
+  request_id: string
+  prompt_id: string
+  input: string
+  model_id: string
+  draft_etag: string | null
+}
+
 export interface PromptState {
+  operation_notice?: string
   catalogue: Array<{
     id: string
     name: string
@@ -14,7 +23,7 @@ export interface PromptState {
   active: { release_id: string; values: PromptValues }
   bundled?: { release_id: string; values: PromptValues }
   active_etag: string | null
-  draft: { values: PromptValues } | null
+  draft: { values: PromptValues; actor?: string; updated_at?: number } | null
   draft_etag: string | null
   history: Array<{ release_id: string; actor: string; created_at: string | number; changed_ids?: string[]; base_release_id?: string; comparison_note?: string | null }>
   skills: Array<{ path: string; text: string }>
@@ -75,12 +84,12 @@ export const adminPrompts = {
     post<PromptState>(`${root}/publish`, { expected_etag, draft_etag }),
   rollback: (release_id: string, expected_etag: string | null) =>
     post<PromptState>(`${root}/rollback`, { release_id, expected_etag }),
-  restoreDefaults: (release_id: string, expected_etag: string | null) =>
-    post<PromptState>(`${root}/restore-defaults`, { release_id, expected_etag }),
+  restoreDefaults: (release_id: string, expected_etag: string | null, draft_etag: string | null) =>
+    post<PromptState>(`${root}/restore-defaults`, { release_id, expected_etag, draft_etag, sync_draft: true }),
   history: (offset = 0, signal?: AbortSignal) =>
     get<TrialHistory>(`${root}/tests?offset=${offset}`, signal),
-  test: (body: { prompt_id: string; input: string; model_id: string; draft_etag: string | null }) =>
-    post<{ test_id: string }>(`${root}/test`, body),
+  test: (body: PromptTrialRequest) =>
+    post<{ test_id: string; reused?: boolean }>(`${root}/test`, body),
   result: (id: string, signal?: AbortSignal) =>
     get<PromptTrial>(`${root}/test/${encodeURIComponent(id)}`, signal),
 }

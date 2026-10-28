@@ -109,6 +109,21 @@ class SlotStateReader(object):
             return None
         return [row for row in rows if isinstance(row, dict) and row.get("slot_id")]
 
+    def load_request(self, batch_id: str) -> Optional[Dict[str, Any]]:
+        """Strict recovery read: unavailable/corrupt storage must not imply restart."""
+        if self._store is None:
+            raise RuntimeError("checkpoint storage unavailable")
+        try:
+            raw = self._store.get("%s%s/request.json" % (SLOT_PREFIX, batch_id))
+        except Exception as exc:
+            if type(exc).__name__ == "ObjectNotFound":
+                return None
+            raise
+        document = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+        if not isinstance(document, dict) or not isinstance(document.get("slots"), list):
+            raise ValueError("invalid checkpoint document")
+        return document
+
     def find_slot(self, batch_id: str, material_id: str) -> Optional[Dict[str, Any]]:
         """The slot row that holds this material, plus its request's status, or None.
 

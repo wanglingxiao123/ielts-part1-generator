@@ -241,6 +241,8 @@ class WebTier:
             else build_question_version_service()
         )
         self.executions = executions if executions is not None else ExecutionManager()
+        from .batch_recovery import BatchRecovery
+        self.batch_recovery = BatchRecovery(self)
         # email -> (runtimeSessionId, minted_at). Per-user so two reviewers do not share a
         # microVM, and so one user's long batch does not reset another's idle timer.
         #
@@ -407,58 +409,64 @@ class WebTier:
                                 "没有找到批次 %s 的历史记录" % batch_id, batch_id=batch_id),
                     status_code=404,
                 )
+            if self.executions.is_running("batch:" + batch_id):
+                found["interrupted"] = False
             return JSONResponse(found)
+
+        @app.get("/api/batch-history/{batch_id}/recovery")
+        async def batch_recovery_plan(batch_id: str, request: Request):
+            return await recovery_response(batch_id, request, start=False)
+
+        @app.post("/api/batch-history/{batch_id}/recovery")
+        async def recover_batch(batch_id: str, request: Request):
+            return await recovery_response(batch_id, request, start=True)
+
+        async def recovery_response(batch_id, request, *, start):
+            from .batch_recovery import RecoveryBusy
+            owner = str((request.scope.get(USER_SCOPE_KEY) or {}).get("email") or "")
+            try:
+                if start:
+                    body = _as_dict(await _json_body(request))
+                    result = await asyncio.to_thread(self.batch_recovery.start, batch_id, owner,
+                                                     body.get("request_id"))
+                else:
+                    result = await asyncio.to_thread(self.batch_recovery.plan, batch_id, owner)
+                return JSONResponse(result, status_code=202 if start else 200)
+            except KeyError:
+                return JSONResponse(_error_body("BATCH_NOT_FOUND", "批次记录不存在。"), 404)
+            except PermissionError:
+                return JSONResponse(_error_body("BATCH_FORBIDDEN", "只能恢复自己的批次。"), 403)
+            except RecoveryBusy as exc:
+                return JSONResponse(_error_body("RECOVERY_BUSY", str(exc)), 503)
+            except ValueError as exc:
+                return JSONResponse(_error_body("RECOVERY_INVALID", str(exc)), 409)
+            except Exception as exc:
+                return JSONResponse(_infra_error_body("RECOVERY_UNAVAILABLE",
+                    "恢复状态暂未确认，请重试查询或确认同一请求；不会重跑已交付的材料。", exc), 502)
 
         @app.post("/api/batch-history/{batch_id}/refill")
         async def refill_batch(batch_id: str, request: Request) -> JSONResponse:
-            """Start an isolated refill whose results merge into the source batch."""
+            """Legacy entry point uses the same checkpoint-aware recovery policy."""
+            from .batch_recovery import RecoveryBusy
             body = _as_dict(await _json_body(request))
-            raw = body.get("seats")
-            if not isinstance(raw, list):
-                return JSONResponse(
-                    _error_body("bad_request", "seats must be a list"), status_code=400)
-            user = request.scope.get(USER_SCOPE_KEY) or {}
-            from starlette.concurrency import run_in_threadpool
+            seats = body.get("seats")
+            if not isinstance(seats, list) or any(not isinstance(row, dict) for row in seats):
+                return JSONResponse(_error_body("bad_request", "请选择缺失版位。"), 400)
+            owner = str((request.scope.get(USER_SCOPE_KEY) or {}).get("email") or "")
             try:
-                reservation = await run_in_threadpool(
-                    self.history.reserve_refill, batch_id,
-                    [row for row in raw if isinstance(row, dict)],
-                    owner=str(user.get("email") or ""),
-                )
+                result = await asyncio.to_thread(self.batch_recovery.start_legacy, batch_id, owner, seats)
+                return JSONResponse(result, 202)
             except KeyError:
-                return JSONResponse(
-                    _error_body("BATCH_NOT_FOUND",
-                                "没有找到批次 %s 的历史记录" % batch_id),
-                    status_code=404)
+                return JSONResponse(_error_body("BATCH_NOT_FOUND", "批次记录不存在。"), 404)
             except PermissionError:
-                return JSONResponse(
-                    _error_body("BATCH_FORBIDDEN", "你不能补生成其他人的批次。"),
-                    status_code=403)
-            except ValueError:
-                return JSONResponse(
-                    _error_body("REFILL_EMPTY", "这些版位已经补齐，无需再次生成。"),
-                    status_code=409)
-            except Exception as exc:  # noqa: BLE001
-                return JSONResponse(_infra_error_body(
-                    "REFILL_RESERVE_FAILED", "补生成任务没有创建成功。", exc),
-                    status_code=502)
-
-            execution_id = str(reservation["execution_id"])
-            if not reservation.get("reused"):
-                try:
-                    await asyncio.to_thread(self._start_batch_refill,
-                        batch_id, execution_id, list(reservation["targets"]),
-                        custom_label=str(reservation.get("custom_label") or ""),
-                        model_id=str(reservation.get("model_id") or ""))
-                except Exception as exc:
-                    return JSONResponse(_infra_error_body(
-                        "REFILL_START_FAILED", "补生成未开始，请稍后重试。", exc), status_code=503)
-            return JSONResponse({
-                "batch_id": batch_id,
-                "execution_id": execution_id,
-                "status": "running",
-                "reused": bool(reservation.get("reused")),
-            }, status_code=202)
+                return JSONResponse(_error_body("BATCH_FORBIDDEN", "只能恢复自己的批次。"), 403)
+            except RecoveryBusy as exc:
+                return JSONResponse(_error_body("RECOVERY_BUSY", str(exc)), 503)
+            except ValueError as exc:
+                return JSONResponse(_error_body("RECOVERY_INVALID", str(exc)), 409)
+            except Exception as exc:
+                return JSONResponse(_infra_error_body("RECOVERY_UNAVAILABLE",
+                    "恢复状态暂未确认，请刷新检查断点后重试。", exc), 502)
 
         @app.get("/api/batch-history-material/{material_id}")
         async def get_history_material(
@@ -1394,7 +1402,7 @@ class WebTier:
 
     def _start_batch_refill(
         self, batch_id: str, execution_id: str, targets: List[Dict[str, Any]],
-        *, custom_label: str = "", model_id: str = "",
+        *, custom_label: str = "", model_id: str = "", on_finished=None,
     ) -> None:
         # Legacy batches predate editable prompts and retain the bundled baseline.
         try:
@@ -1410,8 +1418,9 @@ class WebTier:
             payload: Dict[str, Any] = {
                 "action": "generate_sets", "scenarios": [scenario], "count": 1,
                 "_prompt_release": prompt_ref}
-            if model_id:
-                payload["model_id"] = model_id
+            selected_model = target.get("model_id") or model_id
+            if selected_model:
+                payload["model_id"] = selected_model
             if scenario == "custom":
                 payload["scenarios"] = []
                 payload["custom_scenario"] = {"text": custom_label, "count": 1}
@@ -1423,7 +1432,9 @@ class WebTier:
             child.index = len(children)
             child.slot_ids = [slot_id]
             child.seats = {slot_id: int(target["index"])}
-            child.payload["batch_id"] = "%s-%s" % (execution_id, slot_id)
+            child.payload["batch_id"] = target.get("request_id") or "%s-%s" % (execution_id, slot_id)
+            if target.get("retry_token"):
+                child.payload["retry_token"] = target["retry_token"]
             child.payload["group_id"] = batch_id
             children.append(child)
             slot_ids.append(slot_id)
@@ -1439,9 +1450,20 @@ class WebTier:
                 async for frame in _frames(fan, recorder):
                     publish(frame)
             import asyncio
-            asyncio.run(consume())
+            try:
+                asyncio.run(consume())
+            except Exception:
+                self.history.fail_refill(batch_id, execution_id, "恢复执行中断，请刷新检查已保存的进度。")
+                raise
+            finally:
+                if on_finished:
+                    on_finished()
 
-        self.executions.start("batch-refill:%s" % execution_id, producer)
+        try:
+            self.executions.start("batch-refill:%s" % execution_id, producer)
+        except Exception:
+            self.history.fail_refill(batch_id, execution_id, "恢复任务未能启动，请重试。")
+            raise
 
     def _serve_static(self, full_path: str, request: Request) -> Any:
         """The frontend build, with SPA fallback.

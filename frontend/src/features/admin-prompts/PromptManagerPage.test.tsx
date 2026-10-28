@@ -6,6 +6,7 @@ import { adminPrompts, type PromptState } from '@/api/adminPrompts'
 import { ApiError } from '@/api/http'
 import { SessionContext, type Session } from '@/auth/sessionContext'
 import { App } from '@/App'
+import { rememberWorkspace } from './workspaceRecovery'
 import { PromptManagerPage } from './PromptManagerPage'
 
 vi.mock('@/api/adminPrompts', () => ({
@@ -60,6 +61,8 @@ async function ready() {
 }
 
 beforeEach(() => {
+  rememberWorkspace('admin@example.com', 'draft', null)
+  rememberWorkspace('admin@example.com', 'trial', null)
   Object.defineProperties(HTMLDialogElement.prototype, {
     showModal: { configurable: true, value: function (this: HTMLDialogElement) { this.setAttribute('open', '') } },
     close: { configurable: true, value: function (this: HTMLDialogElement) { this.removeAttribute('open') } },
@@ -104,7 +107,7 @@ describe('administrator prompt manager', () => {
     vi.mocked(adminPrompts.save).mockResolvedValue({ ...initial, draft: { values }, draft_etag: 'draft-2' })
     await userEvent.click(screen.getByRole('button', { name: '保存草稿' }))
     expect(adminPrompts.save).toHaveBeenCalledWith(values, 'draft-1')
-    await screen.findByText('草稿已保存，尚未发布。')
+    await screen.findByText('草稿已保存，其他管理员的修改已保留，尚未发布。')
     expect(adminPrompts.publish).not.toHaveBeenCalled()
   })
 
@@ -120,22 +123,37 @@ describe('administrator prompt manager', () => {
     expect(adminPrompts.publish).not.toHaveBeenCalled()
   })
 
-  it('retains unsaved edits on 409, refreshes tokens explicitly, then saves', async () => {
+  it('requires explicit selection for concurrent same-module edits even after refresh', async () => {
     await ready()
     fireEvent.change(screen.getByLabelText('草稿业务文本'), { target: { value: '保留我的编辑' } })
+    const next = { ...initial, draft: { values: { generate: '另一位管理员的修改', audit: '草稿审核规则' }, actor: 'other@example.com', updated_at: 1793050000 }, draft_etag: 'draft-2' }
+    vi.mocked(adminPrompts.get).mockResolvedValue(next)
     vi.mocked(adminPrompts.save).mockRejectedValueOnce(new ApiError(409, 'CONFLICT', 'stale'))
     await userEvent.click(screen.getByRole('button', { name: '保存草稿' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('版本冲突')
-    expect(screen.getByLabelText('草稿业务文本')).toHaveValue('保留我的编辑')
-    expect(screen.getByRole('button', { name: '保存草稿' })).toBeDisabled()
-    const next = { ...initial, draft_etag: 'draft-2', active_etag: 'active-2' }
-    vi.mocked(adminPrompts.get).mockResolvedValue(next)
+    expect(screen.getByLabelText('我的编辑')).toHaveValue('保留我的编辑')
+    expect(screen.getByLabelText('服务器最新草稿')).toHaveValue('另一位管理员的修改')
+    expect(screen.getByText(/最近保存：other@example.com/)).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: /刷新服务器版本/ }))
-    await screen.findByText(/已刷新服务器版本，本地编辑已保留/)
-    expect(screen.getByLabelText('草稿业务文本')).toHaveValue('保留我的编辑')
-    vi.mocked(adminPrompts.save).mockResolvedValue(next)
+    expect(screen.getByRole('button', { name: '保存草稿' })).toBeDisabled()
+    expect(adminPrompts.save).toHaveBeenCalledTimes(1)
+    await userEvent.click(screen.getByRole('button', { name: '保留我的编辑' }))
+    vi.mocked(adminPrompts.save).mockResolvedValue({ ...next, draft: { values: { generate: '保留我的编辑', audit: '草稿审核规则' } } })
     await userEvent.click(screen.getByRole('button', { name: '保存草稿' }))
     expect(adminPrompts.save).toHaveBeenLastCalledWith({ generate: '保留我的编辑', audit: '草稿审核规则' }, 'draft-2')
+  })
+
+  it('automatically merges different modules after a competing save', async () => {
+    await ready()
+    fireEvent.change(screen.getByLabelText('草稿业务文本'), { target: { value: '我的生成规则' } })
+    const remote = { ...initial, draft: { values: { generate: '草稿生成规则', audit: '他人的审核规则' } }, draft_etag: 'draft-2' }
+    const merged = { generate: '我的生成规则', audit: '他人的审核规则' }
+    vi.mocked(adminPrompts.get).mockResolvedValue(remote)
+    vi.mocked(adminPrompts.save).mockRejectedValueOnce(new ApiError(409, 'CONFLICT', 'stale')).mockResolvedValue({ ...remote, draft: { values: merged }, draft_etag: 'draft-3' })
+    await userEvent.click(screen.getByRole('button', { name: '保存草稿' }))
+    await waitFor(() => expect(adminPrompts.save).toHaveBeenLastCalledWith(merged, 'draft-2'))
+    expect(screen.queryByRole('region', { name: '草稿冲突处理' })).not.toBeInTheDocument()
+    expect(adminPrompts.publish).not.toHaveBeenCalled()
   })
 
   it('keeps local edits on a validation error and lets the user retry', async () => {
@@ -155,9 +173,9 @@ describe('administrator prompt manager', () => {
     await userEvent.click(screen.getByRole('button', {
       name: operation === 'publish' ? '发布整套草稿' : '回滚至 release-0',
     }))
-    if (operation === 'publish') await userEvent.click(screen.getByRole('button', { name: '确认发布' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('版本冲突')
-    if (operation === 'publish') await userEvent.click(screen.getByRole('button', { name: '暂不发布' }))
+    await userEvent.click(screen.getByRole('button', { name: operation === 'publish' ? '确认发布' : '确认回滚' }))
+    expect(await within(screen.getByRole('dialog', { name: operation === 'publish' ? '确认发布整套草稿' : '确认回滚提示词' })).findByRole('alert')).toHaveTextContent('版本冲突')
+    await userEvent.click(screen.getByRole('button', { name: operation === 'publish' ? '暂不发布' : '取消回滚' }))
     expect(screen.getByLabelText('草稿业务文本')).toHaveValue('草稿生成规则')
     expect(screen.getByRole('button', { name: '发布整套草稿' })).toBeDisabled()
     await userEvent.click(screen.getByRole('button', { name: '版本管理' }))
@@ -187,8 +205,10 @@ describe('administrator prompt manager', () => {
     vi.mocked(adminPrompts.rollback).mockResolvedValue({ ...published, active: { ...published.active, release_id: 'rollback-3' } })
     await userEvent.click(screen.getByRole('button', { name: '版本管理' }))
     await userEvent.click(screen.getByRole('button', { name: '回滚至 release-0' }))
+    expect(adminPrompts.rollback).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: '确认回滚' }))
     expect(adminPrompts.rollback).toHaveBeenCalledWith('release-0', 'active-2')
-    await screen.findByText('rollback-3')
+    await screen.findByTitle('rollback-3')
   })
 
   it('requires an actual edit before creating the first draft', async () => {
@@ -220,7 +240,7 @@ describe('administrator prompt manager', () => {
     await screen.findByText('整套配置已发布，仅对新任务生效。')
     expect(screen.getByRole('button', { name: '保存草稿' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '发布整套草稿' })).toBeDisabled()
-    expect(screen.getByText('无未保存修改 · 与当前生效版本一致')).toBeInTheDocument()
+    expect(screen.getByText('已同步')).toBeInTheDocument()
   })
 
   it('runs the selected saved task with model and etag, and compares terminal outputs', async () => {
@@ -231,7 +251,7 @@ describe('administrator prompt manager', () => {
     await userEvent.click(screen.getByRole('button', { name: '样例试运行' }))
     fireEvent.change(screen.getByLabelText('输入样例'), { target: { value: '测试场景' } })
     await userEvent.click(screen.getByRole('button', { name: '运行对比' }))
-    expect(adminPrompts.test).toHaveBeenCalledWith({ prompt_id: 'generate', input: '测试场景', model_id: 'model-a', draft_etag: 'draft-1' })
+    expect(adminPrompts.test).toHaveBeenCalledWith({ request_id: expect.stringMatching(/^[a-f0-9]{32}$/), prompt_id: 'generate', input: '测试场景', model_id: 'model-a', draft_etag: 'draft-1' })
     expect(await screen.findByText('正在运行独立对比…')).toBeInTheDocument()
     expect(await screen.findByText('草稿输出样例', {}, { timeout: 3000 })).toBeInTheDocument()
     expect(screen.getByText('当前输出样例')).toBeInTheDocument()
@@ -337,10 +357,12 @@ it('requires preview confirmation before publishing bundled defaults', async () 
   await userEvent.click(screen.getByRole('button', { name: '恢复内置默认提示词' }))
   expect(adminPrompts.restoreDefaults).not.toHaveBeenCalled()
   expect(screen.getByText('默认生成规则')).toBeInTheDocument()
-  vi.mocked(adminPrompts.restoreDefaults).mockResolvedValue({ ...initial, active: { release_id: 'restored', values: initial.bundled!.values } })
+  vi.mocked(adminPrompts.restoreDefaults).mockResolvedValue({ ...initial, active: { release_id: 'restored', values: initial.bundled!.values }, draft: { values: initial.bundled!.values } })
   await userEvent.click(screen.getByRole('button', { name: '确认恢复并发布' }))
-  expect(adminPrompts.restoreDefaults).toHaveBeenCalledWith('bundled-default', 'active-1')
-  await screen.findByText('已恢复内置默认提示词，并保留发布历史。')
+  expect(adminPrompts.restoreDefaults).toHaveBeenCalledWith('bundled-default', 'active-1', 'draft-1')
+  await screen.findByText('已恢复默认提示词并发布，共享草稿也已同步，发布历史保留。')
+  expect(screen.getByText('已同步')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: '发布整套草稿' })).toBeDisabled()
 })
 
 it('keeps four primary destinations and preserves edits when opening rules', async () => {
@@ -358,7 +380,7 @@ it('saves before opening the selected trial without automatically invoking a mod
   await ready()
   fireEvent.change(screen.getByLabelText('草稿业务文本'), { target: { value: '新标准' } })
   vi.mocked(adminPrompts.save).mockResolvedValue({ ...initial, draft: { values: { ...initial.draft!.values, generate: '新标准' } } })
-  await userEvent.click(screen.getByRole('button', { name: '保存并试运行' }))
+  await userEvent.click(screen.getByRole('button', { name: '保存并前往测试' }))
   await waitFor(() => expect(screen.getByRole('button', { name: '样例试运行' })).toHaveAttribute('aria-current', 'page'))
   expect(adminPrompts.save).toHaveBeenCalledWith({ generate: '新标准', audit: '草稿审核规则' }, 'draft-1')
   expect(adminPrompts.test).not.toHaveBeenCalled()
@@ -382,4 +404,98 @@ it('returns from a historical test without clearing current input or results', a
   expect(screen.getByLabelText('输入样例')).toHaveValue('当前样例')
   expect(screen.getByText('当前草稿结果')).toBeVisible()
   expect(adminPrompts.test).toHaveBeenCalledTimes(1)
+})
+
+
+it('restores unsaved edits after navigation and blocks stale recovered drafts', async () => {
+  const page = renderPage()
+  fireEvent.change(await screen.findByLabelText('草稿业务文本'), { target: { value: '保留我的编辑' } })
+  page.unmount()
+  vi.mocked(adminPrompts.get).mockResolvedValue({ ...initial, draft: { values: { ...initial.draft!.values, generate: '对方修改' } }, draft_etag: 'changed' })
+  renderPage()
+  expect(await screen.findByLabelText('草稿业务文本')).toHaveValue('保留我的编辑')
+  expect(screen.getByRole('button', { name: '保存草稿' })).toBeDisabled()
+  expect(screen.getByText(/已恢复未保存编辑/)).toBeInTheDocument()
+})
+
+it('replays the identical uncertain sample request after leaving and returning', async () => {
+  vi.mocked(adminPrompts.test).mockRejectedValueOnce(new TypeError('lost response')).mockResolvedValue({ test_id: 'recovered' })
+  vi.mocked(adminPrompts.result).mockResolvedValue({ status: 'completed', baseline: '结果', draft: '结果' })
+  const page = renderPage()
+  await screen.findByLabelText('草稿业务文本')
+  await userEvent.click(screen.getByRole('button', { name: '样例试运行' }))
+  fireEvent.change(screen.getByLabelText('输入样例'), { target: { value: '原始输入' } })
+  await userEvent.click(screen.getByRole('button', { name: '运行对比' }))
+  await screen.findByRole('button', { name: '重试确认同一测试' })
+  const request = vi.mocked(adminPrompts.test).mock.calls[0]![0]
+  expect(request.request_id).toMatch(/^[a-f0-9]{32}$/)
+  page.unmount()
+  vi.mocked(adminPrompts.get).mockResolvedValue({ ...initial, draft_etag: 'new-etag' })
+  renderPage()
+  await userEvent.click(await screen.findByRole('button', { name: '重试确认同一测试' }))
+  expect(vi.mocked(adminPrompts.test).mock.calls[1]![0]).toEqual(request)
+})
+
+it('does not lock draft saving when another trial occupies the service', async () => {
+  vi.mocked(adminPrompts.test).mockRejectedValue(new ApiError(409, 'TRIAL_BUSY', '已有试运行进行中'))
+  await ready()
+  await userEvent.click(screen.getByRole('button', { name: '样例试运行' }))
+  fireEvent.change(screen.getByLabelText('输入样例'), { target: { value: '样例' } })
+  await userEvent.click(screen.getByRole('button', { name: '运行对比' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('已有试运行进行中')
+  await userEvent.click(screen.getByRole('button', { name: '提示词编辑' }))
+  fireEvent.change(screen.getByLabelText('草稿业务文本'), { target: { value: '仍可保存' } })
+  expect(screen.getByRole('button', { name: '保存草稿' })).toBeEnabled()
+})
+
+it('preserves unresolved conflicts after leaving and supports adopting the server text', async () => {
+  const page = renderPage()
+  fireEvent.change(await screen.findByLabelText('草稿业务文本'), { target: { value: '我的修改' } })
+  vi.mocked(adminPrompts.get).mockResolvedValue({ ...initial, draft: { values: { generate: '服务器修改', audit: '草稿审核规则' } }, draft_etag: 'draft-2' })
+  await userEvent.click(screen.getByRole('button', { name: /刷新服务器版本/ }))
+  expect(screen.getByRole('button', { name: '保存草稿' })).toBeDisabled()
+  page.unmount()
+  renderPage()
+  await screen.findByLabelText('我的编辑')
+  expect(screen.getByRole('button', { name: '保存草稿' })).toBeDisabled()
+  await userEvent.click(screen.getByRole('button', { name: '采用服务器内容' }))
+  expect(screen.getByLabelText('草稿业务文本')).toHaveValue('服务器修改')
+  expect(screen.queryByRole('region', { name: '草稿冲突处理' })).not.toBeInTheDocument()
+  expect(adminPrompts.save).not.toHaveBeenCalled()
+})
+
+it('checks again if another administrator edits after a conflict choice', async () => {
+  await ready()
+  fireEvent.change(screen.getByLabelText('草稿业务文本'), { target: { value: '我的修改' } })
+  vi.mocked(adminPrompts.get).mockResolvedValue({ ...initial, draft: { values: { generate: '第二位修改', audit: '草稿审核规则' } }, draft_etag: 'draft-2' })
+  await userEvent.click(screen.getByRole('button', { name: /刷新服务器版本/ }))
+  await userEvent.click(screen.getByRole('button', { name: '保留我的编辑' }))
+  vi.mocked(adminPrompts.get).mockResolvedValue({ ...initial, draft: { values: { generate: '第三位修改', audit: '草稿审核规则' } }, draft_etag: 'draft-3' })
+  vi.mocked(adminPrompts.save).mockRejectedValue(new ApiError(409, 'CONFLICT', 'stale'))
+  await userEvent.click(screen.getByRole('button', { name: '保存草稿' }))
+  expect(await screen.findByLabelText('服务器最新草稿')).toHaveValue('第三位修改')
+  expect(screen.getByRole('button', { name: '保存草稿' })).toBeDisabled()
+  expect(adminPrompts.save).toHaveBeenCalledTimes(1)
+})
+
+it.each(['publish', 'rollback', 'restoreDefaults'] as const)('cancels %s without a server write', async (action) => {
+  await ready()
+  await userEvent.click(screen.getByRole('button', { name: '版本管理' }))
+  await userEvent.click(screen.getByRole('button', { name: action === 'publish' ? '发布整套草稿' : action === 'rollback' ? '回滚至 release-0' : '恢复内置默认提示词' }))
+  const dialog = screen.getByRole('dialog', { name: action === 'publish' ? '确认发布整套草稿' : action === 'rollback' ? '确认回滚提示词' : '确认恢复默认提示词' })
+  expect(dialog).toHaveClass('pm-confirm-dialog')
+  expect(adminPrompts[action]).not.toHaveBeenCalled()
+  await userEvent.click(within(dialog).getByRole('button', { name: action === 'publish' ? '暂不发布' : action === 'rollback' ? '取消回滚' : '取消' }))
+  expect(dialog).not.toHaveAttribute('open')
+  expect(adminPrompts[action]).not.toHaveBeenCalled()
+})
+
+it('honestly reports a published restore whose draft sync encountered a concurrent edit', async () => {
+  await ready()
+  await userEvent.click(screen.getByRole('button', { name: '版本管理' }))
+  await userEvent.click(screen.getByRole('button', { name: '恢复内置默认提示词' }))
+  vi.mocked(adminPrompts.restoreDefaults).mockResolvedValue({ ...initial, active: { release_id: 'restored', values: initial.bundled!.values }, operation_notice: '默认提示词已恢复并生效；共享草稿被其他管理员更新，已保留对方的修改，请核对草稿差异。' })
+  await userEvent.click(screen.getByRole('button', { name: '确认恢复并发布' }))
+  expect(await screen.findByText(/已保留对方的修改/)).toBeInTheDocument()
+  expect(screen.getByText('草稿与生效版本有 2 项差异')).toBeInTheDocument()
 })

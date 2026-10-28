@@ -49,8 +49,14 @@ def detail(tier, run_id):
     result = dict(record, sides={})
     for side in SIDES:
         row, _ = tier.prompts.storage.read(side_key(run_id, side))
-        result["sides"][side] = projected(row) if row else {
-            "status": "interrupted", "error": "执行记录不完整，未自动重启。"}
+        if record.get("setup_status") == "preparing":
+            result["sides"][side] = projected({
+                "status": "queued", "stage": "queued",
+                "deadline_at": record["setup_deadline_at"],
+            })
+        else:
+            result["sides"][side] = projected(row) if row else {
+                "status": "interrupted", "error": "初始化未完成，请重新发起对比。"}
     states = [row["status"] for row in result["sides"].values()]
     result["status"] = ("running" if any(x in ("queued", "running") for x in states)
                         else "completed" if all(x == "succeeded" for x in states)
@@ -58,7 +64,8 @@ def detail(tier, run_id):
     for row in result["sides"].values():
         row["attempt"] = row.get("attempt", 0)
         row["retry_action"] = None
-        if result["status"] != "running" and row["status"] != "succeeded":
+        if (result["status"] != "running" and row["status"] != "succeeded"
+                and record.get("setup_status", "ready") == "ready"):
             slots = (row.get("summary") or {}).get("slots") or []
             row["retry_action"] = ("resume" if any(
                 slot.get("resumable") and not slot.get("system_fault") for slot in slots
@@ -108,6 +115,10 @@ def version(tier, selection, body):
     return tier.prompts.resolve(selection)
 
 
+class ScenarioStarting(ValueError):
+    status = 503
+
+
 def start(tier, body, actor):
     request_id = body.get("request_id")
     if not isinstance(request_id, str) or not re.fullmatch(r"[a-f0-9]{32}", request_id):
@@ -115,75 +126,120 @@ def start(tier, body, actor):
     run_id = hashlib.sha256((actor + "\0" + request_id).encode()).hexdigest()[:32]
     fingerprint = hashlib.sha256(encode(body)).hexdigest()
     store = tier.prompts.storage
-    existing, _ = store.read(f"{ROOT}{run_id}.json")
-    if existing:
-        if existing["fingerprint"] != fingerprint:
+    record_key = f"{ROOT}{run_id}.json"
+
+    def read_existing():
+        record, token = store.read(record_key)
+        if record and record["fingerprint"] != fingerprint:
             raise Conflict("相同请求编号对应不同设置，请重新发起。")
+        return record, token
+
+    def is_ready(record):
+        # Records predating setup_status were written after all sides existed.
+        return record is not None and record.get("setup_status", "ready") == "ready"
+
+    existing, _ = read_existing()
+    if is_ready(existing):
         return {"run_id": run_id, "reused": True}
     if not tier.runtime.configured:
         raise ValueError("尚未配置模型运行服务。")
-    base = version(tier, body.get("baseline", "active"), body)
-    candidate = version(tier, body.get("candidate", "draft"), body)
-    if base["values"] == candidate["values"]:
-        raise ValueError("两侧提示词完全相同，请选择不同版本或修改草稿。")
-    catalogue = unary(tier, "list_scenarios").get("scenarios", {})
-    scenarios = [item for category in catalogue.get("categories", [])
-                 for item in category.get("scenarios", [])]
-    scenario = next((item for item in scenarios if item.get("id") == body.get("scenario_id")), None)
-    models = unary(tier, "list_models").get("models", [])
-    if scenario is None:
-        raise ValueError("请选择有效的目录场景。")
-    if not any(item.get("id") == body.get("model_id") for item in models):
-        raise ValueError("请选择当前可用的模型。")
     lease, etag = store.read("scenario-lease.json")
     if lease and lease.get("expires", 0) > time.time():
-        # A concurrent identical request may have completed setup since the first read.
-        existing, _ = store.read(f"{ROOT}{run_id}.json")
-        if existing and existing["fingerprint"] == fingerprint:
+        existing, _ = read_existing()
+        if is_ready(existing):
             return {"run_id": run_id, "reused": True}
+        if lease.get("run_id") == run_id:
+            raise ScenarioStarting("这次对比正在初始化，请稍后重试确认同一请求。")
         raise Conflict("已有完整场景对比正在执行或启动，请从历史记录查看进度。")
-    lease_etag = store.write("scenario-lease.json",
-                            {"run_id": run_id, "expires": time.time() + WALL}, etag)
     try:
-        # Recheck after acquiring the durable lease, including a completed duplicate.
-        existing, _ = store.read(f"{ROOT}{run_id}.json")
-        if existing:
-            if existing["fingerprint"] != fingerprint:
-                raise Conflict("相同请求编号对应不同设置。")
-            store.write("scenario-lease.json", {"expires": 0}, lease_etag)
+        lease_etag = store.write("scenario-lease.json",
+                                {"run_id": run_id, "expires": time.time() + WALL}, etag)
+    except Conflict:
+        existing, _ = read_existing()
+        if is_ready(existing):
             return {"run_id": run_id, "reused": True}
-        sources = dict(baseline=base, candidate=candidate)
-        snapshots = {side: tier.prompts.snapshot(bundle["values"], actor, scenario_trial=True)
-                     for side, bundle in sources.items()}
+        raise ScenarioStarting("启动正在确认，请稍后重试同一请求。")
+
+    def release_lease():
+        try:
+            store.write("scenario-lease.json", {"expires": 0}, lease_etag)
+        except Conflict:
+            pass
+
+    started_sides = set()
+    ready = False
+    try:
+        record, record_token = read_existing()
+        if is_ready(record):
+            release_lease()
+            return {"run_id": run_id, "reused": True}
         now = time.time()
-        record = dict(run_id=run_id, fingerprint=fingerprint, actor=actor, created_at=now,
-                      scenario={"id": scenario["id"], "title": scenario["title_zh"]},
-                      model_id=body["model_id"], versions={
-                          side: {"source_release": sources[side]["release_id"],
-                                 "release_id": snapshots[side]["release_id"],
-                                 "digest": snapshots[side]["digest"]}
-                          for side in SIDES})
-        from prompt_config.catalogue import entries
-        record["prompt_changes"] = [
-            {"id": item["id"], "name": item["name"],
-             "baseline": base["values"][item["id"]], "candidate": candidate["values"][item["id"]]}
-            for item in entries() if base["values"][item["id"]] != candidate["values"][item["id"]]]
+        if record is None:
+            base = version(tier, body.get("baseline", "active"), body)
+            candidate = version(tier, body.get("candidate", "draft"), body)
+            if base["values"] == candidate["values"]:
+                raise ValueError("两侧提示词完全相同，请选择不同版本或修改草稿。")
+            catalogue = unary(tier, "list_scenarios").get("scenarios", {})
+            scenarios = [item for category in catalogue.get("categories", [])
+                         for item in category.get("scenarios", [])]
+            scenario = next((item for item in scenarios if item.get("id") == body.get("scenario_id")), None)
+            models = unary(tier, "list_models").get("models", [])
+            if scenario is None:
+                raise ValueError("请选择有效的目录场景。")
+            if not any(item.get("id") == body.get("model_id") for item in models):
+                raise ValueError("请选择当前可用的模型。")
+            sources = dict(baseline=base, candidate=candidate)
+            snapshots = {side: tier.prompts.snapshot(bundle["values"], actor, scenario_trial=True)
+                         for side, bundle in sources.items()}
+            record = dict(run_id=run_id, fingerprint=fingerprint, actor=actor, created_at=now,
+                          scenario={"id": scenario["id"], "title": scenario["title_zh"]},
+                          model_id=body["model_id"], versions={
+                              side: {"source_release": sources[side]["release_id"],
+                                     "release_id": snapshots[side]["release_id"],
+                                     "digest": snapshots[side]["digest"]}
+                              for side in SIDES})
+            from prompt_config.catalogue import entries
+            record["prompt_changes"] = [
+                {"id": item["id"], "name": item["name"],
+                 "baseline": base["values"][item["id"]], "candidate": candidate["values"][item["id"]]}
+                for item in entries() if base["values"][item["id"]] != candidate["values"][item["id"]]]
+        # Persist the immutable settings before side setup, so retries preserve their snapshots.
+        record = dict(record, setup_status="preparing", setup_deadline_at=now + WALL)
+        record_token = store.write(record_key, record, record_token)
         for side in SIDES:
+            row, token = store.read(side_key(run_id, side))
+            if row and row["status"] not in ("queued", "failed"):
+                raise Conflict("启动记录包含已执行的结果，请从历史记录核对。")
             store.write(side_key(run_id, side), {
                 "status": "queued", "created_at": now, "deadline_at": now + WALL,
-                "events": [], "counts": {}, "stage": "queued", "elapsed_seconds": 0})
-        store.write(f"{ROOT}{run_id}.json", record)
+                "events": [], "counts": {}, "stage": "queued", "elapsed_seconds": 0}, token)
+        record = dict(record, setup_status="ready")
+        store.write(record_key, record, record_token)
+        ready = True
         for side in SIDES:
             tier.executions.start(f"prompt-scenario:{run_id}:{side}",
                                   lambda publish, side=side: run_side(tier, record, side, lease_etag))
+            started_sides.add(side)
     except Exception:
-        # A partial setup must never leave a queued side or hold the lease indefinitely.
-        for side in SIDES:
-            row, token = store.read(side_key(run_id, side))
-            if row and row["status"] == "queued":
-                store.write(side_key(run_id, side), dict(row, status="failed",
-                            error="对比启动失败，请重新发起。"), token)
-        store.write("scenario-lease.json", {"expires": 0}, lease_etag)
+        try:
+            for side in SIDES:
+                # A launched producer may not have changed queued to running yet.
+                if side in started_sides:
+                    continue
+                row, token = store.read(side_key(run_id, side))
+                if row and row["status"] == "queued":
+                    store.write(side_key(run_id, side), dict(row, status="failed",
+                                error="对比启动失败，请重新尝试。"), token)
+            if not ready:
+                failed, token = read_existing()
+                if failed:
+                    store.write(record_key, dict(failed, setup_status="setup_failed"), token)
+            rows = [store.read(side_key(run_id, side))[0] for side in SIDES]
+            if not any(row and row["status"] in ("queued", "running") for row in rows):
+                release_lease()
+        except Exception:
+            # Unknown worker/storage state retains the bounded lease rather than admitting overlap.
+            LOG.exception("scenario setup cleanup failed run=%s", run_id)
         raise
     return {"run_id": run_id, "reused": False}
 
@@ -367,7 +423,7 @@ def install(app, tier, user_scope_key):
             return await asyncio.to_thread(start, tier, body, request.scope[user_scope_key]["email"])
         except (ValueError, TypeError) as exc:
             return JSONResponse({"error": {"message": str(exc)}},
-                                409 if isinstance(exc, Conflict) else 400)
+                                getattr(exc, "status", 409 if isinstance(exc, Conflict) else 400))
 
     @app.post("/api/admin/prompt-scenarios/{run_id}/{side}/retry")
     async def retry(run_id: str, side: str, request: Request):
@@ -380,7 +436,7 @@ def install(app, tier, user_scope_key):
             return await asyncio.to_thread(retry_side, tier, run_id, side, body.get("attempt"))
         except (ValueError, TypeError) as exc:
             return JSONResponse({"error": {"message": str(exc)}},
-                                409 if isinstance(exc, Conflict) else 400)
+                                getattr(exc, "status", 409 if isinstance(exc, Conflict) else 400))
 
     @app.get("/api/admin/prompt-scenarios")
     async def listing(request: Request, offset: int = 0):

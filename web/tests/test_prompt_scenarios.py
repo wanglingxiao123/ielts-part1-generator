@@ -79,6 +79,61 @@ def setup(tier):
             'draft_etag': tier.prompts.state()['draft_etag']}
 
 
+def test_same_request_recovers_partial_initialization_with_original_snapshots(tier, monkeypatch):
+    body = setup(tier)
+    storage = tier.prompts.storage
+    original_write = storage.write
+    failure = [True]
+    def fail_once(key, value, expected=None):
+        if key.endswith('/candidate.json') and failure[0]:
+            failure[0] = False
+            raise RuntimeError("synthetic transient storage error")
+        return original_write(key, value, expected)
+    monkeypatch.setattr(storage, "write", fail_once)
+    with pytest.raises(RuntimeError):
+        start(tier, body, "admin")
+    keys = [key for key in storage.list_keys("scenario-runs/") if key.count("/") == 1]
+    initial = storage.read(keys[0])[0]
+    assert initial["setup_status"] == "setup_failed"
+    assert not tier.executions.work
+    # Recovery must not resolve the old etag against a newer draft.
+    tier.prompts.save_draft(defaults(), "admin", body["draft_etag"])
+    result = start(tier, body, "admin")
+    assert result["run_id"] == initial["run_id"]
+    assert detail(tier, result["run_id"])["versions"] == initial["versions"]
+    tier.executions.run()
+    assert detail(tier, result["run_id"])["status"] == "completed"
+    assert start(tier, body, "admin")["reused"] is True
+    assert len([p for p, _ in tier.runtime.calls if p["action"] == "generate_sets"]) == 2
+
+
+@pytest.mark.parametrize("already_running", [False, True])
+def test_second_worker_failure_keeps_lease_for_started_queued_or_running_peer(tier, already_running):
+    body = setup(tier)
+    work = []
+    def partial_start(key, producer):
+        if work:
+            raise RuntimeError("second worker unavailable")
+        work.append(producer)
+        if already_running:
+            run_id = key.split(":")[1]
+            row, token = tier.prompts.storage.read(side_key(run_id, "baseline"))
+            tier.prompts.storage.write(side_key(run_id, "baseline"), dict(row, status="running"), token)
+    tier.executions.start = partial_start
+    with pytest.raises(RuntimeError):
+        start(tier, body, "admin")
+    lease = tier.prompts.storage.read("scenario-lease.json")[0]
+    assert lease["expires"] > time.time()
+    run_id = lease["run_id"]
+    assert detail(tier, run_id)["sides"]["baseline"]["status"] == ("running" if already_running else "queued")
+    assert detail(tier, run_id)["sides"]["candidate"]["status"] == "failed"
+    with pytest.raises(Conflict):
+        start(tier, dict(body, request_id="b" * 32), "admin")
+    work[0](lambda _: None)
+    assert tier.prompts.storage.read("scenario-lease.json")[0]["expires"] == 0
+    assert detail(tier, run_id)["sides"]["baseline"]["status"] == "succeeded"
+
+
 def test_admin_only_start_history_detail(client):
     register(client, 'admin@example.com')
     client.cookies.clear()

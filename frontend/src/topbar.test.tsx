@@ -10,7 +10,7 @@
  * 这个文件守的就是那件事不再发生：三个页签都是链接，任何 store 状态下都是。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { AuthProvider } from '@/auth/AuthProvider'
 import { setAuthFetch } from '@/auth/authApi'
@@ -54,10 +54,18 @@ async function renderTopBar() {
     </MemoryRouter>,
   )
   // 等会话确认完成，否则页签还没渲染。
-  await waitFor(() => expect(screen.getByText(USER.email)).toBeInTheDocument())
+  await waitFor(() => expect(screen.getByRole('button', { name: '账号菜单' })).toBeInTheDocument())
 }
 
 describe('三个页签始终可点', () => {
+  it('places administrator destinations last, with user management after prompts', async () => {
+    setAuthFetch(() => Promise.resolve(jsonResponse({ user: { ...USER, is_admin: true } })))
+    await renderTopBar()
+    expect(within(screen.getByRole('navigation', { name: '主导航' })).getAllByRole('link').map((link) => link.textContent?.trim())).toEqual([
+      '场景选择', '生成结果', '审核队列', '提示词管理', '用户管理',
+    ])
+    expect(screen.queryByRole('link', { name: '修改密码' })).not.toBeInTheDocument()
+  })
   it('没有活批次时「生成结果」仍是链接', async () => {
     // 这就是客户报的场景：刚打开页面，store 是空的，但 S3 里有历史。
     await renderTopBar()

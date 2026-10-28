@@ -260,6 +260,7 @@ async def run_request(
     run_question_stage: Optional[Callable] = None,
     group_id: Optional[str] = None,
     model_id: Optional[str] = None,
+    retry_token: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Deliver one complete set per entry in ``scenarios``, or return an honest non-success.
 
@@ -293,7 +294,7 @@ async def run_request(
     async for event in stream_request(
             scenarios, batch_id, store=store, budget=budget, concurrency=concurrency,
             run_material=run_material, run_question_stage=run_question_stage, group_id=group_id,
-            model_id=model_id):
+            model_id=model_id, retry_token=retry_token):
         if event is None:
             continue
         await emit(event)
@@ -312,6 +313,7 @@ async def stream_request(
     run_question_stage: Optional[Callable] = None,
     group_id: Optional[str] = None,
     model_id: Optional[str] = None,
+    retry_token: Optional[str] = None,
 ):
     """:func:`run_request` as an async generator: every event yielded as it occurs.
 
@@ -334,7 +336,7 @@ async def stream_request(
                    run_material or run_one, run_question_stage or run_questions,
                    group_id=group_id, model_id=model_id)
 
-    records = _plan(store, batch_id, scenarios, ctx)
+    records = _plan(store, batch_id, scenarios, ctx, retry_token=retry_token)
     try:
         store.save_request(_request_document(
             batch_id, wanted, RUNNING, records, ctx,
@@ -381,7 +383,16 @@ async def stream_request(
     yield events.request_completed(summary)
 
 
-def _plan(store, batch_id: str, scenarios: List[Any], ctx: _Context) -> List[SlotRecord]:
+def retryable_question_fault(record: SlotRecord) -> bool:
+    """Narrow compatibility rule for persisted model-call crashes, never storage faults."""
+    failure = record.last_failure or {}
+    return bool(record.state == EXHAUSTED and record.system_fault
+                and not record.replaced_by and record.material_id
+                and failure.get("reason") == "question_stage_crashed"
+                and str(failure.get("detail") or "").startswith("ModelCallError:"))
+
+
+def _plan(store, batch_id: str, scenarios: List[Any], ctx: _Context, retry_token=None) -> List[SlotRecord]:
     """The slot records to advance, from storage where they exist and new where they do not.
 
     A resumption finds every record already written, including replacements, and returns the ones not
@@ -417,6 +428,15 @@ def _plan(store, batch_id: str, scenarios: List[Any], ctx: _Context) -> List[Slo
         # original request, and a positional match would hand `slot-2r1` whatever scenario happened to
         # sit second in the list.
         ctx.scenarios[record.slot_id] = by_id.get(record.scenario_id)
+        # A human-requested retry is separate from automatic stage retries. Keep
+        # the qualified material and consume this token before any paid call.
+        if (retry_token and retry_token not in record.manual_retry_tokens
+                and retryable_question_fault(record)):
+            record.manual_retry_tokens.append(retry_token)
+            record.system_fault = False
+            record.state = MATERIAL_DONE
+            record.attempts["question_restarts"] = 0
+            store.save_slot(record)
         if record.state not in (COMPLETE, EXHAUSTED):
             pending.append(record)
     return pending

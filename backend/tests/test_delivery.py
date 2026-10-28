@@ -1344,3 +1344,35 @@ class TestQuietRuntimeHeartbeat:
         pushed = []
         FanOut._pump(owner, child, pushed.append)
         assert pushed == [event, _CHILD_DONE]
+
+
+def test_manual_model_failure_retry_preserves_material_and_consumes_token_once():
+    class ModelCallError(RuntimeError):
+        pass
+
+    def crash():
+        raise ModelCallError('question audit call failed: APIError')
+
+    first = Recorder([material_ok], [crash])
+    store = memory_store()
+    def invoke(recorder, token=None):
+        return asyncio.run(run_request([FakeScenario()], 'manual-retry', store=store,
+            run_material=recorder.run_material, run_question_stage=recorder.run_questions,
+            retry_token=token))
+    assert invoke(first)['status'] == SYSTEM_FAILURE
+    material_id = store.load_slot('manual-retry', 'slot-1').material_id
+    second = Recorder([material_ok], [crash])
+    assert invoke(second, 'a'*32)['status'] == SYSTEM_FAILURE
+    assert not second.material_calls and len(second.question_calls) == 2
+    assert store.load_slot('manual-retry', 'slot-1').material_id == material_id
+    duplicate = Recorder([material_ok], [questions_ok()])
+    assert invoke(duplicate, 'a'*32)['status'] == SYSTEM_FAILURE
+    assert not duplicate.material_calls and not duplicate.question_calls
+    assert invoke(second, 'b'*32)['status'] == SYSTEM_FAILURE
+    assert invoke(duplicate, 'a'*32)['status'] == SYSTEM_FAILURE
+    assert not duplicate.question_calls
+    assert invoke(duplicate, 'c'*32)['status'] == SUCCEEDED
+    assert not duplicate.material_calls and len(duplicate.question_calls) == 1
+    assert store.load_slot('manual-retry', 'slot-1').material_id == material_id
+    assert invoke(duplicate, 'c'*32)['status'] == SUCCEEDED
+    assert len(duplicate.question_calls) == 1

@@ -837,6 +837,8 @@ class TestFailedSlotRefill:
 
         batch_store.save_index("b-refill", self._partial_record())
         tier = WebTier(auth, fanout_runtime, str(static_dir), history=history)
+        from types import SimpleNamespace
+        tier.slot_state = SimpleNamespace(load_request=lambda key: None)
         with TestClient(tier.app) as client:
             register(client, "a@amazon.com")
             body = {"seats": [{"scenario_key": "booking-hotel", "index": 8}]}
@@ -889,6 +891,8 @@ class TestFailedSlotRefill:
         )
         batch_store.save_index("b-custom", partial)
         tier = WebTier(auth, fanout_runtime, str(static_dir), history=history)
+        from types import SimpleNamespace
+        tier.slot_state = SimpleNamespace(load_request=lambda key: None)
         with TestClient(tier.app) as client:
             register(client, "a@amazon.com")
             response = client.post(

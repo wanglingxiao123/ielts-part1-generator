@@ -426,14 +426,14 @@ describe('只读的历史批次', () => {
     expect(screen.getByRole('button', { name: '提交审核' })).toBeInTheDocument()
   })
 
-  it('中断过的批次说清缺的不会再补，并且不给补生成的按钮', async () => {
+  it('中断过的批次保留已交付结果并说明将检查恢复可能性', async () => {
     historyBatches = [historyEntry({ batch_id: 'cut', interrupted: true })]
     detailFor = (batchId) =>
       detail(batchId, { interrupted: true, state: 'running', requested_total: 6 })
     renderAt('cut')
 
     await waitFor(() => expect(screen.getByText(/生成任务中途中断/)).toBeInTheDocument())
-    expect(screen.getByText(/不会再补齐/)).toBeInTheDocument()
+    expect(screen.getByText(/能否从断点继续或单独补生成/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /补生成/ })).toBeNull()
   })
 

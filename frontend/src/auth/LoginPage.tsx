@@ -70,6 +70,10 @@ export function LoginPage() {
         setError('两次输入的密码不一致，请重新输入')
         return
       }
+      if (password.length > 1024) {
+        setError('密码最多 1024 位')
+        return
+      }
       if (password.length < MIN_PASSWORD) {
         setError(`密码至少 ${MIN_PASSWORD} 位`)
         return
@@ -152,6 +156,7 @@ export function LoginPage() {
             type={reveal ? 'text' : 'password'}
             value={password}
             autoComplete={registering ? 'new-password' : 'current-password'}
+            maxLength={registering ? 1024 : undefined}
             required
             onChange={(e) => setPassword(e.target.value)}
           />
@@ -163,6 +168,7 @@ export function LoginPage() {
             <input
               type={reveal ? 'text' : 'password'}
               value={confirm}
+              maxLength={1024}
               autoComplete="new-password"
               required
               onChange={(e) => setConfirm(e.target.value)}

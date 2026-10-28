@@ -281,8 +281,23 @@ class TestItIsReadOnly:
         """A boundary, not an omission: the Runtime owns slot state, and a web tier that could write
         here would be a second writer of the record resumption depends on."""
         public = [name for name in dir(SlotStateReader) if not name.startswith("_")]
-        assert sorted(public) == ["available", "find_slot", "load_questions", "load_slots"]
+        assert sorted(public) == ["available", "find_slot", "load_questions", "load_request", "load_slots"]
 
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+class TestRecoveryRead:
+    def test_read_errors_and_malformed_data_cannot_be_treated_as_missing_checkpoint(self):
+        with pytest.raises(RuntimeError):
+            SlotStateReader(FakeStore(raises=RuntimeError('AccessDenied'))).load_request('b1')
+        with pytest.raises(ValueError):
+            SlotStateReader(FakeStore({'_slots/b1/request.json':b'{broken'})).load_request('b1')
+        with pytest.raises(RuntimeError):
+            SlotStateReader(None).load_request('b1')
+
+    def test_missing_and_incomplete_checkpoints_are_distinct(self):
+        assert SlotStateReader(FakeStore()).load_request('missing') is None
+        reader=SlotStateReader(FakeStore({'_slots/b1/request.json':request_doc('incomplete',{'slot_id':'slot-1','state':'material_done'})}))
+        assert reader.load_request('b1')['status']=='incomplete'

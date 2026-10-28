@@ -39,6 +39,8 @@ import pytest
 
 from backend import agents as agents_module
 
+pytestmark = pytest.mark.usefixtures("offline_agent_models")
+
 REPO = Path(__file__).resolve().parents[2]
 
 # Fields that exist only in blueprint.schema.json. Present in neither material.schema.json nor

@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from pathlib import Path
+import re
 import threading
 import time
 import uuid
@@ -11,8 +13,21 @@ from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from prompt_config.store import Conflict
+from prompt_config.store import Conflict, encode
 from .runtime_client import read_json
+
+
+class TrialBusy(Conflict):
+    code = "TRIAL_BUSY"
+
+
+class TrialStarting(ValueError):
+    code = "TRIAL_STARTING"
+    status = 503
+
+
+class TrialRequestConflict(Conflict):
+    code = "TRIAL_REQUEST_CONFLICT"
 
 
 def install(app, tier, user_scope_key):
@@ -31,9 +46,10 @@ def install(app, tier, user_scope_key):
         return result
 
     def error(exc):
-        return JSONResponse({"error": {"code": "PROMPT_CONFLICT" if isinstance(exc, Conflict)
-                                      else "PROMPT_INVALID", "message": str(exc)}},
-                            409 if isinstance(exc, Conflict) else 400)
+        return JSONResponse({"error": {"code": getattr(exc, "code",
+                            "PROMPT_CONFLICT" if isinstance(exc, Conflict) else "PROMPT_INVALID"),
+                            "message": str(exc)}},
+                            getattr(exc, "status", 409 if isinstance(exc, Conflict) else 400))
 
     @app.get("/api/admin/prompts")
     async def get_prompts(request: Request):
@@ -82,6 +98,13 @@ def install(app, tier, user_scope_key):
                 default_id = tier.prompts.bundled()["release_id"]
                 if body.get("release_id") != default_id:
                     raise Conflict("内置默认版本已改变，请刷新后重新确认。")
+                if body.get("sync_draft") is True:
+                    if "draft_etag" not in body:
+                        raise ValueError("请刷新并确认需要恢复的共享草稿。")
+                    notice = await asyncio.to_thread(
+                        tier.prompts.restore_defaults, actor, body.get("expected_etag"),
+                        default_id, body["draft_etag"])
+                    return {**await asyncio.to_thread(state), "operation_notice": notice}
                 await asyncio.to_thread(tier.prompts.publish, actor, body.get("expected_etag"),
                                         release_id=default_id)
             elif operation == "test":
@@ -144,36 +167,76 @@ def trial_history(tier, offset=0):
 
 def start_trial(tier, body, actor):
     from prompt_config.catalogue import defaults
+    request_id = body.get("request_id")
+    if request_id is not None and (
+        not isinstance(request_id, str) or not re.fullmatch(r"[a-f0-9]{32}", request_id)
+    ):
+        raise ValueError("缺少有效的请求编号。")
+    # Legacy clients without an ID still work during a rolling deployment.
+    test_id = (hashlib.sha256((actor + "\0" + request_id).encode()).hexdigest()[:32]
+               if request_id is not None else uuid.uuid4().hex)
+    fingerprint = hashlib.sha256(encode(body)).hexdigest()
+    key = "tests/" + test_id + ".json"
+    store = tier.prompts.storage
+
+    def existing_result():
+        existing, _ = store.read(key)
+        if existing is not None:
+            if existing.get("fingerprint") != fingerprint:
+                raise TrialRequestConflict("同一请求编号对应不同测试内容，请重新发起测试。")
+            return {"test_id": test_id, "reused": True}
+
+    if found := existing_result():
+        return found
     prompt_id, sample = body.get("prompt_id"), body.get("input")
     if prompt_id not in defaults() or not isinstance(sample, str) or not 1 <= len(sample) <= 32000:
         raise ValueError("请选择提示词并输入不超过 32000 字符的测试样例。")
-    draft, etag = tier.prompts.storage.read("draft.json")
+    draft, etag = store.read("draft.json")
     if draft is None or etag != body.get("draft_etag"):
         raise Conflict("草稿已改变，请保存并重新检查。")
     # One bounded trial at a time prevents accidental expensive duplicate-click fan-out.
-    lease, lease_etag = tier.prompts.storage.read("trial-lease.json")
+    lease, lease_etag = store.read("trial-lease.json")
     if lease and lease.get("expires", 0) > time.time():
-        raise Conflict("已有试运行正在执行，请等待完成后重试。")
-    test_id = uuid.uuid4().hex
-    lease_etag = tier.prompts.storage.write("trial-lease.json",
-                                           {"test_id": test_id, "expires": time.time() + 1200}, lease_etag)
+        if found := existing_result():
+            return found
+        if lease.get("test_id") == test_id:
+            raise TrialStarting("正在启动这次测试，请稍后重试确认同一请求。")
+        raise TrialBusy("已有试运行正在执行，请等待完成后重试。")
     try:
+        lease_etag = store.write("trial-lease.json",
+                                {"test_id": test_id, "expires": time.time() + 1200}, lease_etag)
+    except Conflict:
+        if found := existing_result():
+            return found
+        raise TrialStarting("测试正在排队确认，请稍后重试同一请求。")
+
+    def release_lease():
+        try:
+            store.write("trial-lease.json", {"expires": 0}, lease_etag)
+        except Conflict:
+            pass
+
+    try:
+        # The owner may have completed since the initial read and released its lease.
+        if found := existing_result():
+            release_lease()
+            return found
         baseline = tier.prompts.resolve()
         baseline_source = baseline["release_id"]
         # Even bundled baseline is persisted, so Web and Runtime image mismatch cannot swap it.
         baseline = tier.prompts.snapshot(baseline["values"], actor, trial=True)
         candidate = tier.prompts.snapshot(draft["values"], actor, trial=True)
-        record = dict(test_id=test_id, status="running", actor=actor, created_at=time.time(),
+        record = dict(test_id=test_id, fingerprint=fingerprint, status="running",
+                      actor=actor, created_at=time.time(),
                       prompt_id=prompt_id, model_id=body.get("model_id") or "",
                       baseline_release=baseline_source, draft_release=candidate["release_id"],
                       baseline_digest=baseline["digest"], draft_digest=candidate["digest"],
                       baseline_snapshot_release=baseline["release_id"],
                       input=sample, baseline_prompt=baseline["values"][prompt_id],
                       draft_prompt=candidate["values"][prompt_id], draft_etag=etag)
-        key = "tests/" + test_id + ".json"
-        token = tier.prompts.storage.write(key, record)
+        token = store.write(key, record)
     except Exception:
-        tier.prompts.storage.write("trial-lease.json", {"expires": 0}, lease_etag)
+        release_lease()
         raise
 
     def run():
@@ -199,11 +262,17 @@ def start_trial(tier, body, actor):
         finally:
             record["finished_at"] = time.time()
             try:
-                tier.prompts.storage.write(key, record, token)
+                store.write(key, record, token)
             finally:
-                try:
-                    tier.prompts.storage.write("trial-lease.json", {"expires": 0}, lease_etag)
-                except Conflict:
-                    pass
-    threading.Thread(target=run, daemon=True, name="prompt-trial-" + test_id[:8]).start()
-    return {"test_id": test_id}
+                release_lease()
+    try:
+        threading.Thread(target=run, daemon=True, name="prompt-trial-" + test_id[:8]).start()
+    except Exception:
+        logging.getLogger(__name__).exception("Prompt trial worker start failed id=%s", test_id)
+        record.update(status="failed", finished_at=time.time(),
+                      error="试运行未能启动，请发起新的测试。")
+        try:
+            store.write(key, record, token)
+        finally:
+            release_lease()
+    return {"test_id": test_id, "reused": False}

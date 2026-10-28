@@ -321,7 +321,8 @@ class _DictBacked:
         actor, email = normalise_email(actor), normalise_email(email)
         if not isinstance(password, str) or not MIN_PASSWORD_LENGTH <= len(password) <= 1024:
             raise WeakPassword("新密码须为 8 至 1024 位。")
-        if not isinstance(current_password, str) or len(current_password) > 1024:
+        # New-password limits must not prevent migration of previously accepted passwords.
+        if not isinstance(current_password, str):
             raise CurrentPasswordIncorrect("当前密码不正确。")
         encoded = hash_password(password)
         def update(users):
@@ -527,6 +528,8 @@ class AuthService:
             )
         if len(password or "") < MIN_PASSWORD_LENGTH:
             raise WeakPassword("密码至少 %d 位" % MIN_PASSWORD_LENGTH)
+        if len(password) > 1024:
+            raise WeakPassword("密码不能超过 1024 位。")
         if self.store.get(address) is not None:
             raise UserExists("该邮箱已注册")
         # The first account to exist is the admin. Checked against the store rather than a flag

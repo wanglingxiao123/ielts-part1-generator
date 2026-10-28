@@ -110,7 +110,7 @@ class DeliveryRequest(object):
     ``delivery``'s module docstring.
     """
 
-    __slots__ = ("slots", "batch_id", "group_id", "concurrency", "budget", "model_id")
+    __slots__ = ("slots", "batch_id", "group_id", "concurrency", "budget", "model_id", "retry_token")
 
     def __init__(
         self,
@@ -120,6 +120,7 @@ class DeliveryRequest(object):
         concurrency: Optional[int] = None,
         budget: Any = None,
         model_id: Optional[str] = None,
+        retry_token: Optional[str] = None,
     ) -> None:
         self.slots = slots
         self.batch_id = batch_id
@@ -127,6 +128,7 @@ class DeliveryRequest(object):
         self.concurrency = concurrency
         self.budget = budget
         self.model_id = model_id
+        self.retry_token = retry_token
 
 
 def parse_delivery_request(
@@ -178,7 +180,11 @@ def parse_delivery_request(
         except (TypeError, ValueError):
             raise BadRequest("hard_limit_seconds must be a number")
 
+    retry_token = payload.get("retry_token")
+    if retry_token is not None and (not isinstance(retry_token, str) or len(retry_token) != 32
+            or any(c not in "0123456789abcdef" for c in retry_token)):
+        raise BadRequest("retry_token must be 32 lowercase hex characters")
     model_id = payload.get("model_id")
     return DeliveryRequest(slots=slots, batch_id=batch_id, group_id=group_id,
-                           concurrency=concurrency, budget=budget,
+                           concurrency=concurrency, budget=budget, retry_token=retry_token,
                            model_id=str(model_id).strip() if model_id else None)

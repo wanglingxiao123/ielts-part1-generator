@@ -1,3 +1,4 @@
+import { displayDate } from '@/domain/displayDate'
 import { WorkspaceDrawer } from "./WorkspaceDrawer"
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { PromptState } from '@/api/adminPrompts'
@@ -92,7 +93,7 @@ function RunSide({ side, title, retrying, onRetry }: {
       {result?.audit != null && <details className="pm-disclosure"><summary>材料审核报告</summary><pre>{JSON.stringify(result.audit, null, 2)}</pre></details>}
       {questions?.review != null && <details className="pm-disclosure"><summary>题目审核报告</summary><pre>{JSON.stringify(questions.review, null, 2)}</pre></details>}
       {side.summary && <details className="pm-disclosure"><summary>重试计数与最终检查点</summary><pre>{JSON.stringify({ slots: side.summary.slots, system_faults: side.summary.system_faults }, null, 2)}</pre></details>}
-      <ol className="pm-stage-list">{side.events?.map((event, i) => <li key={i}><strong>{stageLabels[event.stage ?? ''] ?? event.stage ?? event.reason ?? event.type}</strong>{event.at && <time>{new Date(event.at * 1000).toLocaleTimeString()}</time>}{event.detail != null && <pre>{typeof event.detail === 'string' ? event.detail : JSON.stringify(event.detail, null, 2)}</pre>}</li>)}</ol>
+      <ol className="pm-stage-list">{side.events?.map((event, i) => <li key={i}><strong>{stageLabels[event.stage ?? ''] ?? event.stage ?? event.reason ?? event.type}</strong>{event.at && <time>{new Date(event.at * 1000).toLocaleTimeString('zh-CN', { hour12: false })}</time>}{event.detail != null && <pre>{typeof event.detail === 'string' ? event.detail : JSON.stringify(event.detail, null, 2)}</pre>}</li>)}</ol>
     </div>}
   </section>
 }
@@ -103,6 +104,8 @@ export function ScenarioComparison({ state, dirty }: { state: PromptState; dirty
   const [scenario, setScenario] = useState(scenarios[0]?.key ?? '')
   const [baseline, setBaseline] = useState('active')
   const [candidate, setCandidate] = useState('draft')
+  const [historyError, setHistoryError] = useState('')
+  const [historyLoading, setHistoryLoading] = useState(false)
   const [history, setHistory] = useState<ScenarioHistory | null>(null)
   const [offset, setOffset] = useState(0)
   const [reload, setReload] = useState(0)
@@ -118,9 +121,10 @@ export function ScenarioComparison({ state, dirty }: { state: PromptState; dirty
   useEffect(() => { alive.current = true; return () => { alive.current = false } }, [])
   useEffect(() => {
     const controller = new AbortController()
+    setHistoryError(''); setHistoryLoading(true)
     void promptScenarios.history(offset, controller.signal).then((value) => {
       if (!controller.signal.aborted) setHistory(value)
-    }).catch((err: unknown) => { if (!controller.signal.aborted) setError(userMessage(err, '场景对比历史读取失败')) })
+    }).catch((err: unknown) => { if (!controller.signal.aborted) setHistoryError(userMessage(err, '场景对比历史读取失败')) }).finally(() => { if (!controller.signal.aborted) setHistoryLoading(false) })
     return () => controller.abort()
   }, [offset, reload])
   useEffect(() => {
@@ -143,7 +147,7 @@ export function ScenarioComparison({ state, dirty }: { state: PromptState; dirty
   const versions = [
     ...(state.bundled ? [{ id: state.bundled.release_id, label: '内置默认版本' }] : []),
     ...state.history.filter((r) => !r.release_id.startsWith('bundled-')).map((r) => ({
-      id: r.release_id, label: `${r.release_id.slice(0, 8)} · ${r.created_at ? new Date(typeof r.created_at === 'number' ? r.created_at * 1000 : r.created_at).toLocaleString() : '默认'}`,
+      id: r.release_id, label: `${r.release_id.slice(0, 8)} · ${r.created_at ? displayDate(r.created_at) : '默认'}`,
     })),
   ]
   async function retrySide(side: 'baseline' | 'candidate') {
@@ -195,10 +199,12 @@ export function ScenarioComparison({ state, dirty }: { state: PromptState; dirty
     <p className="pm-purpose">两侧内容可能不同，请结合材料、题目和运行过程判断；单次结果不代表稳定的质量提升。测试结果不会自动进入正式审核队列。</p>
     </div>
     <WorkspaceDrawer open={historyOpen} onClose={() => setHistoryOpen(false)} title="场景对比历史">
-      <button className="btn" onClick={() => { setError(''); setReload((n) => n + 1) }}>刷新记录</button>
-      <div className="pm-history-list">{history?.items.map((item) => <button className={`pm-trial-history-row ${runId === item.run_id ? 'is-selected' : ''}`} key={item.run_id} onClick={() => { setRun(null); setRunId(item.run_id); setHistoryOpen(false); setReload((n) => n + 1) }}><strong>{item.scenario.title}</strong><span>{new Date(item.created_at * 1000).toLocaleString()}</span><span>{item.model_id}</span><span>{statusLabels[item.status] ?? item.status}</span><code>{item.run_id.slice(0, 8)}</code></button>)}</div>
-      {history?.items.length === 0 && <p>暂无完整场景对比。</p>}
-      <div className="pm-history-pagination"><button className="btn" disabled={!offset} onClick={() => setOffset(Math.max(0, offset - 20))}>上一页</button><button className="btn" disabled={history?.next_offset == null} onClick={() => setOffset(history!.next_offset!)}>下一页</button></div>
+      <button className="btn" disabled={historyLoading} onClick={() => { setHistoryError(''); setReload((n) => n + 1) }}>刷新记录</button>
+      {historyLoading && <p role="status">正在读取历史记录…</p>}
+      {historyError && <p role="alert" className="pm-alert pm-error">{historyError}，请点击刷新记录重试。</p>}
+      <div className="pm-history-list">{history?.items.map((item) => <button className={`pm-trial-history-row ${runId === item.run_id ? 'is-selected' : ''}`} key={item.run_id} onClick={() => { setRun(null); setRunId(item.run_id); setHistoryOpen(false); setReload((n) => n + 1) }}><strong>{item.scenario.title}</strong><span>{displayDate(item.created_at)}</span><span>{item.model_id}</span><span>{statusLabels[item.status] ?? item.status}</span><code>{item.run_id.slice(0, 8)}</code></button>)}</div>
+      {!historyLoading && !historyError && history?.items.length === 0 && <p>暂无完整场景对比。</p>}
+      <div className="pm-history-pagination"><button className="btn" disabled={historyLoading || !offset} onClick={() => setOffset(Math.max(0, offset - 20))}>上一页</button><button className="btn" disabled={historyLoading || !!historyError || history?.next_offset == null} onClick={() => setOffset(history!.next_offset!)}>下一页</button></div>
     </WorkspaceDrawer>
     {runId && !run && <p>正在读取对比详情…</p>}
     {run && <div className="pm-scenario-results">

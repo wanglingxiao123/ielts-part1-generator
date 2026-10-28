@@ -1,4 +1,5 @@
 import { PasswordPage } from "@/auth/PasswordPage"
+import { AccountMenu } from '@/auth/AccountMenu'
 import { lazy, Suspense, useEffect } from 'react'
 import { NavLink, Route, Routes } from 'react-router-dom'
 import { LoginPage } from '@/auth/LoginPage'
@@ -54,7 +55,7 @@ function TopBar() {
           RequireAuth, so offering them to an anonymous visitor on /login just
           bounces them back to the form they are already looking at. */}
       {session.isAuthenticated && (
-        <nav>
+        <nav aria-label="主导航">
           {!session.user?.must_change_password && <>
           <NavLink to="/" end className={({ isActive }) => (isActive ? 'active' : '')}>
             场景选择
@@ -76,13 +77,13 @@ function TopBar() {
             审核队列
           </NavLink>
           {session.isAdmin && (
-            <NavLink to="/admin/users" className={({ isActive }) => (isActive ? 'active' : '')}>
-              用户管理
+            <NavLink to="/admin/prompts" className={({ isActive }) => (isActive ? 'active' : '')}>
+              提示词管理
             </NavLink>
           )}
           {session.isAdmin && (
-            <NavLink to="/admin/prompts" className={({ isActive }) => (isActive ? 'active' : '')}>
-              提示词管理
+            <NavLink to="/admin/users" className={({ isActive }) => (isActive ? 'active' : '')}>
+              用户管理
             </NavLink>
           )}
           {/* /dev/fixtures is deliberately NOT linked: dev harness, see above. */}
@@ -90,7 +91,6 @@ function TopBar() {
         </nav>
       )}
       <div className="spacer" />
-      {session.isAuthenticated && <NavLink to="/account/password" className="btn">修改密码</NavLink>}
       {session.isAuthenticated && !session.user?.must_change_password && (
         <label className="topbar-model" title={models.warning ?? '下一次 AI 操作使用的模型'}>
           <span>模型</span>
@@ -107,17 +107,7 @@ function TopBar() {
           </select>
         </label>
       )}
-      <span className="who">
-        {session.email || '未登录'}
-        {session.isAdmin && ' · 管理员'}
-      </span>
-      {/* Gated on "is there a session", not on an auth mode: there is one login
-          path now, so 退出 is available whenever it can do anything. */}
-      {session.isAuthenticated && (
-        <button type="button" className="btn btn-sm" onClick={() => void session.signOut()}>
-          退出
-        </button>
-      )}
+      {session.isAuthenticated ? <AccountMenu /> : <span className="who">未登录</span>}
     </div>
   )
 }
